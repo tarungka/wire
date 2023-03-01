@@ -591,6 +591,7 @@ func main() {
 
 	// This below function I can change it to be run on the main thread also - can I?
 	go watchChanges(coll, es, serverCfg)
+	// Should I add a delay here just make sure the changes have started streaming?
 	go loadIntialData(coll, es, serverCfg)
 
 	wg.Wait()
