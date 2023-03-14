@@ -65,7 +65,7 @@ services:
       - kafka1
       - kadmin
     environment:
-      - MONGODB_URI=mongodb+srv://engineering-team:bLpJ9EGukKIiE8sL@cluster0.fibrk.mongodb.net/
+      - MONGODB_URI=
       - KAFKA_BOOTSTRAP_SERVERS=kafka1:29092
       - CONTENT_SERVICE_NAME=user
       - INDEX_NAME=test-index

@@ -28,6 +28,5 @@ go.work
 
 
 .vscode
-
-
 .creds
+tests/
