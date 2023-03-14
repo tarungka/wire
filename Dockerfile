@@ -14,6 +14,7 @@ WORKDIR /app
 COPY *.mod ./
 COPY *.sum ./
 COPY *.go ./
+COPY ./.config ./.config
 
 
 RUN go mod download
