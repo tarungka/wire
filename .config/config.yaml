@@ -1,36 +1,55 @@
-InstanceNameToBeSetInEnvVar1:
-  instanceName: just an identifier, has no real use
-  database: DatabaseName
-  collection: CollectionName
+user:
+  instanceName: people
+  database: users
+  collection: m_user
   data:
-    fieldNameInEs1: fieldNameinMongo1
-    fieldNameInEs2: fieldNameinMongo2
-    fieldNameInEs3: fieldNameinMongo3
-  filter:
-    fieldNameinMongo1: filterValue(acc to mongo docs)
+    _id: id
+    firstName: first_name
+    lastName: last_name
+    about: about
+    email: email
+    address: address
+    company: company
+    username: username
   sort:
-    fieldNameinMongo1: sortValue(acc to mongo docs)
-InstanceNameToBeSetInEnvVar2:
-  instanceName: just an identifier, has no real use
-  database: DatabaseName
-  collection: CollectionName
+    createdAt: 1
+post:
+  instanceName: insight
+  database: Post
+  collection: m_post
   data:
-    fieldNameInEs1: fieldNameinMongo1
-    fieldNameInEs2: fieldNameinMongo2
-    fieldNameInEs3: fieldNameinMongo3
-  filter:
-    fieldNameinMongo1: filterValue(acc to mongo docs)
-  sort:
-    fieldNameinMongo1: sortValue(acc to mongo docs)
-InstanceNameToBeSetInEnvVarN:
-  instanceName: just an identifier, has no real use
-  database: DatabaseName
-  collection: CollectionName
+    _id: id
+    title: title
+    description: description
+circle:
+  instanceName: circle
+  database: Circle
+  collection: m_circle
   data:
-    fieldNameInEs1: fieldNameinMongo1
-    fieldNameInEs2: fieldNameinMongo2
-    fieldNameInEs3: fieldNameinMongo3
-  filter:
-    fieldNameinMongo1: filterValue(acc to mongo docs)
-  sort:
-    fieldNameinMongo1: sortValue(acc to mongo docs)
+    _id: id
+    circleName: circle_name
+    description: description
+    organization: organization
+soapbox:
+  instanceName: soapbox
+  database: SoapBox
+  collection: m_soapbox
+  data:
+    _id: id
+    title: title
+    description: description
+byte:
+  instanceName: byte
+  database: Byte
+  collection: m_byte
+  data:
+    _id: id
+    title: title
+    description: description
+playlist:
+  instanceName: list
+  database: Playlist
+  collection: m_play_post_mapping
+  data:
+    _id: id
+    name: title
