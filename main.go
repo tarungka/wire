@@ -142,14 +142,7 @@ func loadIntialData(coll *mongo.Collection, es *elasticsearch.Client, serviceCon
 
 		var cursor *mongo.Cursor
 		var results []bson.M
-		// filter := bson.D{
-		// 	{"isDeleted", false},
-		// }
-		// sort := bson.D{
-		// 	{"createdAt", 1},
-		// 	// {"updatedAt", 1},
-		// }
-		log.Println(serviceConfig.Sort, serviceConfig.Project)
+
 		opts := options.Find().SetSort(serviceConfig.Sort).SetProjection(serviceConfig.Project)
 		// Do I need to check if createAt exists?
 		cursor, find_err := coll.Find(context.TODO(), serviceConfig.Filter, opts)
@@ -166,10 +159,8 @@ func loadIntialData(coll *mongo.Collection, es *elasticsearch.Client, serviceCon
 		if err := cursor.All(context.TODO(), &results); err != nil {
 			panic(err)
 		}
-		log.Println("Total number of documents found: ", len(results))
 		for _, result := range results {
-			// Make each request a goroutine : https://pkg.go.dev/github.com/elastic/go-elasticsearch#section-readme
-			log.Println(result)
+			// TODO: Make each request a goroutine : https://pkg.go.dev/github.com/elastic/go-elasticsearch#section-readme
 			res, _ := json.Marshal(result)
 
 			req := esapi.IndexRequest{
@@ -294,11 +285,8 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 				log.Println(s)
 				continue
 			}
-			// log.Println(cs_op.DocumentId.Hex())
-			// log.Println(reflect.TypeOf(res))
 			// This step is vv imp - took me a day to figure this out
 			res = []byte(`{"doc":` + string(res) + `}`)
-			// log.Println(string(res))
 
 			req := esapi.UpdateRequest{
 				Index:      serviceConfig.EsIndexName,
@@ -308,7 +296,6 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 				// ErrorTrace: true,
 			}
 
-			log.Println(req.Header)
 
 			do_res, err := req.Do(context.Background(), es)
 			if err != nil {
@@ -371,7 +358,6 @@ func watchChanges(coll *mongo.Collection, es *elasticsearch.Client, serviceConfi
 		},
 		},
 	}
-	log.Println(pipeline)
 
 	// Add this to the pipeline
 	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
@@ -394,7 +380,7 @@ func watchChanges(coll *mongo.Collection, es *elasticsearch.Client, serviceConfi
 		if err != nil {
 			panic(err)
 		}
-		fmt.Printf("%s\n", output)
+		// fmt.Printf("%s\n", output)
 
 		var each_request ChangeStreamOperation
 		// var u User
@@ -492,15 +478,10 @@ func loadConfig(content_type string) *map[string]interface{} {
 	}
 	defer cfgFile.Close()
 	byteValue, _ := ioutil.ReadAll(cfgFile)
-	// log.Println(string(byteValue))
-	// yaml.Unmarshal(byteValue, &cfg)
 	err = yaml.Unmarshal(byteValue, &cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// log.Println(cfg[content_type])
-	// log.Println(reflect.TypeOf(cfg[content_type]))
-	// log.Println(len(cfg[content_type].(map[string]interface{})))
 	if cfg[content_type] == nil {
 		log.Fatal("No config found for content type:", content_type)
 		panic("No config found for content type:" + content_type)
@@ -533,16 +514,6 @@ func main() {
 	dataMapping := make(map[string]string)
 	for k, v := range dataMapper {
 		dataMapping[k] = v.(string)
-		// ERROR: REMOVED THIS CODE BECAUSE ITS INCORRECT
-		// if val_str, ok := v.(string); ok {
-		// 	dataMapping[k] = val_str
-		// } else {
-		// 	if val_int, ok := v.(int); ok {
-		// 		dataMapping[k] = strconv.Itoa(val_int)
-		// 	} else {
-		// 		log.Println("Error converting data mapper value to string or int")
-		// 	}
-		// }
 	}
 
 	// Code to print the keys
@@ -601,7 +572,6 @@ func main() {
 		}
 	}
 
-	// log.Println("))))3")
 	serverCfg := SericeConfig{
 		MongoDbUri:   uri,
 		MongoDbDb:    dbName,
@@ -627,7 +597,7 @@ func main() {
 	}
 
 	response := client.Ping(context.TODO(), nil)
-	log.Println(response)
+	// log.Println(response)
 	// if err != nil {
 	// panic(err)
 	// }
