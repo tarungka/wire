@@ -376,10 +376,10 @@ func watchChanges(coll *mongo.Collection, es *elasticsearch.Client, serviceConfi
 		if err := cs.Decode(&event); err != nil {
 			panic(err)
 		}
-		output, err := json.MarshalIndent(event, "", "    ")
-		if err != nil {
-			panic(err)
-		}
+		// output, err := json.MarshalIndent(event, "", "    ")
+		// if err != nil {
+		// 	panic(err)
+		// }
 		// fmt.Printf("%s\n", output)
 
 		var each_request ChangeStreamOperation
@@ -596,7 +596,8 @@ func main() {
 		panic(find_err)
 	}
 
-	response := client.Ping(context.TODO(), nil)
+	client.Ping(context.TODO(), nil)
+	// response := client.Ping(context.TODO(), nil)
 	// log.Println(response)
 	// if err != nil {
 	// panic(err)
