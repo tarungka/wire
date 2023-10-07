@@ -114,7 +114,7 @@ func isLocked() bool {
 	return _change_stream_lock
 }
 
-// Truncate a es index
+// Truncate an es index
 func truncateIndex(esIndexName string, es *elasticsearch.Client) {
 	req := esapi.DeleteByQueryRequest{
 		Index: []string{esIndexName},
