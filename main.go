@@ -173,7 +173,7 @@ func loadInitialData(coll *mongo.Collection, es *elasticsearch.Client, serviceCo
 			defer do_res.Body.Close()
 
 			if do_res.IsError() {
-				log.Printf("[%s] Error indexing document ID=%d", do_res.Status(), result["id"].(primitive.ObjectID).Hex())
+				log.Printf("[%s] Error indexing document ID=%s", do_res.Status(), string(result["id"].(primitive.ObjectID).Hex()))
 			} else {
 				// Deserialize the response into a map.
 				var r map[string]interface{}
@@ -246,7 +246,7 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 			defer do_res.Body.Close()
 
 			if do_res.IsError() {
-				log.Printf("[%s] Error indexing document ID=%d", do_res.Status(), cs_op.DocumentId.Hex())
+				log.Printf("[%s] Error indexing document ID=%s", do_res.Status(), string(cs_op.DocumentId.Hex()))
 			} else {
 				// Deserialize the response into a map.
 				var r map[string]interface{}
