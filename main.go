@@ -40,7 +40,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 	"reflect"
@@ -243,6 +243,10 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 			if err != nil {
 				log.Fatalf("Error getting response: %s", err)
 			}
+
+			// BUG: defer in infinite loop, need to change the approach
+			// Just put this in a function and call it
+			// Does'nt really do anything here
 			defer do_res.Body.Close()
 
 			if do_res.IsError() {
@@ -298,6 +302,8 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 				log.Fatalf("Error getting response: %s", err)
 			}
 			// TODO: understand what defer actually does
+			// Do not use defer in a loop, does not release the resources at the earliest
+			// I think I need to defer at the end of the loop
 			defer do_res.Body.Close()
 
 			if do_res.IsError() {
@@ -398,7 +404,11 @@ func watchChanges(coll *mongo.Collection, es *elasticsearch.Client, serviceConfi
 			log.Println("Error no coll in ns")
 			continue
 		}
-		each_request.DocumentId, ok = event["documentKey"].(primitive.M)["_id"].(primitive.ObjectID)
+		each_request.DocumentId, ok = event["documentKey"].(primitive.M)["_id"].(primitive.ObjectID) // Am I typecasting here?
+		if(!ok) {
+			log.Fatalln("Error while type asserting!")
+			continue
+		}
 
 		if event["operationType"] == "insert" {
 			each_request.FullDocument = event["fullDocument"].(primitive.M)
@@ -439,7 +449,7 @@ func loadConfig(content_type string) *map[string]interface{} {
 		log.Fatal(err)
 	}
 	defer cfgFile.Close()
-	byteValue, _ := ioutil.ReadAll(cfgFile)
+	byteValue, _ := io.ReadAll(cfgFile)
 	// log.Println(string(byteValue))
 	// yaml.Unmarshal(byteValue, &cfg)
 	err = yaml.Unmarshal(byteValue, &cfg)
