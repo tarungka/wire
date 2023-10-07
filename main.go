@@ -40,7 +40,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 	"reflect"
@@ -69,11 +69,12 @@ type ServiceConfig struct {
 	Filter     bson.D
 	Sort       bson.D
 	// ElasticSearch
-	EsCloudId    string
-	EsApiKey     string
-	EsIndexName  string
-	InstanceName string
-	DataMapping  map[string]string
+	EsCloudId     string
+	EsApiKey      string
+	EsIndexName   string
+	InstanceName  string
+	TruncateIndex bool
+	DataMapping   map[string]string
 }
 
 type ChangeStreamOperation struct {
@@ -94,6 +95,7 @@ type ChangeStreamOperation struct {
 }
 
 
+// TODO: What are the downsides to storing this globally in go?
 var CurrentResumeToken string
 
 var _change_stream_lock bool = false
@@ -112,6 +114,76 @@ func isLocked() bool {
 	return _change_stream_lock
 }
 
+// Truncate an es index
+func truncateIndex(esIndexName string, es *elasticsearch.Client) {
+	req := esapi.DeleteByQueryRequest{
+		Index: []string{esIndexName},
+		Body:  bytes.NewReader([]byte(`{"query": {"match_all": {}}}`)),
+	}
+
+	log.Println("Truncating the index!")
+	res, err := req.Do(context.Background(), es)
+	if err != nil {
+		panic(err)
+	}
+	defer res.Body.Close()
+}
+
+func insertInIndex(req esapi.IndexRequest, es *elasticsearch.Client, docId string) bool {
+	do_res, err := req.Do(context.Background(), es)
+	if err != nil {
+		log.Fatalf("Error getting response: %s", err)
+	}
+	defer do_res.Body.Close()
+
+	if do_res.IsError() {
+		log.Printf("[%s] Error indexing document ID=%s", do_res.Status(), docId)
+		return false
+	} else {
+		// Deserialize the response into a map.
+		var r map[string]interface{}
+		if err := json.NewDecoder(do_res.Body).Decode(&r); err != nil {
+			log.Printf("Error parsing the response body: %s", err)
+
+		} else {
+			// Print the response status and indexed document version.
+			log.Printf("[%s] %s; version=%d", do_res.Status(), r["result"], int(r["_version"].(float64)))
+		}
+		return true
+	}
+}
+
+func updateInIndex(req esapi.UpdateRequest, es *elasticsearch.Client, docId string) bool {
+	do_res, err := req.Do(context.Background(), es)
+	if err != nil {
+		log.Fatalf("Error getting response: %s", err)
+	}
+	// TODO: understand what defer actually does
+	// Do not use defer in a loop, does not release the resources at the earliest
+	// I think I need to defer at the end of the loop
+	defer do_res.Body.Close()
+
+	if do_res.IsError() {
+		log.Println(do_res.String())
+		log.Println(do_res.Body)
+		log.Println(do_res.HasWarnings())
+		log.Println(do_res.Warnings())
+		log.Printf("[%s] Error indexing document ID=%s", do_res.Status(), docId)
+		log.Println(do_res.Header)
+		return false
+	} else {
+		// Deserialize the response into a map.
+		var r map[string]interface{}
+		if err := json.NewDecoder(do_res.Body).Decode(&r); err != nil {
+			log.Printf("Error parsing the response body: %s", err)
+		} else {
+			// Print the response status and indexed document version.
+			log.Printf("[%s] %s; version=%d", do_res.Status(), r["result"], int(r["_version"].(float64)))
+		}
+		return true
+	}
+}
+
 // Function to read data from mongodb
 func loadInitialData(coll *mongo.Collection, es *elasticsearch.Client, serviceConfig ServiceConfig) {
 
@@ -128,6 +200,11 @@ func loadInitialData(coll *mongo.Collection, es *elasticsearch.Client, serviceCo
 		// Reacquiring the lock just in case
 		// Acquire lock
 		acquireLock()
+
+		if serviceConfig.TruncateIndex {
+			// Writing this in a func to release mem when operation is done
+			truncateIndex(serviceConfig.EsIndexName, es)
+		}
 
 		var cursor *mongo.Cursor
 		var results []bson.M
@@ -154,36 +231,23 @@ func loadInitialData(coll *mongo.Collection, es *elasticsearch.Client, serviceCo
 		if err := cursor.All(context.TODO(), &results); err != nil {
 			panic(err)
 		}
+		log.Println("The length of initial data is:", len(results))
+
+		// TODO: make this async,taking too long to upload initial data
 		for _, result := range results {
 			// Make each request a goroutine : https://pkg.go.dev/github.com/elastic/go-elasticsearch#section-readme
 			res, _ := json.Marshal(result)
 
 			req := esapi.IndexRequest{
-				Index:      serviceConfig.EsIndexName,
+				Index: serviceConfig.EsIndexName,
 				// IMP: The Id of the document is used as unique identifier
 				DocumentID: result["id"].(primitive.ObjectID).Hex(),
 				Body:       bytes.NewReader(res),
 				Refresh:    "true",
 			}
 
-			do_res, err := req.Do(context.Background(), es)
-			if err != nil {
-				log.Fatalf("Error getting response: %s", err)
-			}
-			defer do_res.Body.Close()
+			insertInIndex(req, es, string(result["id"].(primitive.ObjectID).Hex()))
 
-			if do_res.IsError() {
-				log.Printf("[%s] Error indexing document ID=%s", do_res.Status(), string(result["id"].(primitive.ObjectID).Hex()))
-			} else {
-				// Deserialize the response into a map.
-				var r map[string]interface{}
-				if err := json.NewDecoder(do_res.Body).Decode(&r); err != nil {
-					log.Printf("Error parsing the response body: %s", err)
-				} else {
-					// Print the response status and indexed document version.
-					log.Printf("[%s] %s; version=%d", do_res.Status(), r["result"], int(r["_version"].(float64)))
-				}
-			}
 		}
 
 		// Update a persistent variable to indicate that the initial data has been loaded
@@ -202,7 +266,6 @@ func loadInitialData(coll *mongo.Collection, es *elasticsearch.Client, serviceCo
 	}
 	wg.Done()
 }
-
 
 // WARN: If ever this function is parallelized, then the lock needs to be handled properly
 // Updation of the resume token needs to be handled - https://docs.mongodb.com/manual/changeStreams/#change-stream-resume-token
@@ -239,24 +302,29 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 				Refresh:    "true",
 			}
 
-			do_res, err := req.Do(context.Background(), es)
-			if err != nil {
-				log.Fatalf("Error getting response: %s", err)
-			}
-			defer do_res.Body.Close()
+			insertInIndex(req, es, string(cs_op.DocumentId.Hex()))
+			// do_res, err := req.Do(context.Background(), es)
+			// if err != nil {
+			// 	log.Fatalf("Error getting response: %s", err)
+			// }
 
-			if do_res.IsError() {
-				log.Printf("[%s] Error indexing document ID=%s", do_res.Status(), string(cs_op.DocumentId.Hex()))
-			} else {
-				// Deserialize the response into a map.
-				var r map[string]interface{}
-				if err := json.NewDecoder(do_res.Body).Decode(&r); err != nil {
-					log.Printf("Error parsing the response body: %s", err)
-				} else {
-					// Print the response status and indexed document version.
-					log.Printf("[%s] %s; version=%d", do_res.Status(), r["result"], int(r["_version"].(float64)))
-				}
-			}
+			// // BUG: defer in infinite loop, need to change the approach
+			// // Just put this in a function and call it
+			// // Does'nt really do anything here
+			// defer do_res.Body.Close()
+
+			// if do_res.IsError() {
+			// 	log.Printf("[%s] Error indexing document ID=%s", do_res.Status(), string(cs_op.DocumentId.Hex()))
+			// } else {
+			// 	// Deserialize the response into a map.
+			// 	var r map[string]interface{}
+			// 	if err := json.NewDecoder(do_res.Body).Decode(&r); err != nil {
+			// 		log.Printf("Error parsing the response body: %s", err)
+			// 	} else {
+			// 		// Print the response status and indexed document version.
+			// 		log.Printf("[%s] %s; version=%d", do_res.Status(), r["result"], int(r["_version"].(float64)))
+			// 	}
+			// }
 
 			CurrentResumeToken = cs_op.ResumeToken
 		}
@@ -286,37 +354,15 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 			req := esapi.UpdateRequest{
 				Index:      serviceConfig.EsIndexName,
 				DocumentID: cs_op.DocumentId.Hex(),
-				Body: bytes.NewReader(res),
-				Refresh: "true",
+				Body:       bytes.NewReader(res),
+				Refresh:    "true",
 				// ErrorTrace: true,
 			}
 
+			// BUG: Why this here?
 			log.Println(req.Header)
 
-			do_res, err := req.Do(context.Background(), es)
-			if err != nil {
-				log.Fatalf("Error getting response: %s", err)
-			}
-			// TODO: understand what defer actually does
-			defer do_res.Body.Close()
-
-			if do_res.IsError() {
-				log.Println(do_res.String())
-				log.Println(do_res.Body)
-				log.Println(do_res.HasWarnings())
-				log.Println(do_res.Warnings())
-				log.Printf("[%s] Error indexing document ID=%s", do_res.Status(), cs_op.DocumentId.Hex())
-				log.Println(do_res.Header)
-			} else {
-				// Deserialize the response into a map.
-				var r map[string]interface{}
-				if err := json.NewDecoder(do_res.Body).Decode(&r); err != nil {
-					log.Printf("Error parsing the response body: %s", err)
-				} else {
-					// Print the response status and indexed document version.
-					log.Printf("[%s] %s; version=%d", do_res.Status(), r["result"], int(r["_version"].(float64)))
-				}
-			}
+			updateInIndex(req, es, string(cs_op.DocumentId.Hex()))
 
 			CurrentResumeToken = cs_op.ResumeToken
 
@@ -398,7 +444,11 @@ func watchChanges(coll *mongo.Collection, es *elasticsearch.Client, serviceConfi
 			log.Println("Error no coll in ns")
 			continue
 		}
-		each_request.DocumentId, ok = event["documentKey"].(primitive.M)["_id"].(primitive.ObjectID)
+		each_request.DocumentId, ok = event["documentKey"].(primitive.M)["_id"].(primitive.ObjectID) // Am I typecasting here?
+		if !ok {
+			log.Fatalln("Error while type asserting!")
+			continue
+		}
 
 		if event["operationType"] == "insert" {
 			each_request.FullDocument = event["fullDocument"].(primitive.M)
@@ -439,7 +489,7 @@ func loadConfig(content_type string) *map[string]interface{} {
 		log.Fatal(err)
 	}
 	defer cfgFile.Close()
-	byteValue, _ := ioutil.ReadAll(cfgFile)
+	byteValue, _ := io.ReadAll(cfgFile)
 	// log.Println(string(byteValue))
 	// yaml.Unmarshal(byteValue, &cfg)
 	err = yaml.Unmarshal(byteValue, &cfg)
@@ -470,9 +520,13 @@ func main() {
 	// streamCfg := streamCfg.(map[string]interface{}) // Find a better hack for this
 	dbName := streamCfg["database"].(string)
 	collName := streamCfg["collection"].(string)
+	truncateIndex := streamCfg["truncateIndex"].(bool)
 	log.Println("Connecting to database:", dbName, "and collection:", collName)
 	instanceName := streamCfg["instanceName"].(string)
-	dataMapper := streamCfg["data"].(map[string]interface{}) // Why can I not convert this to map[string]string?
+	// CHECK THIS LATER
+	// Why can I not convert this to map[string]string? I think it should be map[string]map[string]string
+	dataMapper := streamCfg["data"].(map[string]interface{})
+	// Data mapping hold the mapping of the data from the database to elastic search
 	dataMapping := make(map[string]string)
 	for k, v := range dataMapper {
 		dataMapping[k] = v.(string)
@@ -536,18 +590,19 @@ func main() {
 
 	log.Println("))))3")
 	serverCfg := ServiceConfig{
-		MongoDbUri:   uri,
-		MongoDbDb:    dbName,
-		MongoDbCol:   collName,
-		EsCloudId:    es_cloud_id,
-		EsApiKey:     es_api_key,
-		EsIndexName:  index_name,
-		InstanceName: instanceName,
-		DataMapping:  dataMapping,
-		Project:      mongoProject,
-		CsProject:    mongoCsProject,
-		Filter:       mongoFilter,
-		Sort:         mongoSort,
+		MongoDbUri:    uri,
+		MongoDbDb:     dbName,
+		MongoDbCol:    collName,
+		EsCloudId:     es_cloud_id,
+		EsApiKey:      es_api_key,
+		EsIndexName:   index_name,
+		InstanceName:  instanceName,
+		DataMapping:   dataMapping,
+		Project:       mongoProject,
+		CsProject:     mongoCsProject,
+		Filter:        mongoFilter,
+		Sort:          mongoSort,
+		TruncateIndex: truncateIndex,
 	}
 	// log.Println("Server config:")
 	// log.Println(serverCfg)
@@ -594,5 +649,5 @@ func main() {
 	// Should I add a delay here just make sure the changes have started streaming?
 	go loadInitialData(coll, es, serverCfg)
 
-	wg.Wait()
+	wg.Wait() // Technically this never happens, as the server is deployed and never really stops
 }
