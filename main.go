@@ -59,7 +59,7 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 )
 
-type SericeConfig struct {
+type ServiceConfig struct {
 	// MongoDb
 	MongoDbUri string
 	MongoDbDb  string
@@ -89,7 +89,7 @@ type ChangeStreamOperation struct {
 		removedFields map[string]interface{}
 	}
 	ResumeToken string
-	// Not supprting this as of now, will see in future releases
+	// Not supporting this as of now, will see in future releases
 	// clusterTime  time.Time
 }
 
@@ -113,7 +113,7 @@ func isLocked() bool {
 }
 
 // Function to read data from mongodb
-func loadIntialData(coll *mongo.Collection, es *elasticsearch.Client, serviceConfig SericeConfig) {
+func loadInitialData(coll *mongo.Collection, es *elasticsearch.Client, serviceConfig ServiceConfig) {
 
 	// TODO: Need to write a failover for this part of the code
 	// how do I handle this for bulk of data?
@@ -160,7 +160,7 @@ func loadIntialData(coll *mongo.Collection, es *elasticsearch.Client, serviceCon
 
 			req := esapi.IndexRequest{
 				Index:      serviceConfig.EsIndexName,
-				// IMP: The Id of the docuemnt is used as unique identifier
+				// IMP: The Id of the document is used as unique identifier
 				DocumentID: result["id"].(primitive.ObjectID).Hex(),
 				Body:       bytes.NewReader(res),
 				Refresh:    "true",
@@ -207,7 +207,7 @@ func loadIntialData(coll *mongo.Collection, es *elasticsearch.Client, serviceCon
 // WARN: If ever this function is parallelized, then the lock needs to be handled properly
 // Updation of the resume token needs to be handled - https://docs.mongodb.com/manual/changeStreams/#change-stream-resume-token
 // Need to determine which event is latest when updating the resume token when parallelized - interesting problem
-func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, serviceConfig SericeConfig) {
+func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, serviceConfig ServiceConfig) {
 	for {
 		if isLocked() {
 			continue
@@ -331,7 +331,7 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 	}
 }
 
-func watchChanges(coll *mongo.Collection, es *elasticsearch.Client, serviceConfig SericeConfig) {
+func watchChanges(coll *mongo.Collection, es *elasticsearch.Client, serviceConfig ServiceConfig) {
 
 	queue := goconcurrentqueue.NewFIFO()
 
@@ -535,7 +535,7 @@ func main() {
 	}
 
 	log.Println("))))3")
-	serverCfg := SericeConfig{
+	serverCfg := ServiceConfig{
 		MongoDbUri:   uri,
 		MongoDbDb:    dbName,
 		MongoDbCol:   collName,
@@ -592,7 +592,7 @@ func main() {
 	// This below function I can change it to be run on the main thread also - can I?
 	go watchChanges(coll, es, serverCfg)
 	// Should I add a delay here just make sure the changes have started streaming?
-	go loadIntialData(coll, es, serverCfg)
+	go loadInitialData(coll, es, serverCfg)
 
 	wg.Wait()
 }
