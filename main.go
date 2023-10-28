@@ -57,6 +57,9 @@ import (
 	// This is for elastic search go driver
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
+
+	"net/http"
+	_ "net/http/pprof"
 )
 
 type ServiceConfig struct {
@@ -641,6 +644,9 @@ func main() {
 
 	// TODO: Uncomment this later after understanding defer
 	// defer res.Body.Close()
+	go func() {
+		log.Println(http.ListenAndServe("localhost:9000", nil))
+	}()
 
 	wg.Add(2)
 
