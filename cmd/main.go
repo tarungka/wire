@@ -41,10 +41,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"reflect"
 	"sync"
+
+	"github.com/knadh/koanf/v2"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -94,6 +97,10 @@ type ChangeStreamOperation struct {
 	// clusterTime  time.Time
 }
 
+var (
+	buildString = "unknown"
+	ko          = koanf.New(".")
+)
 
 // TODO: What are the downsides to storing this globally in go?
 var CurrentResumeToken string
@@ -101,12 +108,12 @@ var CurrentResumeToken string
 var _change_stream_lock bool = false
 
 func acquireLock() {
-	log.Println("Acquiring lock")
+	log.Info().Msg("Acquiring lock")
 	_change_stream_lock = true
 }
 
 func releaseLock() {
-	log.Println("Releasing lock")
+	log.Info().Msg("Releasing lock")
 	_change_stream_lock = false
 }
 
@@ -121,7 +128,7 @@ func truncateIndex(esIndexName string, es *elasticsearch.Client) {
 		Body:  bytes.NewReader([]byte(`{"query": {"match_all": {}}}`)),
 	}
 
-	log.Println("Truncating the index!")
+	log.Info().Msg("Truncating the index!")
 	res, err := req.Do(context.Background(), es)
 	if err != nil {
 		panic(err)
@@ -132,7 +139,7 @@ func truncateIndex(esIndexName string, es *elasticsearch.Client) {
 func insertInIndex(req esapi.IndexRequest, es *elasticsearch.Client, docId string) bool {
 	do_res, err := req.Do(context.Background(), es)
 	if err != nil {
-		log.Fatalf("Error getting response: %s", err)
+		log.Fatal().Msgf("Error getting response: %s", err)
 	}
 	defer do_res.Body.Close()
 
@@ -156,7 +163,7 @@ func insertInIndex(req esapi.IndexRequest, es *elasticsearch.Client, docId strin
 func updateInIndex(req esapi.UpdateRequest, es *elasticsearch.Client, docId string) bool {
 	do_res, err := req.Do(context.Background(), es)
 	if err != nil {
-		log.Fatalf("Error getting response: %s", err)
+		log.Fatal().Msgf("Error getting response: %s", err)
 	}
 	// TODO: understand what defer actually does
 	// Do not use defer in a loop, does not release the resources at the earliest
@@ -164,12 +171,12 @@ func updateInIndex(req esapi.UpdateRequest, es *elasticsearch.Client, docId stri
 	defer do_res.Body.Close()
 
 	if do_res.IsError() {
-		log.Println(do_res.String())
-		log.Println(do_res.Body)
-		log.Println(do_res.HasWarnings())
-		log.Println(do_res.Warnings())
+		log.Info().Msg(do_res.String())
+		log.Info().Msgf("%s", do_res.Body)
+		log.Info().Bool("Has warning?", do_res.HasWarnings()).Send()
+		log.Info().Msgf("%s", do_res.Warnings())
 		log.Printf("[%s] Error indexing document ID=%s", do_res.Status(), docId)
-		log.Println(do_res.Header)
+		log.Info().Msgf("%s", do_res.Header)
 		return false
 	} else {
 		// Deserialize the response into a map.
@@ -193,7 +200,7 @@ func loadInitialData(coll *mongo.Collection, es *elasticsearch.Client, serviceCo
 
 	// Check if the file named initial_data_loaded.lock exists
 	if _, err := os.Stat("initial_data_loaded.lock"); err == nil {
-		log.Println("Initial data already loaded")
+		log.Info().Msg("Initial data already loaded")
 		releaseLock()
 	} else if errors.Is(err, os.ErrNotExist) {
 
@@ -231,7 +238,7 @@ func loadInitialData(coll *mongo.Collection, es *elasticsearch.Client, serviceCo
 		if err := cursor.All(context.TODO(), &results); err != nil {
 			panic(err)
 		}
-		log.Println("The length of initial data is:", len(results))
+		log.Info().Msgf("The length of initial data is: %d", len(results))
 
 		// TODO: make this async,taking too long to upload initial data
 		for _, result := range results {
@@ -256,7 +263,7 @@ func loadInitialData(coll *mongo.Collection, es *elasticsearch.Client, serviceCo
 		// Create a file by the name initial_data_loaded.lock
 		_, err := os.Create("initial_data_loaded.lock")
 		if err != nil {
-			log.Fatal(err)
+			log.Err(err).Send()
 		}
 
 		// Release lock
@@ -282,9 +289,9 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 		cs_op, ok := item.(ChangeStreamOperation)
 		if !ok {
 			// This is a debug statement
-			log.Println("Not a ChangeStreamOperation")
+			log.Info().Msg("Not a ChangeStreamOperation")
 			log.Print("Is of data type:")
-			log.Println(reflect.TypeOf(cs_op))
+			log.Info().Type("Type:", reflect.TypeOf(cs_op)).Send()
 			continue
 		}
 
@@ -292,7 +299,7 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 		// For an insert operation the following in returned
 		// Keys: ['_id', 'operationType', 'clusterTime', 'fullDocument', 'ns', 'documentKey']
 		if cs_op.OperationType == "insert" {
-			log.Println("Inserting the data in elastic search")
+			log.Info().Msg("Inserting the data in elastic search")
 			res, _ := json.Marshal(cs_op.FullDocument)
 
 			req := esapi.IndexRequest{
@@ -305,7 +312,7 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 			insertInIndex(req, es, string(cs_op.DocumentId.Hex()))
 			// do_res, err := req.Do(context.Background(), es)
 			// if err != nil {
-			// 	log.Fatalf("Error getting response: %s", err)
+			// 	log.Fatal().Msg("Error getting response: %s", err)
 			// }
 
 			// // BUG: defer in infinite loop, need to change the approach
@@ -334,22 +341,22 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 		// Can raise an not found exception if the document is not found in elastic search
 		// elasticsearch.NotFoundError -> catch this
 		if cs_op.OperationType == "update" {
-			log.Println("Updating the data in elastic search")
+			log.Info().Msg("Updating the data in elastic search")
 			// Update the data in elastic search
-			log.Println(cs_op.FullDocument)
+			log.Info().Interface("Interface:", cs_op.FullDocument).Send()
 			res, s := json.Marshal(cs_op.FullDocument)
 			// u := User{FirstName: "test", LastName: "test", Description: "test", Title: "test", _id: cs_op.DocumentId.Hex(), IsActive: true, IsDeleted: false}
 			// res, s := json.Marshal(u)
 			if s != nil {
-				log.Println("Error in marshalling the data")
-				log.Println(s)
+				log.Info().Msg("Error in marshalling the data")
+				log.Err(s).Send()
 				continue
 			}
-			// log.Println(cs_op.DocumentId.Hex())
-			// log.Println(reflect.TypeOf(res))
+			// log.Info().Msg(cs_op.DocumentId.Hex())
+			// log.Info().Msg(reflect.TypeOf(res))
 			// This step is vv imp - took me a day to figure this out
 			res = []byte(`{"doc":` + string(res) + `}`)
-			// log.Println(string(res))
+			// log.Info().Msg(string(res))
 
 			req := esapi.UpdateRequest{
 				Index:      serviceConfig.EsIndexName,
@@ -360,7 +367,7 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 			}
 
 			// BUG: Why this here?
-			log.Println(req.Header)
+			log.Info().Msgf("%s", req.Header)
 
 			updateInIndex(req, es, string(cs_op.DocumentId.Hex()))
 
@@ -372,7 +379,7 @@ func uploadToElasticSearch(q *goconcurrentqueue.FIFO, es *elasticsearch.Client, 
 		// Keys: ['_id', 'operationType', 'clusterTime', 'ns', 'documentKey']
 		// Delete the data from elastic search
 		if cs_op.OperationType == "delete" {
-			log.Fatalln("Deleting the data from elastic search - FEATURE NOT IMPLEMENTED YET")
+			log.Fatal().Msg("Deleting the data from elastic search - FEATURE NOT IMPLEMENTED YET")
 		}
 	}
 }
@@ -408,7 +415,7 @@ func watchChanges(coll *mongo.Collection, es *elasticsearch.Client, serviceConfi
 
 	go uploadToElasticSearch(queue, es, serviceConfig)
 
-	log.Println("Waiting For Change Events")
+	log.Info().Msg("Waiting For Change Events")
 	for cs.Next(context.TODO()) {
 		var event bson.M
 		if err := cs.Decode(&event); err != nil {
@@ -430,23 +437,23 @@ func watchChanges(coll *mongo.Collection, es *elasticsearch.Client, serviceConfi
 
 		each_request.OperationType, ok = event["operationType"].(string)
 		if !ok {
-			log.Println("Error in operationType")
+			log.Info().Msg("Error in operationType")
 			continue
 		}
 		// each_request.clusterTime, ok = event["clusterTime"].(primitive.Timestamp)
 		each_request.Ns.db, ok = event["ns"].(primitive.M)["db"].(string)
 		if !ok {
-			log.Println("Error no db in ns")
+			log.Info().Msg("Error no db in ns")
 			continue
 		}
 		each_request.Ns.coll, ok = event["ns"].(primitive.M)["coll"].(string)
 		if !ok {
-			log.Println("Error no coll in ns")
+			log.Info().Msg("Error no coll in ns")
 			continue
 		}
 		each_request.DocumentId, ok = event["documentKey"].(primitive.M)["_id"].(primitive.ObjectID) // Am I typecasting here?
 		if !ok {
-			log.Fatalln("Error while type asserting!")
+			log.Fatal().Msg("Error while type asserting!")
 			continue
 		}
 
@@ -486,19 +493,19 @@ func loadConfig(content_type string) *map[string]interface{} {
 	// var cfg map[string]interface{}
 	cfgFile, err := os.Open(".config/config.yaml")
 	if err != nil {
-		log.Fatal(err)
+		log.Err(err).Send()
 	}
 	defer cfgFile.Close()
 	byteValue, _ := io.ReadAll(cfgFile)
-	// log.Println(string(byteValue))
+	// log.Info().Msg(string(byteValue))
 	// yaml.Unmarshal(byteValue, &cfg)
 	err = yaml.Unmarshal(byteValue, &cfg)
 	if err != nil {
-		log.Fatal(err)
+		log.Err(err).Send()
 	}
-	// log.Println(cfg[content_type])
-	// log.Println(reflect.TypeOf(cfg[content_type]))
-	// log.Println(len(cfg[content_type].(map[string]interface{})))
+	// log.Info().Msg(cfg[content_type])
+	// log.Info().Msg(reflect.TypeOf(cfg[content_type]))
+	// log.Info().Msg(len(cfg[content_type].(map[string]interface{})))
 	x := cfg[content_type].(map[string]interface{})
 
 	return &x
@@ -508,20 +515,58 @@ func loadConfig(content_type string) *map[string]interface{} {
 
 var wg sync.WaitGroup
 
+
+
 func main() {
+
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	zerolog.SetGlobalLevel(zerolog.TraceLevel)
+
+	initFlags(ko)
+
+	if ko.Bool("version") {
+		fmt.Println(buildString)
+		os.Exit(0)
+	} else {
+		log.Info().Str("build:", buildString).Msgf("Build Version: %s", buildString)
+	}
+
+	log.Info().Msg("Starting the application")
+
+	initConfig(ko)
+
+	source, err := dataSourceFactory("mongo")
+	if err != nil {
+		log.Err(err).Send()
+	}
+
+	sink, err := dataSinkFactory("elasticsearch")
+	if err != nil {
+		log.Err(err).Send()
+	}
+
+	pipeline := newDataPipeline(source, sink)
+
+	pipeline.Run()
+
+	defer source.Close()
+	defer sink.Close()
+
+	os.Exit(0)
+	return
 
 	content_service_name := os.Getenv("CONTENT_SERVICE_NAME")
 	if content_service_name == "" {
-		log.Fatal("You must set your 'CONTENT_SERVICE_NAME' environmental variable.")
+		log.Fatal().Msg("You must set your 'CONTENT_SERVICE_NAME' environmental variable.")
 	}
 	// I'm returning a pointer to a map
 	streamCfg := *loadConfig(content_service_name)
-	log.Println(streamCfg)
+	log.Info().Interface("Stream config:", streamCfg).Send()
 	// streamCfg := streamCfg.(map[string]interface{}) // Find a better hack for this
 	dbName := streamCfg["database"].(string)
 	collName := streamCfg["collection"].(string)
 	truncateIndex := streamCfg["truncateIndex"].(bool)
-	log.Println("Connecting to database:", dbName, "and collection:", collName)
+	log.Info().Msgf("Connecting to database: %s and collection: %s", dbName, collName)
 	instanceName := streamCfg["instanceName"].(string)
 	// CHECK THIS LATER
 	// Why can I not convert this to map[string]string? I think it should be map[string]map[string]string
@@ -537,23 +582,23 @@ func main() {
 	// for k := range somethingCfg {
 	// 	keys = append(keys, k)
 	// }
-	// log.Println(keys)
+	// log.Info().Msg(keys)
 
 	index_name := os.Getenv("INDEX_NAME")
 	if index_name == "" {
-		log.Fatal("You must set your 'INDEX_NAME' environmental variable.")
+		log.Fatal().Msg("You must set your 'INDEX_NAME' environmental variable.")
 	}
 	uri := os.Getenv("MONGODB_URI")
 	if uri == "" {
-		log.Fatal("You must set your 'MONGODB_URI' environmental variable. See\n\t https://www.mongodb.com/docs/drivers/go/current/usage-examples/#environment-variable")
+		log.Fatal().Msg("You must set your 'MONGODB_URI' environmental variable. See\n\t https://www.mongodb.com/docs/drivers/go/current/usage-examples/#environment-variable")
 	}
 	es_cloud_id := os.Getenv("ES_CLOUD_ID")
 	if es_cloud_id == "" {
-		log.Fatal("You must set your 'ES_CLOUD_ID' environmental variable.")
+		log.Fatal().Msg("You must set your 'ES_CLOUD_ID' environmental variable.")
 	}
 	es_api_key := os.Getenv("ES_API_KEY")
 	if es_api_key == "" {
-		log.Fatal("You must set your 'ES_API_KEY' environmental variable.")
+		log.Fatal().Msg("You must set your 'ES_API_KEY' environmental variable.")
 	}
 
 	mongoProject := bson.D{}
@@ -588,7 +633,7 @@ func main() {
 		}
 	}
 
-	log.Println("))))3")
+	log.Info().Msg("))))3")
 	serverCfg := ServiceConfig{
 		MongoDbUri:    uri,
 		MongoDbDb:     dbName,
@@ -604,9 +649,9 @@ func main() {
 		Sort:          mongoSort,
 		TruncateIndex: truncateIndex,
 	}
-	// log.Println("Server config:")
-	// log.Println(serverCfg)
-	// log.Println("****************************************")
+	// log.Info().Msg("Server config:")
+	// log.Info().Msg(serverCfg)
+	// log.Info().Msg("****************************************")
 	acquireLock()
 
 	client, find_err := mongo.Connect(context.TODO(), options.Client().ApplyURI(uri))
@@ -635,7 +680,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	log.Println(res)
+	log.Info().Msgf("%s", res)
 	log.Printf("Elastic Client Version: %s", elasticsearch.Version)
 	// log.Printf("Server: %s", r["version"].(map[string]interface{})["number"])
 
