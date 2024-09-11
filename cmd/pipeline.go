@@ -9,7 +9,7 @@ import (
 type DataSource interface {
 	Init(args sources.SourceConfig) (error)
 	Connect() (error)
-	Read() ([]byte, error)
+	Read() (<- chan []byte, error)
 	Key() (string, error)
 	Name() (string)
 	Close() error
@@ -18,7 +18,7 @@ type DataSource interface {
 type DataSink interface {
 	Init(args sinks.SinkConfig) (error)
 	Connect() (error)
-	Write(data []byte) error
+	Write(data <- chan []byte) error
 	Key() (string, error)
 	Name() (string)
 	Close() error
@@ -45,12 +45,12 @@ func (dp *DataPipeline) Run() error {
 
 	// TODO: The code to read the initial/existing data will come here
 
-    data, err := dp.Source.Read()
+    dataChannel, err := dp.Source.Read()
     if err != nil {
         return err
     }
 
-    if err := dp.Sink.Write(data); err != nil {
+    if err := dp.Sink.Write(dataChannel); err != nil {
         return err
     }
 

@@ -2,6 +2,7 @@ package sources
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/rs/zerolog/log"
@@ -23,33 +24,12 @@ type MongoSource struct {
 	filter                 bson.D
 	sort                   bson.D
 	client                 *mongo.Client
-}
+	collection             *mongo.Collection
+	objectContext          context.Context
+	mongoStream            *mongo.ChangeStream
 
-// func (m *MongoSource) Init(ko *koanf.Koanf) (error){
-// func (m *MongoSource) Init(args map[string]interface{}) error {
-// 	if pipelineConnectionKey, ok := args["key"].(string); ok {
-// 		m.pipelineKey = pipelineConnectionKey
-// 	}
-// 	if pipelineConnectionName, ok := args["name"].(string); ok {
-// 		m.pipelineName = pipelineConnectionName
-// 	}
-// 	if pipelineConnectionType, ok := args["type"].(string); ok {
-// 		m.pipelineConnectionType = pipelineConnectionType
-// 	}
-// 	if mongoConfig, ok := args["config"]; ok {
-// 		mongoConfigMap := mongoConfig.(map[string]interface{})
-// 		if mongoUri, ok := mongoConfigMap["uri"].(string); ok {
-// 			m.mongoDbUri = mongoUri
-// 		}
-// 		if mongoDatabase, ok := mongoConfigMap["database"].(string); ok {
-// 			m.mongoDbDb = mongoDatabase
-// 		}
-// 		if mongoCollection, ok := mongoConfigMap["collection"].(string); ok {
-// 			m.mongoDbCol = mongoCollection
-// 		}
-// 	}
-// 	return nil
-// }
+	changeStreamChan chan []byte
+}
 
 func (m *MongoSource) Init(args SourceConfig) error {
 	m.pipelineKey = args.Key
@@ -62,20 +42,20 @@ func (m *MongoSource) Init(args SourceConfig) error {
 	m.filter = bson.D{}
 	m.sort = bson.D{}
 	m.csProject = bson.D{}
-	// mongoConfigMap := mongoConfig.(map[string]string)
-	// if mongoUri, ok := mongoConfig["uri"].(string); ok {
-	// 	m.mongoDbUri = mongoUri
-	// }
-	// if mongoDatabase, ok := mongoConfigMap["database"].(string); ok {
-	// 	m.mongoDbDb = mongoDatabase
-	// }
-	// if mongoCollection, ok := mongoConfigMap["collection"].(string); ok {
-	// 	m.mongoDbCol = mongoCollection
-	// }
+
+	// Create context
+	m.objectContext = context.Background()
+
+	m.changeStreamChan = make(chan []byte, 100)
+
 	return nil
 }
 
 func (m *MongoSource) Connect() error {
+
+	if m.client != nil {
+		return nil
+	}
 
 	log.Trace().Msg("Connecting to mongodb...")
 	client, err := mongo.Connect(context.TODO(), options.Client().ApplyURI(m.mongoDbUri))
@@ -86,6 +66,7 @@ func (m *MongoSource) Connect() error {
 	}
 
 	m.client = client
+	m.getCollectionInstance()
 
 	// How does this work?
 	// defer func() {
@@ -97,10 +78,56 @@ func (m *MongoSource) Connect() error {
 	return nil
 }
 
-func (m *MongoSource) Read() ([]byte, error) {
-	// Read data from MongoDB
-	log.Info().Msg("Reading from MongoDB")
-	return []byte("data from MongoDB"), nil
+func (m *MongoSource) getCollectionInstance() error {
+	m.collection = m.client.Database(m.mongoDbDb).Collection(m.mongoDbCol)
+	return nil
+}
+
+// func (m *MongoSource) Read() (<- chan []byte, error) {
+// 	// Read data from MongoDB
+// 	log.Info().Msg("Reading from MongoDB")
+// 	return []byte("data from MongoDB"), nil
+// }
+
+// func (m *MongoSource) Watch() (<-chan []byte, error) {
+func (m *MongoSource) Read () (<-chan []byte, error) {
+	stream, err := m.collection.Watch(m.objectContext, mongo.Pipeline{})
+	if err != nil {
+		log.Error().Err(err).Msg("Error when watching for changes on the mongodb collection")
+	}
+	m.mongoStream = stream
+
+	// TODO: review this later, do i need a go function like this?
+	go func() {
+		for stream.Next(m.objectContext) {
+
+			log.Debug().Msg("Got a new event")
+
+			var changeDoc bson.M
+			if err := stream.Decode(&changeDoc); err != nil {
+				log.Err(err).Msg("Error decoding change document")
+				continue
+			}
+
+			// Convert changeDoc to JSON
+			jsonData, err := json.Marshal(changeDoc)
+			if err != nil {
+				log.Err(err).Msg("Error marshalling change document to JSON")
+				continue
+			}
+
+			m.changeStreamChan <- jsonData // Send the change to the channel
+		}
+
+		// This should technically never happen, unless its a SYS INT
+		close(m.changeStreamChan)
+	}()
+
+	if err := stream.Err(); err != nil {
+		log.Err(err).Msg("Error in the change stream")
+	}
+
+	return m.changeStreamChan, nil
 }
 
 func (m *MongoSource) Key() (string, error) {
@@ -110,12 +137,15 @@ func (m *MongoSource) Key() (string, error) {
 	return m.pipelineKey, nil
 }
 
-func (m *MongoSource) Name() (string) {
+func (m *MongoSource) Name() string {
 	return m.pipelineName
 }
 
 func (m *MongoSource) Close() error {
 	// Close MongoDB connection
 	log.Info().Msg("Closing MongoDB connection")
+	if err := m.client.Disconnect(context.TODO()); err != nil {
+		log.Err(err).Msg("Error when dis-connecting from mongodb database!") // panic(err)
+	}
 	return nil
 }

@@ -594,7 +594,7 @@ func main() {
 		}
 		log.Debug().Msgf("%d. Creating pipeline: %s", index, pipelineString)
 
-		// newPipeline.Run()
+		newPipeline.Run()
 	}
 
 	// pipeline.Run()
