@@ -1,16 +1,26 @@
 package main
 
-import "github.com/rs/zerolog/log"
+import (
+	"github.com/rs/zerolog/log"
+	"github.com/tgk/wire/sinks"
+	"github.com/tgk/wire/sources"
+)
 
 type DataSource interface {
+	Init(args sources.SourceConfig) (error)
 	Connect() (error)
 	Read() ([]byte, error)
+	Key() (string, error)
+	Name() (string)
 	Close() error
 }
 
 type DataSink interface {
+	Init(args sinks.SinkConfig) (error)
 	Connect() (error)
 	Write(data []byte) error
+	Key() (string, error)
+	Name() (string)
 	Close() error
 }
 
@@ -21,7 +31,7 @@ type DataPipeline struct {
 
 func (dp *DataPipeline) Run() error {
 
-	// Init
+	// Connect
 	if sourceConnectError := dp.Source.Connect(); sourceConnectError != nil {
 		log.Err(sourceConnectError).Msg("Error when connecting to source")
 		panic(sourceConnectError)
@@ -45,6 +55,10 @@ func (dp *DataPipeline) Run() error {
     }
 
     return nil
+}
+
+func (dp *DataPipeline) Show() (string, error) {
+	return dp.Source.Name() + " -> " + dp.Sink.Name(), nil
 }
 
 func newDataPipeline(source DataSource, sink DataSink) *DataPipeline {

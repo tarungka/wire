@@ -48,6 +48,8 @@ import (
 	"github.com/knadh/koanf/v2"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/tgk/wire/sinks"
+	"github.com/tgk/wire/sources"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -515,8 +517,6 @@ func loadConfig(content_type string) *map[string]interface{} {
 
 var wg sync.WaitGroup
 
-
-
 func main() {
 
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
@@ -537,22 +537,70 @@ func main() {
 		log.Err(initError).Msg("Error when initializing the config!")
 	}
 
-	source, err := dataSourceFactory("mongo")
-	if err != nil {
-		log.Err(err).Send()
+	var allSourcesConfig []sources.SourceConfig
+	var allSinksConfig []sinks.SinkConfig
+	// var config Config
+
+	// ko.Unmarshal("", &config)
+	// fmt.Println(config)
+
+	ko.Unmarshal("sources", &allSourcesConfig)
+	ko.Unmarshal("sinks", &allSinksConfig)
+	// fmt.Println("--------")
+	// fmt.Println(allSourcesConfig)
+	// fmt.Println(allSinksConfig)
+	// For simplicity I will make the number of sources === sinks
+	// if !(len(allSinksConfig) == len(allSinksConfig)) {
+	// 	log.Panic().Msg("Number of sources and sinks do not match!")
+	// }
+	// fmt.Println("--------")
+
+	var allSourceInterfaces []DataSource
+	var allSinkInterfaces []DataSink
+
+	for _, sourceConfig := range allSourcesConfig {
+		// fmt.Println(sourceConfig)
+		eachSourceInterface, err := dataSourceFactory(sourceConfig)
+		if err != nil {
+			log.Err(err).Send()
+		}
+		allSourceInterfaces = append(allSourceInterfaces, eachSourceInterface)
 	}
 
-	sink, err := dataSinkFactory("elasticsearch")
-	if err != nil {
-		log.Err(err).Send()
+	for _, sinkConfig := range allSinksConfig {
+		// fmt.Println(sinkConfig)
+		eachSinkInterface, err := dataSinkFactory(sinkConfig)
+		if err != nil {
+			log.Err(err).Send()
+		}
+		allSinkInterfaces = append(allSinkInterfaces, eachSinkInterface)
 	}
 
-	pipeline := newDataPipeline(source, sink)
+	allSourcesAndSinks, err := createSourcesAndSinksConfigs(allSourceInterfaces, allSinkInterfaces)
+	if err != nil {
+		log.Panic().Err(err).Msg("Internal server error!")
+	}
 
-	pipeline.Run()
+	dataPipelines, err := allSourcesAndSinks.getPipelineConfigs()
+	if err != nil {
+		log.Panic().Err(err).Send()
+	}
 
-	defer source.Close()
-	defer sink.Close()
+	for index, pipeline := range dataPipelines {
+		newPipeline := newDataPipeline(pipeline.source, pipeline.sink)
+		pipelineString, err := newPipeline.Show()
+		if err != nil {
+			log.Err(err).Send()
+		}
+		log.Debug().Msgf("%d. Creating pipeline: %s", index, pipelineString)
+
+		// newPipeline.Run()
+	}
+
+	// pipeline.Run()
+
+	// defer source.Close()
+	// defer sink.Close()
 
 	os.Exit(0)
 	return

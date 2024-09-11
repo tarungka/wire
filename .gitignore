@@ -30,3 +30,4 @@ go.work
 .creds
 tests/
 tmp/
+.DS_Store
