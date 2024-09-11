@@ -41,10 +41,11 @@ func initFlags(ko *koanf.Koanf) {
 
 func initConfig(ko *koanf.Koanf) error {
 
+	log.Info().Msg("Loading configs")
 	// Load one or more config files. Keys in each subsequent file is merged
 	// into the previous file's keys.
 	for _, f := range ko.Strings("config") {
-		log.Printf("reading config from %s", f)
+		log.Debug().Msgf("Reading config from %s", f)
 		var parser koanf.Parser
 		fileExtension := f[strings.LastIndex(f, ".")+1:]
 		switch fileExtension {

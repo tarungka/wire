@@ -33,6 +33,7 @@ func (c *Config) get() ([]DataSource, []DataSink, error) {
 // }
 
 func (c *Config) getPipelineConfigs() ([]dataPipelineObject, error) {
+	log.Trace().Msg("Creating pipeline configs")
 	var response []dataPipelineObject
 	for _, src := range c.sources {
 		for _, snk := range c.sinks {
@@ -45,6 +46,7 @@ func (c *Config) getPipelineConfigs() ([]dataPipelineObject, error) {
 				log.Panic().Err(err).Send()
 			}
 			if srcKey == snkKey {
+				log.Trace().Msgf("Source:[%s] -> Sink:[%s]", src.Info(), snk.Info())
 				response = append(response, dataPipelineObject{src, snk})
 			}
 		}
@@ -62,29 +64,12 @@ func createSourcesAndSinksConfigs(programSources []DataSource, programSinks []Da
 
 func dataSourceFactory(config sources.SourceConfig) (DataSource, error) {
 	sourceType := config.ConnectionType
+	log.Debug().Msgf("Creating and allocating object for source: %s", sourceType)
 	switch sourceType {
 	case "mongodb":
-		// keys := make([]string, 0, len(configs))
-		// for k := range configs {
-		// 	keys = append(keys, k)
-		// }
-
-		// configs := config.Config
-		// uri := configs["uri"]
-		// database := configs["database"]
-		// collection := configs["collection"]
-		// fmt.Println(uri, database, collection)
-
 		x := &sources.MongoSource{}
 		x.Init(config)
 		return x, nil
-		// return &sources.MongoSource{
-		// 	MongoDbUri: uri,
-		// 	MongoDbDb:  database,
-		// 	MongoDbCol: collection,
-		//     PipelineKey: config.Key,
-
-		// }, nil
 	// case "mysql":
 	//     return &MySQLSource{}, nil
 	// Add other sources
@@ -95,6 +80,7 @@ func dataSourceFactory(config sources.SourceConfig) (DataSource, error) {
 
 func dataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
 	sinkType := config.ConnectionType
+	log.Debug().Msgf("Creating and allocating object for sink: %s", sinkType)
 	switch sinkType {
 	case "elasticsearch":
 		x := &sinks.ElasticSink{}

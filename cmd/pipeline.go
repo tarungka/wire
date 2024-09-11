@@ -12,6 +12,7 @@ type DataSource interface {
 	Read() (<- chan []byte, error)
 	Key() (string, error)
 	Name() (string)
+	Info() (string)
 	Close() error
 }
 
@@ -21,6 +22,7 @@ type DataSink interface {
 	Write(data <- chan []byte) error
 	Key() (string, error)
 	Name() (string)
+	Info() (string)
 	Close() error
 }
 
@@ -38,7 +40,7 @@ func (dp *DataPipeline) Run() error {
 	}
 
 	if sinkConnectError := dp.Sink.Connect(); sinkConnectError != nil {
-		log.Err(sinkConnectError).Msg("Error when connecting to source")
+		log.Err(sinkConnectError).Msg("Error when connecting to sink")
 		panic(sinkConnectError)
 	}
 

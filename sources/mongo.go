@@ -90,7 +90,7 @@ func (m *MongoSource) getCollectionInstance() error {
 // }
 
 // func (m *MongoSource) Watch() (<-chan []byte, error) {
-func (m *MongoSource) Read () (<-chan []byte, error) {
+func (m *MongoSource) Read() (<-chan []byte, error) {
 	stream, err := m.collection.Watch(m.objectContext, mongo.Pipeline{})
 	if err != nil {
 		log.Error().Err(err).Msg("Error when watching for changes on the mongodb collection")
@@ -148,4 +148,8 @@ func (m *MongoSource) Close() error {
 		log.Err(err).Msg("Error when dis-connecting from mongodb database!") // panic(err)
 	}
 	return nil
+}
+
+func (m *MongoSource) Info() string {
+	return fmt.Sprintf("Key:%s|Name:%s|Type:%s", m.pipelineKey, m.pipelineName, m.pipelineConnectionType)
 }

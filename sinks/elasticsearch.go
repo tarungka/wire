@@ -85,7 +85,7 @@ func (e *ElasticSink) Write(mongoChan <-chan []byte) error {
 
 		// Create an Elasticsearch index request
 		req := esapi.IndexRequest{
-			Index:      "mongo_changes",                     // Elasticsearch index name
+			Index:      e.elasticIndex,               // Elasticsearch index name
 			DocumentID: fmt.Sprintf("%v", documentID), // Assuming the changeDoc has an "_id" field
 			Body:       bytes.NewReader(data),
 			Refresh:    "true", // Auto-refresh to make the document available immediately
@@ -101,7 +101,7 @@ func (e *ElasticSink) Write(mongoChan <-chan []byte) error {
 
 		if res.IsError() {
 			log.Printf("Elasticsearch indexing error: %s", res.String())
-			return fmt.Errorf("%s",res.String())
+			return fmt.Errorf("%s", res.String())
 		} else {
 			log.Printf("Document indexed successfully to Elasticsearch: %v", documentID)
 		}
@@ -124,4 +124,8 @@ func (e *ElasticSink) Close() error {
 	// Close Elasticsearch connection
 	log.Info().Msg("Closing Elasticsearch connection")
 	return nil
+}
+
+func (e *ElasticSink) Info() string {
+	return fmt.Sprintf("Key:%s|Name:%s|Type:%s", e.pipelineKey, e.pipelineName, e.pipelineConnectionType)
 }
