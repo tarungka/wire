@@ -533,7 +533,9 @@ func main() {
 
 	log.Info().Msg("Starting the application")
 
-	initConfig(ko)
+	if initError := initConfig(ko); initError != nil {
+		log.Err(initError).Msg("Error when initializing the config!")
+	}
 
 	source, err := dataSourceFactory("mongo")
 	if err != nil {

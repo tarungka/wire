@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/knadh/koanf/parsers/json"
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/posflag"
@@ -37,17 +39,28 @@ func initFlags(ko *koanf.Koanf) {
 	}
 }
 
-func initConfig(ko *koanf.Koanf) {
+func initConfig(ko *koanf.Koanf) error {
 
 	// Load one or more config files. Keys in each subsequent file is merged
 	// into the previous file's keys.
 	for _, f := range ko.Strings("config") {
 		log.Printf("reading config from %s", f)
-		if err := ko.Load(file.Provider(f), yaml.Parser()); err != nil {
+		var parser koanf.Parser
+		fileExtension := f[strings.LastIndex(f, ".")+1:]
+		switch fileExtension {
+		case "yaml":
+			parser = yaml.Parser()
+		case "json":
+			parser = json.Parser()
+		default:
+			return fmt.Errorf("unsupported file extension")
+		}
+		if err := ko.Load(file.Provider(f), parser); err != nil {
 			log.Fatal().Msgf("error reading config: %v", err)
 		} else {
 			log.Trace().Msg("Successfully read the contents of the config file")
 			// log.Debug().Msgf("%s",ko.String("InstanceNameToBeSetInEnvVar1"))
 		}
 	}
+	return nil
 }
