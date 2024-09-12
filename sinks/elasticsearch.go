@@ -54,17 +54,21 @@ func (e *ElasticSink) Connect() error {
 	return nil
 }
 
+// Accepts a byte array of json data and writes to elastic search index
 func (e *ElasticSink) Write(mongoChan <-chan []byte) error {
-	for changeDocBytes := range mongoChan { // Receive data from the MongoSource channel
+	// Receive data from the MongoSource channel
+	for changeDocBytes := range mongoChan {
 
 		var changeDoc map[string]interface{}
-
+		changeDocBytes = []byte(`{"doc":` + string(changeDocBytes) + `}`)
 		// Convert change document to JSON for Elasticsearch
 		err := json.Unmarshal(changeDocBytes, &changeDoc)
 		if err != nil {
 			log.Err(err).Msg("Error un-marshalling MongoDB change document")
 			continue
 		}
+
+		log.Trace().Msgf("Writing data to elastic index: %s", changeDoc)
 
 		// TODO: Doing this for the initial dev, will optimize this in the later versions
 		// Convert change document back to JSON for Elasticsearch (optional: already bytes in mongoChan)
@@ -77,15 +81,23 @@ func (e *ElasticSink) Write(mongoChan <-chan []byte) error {
 			continue
 		}
 
-		documentID, ok := changeDoc["_id"]
+		fullDocument, ok := changeDoc["doc"]
+		if !ok {
+			log.Err(fmt.Errorf("no doc in the document")).Msg("No 'doc' in the document!")
+			continue
+		}
+		documentID, ok := fullDocument.(map[string]interface{})["_id"]
 		if !ok {
 			log.Err(fmt.Errorf("missing _id field")).Msg("Change document is missing _id field")
 			continue
 		}
 
+		log.Debug().Msgf("Event document ID: %s", documentID)
+		log.Trace().Msgf("Writing data to elastic index: %s", data)
+
 		// Create an Elasticsearch index request
 		req := esapi.IndexRequest{
-			Index:      e.elasticIndex,               // Elasticsearch index name
+			Index:      e.elasticIndex,                // Elasticsearch index name
 			DocumentID: fmt.Sprintf("%v", documentID), // Assuming the changeDoc has an "_id" field
 			Body:       bytes.NewReader(data),
 			Refresh:    "true", // Auto-refresh to make the document available immediately

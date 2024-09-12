@@ -1,4 +1,4 @@
-# Mongo Elasticsearch NearRealtime connector
+# Mongo Elasticsearch NearRealtime connector [UNDER DEVELOPMENT]
 
 Just building a pipeline to keep mongo collection and Elasticsearch in sync.
 

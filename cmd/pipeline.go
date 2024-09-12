@@ -36,17 +36,20 @@ func (dp *DataPipeline) Run() error {
 	// Connect
 	if sourceConnectError := dp.Source.Connect(); sourceConnectError != nil {
 		log.Err(sourceConnectError).Msg("Error when connecting to source")
-		panic(sourceConnectError)
+		// panic(sourceConnectError)
 	}
 
 	if sinkConnectError := dp.Sink.Connect(); sinkConnectError != nil {
 		log.Err(sinkConnectError).Msg("Error when connecting to sink")
-		panic(sinkConnectError)
+		// panic(sinkConnectError)
 	}
 
 
 	// TODO: The code to read the initial/existing data will come here
 
+
+	// TODO: This code IMO will only hold good for low throughput scenarios
+	// and does not scale when there are multiple pipelines running.
     dataChannel, err := dp.Source.Read()
     if err != nil {
         return err
