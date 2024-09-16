@@ -13,19 +13,17 @@ WORKDIR /app
 # Copy the local package files to the container's workspace.
 COPY *.mod ./
 COPY *.sum ./
-COPY *.go ./
-COPY ./.config ./.config
-
 
 RUN go mod download
 
-# Install Go tools
-RUN go get -d -v
+COPY *.go ./
+COPY ./cmd ./cmd
+COPY ./sources ./sources
+COPY ./sinks ./sinks
+COPY ./.config ./.config
+COPY ./tests/config.json ./.config/config.json
 
-RUN go install -v
+RUN go build -o /wire ./cmd
 
-
-RUN go build -o /search
-
-CMD [ "/search" ]
+CMD [ "/wire" , "--config", "./.config/config.json"]
 
