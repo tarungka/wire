@@ -1,0 +1,9 @@
+label:
+  - name: "bug"
+    keywords:
+      - "bug"
+      - "fix"
+  - name: "feature"
+    keywords:
+      - "feature"
+      - "enhancement"
