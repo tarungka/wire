@@ -79,7 +79,9 @@ func main() {
 		}
 		log.Debug().Msgf("%d. Creating and running pipeline: %s", index, pipelineString)
 
-		// TODO: Handle the error returned
-		newPipeline.Run()
+		pipelineError := newPipeline.Run()
+		if pipelineError != nil {
+			log.Err(err).Msg("Error when running the pipeline")
+		}
 	}
 }

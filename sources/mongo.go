@@ -47,9 +47,6 @@ type MongoSource struct {
 	sort                   bson.D
 	client                 *mongo.Client
 	collection             *mongo.Collection
-	mongoStream            *mongo.ChangeStream
-
-	changeStreamChan chan []byte
 }
 
 func (m *MongoSource) Init(args SourceConfig) error {
@@ -63,16 +60,6 @@ func (m *MongoSource) Init(args SourceConfig) error {
 	m.filter = bson.D{}
 	m.sort = bson.D{}
 	m.csProject = bson.D{}
-
-	// TODO: I might need to make this an interface, lets see
-	// TODO: IMP: Apparently this is bad practice to have this as
-	// a member variable, move this over to the function using it, i.e Read
-	// Contraire
-	// What if I want to merge the data streams from different places on this
-	// channel? Are there better approaches?
-	// Also initiate the close of all downstream goroutines by closing this
-	// when shutting down a pipeline
-	m.changeStreamChan = make(chan []byte, 100)
 
 	return nil
 }
@@ -115,8 +102,6 @@ func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}) (<-chan
 	if err != nil {
 		log.Error().Err(err).Msg("Error when watching for changes on the mongodb collection")
 	}
-	// TODO: I think the scope of stream variable needs to be local, not global
-	m.mongoStream = stream
 
 	// Create a channel to send the data to
 	changeStreamChan := make(chan []byte, 5)
@@ -141,7 +126,7 @@ func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}) (<-chan
 
 			log.Debug().Msg("Got a new event")
 
-			streamError := stream.Err()
+			streamError := mongoStream.Err()
 			if streamError != nil {
 				log.Err(streamError).Msg("Error in change streams")
 			}
@@ -150,7 +135,7 @@ func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}) (<-chan
 
 			// var changeDoc bson.M
 			var changeDoc ChangeStreamOperation
-			if err := stream.Decode(&changeDoc); err != nil {
+			if err := mongoStream.Decode(&changeDoc); err != nil {
 				log.Err(err).Msg("Error decoding change document")
 				continue
 			}

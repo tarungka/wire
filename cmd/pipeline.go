@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"time"
 
 	"github.com/rs/zerolog/log"
 	"github.com/tgk/wire/sinks"
@@ -39,19 +38,18 @@ type DataPipeline struct {
 func (dp *DataPipeline) Run() error {
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// defer cancel()
+	dp.cancel = cancel
+	defer func(){
+		log.Trace().Msg("The RUN function is done/returning")
+	}()
 
 	// Connect
-	sourceConnectError := dp.Source.Connect(ctx)
-	if sourceConnectError != nil {
+	if sourceConnectError := dp.Source.Connect(ctx); sourceConnectError != nil {
 		log.Err(sourceConnectError).Msg("Error when connecting to source")
-		// panic(sourceConnectError)
 	}
-	dp.cancel = cancel
 
 	if sinkConnectError := dp.Sink.Connect(ctx); sinkConnectError != nil {
 		log.Err(sinkConnectError).Msg("Error when connecting to sink")
-		// panic(sinkConnectError)
 	}
 
 	// TODO: The code to read the initial/existing data will come here
@@ -86,12 +84,13 @@ func (dp *DataPipeline) Init() error {
 func (dp *DataPipeline) Close() bool {
 	dpInfo, _ := dp.Show()
 	log.Info().Msgf("Closing data pipeline: %s", dpInfo)
-	dp.Source.Disconnect()
-	dp.Sink.Disconnect()
 	close(dp.done)
 
 	// Cancel the context
 	dp.cancel()
+
+	dp.Source.Disconnect()
+	dp.Sink.Disconnect()
 	return false
 }
 
@@ -102,10 +101,11 @@ func newDataPipeline(source DataSource, sink DataSink) *DataPipeline {
 	}
 	dataPipeline.Init()
 
-	go func() {
-		time.Sleep(1 * time.Second)
-		dataPipeline.Close()
-	}()
+	// TODO: Remove this, code is only for testing
+	// go func() {
+	// 	time.Sleep(1 * time.Second)
+	// 	dataPipeline.Close()
+	// }()
 
 	return dataPipeline
 }
