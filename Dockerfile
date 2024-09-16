@@ -1,5 +1,5 @@
-FROM golang:1.19.5
-
+# Build stage
+FROM golang:1.19.5 AS builder
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
@@ -7,23 +7,42 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-
 WORKDIR /app
 
-# Copy the local package files to the container's workspace.
-COPY *.mod ./
-COPY *.sum ./
+# Copy go.mod and go.sum to cache dependencies
+COPY go.mod .
+COPY go.sum .
 
+# Download Go modules
 RUN go mod download
 
+# Copy the rest of the source code
 COPY *.go ./
 COPY ./cmd ./cmd
 COPY ./sources ./sources
 COPY ./sinks ./sinks
 COPY ./.config ./.config
-COPY ./tests/config.json ./.config/config.json
+COPY ./.config/config.json ./.config/config.json
+COPY ./.config/config.yaml ./.config/config.yaml
 
+# Build the application binary
 RUN go build -o /wire ./cmd
 
-CMD [ "/wire" , "--config", "./.config/config.json"]
+# Final stage - slim image
+FROM debian:bullseye-slim
+
+# Set up the work directory
+WORKDIR /app
+
+# Copy only the built binary from the previous stage
+COPY --from=builder /wire /wire
+
+# Copy the config folder
+COPY ./.config ./.config
+
+# Define the default config path using an environment variable
+# ENV CONFIG_PATH=./.config/config.json
+
+# Command to run the application with the config file argument
+CMD [ "/wire", "--config", "./.config/config.json" ]
 
