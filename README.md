@@ -1,6 +1,6 @@
-# Mongo Elasticsearch NearRealtime connector [UNDER DEVELOPMENT]
+# Wire Connector [UNDER DEVELOPMENT]
 
-Just building a pipeline to keep source and sink in sync.
+Building a pipeline to keep source and sink in sync. Currently works on the basis of Change data capture.
 
 Using native drivers for all sources and sinks
 
@@ -24,3 +24,9 @@ Edit the `config.json` and add the necessary sources and sinks.
 | `type`         | Type of source or sink.                                            | Yes      |
 | `key`          | Unique identifier to map the source to the sink.                   | Yes      |
 | `config`       | A JSON config of all the attributes to connect to the source/sink. | Yes      |
+
+
+### Currently supported platforms
+
+* MongoDB
+* Elastic Search
