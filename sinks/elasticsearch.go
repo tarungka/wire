@@ -34,16 +34,18 @@ func (e *ElasticSink) Init(args SinkConfig) error {
 	e.elasticApiKey = args.Config["api_key"]
 	e.elasticIndex = args.Config["index_name"]
 
-	e.objectContext = context.Background()
+	// e.objectContext = context.Background()
 	return nil
 }
 
-func (e *ElasticSink) Connect() error {
+func (e *ElasticSink) Connect(ctx context.Context) error {
 	log.Trace().Msg("Connecting to elaticsearch...")
 	esCfg := elasticsearch.Config{
 		CloudID: e.elasticCloudId,
 		APIKey:  e.elasticApiKey,
 	}
+
+	e.objectContext = ctx
 
 	es, esErr := elasticsearch.NewClient(esCfg)
 	if esErr != nil {
@@ -55,7 +57,7 @@ func (e *ElasticSink) Connect() error {
 }
 
 // Accepts a byte array of json data and writes to elastic search index
-func (e *ElasticSink) Write(mongoChan <-chan []byte) error {
+func (e *ElasticSink) Write(done <-chan interface{},mongoChan <-chan []byte) error {
 	// Receive data from the MongoSource channel
 	for changeDocBytes := range mongoChan {
 
@@ -118,6 +120,9 @@ func (e *ElasticSink) Write(mongoChan <-chan []byte) error {
 			log.Printf("Document indexed successfully to Elasticsearch: %v", documentID)
 		}
 	}
+
+	log.Trace().Msg("Closed the upstream channel, need to clean up the es connection also")
+
 	return nil
 }
 
@@ -132,7 +137,7 @@ func (e *ElasticSink) Name() string {
 	return e.pipelineName
 }
 
-func (e *ElasticSink) Close() error {
+func (e *ElasticSink) Disconnect() error {
 	// Close Elasticsearch connection
 	log.Info().Msg("Closing Elasticsearch connection")
 	return nil

@@ -22,10 +22,6 @@ func initFlags(ko *koanf.Koanf) {
 	}
 
 	f.StringSlice("config", []string{"config.yaml"}, "path to one or more config files (will be merged in order)")
-	f.String("mode", "single", "single | failover")
-	f.Bool("stop-at-end", false, "stop relay at the end of offsets")
-	f.StringSlice("filter", []string{}, "path to one or more filter providers")
-	f.StringSlice("topic", []string{}, "one or more source:target topic names. Setting this overrides [topics] in the config file.")
 	f.Bool("version", false, "show current version of the build")
 
 	if err := f.Parse(os.Args[1:]); err != nil {
@@ -60,7 +56,6 @@ func initConfig(ko *koanf.Koanf) error {
 			log.Fatal().Msgf("error reading config: %v", err)
 		} else {
 			log.Trace().Msg("Successfully read the contents of the config file")
-			// log.Debug().Msgf("%s",ko.String("InstanceNameToBeSetInEnvVar1"))
 		}
 	}
 	return nil

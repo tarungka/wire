@@ -47,7 +47,6 @@ type MongoSource struct {
 	sort                   bson.D
 	client                 *mongo.Client
 	collection             *mongo.Collection
-	objectContext          context.Context
 	mongoStream            *mongo.ChangeStream
 
 	changeStreamChan chan []byte
@@ -65,9 +64,6 @@ func (m *MongoSource) Init(args SourceConfig) error {
 	m.sort = bson.D{}
 	m.csProject = bson.D{}
 
-	// Create context
-	m.objectContext = context.Background()
-
 	// TODO: I might need to make this an interface, lets see
 	// TODO: IMP: Apparently this is bad practice to have this as
 	// a member variable, move this over to the function using it, i.e Read
@@ -81,29 +77,21 @@ func (m *MongoSource) Init(args SourceConfig) error {
 	return nil
 }
 
-func (m *MongoSource) Connect() error {
+func (m *MongoSource) Connect(ctx context.Context) error {
 
 	if m.client != nil {
 		return nil
 	}
 
 	log.Trace().Msg("Connecting to mongodb...")
-	client, err := mongo.Connect(context.TODO(), options.Client().ApplyURI(m.mongoDbUri))
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(m.mongoDbUri))
 	if err != nil {
 		log.Err(err).Msg("Error when connecting to mongodb database!")
-		// panic(err)
 		return fmt.Errorf("%s", err)
 	}
 
 	m.client = client
 	m.getCollectionInstance()
-
-	// How does this work?
-	// defer func() {
-	// 	if err := client.Disconnect(context.TODO()); err != nil {
-	// 		log.Err(err).Msg("Error when dis-connecting from mongodb database!") // panic(err)
-	// 	}
-	// }()
 
 	return nil
 }
@@ -120,25 +108,45 @@ func (m *MongoSource) getCollectionInstance() error {
 // }
 
 // func (m *MongoSource) Watch() (<-chan []byte, error) {
-func (m *MongoSource) Read() (<-chan []byte, error) {
+func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}) (<-chan []byte, error) {
 	// This is to get the entire document along with the changes in the payload
 	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
-	stream, err := m.collection.Watch(m.objectContext, mongo.Pipeline{}, opts)
+	stream, err := m.collection.Watch(ctx, mongo.Pipeline{}, opts)
 	if err != nil {
 		log.Error().Err(err).Msg("Error when watching for changes on the mongodb collection")
 	}
 	// TODO: I think the scope of stream variable needs to be local, not global
 	m.mongoStream = stream
 
+	// Create a channel to send the data to
+	changeStreamChan := make(chan []byte, 5)
+	// defer close(changeStreamChan)
+	defer func() {
+		log.Trace().Msg("The Mongodb Source Read is done!")
+	}()
+
 	// TODO: review this later, do i need a go function like this?
-	go func() {
+	go func(mongoStream *mongo.ChangeStream, opStream chan<- []byte) {
 
 		// TODO: According to best practices this is the place to keep
 		// the channel
 
-		for stream.Next(m.objectContext) {
+		defer func() {
+			log.Trace().Msg("Closing the mongo change stream")
+			mongoStream.Close(ctx)
+			close(opStream)
+		}()
+
+		for mongoStream.Next(ctx) {
 
 			log.Debug().Msg("Got a new event")
+
+			streamError := stream.Err()
+			if streamError != nil {
+				log.Err(streamError).Msg("Error in change streams")
+			}
+
+			// ctx.
 
 			// var changeDoc bson.M
 			var changeDoc ChangeStreamOperation
@@ -165,18 +173,26 @@ func (m *MongoSource) Read() (<-chan []byte, error) {
 
 			log.Trace().Str("jsonData", string(jsonData)).Msgf("The json data being sent over the channel is: %s", jsonData)
 
-			m.changeStreamChan <- jsonData // Send the change to the channel
+			select {
+			case <-done:
+				log.Trace().Msg("Closing read from mongodb")
+				close(opStream)
+				return
+			// case data, a<-jsonData:
+			case opStream <- jsonData: // Send the change to the channel
+			default:
+			}
+
 		}
 
 		// This should technically never happen, unless its a SYS INT
-		close(m.changeStreamChan)
-	}()
+	}(stream, changeStreamChan)
 
 	if err := stream.Err(); err != nil {
 		log.Err(err).Msg("Error in the change stream")
 	}
 
-	return m.changeStreamChan, nil
+	return changeStreamChan, nil
 }
 
 func (m *MongoSource) Key() (string, error) {
@@ -190,10 +206,10 @@ func (m *MongoSource) Name() string {
 	return m.pipelineName
 }
 
-func (m *MongoSource) Close() error {
+func (m *MongoSource) Disconnect() error {
 	// Close MongoDB connection
 	log.Info().Msg("Closing MongoDB connection")
-	if err := m.client.Disconnect(context.TODO()); err != nil {
+	if err := m.client.Disconnect(context.Background()); err != nil {
 		log.Err(err).Msg("Error when dis-connecting from mongodb database!") // panic(err)
 	}
 	return nil
