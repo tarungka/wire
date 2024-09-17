@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"time"
 
 	"github.com/rs/zerolog/log"
 	"github.com/tgk/wire/sinks"
@@ -103,10 +102,10 @@ func newDataPipeline(source DataSource, sink DataSink) *DataPipeline {
 	dataPipeline.Init()
 
 	// TODO: Remove this, code is only for testing
-	go func() {
-		time.Sleep(3 * time.Second)
-		dataPipeline.Close()
-	}()
+	// go func() {
+	// 	time.Sleep(3 * time.Second)
+	// 	dataPipeline.Close()
+	// }()
 
 	return dataPipeline
 }
