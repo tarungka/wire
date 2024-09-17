@@ -1,19 +1,31 @@
----
 sources:
-- name: MongoDb User Data
-  type: mongodb
-  key: mongo_user_pipeline
-  config:
-    uri: MONGO_URI
-    database: MONGO_DB
-    collection: MONGO_COLL
-    tasks: '1'
+  - name: MongoDb User Data
+    type: mongodb
+    key: mongo_user_pipeline
+    config:
+      uri: MONGO_URI
+      database: MONGO_DB
+      collection: MONGO_COLL
+      tasks: '1'
+  - name: Kafka User Data (Kafka Consumer)
+    type: kafka
+    key: mongo_user_pipeline
+    config:
+      bootstrap_servers: 'localhost:9092'
+      topic: foo
+      group: test-group
 sinks:
-- name: ElasticSearch User Data
-  type: elasticsearch
-  key: mongo_user_pipeline
-  config:
-    cloud_id: ES_CLOUD_ID
-    url: ES_URL
-    api_key: ES_API_KEY
-    index_name: ES_INDEX_NAME
+  - name: ElasticSearch User Data
+    type: elasticsearch
+    key: mongo_user_pipeline
+    config:
+      cloud_id: ES_CLOUD_ID
+      url: ES_URL
+      api_key: ES_API_KEY
+      index_name: ES_INDEX_NAME
+  - name: Kafka User Data (Kafka Producer)
+    type: kafka
+    key: mongo_user_pipeline
+    config:
+      bootstrap_servers: 'localhost:9092'
+      topic: foo

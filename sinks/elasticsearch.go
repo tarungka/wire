@@ -57,14 +57,14 @@ func (e *ElasticSink) Connect(ctx context.Context) error {
 }
 
 // Accepts a byte array of json data and writes to elastic search index
-func (e *ElasticSink) Write(done <-chan interface{},mongoChan <-chan []byte) error {
+func (e *ElasticSink) Write(done <-chan interface{},dataChan <-chan []byte) error {
 	// Receive data from the MongoSource channel
-	for changeDocBytes := range mongoChan {
+	for docBytes := range dataChan {
 
 		var changeDoc map[string]interface{}
-		changeDocBytes = []byte(`{"doc":` + string(changeDocBytes) + `}`)
+		docBytes = []byte(`{"doc":` + string(docBytes) + `}`)
 		// Convert change document to JSON for Elasticsearch
-		err := json.Unmarshal(changeDocBytes, &changeDoc)
+		err := json.Unmarshal(docBytes, &changeDoc)
 		if err != nil {
 			log.Err(err).Msg("Error un-marshalling MongoDB change document")
 			continue

@@ -10,6 +10,16 @@
         "collection": "MONGO_COLL",
         "tasks": "1"
       }
+    },
+    {
+      "name": "Kafka User Data (Kafka Consumer)",
+      "type": "kafka",
+      "key": "mongo_user_pipeline",
+      "config": {
+        "bootstrap_servers": "localhost:9092",
+        "topic": "foo",
+        "group": "test-group"
+      }
     }
   ],
   "sinks": [
@@ -22,6 +32,15 @@
         "url": "ES_URL",
         "api_key": "ES_API_KEY",
         "index_name": "ES_INDEX_NAME"
+      }
+    },
+    {
+      "name": "Kafka User Data (Kafka Producer)",
+      "type": "kafka",
+      "key": "mongo_user_pipeline",
+      "config": {
+        "bootstrap_servers": "localhost:9092",
+        "topic": "foo"
       }
     }
   ]

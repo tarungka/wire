@@ -103,7 +103,7 @@ func newDataPipeline(source DataSource, sink DataSink) *DataPipeline {
 
 	// TODO: Remove this, code is only for testing
 	// go func() {
-	// 	time.Sleep(1 * time.Second)
+	// 	time.Sleep(3 * time.Second)
 	// 	dataPipeline.Close()
 	// }()
 

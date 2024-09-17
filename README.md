@@ -23,10 +23,12 @@ Edit the `config.json` and add the necessary sources and sinks.
 | `name`         | A name given to the source/sink for ease of identification.        | No       |
 | `type`         | Type of source or sink.                                            | Yes      |
 | `key`          | Unique identifier to map the source to the sink.                   | Yes      |
-| `config`       | A JSON config of all the attributes to connect to the source/sink. | Yes      |
-
+| `config`       | A JSON config of all the attributes to connect to the source/sink. Please refer to the `.config/` folder for more details. | Yes      |
 
 ### Currently supported platforms
 
-* MongoDB
-* Elastic Search
+| Platform      | Source | Sink | Type            |
+| ------------- | ------ | ---- | --------------- |
+| MongoDB       | ✔️     | ❌   | `mongodb`       |
+| Elasticsearch | ❌     | ✔️   | `elasticsearch` |
+| Kafka         | ✔️     | ✔️   | `kafka`         |
