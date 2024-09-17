@@ -1,0 +1,35 @@
+{"level":"trace","time":1726562352,"message":"No errors when parsing the flags"}
+{"level":"info","build:":"unknown","time":1726562352,"message":"Build Version: unknown"}
+{"level":"info","time":1726562352,"message":"Starting the application"}
+{"level":"info","time":1726562352,"message":"Loading configs"}
+{"level":"debug","time":1726562352,"message":"Reading config from tests/kafka-elasticsearch/config.json"}
+{"level":"trace","time":1726562352,"message":"Successfully read the contents of the config file"}
+{"level":"debug","time":1726562352,"message":"Creating and allocating object for source: kafka"}
+{"level":"debug","time":1726562352,"message":"Creating and allocating object for sink: elasticsearch"}
+{"level":"trace","time":1726562352,"message":"Creating pipeline configs"}
+{"level":"trace","time":1726562352,"message":"Source:[Key:mongo_user_pipeline|Name:Kafka User Data|Type:kafka] -> Sink:[Key:mongo_user_pipeline|Name:ElasticSearch User Data|Type:elasticsearch]"}
+{"level":"debug","time":1726562352,"message":"0. Creating and running pipeline: Kafka User Data -> ElasticSearch User Data"}
+{"level":"trace","time":1726562352,"message":"Connecting to kafka cluster..."}
+{"level":"trace","time":1726562352,"message":"Connecting to elaticsearch..."}
+{"level":"trace","time":1726562352,"message":"The Kafka Source Read is done!"}
+{"level":"debug","time":1726562352,"message":"processed 1 records-- map[name:test]\n"}
+{"level":"debug","time":1726562352,"message":"processed 2 records-- map[_id:test-9999 name:test]\n"}
+{"level":"debug","time":1726562352,"message":"processed 3 records-- map[_id:test-9998 name:test1]\n"}
+{"level":"trace","time":1726562352,"message":"Writing data to elastic index: map[doc:map[name:test]]"}
+{"level":"error","error":"missing _id field","time":1726562352,"message":"Change document is missing _id field"}
+{"level":"trace","time":1726562352,"message":"Writing data to elastic index: map[doc:map[_id:test-9999 name:test]]"}
+{"level":"debug","time":1726562352,"message":"Event document ID: test-9999"}
+{"level":"trace","time":1726562352,"message":"Writing data to elastic index: {\"doc\":{\"_id\":\"test-9999\",\"name\":\"test\"}}"}
+{"level":"debug","time":1726562352,"message":"Document indexed successfully to Elasticsearch: test-9999"}
+{"level":"trace","time":1726562352,"message":"Writing data to elastic index: map[doc:map[_id:test-9998 name:test1]]"}
+{"level":"debug","time":1726562352,"message":"Event document ID: test-9998"}
+{"level":"trace","time":1726562352,"message":"Writing data to elastic index: {\"doc\":{\"_id\":\"test-9998\",\"name\":\"test1\"}}"}
+{"level":"debug","time":1726562352,"message":"Document indexed successfully to Elasticsearch: test-9998"}
+{"level":"info","time":1726562355,"message":"Closing data pipeline: Kafka User Data -> ElasticSearch User Data"}
+{"level":"trace","time":1726562355,"message":"Disconnecting kafka sink"}
+{"level":"error","time":1726562355,"message":"[{ -1 context canceled}]"}
+{"level":"error","error":"context canceled","time":1726562355,"message":"fetch err topic  partition -1: context canceled"}
+{"level":"info","time":1726562355,"message":"Context cancelled, gracefully shutting down the pipeline"}
+{"level":"info","time":1726562355,"message":"Closing Elasticsearch connection"}
+{"level":"trace","time":1726562355,"message":"Closed the upstream channel, need to clean up the es connection also"}
+{"level":"trace","time":1726562355,"message":"The RUN function is done/returning"}
