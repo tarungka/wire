@@ -158,7 +158,8 @@ if __name__ == "__main__":
         exit(0)
     rd_api_token = environ.get("RD_API_TOKEN", None)
     if rd_api_token:
-        log.debug(f"RD_API_TOKEN: {rd_api_token}")
+        pass
+        # log.debug(f"RD_API_TOKEN: {rd_api_token}")
     else:
         log.error("RD_API_TOKEN env var not set")
         exit(0)

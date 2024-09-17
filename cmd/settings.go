@@ -62,6 +62,7 @@ func createSourcesAndSinksConfigs(programSources []DataSource, programSinks []Da
 	}, nil
 }
 
+// TODO: Move this to source dir
 func dataSourceFactory(config sources.SourceConfig) (DataSource, error) {
 	sourceType := config.ConnectionType
 	log.Debug().Msgf("Creating and allocating object for source: %s", sourceType)
@@ -78,6 +79,7 @@ func dataSourceFactory(config sources.SourceConfig) (DataSource, error) {
 	}
 }
 
+// TODO: Move this to sink dir
 func dataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
 	sinkType := config.ConnectionType
 	log.Debug().Msgf("Creating and allocating object for sink: %s", sinkType)
@@ -86,10 +88,10 @@ func dataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
 		x := &sinks.ElasticSink{}
 		x.Init(config)
 		return x, nil
-		// return &sinks.ElasticSink{}, nil
-	// case "kafka":
-	//     return &KafkaSink{}, nil
-	// Add other sinks
+	case "kafka":
+		x := &sinks.KafkaSink{}
+		x.Init(config)
+		return x, nil
 	default:
 		return nil, fmt.Errorf("unknown sink type: %s", sinkType)
 	}
