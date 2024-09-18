@@ -7,6 +7,8 @@ import (
 	"github.com/knadh/koanf/v2"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	pipeline "github.com/tgk/wire/pipeline"
+	server "github.com/tgk/wire/server"
 	"github.com/tgk/wire/sinks"
 	"github.com/tgk/wire/sources"
 )
@@ -32,21 +34,36 @@ func main() {
 
 	log.Info().Msg("Starting the application")
 
-	if initError := initConfig(ko); initError != nil {
-		log.Err(initError).Msg("Error when initializing the config!")
+	// This way the command line arguments are overridden by the remote/other configs
+	if ko.Bool("override") {
+		if initError := initConfig(ko); initError != nil {
+			log.Err(initError).Msg("Error when initializing the config!")
+		}
 	}
+
+	go func(ko *koanf.Koanf) {
+		log.Info().Msg("Starting the web server...")
+		server.Init(ko)
+		server.Run(ko)
+	}(ko)
+	// var done chan interface{}
+	// <-done
 
 	var allSourcesConfig []sources.SourceConfig
 	var allSinksConfig []sinks.SinkConfig
 
-	ko.Unmarshal("sources", &allSourcesConfig)
-	ko.Unmarshal("sinks", &allSinksConfig)
+	if err := ko.Unmarshal("sources", &allSourcesConfig); err != nil {
+		log.Err(err).Msg("Error when un-marshaling sources")
+	}
+	if err := ko.Unmarshal("sinks", &allSinksConfig); err != nil {
+		log.Err(err).Msg("Error when un-marshaling sinks")
+	}
 
-	var allSourceInterfaces []DataSource
-	var allSinkInterfaces []DataSink
+	var allSourceInterfaces []pipeline.DataSource
+	var allSinkInterfaces []pipeline.DataSink
 
 	for _, sourceConfig := range allSourcesConfig {
-		eachSourceInterface, err := dataSourceFactory(sourceConfig)
+		eachSourceInterface, err := pipeline.DataSourceFactory(sourceConfig)
 		if err != nil {
 			log.Err(err).Send()
 		}
@@ -54,25 +71,25 @@ func main() {
 	}
 
 	for _, sinkConfig := range allSinksConfig {
-		eachSinkInterface, err := dataSinkFactory(sinkConfig)
+		eachSinkInterface, err := pipeline.DataSinkFactory(sinkConfig)
 		if err != nil {
 			log.Err(err).Send()
 		}
 		allSinkInterfaces = append(allSinkInterfaces, eachSinkInterface)
 	}
 
-	allSourcesAndSinks, err := createSourcesAndSinksConfigs(allSourceInterfaces, allSinkInterfaces)
+	allSourcesAndSinks, err := pipeline.CreateSourcesAndSinksConfigs(allSourceInterfaces, allSinkInterfaces)
 	if err != nil {
 		log.Panic().Err(err).Msg("Internal server error!")
 	}
 
-	mappedDataPipelines, err := allSourcesAndSinks.getPipelineConfigs()
+	mappedDataPipelines, err := allSourcesAndSinks.GetPipelineConfigs()
 	if err != nil {
 		log.Panic().Err(err).Send()
 	}
 
-	for index, pipeline := range mappedDataPipelines {
-		newPipeline := newDataPipeline(pipeline.source, pipeline.sink)
+	for index, eachPipeline := range mappedDataPipelines {
+		newPipeline := pipeline.NewDataPipeline(eachPipeline.Source, eachPipeline.Sink)
 		pipelineString, err := newPipeline.Show()
 		if err != nil {
 			log.Err(err).Send()

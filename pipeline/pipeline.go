@@ -1,4 +1,4 @@
-package main
+package pipeline
 
 import (
 	"context"
@@ -94,7 +94,7 @@ func (dp *DataPipeline) Close() bool {
 	return false
 }
 
-func newDataPipeline(source DataSource, sink DataSink) *DataPipeline {
+func NewDataPipeline(source DataSource, sink DataSink) *DataPipeline {
 	dataPipeline := &DataPipeline{
 		Source: source,
 		Sink:   sink,

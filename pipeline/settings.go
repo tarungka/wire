@@ -1,4 +1,4 @@
-package main
+package pipeline
 
 import (
 	"fmt"
@@ -8,35 +8,36 @@ import (
 	sources "github.com/tgk/wire/sources"
 )
 
-type dataPipelineObject struct {
-	source DataSource
-	sink   DataSink
+type DataPipelineObject struct {
+	Source DataSource
+	Sink   DataSink
 }
 type Config struct {
-	sources    []DataSource
-	sinks      []DataSink
-	mappedConf []dataPipelineObject
+	Sources    []DataSource
+	Sinks      []DataSink
+	mappedConf []DataPipelineObject
 }
 
 func (c *Config) set(programSources []DataSource, programSinks []DataSink) error {
-	c.sources = programSources
-	c.sinks = programSinks
+	c.Sources = programSources
+	c.Sinks = programSinks
 	return nil
 }
 
 func (c *Config) get() ([]DataSource, []DataSink, error) {
-	return c.sources, c.sinks, nil
+	return c.Sources, c.Sinks, nil
 }
 
 // func (c *Config) Key() (string, error) {
 // 	return c.Key()
 // }
 
-func (c *Config) getPipelineConfigs() ([]dataPipelineObject, error) {
+func (c *Config) GetPipelineConfigs() ([]DataPipelineObject, error) {
 	log.Trace().Msg("Creating pipeline configs")
-	var response []dataPipelineObject
-	for _, src := range c.sources {
-		for _, snk := range c.sinks {
+	var response []DataPipelineObject
+	log.Trace().Msgf("The number of sources and sinks are: %v, %v", len(c.Sources), len(c.Sinks))
+	for _, src := range c.Sources {
+		for _, snk := range c.Sinks {
 			srcKey, err := src.Key()
 			if err != nil {
 				log.Panic().Err(err).Send()
@@ -47,7 +48,7 @@ func (c *Config) getPipelineConfigs() ([]dataPipelineObject, error) {
 			}
 			if srcKey == snkKey {
 				log.Trace().Msgf("Source:[%s] -> Sink:[%s]", src.Info(), snk.Info())
-				response = append(response, dataPipelineObject{src, snk})
+				response = append(response, DataPipelineObject{src, snk})
 			}
 		}
 	}
@@ -55,15 +56,15 @@ func (c *Config) getPipelineConfigs() ([]dataPipelineObject, error) {
 	return response, nil
 }
 
-func createSourcesAndSinksConfigs(programSources []DataSource, programSinks []DataSink) (*Config, error) {
+func CreateSourcesAndSinksConfigs(programSources []DataSource, programSinks []DataSink) (*Config, error) {
 	return &Config{
-		sources: programSources,
-		sinks:   programSinks,
+		Sources: programSources,
+		Sinks:   programSinks,
 	}, nil
 }
 
 // TODO: Move this to source dir
-func dataSourceFactory(config sources.SourceConfig) (DataSource, error) {
+func DataSourceFactory(config sources.SourceConfig) (DataSource, error) {
 	sourceType := config.ConnectionType
 	log.Debug().Msgf("Creating and allocating object for source: %s", sourceType)
 	switch sourceType {
@@ -84,7 +85,7 @@ func dataSourceFactory(config sources.SourceConfig) (DataSource, error) {
 }
 
 // TODO: Move this to sink dir
-func dataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
+func DataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
 	sinkType := config.ConnectionType
 	log.Debug().Msgf("Creating and allocating object for sink: %s", sinkType)
 	switch sinkType {
