@@ -24,13 +24,21 @@ func (k *KafkaSink) Init(args SinkConfig) error {
 	k.pipelineKey = args.Key
 	k.pipelineName = args.Name
 	k.pipelineConnectionType = args.ConnectionType
+
+	if args.Config["bootstrap_servers"] == "" || args.Config["topic"] == "" {
+		log.Error().Msg("Error missing config values")
+		return fmt.Errorf("error missing config values")
+	} else {
+		log.Debug().Str("bootstrap_servers", args.Config["bootstrap_servers"]).Str("topic", args.Config["topic"]).Send()
+	}
+
 	k.bootstrapServers = args.Config["bootstrap_servers"]
 	k.topic = args.Config["topic"]
 
 	return nil
 }
 func (k *KafkaSink) Connect(ctx context.Context) error {
-	log.Trace().Msg("Connecting to kafka cluster...")
+	log.Trace().Msg("Connecting to kafka cluster as a sink...")
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(k.bootstrapServers),
 		kgo.DefaultProduceTopic(k.topic),

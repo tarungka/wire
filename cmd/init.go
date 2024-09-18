@@ -64,20 +64,7 @@ func initFlags(ko *koanf.Koanf) {
 }
 
 func initConfig(ko *koanf.Koanf) error {
-
 	log.Info().Msg("Loading configs")
-	// Load one or more config files. Keys in each subsequent file is merged
-	// into the previous file's keys.
-	// log.Debug().Msgf("%v", ko.Strings("config"))
-	// if len(ko.Strings("config")) == 0 {
-
-	// 	if err := ko.Load(file.Provider("../tests/config.json"), json.Parser()); err != nil {
-	// 		// if err := ko.Load(file.Provider("../.config/config.json"), json.Parser()); err != nil {
-	// 		log.Fatal().Msgf("1.error reading config: %v", err)
-	// 	} else {
-	// 		log.Trace().Msg("1.Successfully read the contents of the config file")
-	// 	}
-	// }
 	for _, f := range ko.Strings("config") {
 		log.Debug().Msgf("Reading config from %s", f)
 		var parser koanf.Parser
@@ -91,16 +78,7 @@ func initConfig(ko *koanf.Koanf) error {
 			return fmt.Errorf("unsupported file extension")
 		}
 		log.Debug().Msgf("The config is: %v", ko.All())
-		if err := ko.Load(file.Provider(f), parser, koanf.WithMergeFunc(func(src, dest map[string]interface{}) error {
-			// src is the config from the file
-			// dest is the config from the command line args
-			// log.Debug().Msgf("%v", src)
-			// log.Debug().Msgf("%v", dest)
-			if dest["port"] == nil {
-				src["port"] = dest["port"]
-			}
-			return nil
-		})); err != nil {
+		if err := ko.Load(file.Provider(f), parser); err != nil {
 			log.Fatal().Msgf("error reading config: %v", err)
 		} else {
 			log.Trace().Msg("Successfully read the contents of the config file")
