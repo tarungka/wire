@@ -2,6 +2,8 @@ package server
 
 import (
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -14,8 +16,7 @@ func Init(config *koanf.Koanf) {
 	log.Info().Msgf("Running the web server on port: %s", config.String("port"))
 }
 
-func Run(config *koanf.Koanf) {
-
+func Run(done <-chan os.Signal, config *koanf.Koanf) {
 	serverPort := config.String("port")
 
 	router := chi.NewRouter()
@@ -25,10 +26,10 @@ func Run(config *koanf.Koanf) {
 	router.Use(middleware.Heartbeat("/health"))
 	router.Use(middleware.CleanPath) // Not sure
 	router.Use(middleware.RequestID)
-
+	router.Use(middleware.Timeout(30 * time.Second)) // 30 second timeout
 
 	// router.Mount("/metrics")
-	router.Mount("/connector", ConnectorRouter())
+	router.Mount("/connector", ConnectorRouter(done))
 
-	log.Error().Msg(http.ListenAndServe(":" + serverPort, router).Error())
+	log.Error().Msg(http.ListenAndServe(":"+serverPort, router).Error())
 }

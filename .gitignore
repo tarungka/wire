@@ -31,3 +31,5 @@ go.work
 tests/
 tmp/
 .DS_Store
+# Log files
+*.log

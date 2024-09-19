@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"os"
 
 	"github.com/rs/zerolog/log"
 	"github.com/tgk/wire/sinks"
@@ -10,7 +11,7 @@ import (
 
 type DataSource interface {
 	Init(args sources.SourceConfig) error
-	Connect(context.Context) (error)
+	Connect(context.Context) error
 	Read(context.Context, <-chan interface{}) (<-chan []byte, error)
 	Key() (string, error)
 	Name() string
@@ -35,12 +36,12 @@ type DataPipeline struct {
 	cancel context.CancelFunc
 }
 
-func (dp *DataPipeline) Run() error {
+func (dp *DataPipeline) Run(done <-chan os.Signal) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	dp.cancel = cancel
-	defer func(){
-		log.Trace().Msg("The RUN function is done/returning")
+	defer func() {
+		log.Trace().Msgf("The RUN function is done/returning.[%v]", dp.Sink.Info())
 	}()
 
 	// Connect
@@ -58,18 +59,21 @@ func (dp *DataPipeline) Run() error {
 	// and does not scale when there are multiple pipelines running.
 	dataChannel, err := dp.Source.Read(ctx, dp.done)
 	if err != nil {
-		return err
+		log.Err(err).Msg("Error when reading from the data source")
 	}
-
 
 	// Not going to send the context to the Sink as I only want to close the
 	// sink when the upstream channel is closed and not when the context is invalidated
 	// or closed/timed out.
 	if err := dp.Sink.Write(dp.done, dataChannel); err != nil {
-		return err
+		log.Err(err).Msg("Error when writing to the data sink")
 	}
 
-	return nil
+	// TODO: Why exactly am I blocking this function here?
+	<-done
+	log.Info().Msg("The RUN function is done!")
+	dp.Close()
+
 }
 
 func (dp *DataPipeline) Show() (string, error) {

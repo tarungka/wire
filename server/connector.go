@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
@@ -12,11 +13,11 @@ import (
 	"github.com/tgk/wire/sources"
 )
 
-func ConnectorRouter() chi.Router {
+func ConnectorRouter(done <-chan os.Signal) chi.Router {
 	router := chi.NewRouter()
 
 	router.Get("/{connectorName}", test())
-	router.Put("/", createPipeline())
+	router.Put("/", createPipeline(done))
 	router.Post("/{connectorName}", test())
 	router.Delete("/{connectorName}", test())
 
@@ -29,7 +30,7 @@ func test() http.HandlerFunc {
 	}
 }
 
-func createPipeline() http.HandlerFunc {
+func createPipeline(done <-chan os.Signal) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		var pipelineData CreatePipelineModel
@@ -82,10 +83,7 @@ func createPipeline() http.HandlerFunc {
 		}
 		log.Debug().Msgf("Creating and running pipeline: %s", pipelineString)
 
-		pipelineError := newPipeline.Run()
-		if pipelineError != nil {
-			log.Err(err).Msg("Error when running the pipeline")
-		}
+		go newPipeline.Run(done)
 
 		SendResponse(w, true, nil, "")
 	}

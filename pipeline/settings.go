@@ -1,17 +1,24 @@
 package pipeline
 
 import (
-	"fmt"
-
 	"github.com/rs/zerolog/log"
-	sinks "github.com/tgk/wire/sinks"
-	sources "github.com/tgk/wire/sources"
 )
 
 type DataPipelineObject struct {
+	key    string
 	Source DataSource
 	Sink   DataSink
 }
+
+func (d *DataPipelineObject) SetSource(source DataSource) {
+	log.Trace().Msgf("Setting source %s", source.Info())
+	d.Source = source
+}
+func (d *DataPipelineObject) SetSink(sink DataSink) {
+	log.Trace().Msgf("Setting sink %s", sink.Info())
+	d.Sink = sink
+}
+
 type Config struct {
 	Sources    []DataSource
 	Sinks      []DataSink
@@ -48,56 +55,10 @@ func (c *Config) GetPipelineConfigs() ([]DataPipelineObject, error) {
 			}
 			if srcKey == snkKey {
 				log.Trace().Msgf("Source:[%s] -> Sink:[%s]", src.Info(), snk.Info())
-				response = append(response, DataPipelineObject{src, snk})
+				response = append(response, DataPipelineObject{srcKey, src, snk})
 			}
 		}
 	}
 	c.mappedConf = response
 	return response, nil
-}
-
-func CreateSourcesAndSinksConfigs(programSources []DataSource, programSinks []DataSink) (*Config, error) {
-	return &Config{
-		Sources: programSources,
-		Sinks:   programSinks,
-	}, nil
-}
-
-// TODO: Move this to source dir
-func DataSourceFactory(config sources.SourceConfig) (DataSource, error) {
-	sourceType := config.ConnectionType
-	log.Debug().Msgf("Creating and allocating object for source: %s", sourceType)
-	switch sourceType {
-	case "mongodb":
-		x := &sources.MongoSource{}
-		x.Init(config)
-		return x, nil
-	case "kafka":
-		x := &sources.KafkaSource{}
-		x.Init(config)
-		return x, nil
-	// case "mysql":
-	//     return &MySQLSource{}, nil
-	// Add other sources
-	default:
-		return nil, fmt.Errorf("unknown source type: %s", sourceType)
-	}
-}
-
-// TODO: Move this to sink dir
-func DataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
-	sinkType := config.ConnectionType
-	log.Debug().Msgf("Creating and allocating object for sink: %s", sinkType)
-	switch sinkType {
-	case "elasticsearch":
-		x := &sinks.ElasticSink{}
-		x.Init(config)
-		return x, nil
-	case "kafka":
-		x := &sinks.KafkaSink{}
-		x.Init(config)
-		return x, nil
-	default:
-		return nil, fmt.Errorf("unknown sink type: %s", sinkType)
-	}
 }
