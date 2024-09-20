@@ -17,6 +17,8 @@ func (d *DataPipelineObject) SetSource(source DataSource) {
 func (d *DataPipelineObject) SetSink(sink DataSink) {
 	log.Trace().Msgf("Setting sink %s", sink.Info())
 	d.Sink = sink
+
+	log.Debug().Msgf("DataPipelineObject: %v", d)
 }
 
 type Config struct {

@@ -11,8 +11,6 @@ import (
 	"github.com/rs/zerolog/log"
 	pipeline "github.com/tgk/wire/pipeline"
 	server "github.com/tgk/wire/server"
-	"github.com/tgk/wire/sinks"
-	"github.com/tgk/wire/sources"
 )
 
 var (
@@ -66,18 +64,12 @@ func main() {
 		server.Run(done, ko)
 	}(ko)
 
-	var allSourcesConfig []sources.SourceConfig
-	var allSinksConfig []sinks.SinkConfig
-
-	if err := ko.Unmarshal("sources", &allSourcesConfig); err != nil {
-		log.Err(err).Msg("Error when un-marshaling sources")
-	}
-	if err := ko.Unmarshal("sinks", &allSinksConfig); err != nil {
-		log.Err(err).Msg("Error when un-marshaling sinks")
-	}
-
-
 	var pipelineObject pipeline.PipelineDataObject
+
+	allSourcesConfig, allSinksConfig, err := pipelineObject.ParseConfig(ko)
+	if err != nil {
+		log.Err(err).Msg("Error when reading config")
+	}
 
 	for _, sourceConfig := range allSourcesConfig {
 		pipelineObject.AddSource(sourceConfig)
@@ -86,45 +78,19 @@ func main() {
 		pipelineObject.AddSink(sinkConfig)
 	}
 
-	pipelineObject.Info()
-
-	var allSourceInterfaces []pipeline.DataSource
-	var allSinkInterfaces []pipeline.DataSink
-
-	for _, sourceConfig := range allSourcesConfig {
-		eachSourceInterface, err := pipeline.DataSourceFactory(sourceConfig)
-		if err != nil {
-			log.Err(err).Send()
-		}
-		allSourceInterfaces = append(allSourceInterfaces, eachSourceInterface)
+	mappedDataPipelines, exists := pipelineObject.GetMappedPipelines()
+	if !exists {
+		log.Debug().Msg("No data pipelines exist")
 	}
 
-	for _, sinkConfig := range allSinksConfig {
-		eachSinkInterface, err := pipeline.DataSinkFactory(sinkConfig)
-		if err != nil {
-			log.Err(err).Send()
-		}
-		allSinkInterfaces = append(allSinkInterfaces, eachSinkInterface)
-	}
-
-	allSourcesAndSinks, err := pipeline.CreateSourcesAndSinksConfigs(allSourceInterfaces, allSinkInterfaces)
-	if err != nil {
-		log.Panic().Err(err).Msg("Internal server error!")
-	}
-
-	mappedDataPipelines, err := allSourcesAndSinks.GetPipelineConfigs()
-	if err != nil {
-		log.Panic().Err(err).Send()
-	}
-
-
-	for index, eachPipeline := range mappedDataPipelines {
-		newPipeline := pipeline.NewDataPipeline(eachPipeline.Source, eachPipeline.Sink)
+	for k,v := range mappedDataPipelines {
+		log.Debug().Msgf("Key: %s | Value: %v", k, v)
+		newPipeline := pipeline.NewDataPipeline(v.Source, v.Sink)
 		pipelineString, err := newPipeline.Show()
 		if err != nil {
 			log.Err(err).Send()
 		}
-		log.Debug().Msgf("%d. Creating and running pipeline: %s", index, pipelineString)
+		log.Debug().Msgf("Creating and running pipeline: %s", pipelineString)
 
 		go newPipeline.Run(done)
 	}

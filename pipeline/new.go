@@ -4,6 +4,7 @@ package pipeline
 import (
 	"fmt"
 
+	"github.com/knadh/koanf/v2"
 	"github.com/rs/zerolog/log"
 	"github.com/tgk/wire/sinks"
 	"github.com/tgk/wire/sources"
@@ -29,11 +30,28 @@ func (p *PipelineDataObject) addKey(s string) {
 	}
 }
 
+func (p *PipelineDataObject) ParseConfig(ko *koanf.Koanf) ([]sources.SourceConfig, []sinks.SinkConfig, error) {
+	var allSourcesConfig []sources.SourceConfig
+	var allSinksConfig []sinks.SinkConfig
+
+	if err := ko.Unmarshal("sources", &allSourcesConfig); err != nil {
+		log.Err(err).Msg("Error when un-marshaling sources")
+		return nil, nil, err
+	}
+	if err := ko.Unmarshal("sinks", &allSinksConfig); err != nil {
+		log.Err(err).Msg("Error when un-marshaling sinks")
+		return nil, nil, err
+	}
+
+	return allSourcesConfig, allSinksConfig, nil
+}
+
 func (p *PipelineDataObject) mapSource(source DataSource) {
 
 	log.Trace().Msg("Mapping source")
 
 	if p.mappedDataPipelines == nil {
+		log.Debug().Msg("mappedDataPipelines is nil, making it")
 		p.mappedDataPipelines = make(map[string]DataPipelineObject)
 	}
 
@@ -41,7 +59,8 @@ func (p *PipelineDataObject) mapSource(source DataSource) {
 
 	if value, exists := p.mappedDataPipelines[key]; exists {
 		log.Debug().Msgf("Mapped source key(%s) exists, updating it", key)
-		value.SetSource(source)
+		value.SetSource(source)            // Updated the local copy
+		p.mappedDataPipelines[key] = value // Updating the main object
 		return
 	}
 
@@ -52,7 +71,6 @@ func (p *PipelineDataObject) mapSource(source DataSource) {
 		Sink:   nil,
 	}
 	p.mappedDataPipelines[key] = data
-	p.Info()
 }
 
 func (p *PipelineDataObject) mapSink(sink DataSink) {
@@ -60,17 +78,23 @@ func (p *PipelineDataObject) mapSink(sink DataSink) {
 	log.Trace().Msg("Mapping sink")
 
 	if p.mappedDataPipelines == nil {
+		log.Debug().Msg("mappedDataPipelines is nil, making it")
 		p.mappedDataPipelines = make(map[string]DataPipelineObject)
 	}
 
 	key, _ := sink.Key()
+	log.Debug().Msgf("mappedDataPipeline: %s", p.mappedDataPipelines)
 	if value, exists := p.mappedDataPipelines[key]; exists {
 		log.Debug().Msgf("Mapped sink key(%s) exists, updating it", key)
-		a:=1
-		b:=2
-		c:=3
-		fmt.Printf("SUM: %d", a+b+c)
+
+		// log.Debug().Msgf("Value before: %v", value)
 		value.SetSink(sink)
+		// log.Debug().Msgf("Value after: %v", value)
+
+		// TODO: Understand better and change this approach, maybe
+		// As I have created a local copy of the data and then made edits on it
+		// I have to update the old data with the new data
+		p.mappedDataPipelines[key] = value
 		return
 	}
 
@@ -119,8 +143,15 @@ func (p *PipelineDataObject) AddSink(snk sinks.SinkConfig) error {
 	p.snkIndexMap[key] = append(p.snkIndexMap[key], len(p.allSinkInterfaces))
 	p.allSinkInterfaces = append(p.allSinkInterfaces, sink)
 	p.addKey(key)
+	// log.Debug().Msgf("Before mappedDataPipeline: %s", p.mappedDataPipelines)
 	p.mapSink(sink)
+	// log.Debug().Msgf("After mappedDataPipeline: %s", p.mappedDataPipelines)
 	return nil
+}
+
+func (p *PipelineDataObject) GetMappedPipelines() (map[string]DataPipelineObject, bool) {
+	exists := p.mappedDataPipelines != nil
+	return p.mappedDataPipelines, exists
 }
 
 func (p *PipelineDataObject) Info() {
