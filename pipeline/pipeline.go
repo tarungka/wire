@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"os"
 	"sync"
 
 	"github.com/rs/zerolog/log"
@@ -48,11 +47,10 @@ type DataSink interface {
 type DataPipeline struct {
 	Source DataSource
 	Sink   DataSink
-	done   chan interface{}
 	cancel context.CancelFunc
 }
 
-func (dp *DataPipeline) Run(done <-chan os.Signal, wg *sync.WaitGroup) {
+func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
 
 	defer func() {
 		log.Trace().Msgf("The RUN function is done/returning.[%v]", dp.Sink.Info())
@@ -75,22 +73,23 @@ func (dp *DataPipeline) Run(done <-chan os.Signal, wg *sync.WaitGroup) {
 
 	// TODO: This code IMO will only hold good for low throughput scenarios
 	// and does not scale when there are multiple pipelines running.
-	dataChannel, err := dp.Source.Read(ctx, dp.done, wg)
+	dataChannel, err := dp.Source.Read(ctx, done, wg)
 	if err != nil {
 		log.Err(err).Msg("Error when reading from the data source")
+		return
 	}
 
 	wg.Add(1)
 	// Not going to send the context to the Sink as I only want to close the
 	// sink when the upstream channel is closed and not when the context is invalidated
 	// or closed/timed out.
-	if err := dp.Sink.Write(dp.done, wg, dataChannel); err != nil {
+	if err := dp.Sink.Write(done, wg, dataChannel); err != nil {
 		log.Err(err).Msg("Error when writing to the data sink")
 	}
 
 	// TODO: Why exactly am I blocking this function here?
 	<-done
-	log.Info().Msg("The RUN function is done!")
+	// log.Info().Msg("The RUN function is done!")
 	dp.Close() // the context is cancelled in here
 	// cancel()
 
@@ -101,14 +100,14 @@ func (dp *DataPipeline) Show() (string, error) {
 }
 
 func (dp *DataPipeline) Init() error {
-	dp.done = make(chan interface{})
+	// dp.done = make(chan interface{})
 	return nil
 }
 
 func (dp *DataPipeline) Close() bool {
 	dpInfo, _ := dp.Show()
 	log.Info().Msgf("Closing data pipeline: %s", dpInfo)
-	close(dp.done)
+	// close(dp.done)
 
 	// Cancel the context
 	dp.cancel()

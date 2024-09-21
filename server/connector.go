@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
@@ -14,7 +13,7 @@ import (
 	"github.com/tgk/wire/sources"
 )
 
-func ConnectorRouter(done <-chan os.Signal, wg *sync.WaitGroup) chi.Router {
+func ConnectorRouter(done <-chan interface{}, wg *sync.WaitGroup) chi.Router {
 	router := chi.NewRouter()
 
 	router.Get("/{connectorName}", test())
@@ -31,7 +30,7 @@ func test() http.HandlerFunc {
 	}
 }
 
-func createPipeline(done <-chan os.Signal, wg *sync.WaitGroup) http.HandlerFunc {
+func createPipeline(done <-chan interface{}, wg *sync.WaitGroup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		var pipelineData CreatePipelineModel

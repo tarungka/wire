@@ -53,8 +53,7 @@ func main() {
 		}
 	}
 
-	done := make(chan os.Signal, 1)
-	// signal.Notify(done, os.Interrupt)
+	done := make(chan interface{}, 1)
 
 	var wg sync.WaitGroup
 
@@ -65,6 +64,8 @@ func main() {
 		server.Run(done, &wg, ko)
 	}(ko)
 
+
+	// Start pipelines that have been specified in the config file
 	var pipelineObject pipeline.PipelineDataObject
 
 	allSourcesConfig, allSinksConfig, err := pipelineObject.ParseConfig(ko)
@@ -97,26 +98,17 @@ func main() {
 		go newPipeline.Run(done, &wg)
 	}
 
-	// func() {
-	// 	time.Sleep(5 * time.Second)
-	// 	log.Trace().Msg("FIVE seconds are DONE!")
-	// 	// done<-os.Interrupt
-	// 	signal.Notify(done, os.Interrupt)
-	// 	<-done
-	// 	close(done)
-	// }()
-
-	// Wait for an interrupt signal (Ctrl+C)
+	// Wait for an interrupt signal (ctrl+c)
 	signalChannel := make(chan os.Signal, 1)
+	// TODO: Catch SIGTERM and handle it
 	signal.Notify(signalChannel, os.Interrupt)
 	<-signalChannel // Blocks until an interrupt signal is received
 
-	fmt.Println("\nReceived interrupt signal, closing all goroutines...")
+	log.Info().Msg("Process interrupted, shutting down...")
 
 	// Close the done channel to signal all goroutines to exit
 	close(done)
 
+	// For for graceful shutdown
 	wg.Wait()
-
-	log.Info().Msg("received interrupt signal; closing client")
 }

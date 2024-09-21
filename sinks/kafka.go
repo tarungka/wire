@@ -72,21 +72,11 @@ func (k *KafkaSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan 
 
 	// wg.Add(1)
 	defer func() {
-		log.Trace().Msg("Done Writing to the kafka sink")
+		// log.Trace().Msg("Done Writing to the kafka sink")
 		wg.Done()
 	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// defer cancel()
-
-	// for i := 0; i < 10; i++ {
-	// 	time.Sleep(1 * time.Second)
-	// 	fmt.Printf("after %d seconds\n", i+1)
-	// }
-
-	// for docBytes := range dataChan{
-	// 	log.Debug().Msgf("%v", string(docBytes))
-	// }
 
 	go func() {
 		defer cancel()
@@ -124,7 +114,7 @@ func (k *KafkaSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan 
 		}
 	}()
 
-	log.Debug().Msg("The upstream channel(source) closed")
+	// log.Debug().Msg("The upstream channel(source) closed")
 
 	return nil
 }

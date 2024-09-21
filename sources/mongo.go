@@ -104,15 +104,16 @@ func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 	stream, err := m.collection.Watch(ctx, mongo.Pipeline{}, opts)
 	if err != nil {
 		log.Error().Err(err).Msg("Error when watching for changes on the mongodb collection")
+		return nil, err
 	}
 
 	// Create a channel to send the data to
 	changeStreamChan := make(chan []byte, 5)
-	// defer close(changeStreamChan)
 
-	defer func() {
-		log.Trace().Msg("The Mongodb Source Read is done!")
-	}()
+	// TODO: Misleading change the message
+	// defer func() {
+	// 	log.Trace().Msg("The Mongodb Source Read is done!")
+	// }()
 
 	wg.Add(1)
 	// TODO: review this later, do i need a go function like this?
@@ -173,7 +174,7 @@ func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 			select {
 			case <-done:
 				log.Trace().Msg("Closing read from mongodb")
-				close(opStream)
+				close(changeStreamChan)
 				return
 			// case data, a<-jsonData:
 			case opStream <- jsonData: // Send the change to the channel
@@ -187,6 +188,7 @@ func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 
 	if err := stream.Err(); err != nil {
 		log.Err(err).Msg("Error in the change stream")
+		return nil, err
 	}
 
 	return changeStreamChan, nil

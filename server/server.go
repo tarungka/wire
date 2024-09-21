@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -17,7 +16,7 @@ func Init(config *koanf.Koanf) {
 	log.Info().Msgf("Running the web server on port: %s", config.String("port"))
 }
 
-func Run(done <-chan os.Signal, wg *sync.WaitGroup, config *koanf.Koanf) {
+func Run(done <-chan interface{}, wg *sync.WaitGroup, config *koanf.Koanf) {
 	serverPort := config.String("port")
 
 	router := chi.NewRouter()
