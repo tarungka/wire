@@ -66,21 +66,22 @@ func main() {
 
 
 	// Start pipelines that have been specified in the config file
-	var pipelineObject pipeline.PipelineDataObject
+	// var dataPipeline pipeline.PipelineDataObject
+	dataPipeline := pipeline.GetPipelineInstance()
 
-	allSourcesConfig, allSinksConfig, err := pipelineObject.ParseConfig(ko)
+	allSourcesConfig, allSinksConfig, err := dataPipeline.ParseConfig(ko)
 	if err != nil {
 		log.Err(err).Msg("Error when reading config")
 	}
 
 	for _, sourceConfig := range allSourcesConfig {
-		pipelineObject.AddSource(sourceConfig)
+		dataPipeline.AddSource(sourceConfig)
 	}
 	for _, sinkConfig := range allSinksConfig {
-		pipelineObject.AddSink(sinkConfig)
+		dataPipeline.AddSink(sinkConfig)
 	}
 
-	mappedDataPipelines, exists := pipelineObject.GetMappedPipelines()
+	mappedDataPipelines, exists := dataPipeline.GetMappedPipelines()
 	if !exists {
 		log.Debug().Msg("No data pipelines exist")
 	}

@@ -14,7 +14,7 @@ type DataSource interface {
 	// Parse and configure the Source
 	Init(args sources.SourceConfig) error
 
-	// Connect to the source
+	// Connect to the Source
 	Connect(context.Context) error
 
 	// Read is responsible to create a write only channel that is accessible to
@@ -35,19 +35,53 @@ type DataSource interface {
 }
 
 type DataSink interface {
+
+	// Parse and configure the Sink
 	Init(args sinks.SinkConfig) error
+
+	// Connect to the Sink
 	Connect(context.Context) error
+
+	// Write is responsible to read data from the upstream input channel and
+	// write data to the sink
 	Write(<-chan interface{}, *sync.WaitGroup, <-chan []byte) error
+
+	// Get the key
 	Key() (string, error)
+
+	// Name of the Sink
 	Name() string
+
+	// Info about he Sink
 	Info() string
+
+	// Disconnect the application from the sink
 	Disconnect() error
 }
 
 type DataPipeline struct {
-	Source DataSource
-	Sink   DataSink
-	cancel context.CancelFunc
+	Source       DataSource
+	Sink         DataSink
+	cancel       context.CancelFunc
+	key          string
+	pipelineDone chan interface{}
+}
+
+func (dp *DataPipeline) Init() error {
+	// dp.pipelineDone = make(chan interface{})
+	return nil
+}
+
+func (d *DataPipeline) SetSource(source DataSource) {
+	log.Trace().Msgf("Setting source %s", source.Info())
+	d.Source = source
+}
+
+func (d *DataPipeline) SetSink(sink DataSink) {
+	log.Trace().Msgf("Setting sink %s", sink.Info())
+	d.Sink = sink
+
+	log.Debug().Msgf("DataPipelineObject: %v", d)
 }
 
 func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
@@ -90,24 +124,18 @@ func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
 	// TODO: Why exactly am I blocking this function here?
 	<-done
 	// log.Info().Msg("The RUN function is done!")
-	dp.Close() // the context is cancelled in here
 	// cancel()
-
+	dp.Close() // the context is cancelled in here
 }
 
 func (dp *DataPipeline) Show() (string, error) {
 	return dp.Source.Name() + " -> " + dp.Sink.Name(), nil
 }
 
-func (dp *DataPipeline) Init() error {
-	// dp.done = make(chan interface{})
-	return nil
-}
-
 func (dp *DataPipeline) Close() bool {
 	dpInfo, _ := dp.Show()
 	log.Info().Msgf("Closing data pipeline: %s", dpInfo)
-	// close(dp.done)
+	// close(dp.pipelineDone)
 
 	// Cancel the context
 	dp.cancel()

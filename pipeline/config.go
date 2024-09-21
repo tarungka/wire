@@ -3,6 +3,7 @@ package pipeline
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/knadh/koanf/v2"
 	"github.com/rs/zerolog/log"
@@ -10,16 +11,22 @@ import (
 	"github.com/tgk/wire/sources"
 )
 
-type PipelineDataObject struct {
+type DataPipelineConfig struct {
 	allSourceInterfaces []DataSource
 	allSinkInterfaces   []DataSink
-	srcIndexMap         map[string][]int
-	snkIndexMap         map[string][]int
-	keys                map[string]bool
-	mappedDataPipelines map[string]DataPipelineObject
+	srcIndexMap         map[string][]int // key : [indices of where the source is in the allSourceInterfaces]
+	snkIndexMap         map[string][]int // key : [indices of where the sink is in the allSinkInterfaces]
+	// Keys can have the value false when a key is created and then deleted
+	keys                map[string]bool         // Keys: ifExists
+	mappedDataPipelines map[string]DataPipeline // Mapping of {key: DataPipeline}
 }
 
-func (p *PipelineDataObject) addKey(s string) {
+var (
+	pipelineInstance *DataPipelineConfig
+	once             sync.Once
+)
+
+func (p *DataPipelineConfig) addKey(s string) {
 
 	if p.keys == nil {
 		p.keys = make(map[string]bool)
@@ -30,7 +37,7 @@ func (p *PipelineDataObject) addKey(s string) {
 	}
 }
 
-func (p *PipelineDataObject) ParseConfig(ko *koanf.Koanf) ([]sources.SourceConfig, []sinks.SinkConfig, error) {
+func (p *DataPipelineConfig) ParseConfig(ko *koanf.Koanf) ([]sources.SourceConfig, []sinks.SinkConfig, error) {
 	var allSourcesConfig []sources.SourceConfig
 	var allSinksConfig []sinks.SinkConfig
 
@@ -46,13 +53,13 @@ func (p *PipelineDataObject) ParseConfig(ko *koanf.Koanf) ([]sources.SourceConfi
 	return allSourcesConfig, allSinksConfig, nil
 }
 
-func (p *PipelineDataObject) mapSource(source DataSource) {
+func (p *DataPipelineConfig) mapSource(source DataSource) {
 
 	log.Trace().Msg("Mapping source")
 
 	if p.mappedDataPipelines == nil {
 		log.Debug().Msg("mappedDataPipelines is nil, making it")
-		p.mappedDataPipelines = make(map[string]DataPipelineObject)
+		p.mappedDataPipelines = make(map[string]DataPipeline)
 	}
 
 	key, _ := source.Key()
@@ -65,7 +72,7 @@ func (p *PipelineDataObject) mapSource(source DataSource) {
 	}
 
 	log.Debug().Msgf("Mapped source key(%s) does NOT exists, creating it", key)
-	data := DataPipelineObject{
+	data := DataPipeline{
 		key:    key,
 		Source: source,
 		Sink:   nil,
@@ -73,17 +80,17 @@ func (p *PipelineDataObject) mapSource(source DataSource) {
 	p.mappedDataPipelines[key] = data
 }
 
-func (p *PipelineDataObject) mapSink(sink DataSink) {
+func (p *DataPipelineConfig) mapSink(sink DataSink) {
 
 	log.Trace().Msg("Mapping sink")
 
 	if p.mappedDataPipelines == nil {
 		log.Debug().Msg("mappedDataPipelines is nil, making it")
-		p.mappedDataPipelines = make(map[string]DataPipelineObject)
+		p.mappedDataPipelines = make(map[string]DataPipeline)
 	}
 
 	key, _ := sink.Key()
-	log.Debug().Msgf("mappedDataPipeline: %s", p.mappedDataPipelines)
+	log.Debug().Msgf("mappedDataPipeline: %v", p.mappedDataPipelines)
 	if value, exists := p.mappedDataPipelines[key]; exists {
 		log.Debug().Msgf("Mapped sink key(%s) exists, updating it", key)
 
@@ -99,7 +106,7 @@ func (p *PipelineDataObject) mapSink(sink DataSink) {
 	}
 
 	log.Debug().Msgf("Mapped sink key(%s) does NOT exists, creating it", key)
-	data := DataPipelineObject{
+	data := DataPipeline{
 		key:    key,
 		Source: nil,
 		Sink:   sink,
@@ -107,7 +114,7 @@ func (p *PipelineDataObject) mapSink(sink DataSink) {
 	p.mappedDataPipelines[key] = data
 }
 
-func (p *PipelineDataObject) AddSource(src sources.SourceConfig) error {
+func (p *DataPipelineConfig) AddSource(src sources.SourceConfig) error {
 
 	log.Trace().Msg("Creating a source")
 
@@ -128,7 +135,7 @@ func (p *PipelineDataObject) AddSource(src sources.SourceConfig) error {
 	return nil
 }
 
-func (p *PipelineDataObject) AddSink(snk sinks.SinkConfig) error {
+func (p *DataPipelineConfig) AddSink(snk sinks.SinkConfig) error {
 
 	if p.snkIndexMap == nil {
 		p.snkIndexMap = make(map[string][]int)
@@ -149,12 +156,25 @@ func (p *PipelineDataObject) AddSink(snk sinks.SinkConfig) error {
 	return nil
 }
 
-func (p *PipelineDataObject) GetMappedPipelines() (map[string]DataPipelineObject, bool) {
+func (p *DataPipelineConfig) GetMappedPipelines() (map[string]DataPipeline, bool) {
 	exists := p.mappedDataPipelines != nil
 	return p.mappedDataPipelines, exists
 }
 
-func (p *PipelineDataObject) Info() {
+func (p *DataPipelineConfig) Close(key string) (bool, error) {
+
+	if p.keys[key] {
+		// dataPipeline := p.mappedDataPipelines[key]
+		// dataPipeline.Close()
+		// dataPipeline.
+
+		return true, nil
+	}
+
+	return false, fmt.Errorf("key does not exist")
+}
+
+func (p *DataPipelineConfig) Info() {
 
 	fmt.Printf("Keys\n")
 	for k := range p.keys {
@@ -184,13 +204,6 @@ func (p *PipelineDataObject) Info() {
 		fmt.Printf("%s| %v %v\n", k, v.Source, v.Sink)
 		// fmt.Printf("%s| %v ; %v", k, v.Source.Info(), v.Sink.Info())
 	}
-}
-
-func CreateSourcesAndSinksConfigs(programSources []DataSource, programSinks []DataSink) (*Config, error) {
-	return &Config{
-		Sources: programSources,
-		Sinks:   programSinks,
-	}, nil
 }
 
 // TODO: Move this to source dir
@@ -230,4 +243,12 @@ func DataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
 	default:
 		return nil, fmt.Errorf("unknown sink type: %s", sinkType)
 	}
+}
+
+func GetPipelineInstance() *DataPipelineConfig {
+	once.Do(func() {
+		pipelineInstance = &DataPipelineConfig{}
+	})
+
+	return pipelineInstance
 }
