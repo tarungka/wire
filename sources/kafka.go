@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -64,7 +65,7 @@ func (k *KafkaSource) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}) (<-chan []byte, error) {
+func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}, wg *sync.WaitGroup) (<-chan []byte, error) {
 	// This is to get the entire document along with the changes in the payload
 
 	changeStreamChan := make(chan []byte, 5)
@@ -72,8 +73,13 @@ func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}) (<-chan
 		log.Trace().Msg("The Kafka Source Read is done!")
 	}()
 
+	wg.Add(1)
 	go func(ctx context.Context, done <-chan interface{}, opStream chan<- []byte) {
 
+		defer func () {
+			log.Trace().Msg("Done Reading from the kafka source")
+			wg.Done()
+		}()
 		// TODO: Do I need to close this here?
 		defer close(opStream)
 

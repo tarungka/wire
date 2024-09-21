@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -16,7 +17,7 @@ func Init(config *koanf.Koanf) {
 	log.Info().Msgf("Running the web server on port: %s", config.String("port"))
 }
 
-func Run(done <-chan os.Signal, config *koanf.Koanf) {
+func Run(done <-chan os.Signal, wg *sync.WaitGroup, config *koanf.Koanf) {
 	serverPort := config.String("port")
 
 	router := chi.NewRouter()
@@ -29,7 +30,7 @@ func Run(done <-chan os.Signal, config *koanf.Koanf) {
 	router.Use(middleware.Timeout(30 * time.Second)) // 30 second timeout
 
 	// router.Mount("/metrics")
-	router.Mount("/connector", ConnectorRouter(done))
+	router.Mount("/connector", ConnectorRouter(done, wg))
 
 	log.Error().Msg(http.ListenAndServe(":"+serverPort, router).Error())
 }

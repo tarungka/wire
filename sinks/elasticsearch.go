@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
@@ -57,8 +58,15 @@ func (e *ElasticSink) Connect(ctx context.Context) error {
 }
 
 // Accepts a byte array of json data and writes to elastic search index
-func (e *ElasticSink) Write(done <-chan interface{},dataChan <-chan []byte) error {
+func (e *ElasticSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan <-chan []byte) error {
 	// Receive data from the MongoSource channel
+
+	wg.Add(1)
+	defer func() {
+		log.Trace().Msg("Done Writing to the elastic sink")
+		wg.Done()
+	}()
+
 	for docBytes := range dataChan {
 
 		var changeDoc map[string]interface{}

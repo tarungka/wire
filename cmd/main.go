@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"time"
+	"sync"
 
 	"github.com/knadh/koanf/v2"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	pipeline "github.com/tgk/wire/pipeline"
-	server "github.com/tgk/wire/server"
+	"github.com/tgk/wire/server"
 )
 
 var (
@@ -54,14 +54,15 @@ func main() {
 	}
 
 	done := make(chan os.Signal, 1)
-	signal.Notify(done, os.Interrupt)
+	// signal.Notify(done, os.Interrupt)
 
+	var wg sync.WaitGroup
 
 	// Run the web server
 	go func(ko *koanf.Koanf) {
 		log.Info().Msg("Starting the web server...")
 		server.Init(ko)
-		server.Run(done, ko)
+		server.Run(done, &wg, ko)
 	}(ko)
 
 	var pipelineObject pipeline.PipelineDataObject
@@ -83,7 +84,7 @@ func main() {
 		log.Debug().Msg("No data pipelines exist")
 	}
 
-	for k,v := range mappedDataPipelines {
+	for k, v := range mappedDataPipelines {
 		log.Debug().Msgf("Key: %s | Value: %v", k, v)
 		newPipeline := pipeline.NewDataPipeline(v.Source, v.Sink)
 		pipelineString, err := newPipeline.Show()
@@ -92,37 +93,30 @@ func main() {
 		}
 		log.Debug().Msgf("Creating and running pipeline: %s", pipelineString)
 
-		go newPipeline.Run(done)
+		wg.Add(1)
+		go newPipeline.Run(done, &wg)
 	}
 
-	func (){
-		time.Sleep(10*time.Second)
-		close(done)
-	}()
-
-	<-done
-	log.Info().Msg("1.received interrupt signal; closing client")
-	// close(done)
-	// time.Sleep(10 * time.Second)
-	go func() {
-		log.Info().Msg("2.received interrupt signal; closing client")
-		defer close(done)
-	}()
-
-	// sigs := make(chan os.Signal, 2)
-	// signal.Notify(sigs, os.Interrupt)
-
-	// <-sigs // Wait in def until some signal comes your way
-	// log.Info().Msg("received interrupt signal; closing client")
-	// done := make(chan struct{})
-	// go func() {
-	// 	defer close(done)
+	// func() {
+	// 	time.Sleep(5 * time.Second)
+	// 	log.Trace().Msg("FIVE seconds are DONE!")
+	// 	// done<-os.Interrupt
+	// 	signal.Notify(done, os.Interrupt)
+	// 	<-done
+	// 	close(done)
 	// }()
 
-	// select {
-	// case <-sigs: // If this is received twice
-	// 	log.Info().Msg("received second interrupt signal; quitting without waiting for graceful close")
-	// case <-done:
-	// }
+	// Wait for an interrupt signal (Ctrl+C)
+	signalChannel := make(chan os.Signal, 1)
+	signal.Notify(signalChannel, os.Interrupt)
+	<-signalChannel // Blocks until an interrupt signal is received
 
+	fmt.Println("\nReceived interrupt signal, closing all goroutines...")
+
+	// Close the done channel to signal all goroutines to exit
+	close(done)
+
+	wg.Wait()
+
+	log.Info().Msg("received interrupt signal; closing client")
 }
