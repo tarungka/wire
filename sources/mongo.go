@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -95,31 +96,43 @@ func (m *MongoSource) getCollectionInstance() error {
 // }
 
 // func (m *MongoSource) Watch() (<-chan []byte, error) {
-func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}) (<-chan []byte, error) {
+func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}, wg *sync.WaitGroup) (<-chan []byte, error) {
+
+
 	// This is to get the entire document along with the changes in the payload
 	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
 	stream, err := m.collection.Watch(ctx, mongo.Pipeline{}, opts)
 	if err != nil {
 		log.Error().Err(err).Msg("Error when watching for changes on the mongodb collection")
+		return nil, err
 	}
 
 	// Create a channel to send the data to
 	changeStreamChan := make(chan []byte, 5)
-	// defer close(changeStreamChan)
-	defer func() {
-		log.Trace().Msg("The Mongodb Source Read is done!")
-	}()
 
+	// TODO: Misleading change the message
+	// defer func() {
+	// 	log.Trace().Msg("The Mongodb Source Read is done!")
+	// }()
+
+	wg.Add(1)
 	// TODO: review this later, do i need a go function like this?
 	go func(mongoStream *mongo.ChangeStream, opStream chan<- []byte) {
+		defer func () {
+			log.Trace().Msg("Done Reading from the mongodb source")
+			wg.Done()
+		}()
 
 		// TODO: According to best practices this is the place to keep
 		// the channel
 
 		defer func() {
 			log.Trace().Msg("Closing the mongo change stream")
-			mongoStream.Close(ctx)
-			close(opStream)
+			// mongoStream.Close(ctx) // Close here?
+			// close(opStream) // I cannot close the read only change stream
+			// and expect the downstream channels to close, i need to close
+			// the original channel
+			close(changeStreamChan)
 		}()
 
 		for mongoStream.Next(ctx) {
@@ -161,11 +174,11 @@ func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}) (<-chan
 			select {
 			case <-done:
 				log.Trace().Msg("Closing read from mongodb")
-				close(opStream)
+				close(changeStreamChan)
 				return
 			// case data, a<-jsonData:
 			case opStream <- jsonData: // Send the change to the channel
-			default:
+			default: // Do not block as I want to read for changes, right?
 			}
 
 		}
@@ -175,6 +188,7 @@ func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}) (<-chan
 
 	if err := stream.Err(); err != nil {
 		log.Err(err).Msg("Error in the change stream")
+		return nil, err
 	}
 
 	return changeStreamChan, nil

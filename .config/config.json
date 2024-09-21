@@ -1,4 +1,5 @@
 {
+  "port": 8080,
   "sources": [
     {
       "name": "MongoDb User Data",
@@ -17,8 +18,7 @@
       "key": "mongo_user_pipeline",
       "config": {
         "bootstrap_servers": "localhost:9092",
-        "topic": "foo",
-        "group": "test-group"
+        "topic": "foo"
       }
     }
   ],
@@ -40,6 +40,7 @@
       "key": "mongo_user_pipeline",
       "config": {
         "bootstrap_servers": "localhost:9092",
+        "group": "test-group",
         "topic": "foo"
       }
     }

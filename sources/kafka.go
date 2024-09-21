@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -17,7 +18,7 @@ type KafkaSource struct {
 	pipelineConnectionType string
 	// MongoDB connection details
 	bootstrapServers string
-	consumerGroup    string
+	consumerGroup    string // Not sure if this is even a feature
 	topic            string
 
 	kafkaConsumerClient *kgo.Client
@@ -27,6 +28,14 @@ func (m *KafkaSource) Init(args SourceConfig) error {
 	m.pipelineKey = args.Key
 	m.pipelineName = args.Name
 	m.pipelineConnectionType = args.ConnectionType
+
+	if args.Config["bootstrap_servers"] == "" || args.Config["group"] == "" || args.Config["topic"] == "" {
+		log.Error().Msg("Error missing config values")
+		return fmt.Errorf("error missing config values")
+	} else {
+		log.Debug().Str("bootstrap_servers", args.Config["bootstrap_servers"]).Str("topic", args.Config["topic"]).Str("group", args.Config["group"]).Send()
+	}
+
 	m.bootstrapServers = args.Config["bootstrap_servers"]
 	m.consumerGroup = args.Config["group"]
 	m.topic = args.Config["topic"]
@@ -36,7 +45,7 @@ func (m *KafkaSource) Init(args SourceConfig) error {
 
 func (k *KafkaSource) Connect(ctx context.Context) error {
 
-	log.Trace().Msg("Connecting to kafka cluster...")
+	log.Trace().Msg("Connecting to kafka cluster as a source...")
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(k.bootstrapServers),
 		kgo.ConsumerGroup(k.consumerGroup),
@@ -56,7 +65,7 @@ func (k *KafkaSource) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}) (<-chan []byte, error) {
+func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}, wg *sync.WaitGroup) (<-chan []byte, error) {
 	// This is to get the entire document along with the changes in the payload
 
 	changeStreamChan := make(chan []byte, 5)
@@ -64,8 +73,13 @@ func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}) (<-chan
 		log.Trace().Msg("The Kafka Source Read is done!")
 	}()
 
+	wg.Add(1)
 	go func(ctx context.Context, done <-chan interface{}, opStream chan<- []byte) {
 
+		defer func () {
+			log.Trace().Msg("Done Reading from the kafka source")
+			wg.Done()
+		}()
 		// TODO: Do I need to close this here?
 		defer close(opStream)
 

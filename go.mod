@@ -1,9 +1,10 @@
 module github.com/tgk/wire
 
-go 1.23
+go 1.23.1
 
 require (
 	github.com/elastic/go-elasticsearch/v8 v8.10.0
+	github.com/go-chi/chi/v5 v5.1.0
 	github.com/knadh/koanf/parsers/json v0.1.0
 	github.com/knadh/koanf/parsers/yaml v0.1.0
 	github.com/knadh/koanf/providers/file v1.1.0
@@ -11,6 +12,7 @@ require (
 	github.com/knadh/koanf/v2 v2.1.1
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/pflag v1.0.5
+	github.com/twmb/franz-go v1.17.1
 	go.etcd.io/etcd/client/v3 v3.5.9
 	go.mongodb.org/mongo-driver v1.12.1
 	google.golang.org/grpc v1.58.2
@@ -33,7 +35,6 @@ require (
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
-	github.com/twmb/franz-go v1.17.1 // indirect
 	github.com/twmb/franz-go/pkg/kmsg v1.8.0 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.1.2 // indirect
