@@ -72,11 +72,13 @@ func (dp *DataPipeline) Init() error {
 	return nil
 }
 
+// Set the source of the data pipeline
 func (d *DataPipeline) SetSource(source DataSource) {
 	log.Trace().Msgf("Setting source %s", source.Info())
 	d.Source = source
 }
 
+// Set the sink of the data pipeline
 func (d *DataPipeline) SetSink(sink DataSink) {
 	log.Trace().Msgf("Setting sink %s", sink.Info())
 	d.Sink = sink
@@ -84,6 +86,8 @@ func (d *DataPipeline) SetSink(sink DataSink) {
 	log.Debug().Msgf("DataPipelineObject: %v", d)
 }
 
+// Run the data pipeline, connects to the source and sink. Reads data from the source
+// then writes the data to the sink.
 func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
 
 	defer func() {
@@ -121,17 +125,16 @@ func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
 		log.Err(err).Msg("Error when writing to the data sink")
 	}
 
-	// TODO: Why exactly am I blocking this function here?
 	<-done
-	// log.Info().Msg("The RUN function is done!")
-	// cancel()
 	dp.Close() // the context is cancelled in here
 }
 
+// Shows the `source name` -> `sink name`
 func (dp *DataPipeline) Show() (string, error) {
 	return dp.Source.Name() + " -> " + dp.Sink.Name(), nil
 }
 
+// Close the data pipeline
 func (dp *DataPipeline) Close() bool {
 	dpInfo, _ := dp.Show()
 	log.Info().Msgf("Closing data pipeline: %s", dpInfo)
@@ -145,6 +148,7 @@ func (dp *DataPipeline) Close() bool {
 	return false
 }
 
+// Create a new DataPipeline and initialize it
 func NewDataPipeline(source DataSource, sink DataSink) *DataPipeline {
 	dataPipeline := &DataPipeline{
 		Source: source,

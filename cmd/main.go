@@ -66,29 +66,30 @@ func main() {
 
 
 	// Start pipelines that have been specified in the config file
-	// var dataPipeline pipeline.PipelineDataObject
-	dataPipeline := pipeline.GetPipelineInstance()
+	// var dataPipelineConfig pipeline.PipelineDataObject
+	dataPipelineConfig := pipeline.GetPipelineInstance()
 
-	allSourcesConfig, allSinksConfig, err := dataPipeline.ParseConfig(ko)
+	allSourcesConfig, allSinksConfig, err := dataPipelineConfig.ParseConfig(ko)
 	if err != nil {
 		log.Err(err).Msg("Error when reading config")
 	}
 
 	for _, sourceConfig := range allSourcesConfig {
-		dataPipeline.AddSource(sourceConfig)
+		dataPipelineConfig.AddSource(sourceConfig)
 	}
 	for _, sinkConfig := range allSinksConfig {
-		dataPipeline.AddSink(sinkConfig)
+		dataPipelineConfig.AddSink(sinkConfig)
 	}
 
-	mappedDataPipelines, exists := dataPipeline.GetMappedPipelines()
+	mappedDataPipelines, exists := dataPipelineConfig.GetMappedPipelines()
 	if !exists {
 		log.Debug().Msg("No data pipelines exist")
 	}
 
-	for k, v := range mappedDataPipelines {
-		log.Debug().Msgf("Key: %s | Value: %v", k, v)
-		newPipeline := pipeline.NewDataPipeline(v.Source, v.Sink)
+	// Run each pipeline
+	for pipelineKey, eachDataPipeline := range mappedDataPipelines {
+		log.Debug().Msgf("Key: %s | Value: %v", pipelineKey, eachDataPipeline)
+		newPipeline := pipeline.NewDataPipeline(eachDataPipeline.Source, eachDataPipeline.Sink)
 		pipelineString, err := newPipeline.Show()
 		if err != nil {
 			log.Err(err).Send()

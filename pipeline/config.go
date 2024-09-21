@@ -12,22 +12,22 @@ import (
 )
 
 type DataPipelineConfig struct {
-	allSourceInterfaces []DataSource
-	allSinkInterfaces   []DataSink
-	srcIndexMap         map[string][]int // key : [indices of where the source is in the allSourceInterfaces]
-	snkIndexMap         map[string][]int // key : [indices of where the sink is in the allSinkInterfaces]
-	// Keys can have the value false when a key is created and then deleted
-	keys                map[string]bool         // Keys: ifExists
+	allSourceInterfaces []DataSource            // All the data sources in an array
+	allSinkInterfaces   []DataSink              // All the data sinks in an array
+	srcIndexMap         map[string][]int        // key : [indices of where the source is in the allSourceInterfaces]
+	snkIndexMap         map[string][]int        // key : [indices of where the sink is in the allSinkInterfaces]
+	keys                map[string]bool         // Keys: ifExists; value can be false only when key is deleted after creation
 	mappedDataPipelines map[string]DataPipeline // Mapping of {key: DataPipeline}
 }
 
 var (
-	pipelineInstance *DataPipelineConfig
-	once             sync.Once
+	pipelineInstance *DataPipelineConfig // holds the singleton value
+	once             sync.Once           // Setting the scope of this to the global package
 )
 
-func (p *DataPipelineConfig) addKey(s string) {
 
+// Add a new key to the config, if exists does nothing
+func (p *DataPipelineConfig) addKey(s string) {
 	if p.keys == nil {
 		p.keys = make(map[string]bool)
 	}
@@ -37,6 +37,7 @@ func (p *DataPipelineConfig) addKey(s string) {
 	}
 }
 
+// Parse the config and return array or sources and sinks
 func (p *DataPipelineConfig) ParseConfig(ko *koanf.Koanf) ([]sources.SourceConfig, []sinks.SinkConfig, error) {
 	var allSourcesConfig []sources.SourceConfig
 	var allSinksConfig []sinks.SinkConfig
@@ -51,6 +52,31 @@ func (p *DataPipelineConfig) ParseConfig(ko *koanf.Koanf) ([]sources.SourceConfi
 	}
 
 	return allSourcesConfig, allSinksConfig, nil
+}
+
+// Parse the config and read the sources and sinks into the pipeline config
+func (p *DataPipelineConfig) Config(ko *koanf.Koanf) (bool, error) {
+
+	var allSourcesConfig []sources.SourceConfig
+	var allSinksConfig []sinks.SinkConfig
+
+	if err := ko.Unmarshal("sources", &allSourcesConfig); err != nil {
+		log.Err(err).Msg("Error when un-marshaling sources")
+		return false, err
+	}
+	if err := ko.Unmarshal("sinks", &allSinksConfig); err != nil {
+		log.Err(err).Msg("Error when un-marshaling sinks")
+		return false, err
+	}
+
+	for _, sourceConfig := range allSourcesConfig {
+		p.AddSource(sourceConfig)
+	}
+	for _, sinkConfig := range allSinksConfig {
+		p.AddSink(sinkConfig)
+	}
+
+	return true, nil
 }
 
 func (p *DataPipelineConfig) mapSource(source DataSource) {
@@ -114,6 +140,7 @@ func (p *DataPipelineConfig) mapSink(sink DataSink) {
 	p.mappedDataPipelines[key] = data
 }
 
+// Add a source to the pipeline config
 func (p *DataPipelineConfig) AddSource(src sources.SourceConfig) error {
 
 	log.Trace().Msg("Creating a source")
@@ -135,6 +162,7 @@ func (p *DataPipelineConfig) AddSource(src sources.SourceConfig) error {
 	return nil
 }
 
+// Add a sink to the pipeline config
 func (p *DataPipelineConfig) AddSink(snk sinks.SinkConfig) error {
 
 	if p.snkIndexMap == nil {
@@ -156,11 +184,14 @@ func (p *DataPipelineConfig) AddSink(snk sinks.SinkConfig) error {
 	return nil
 }
 
+// Gets all the pipelines in the format [{key : DataPipeline},...]
 func (p *DataPipelineConfig) GetMappedPipelines() (map[string]DataPipeline, bool) {
 	exists := p.mappedDataPipelines != nil
 	return p.mappedDataPipelines, exists
 }
 
+// [NOT IMPLEMENTED] Close a pipeline given a key, all sources and sinks are
+// also closed
 func (p *DataPipelineConfig) Close(key string) (bool, error) {
 
 	if p.keys[key] {
@@ -174,6 +205,8 @@ func (p *DataPipelineConfig) Close(key string) (bool, error) {
 	return false, fmt.Errorf("key does not exist")
 }
 
+
+// Information about all the configs
 func (p *DataPipelineConfig) Info() {
 
 	fmt.Printf("Keys\n")
@@ -206,7 +239,7 @@ func (p *DataPipelineConfig) Info() {
 	}
 }
 
-// TODO: Move this to source dir
+// Return the correct data source interface and initializes it given a config
 func DataSourceFactory(config sources.SourceConfig) (DataSource, error) {
 	sourceType := config.ConnectionType
 	log.Debug().Msgf("Creating and allocating object for source: %s", sourceType)
@@ -227,7 +260,7 @@ func DataSourceFactory(config sources.SourceConfig) (DataSource, error) {
 	}
 }
 
-// TODO: Move this to sink dir
+// Return the correct data sink interface and initializes it given a config
 func DataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
 	sinkType := config.ConnectionType
 	log.Debug().Msgf("Creating and allocating object for sink: %s", sinkType)
@@ -245,6 +278,8 @@ func DataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
 	}
 }
 
+// This is a singleton implementation of the Data pipeline config
+// This will change a lot when made into a distributed architecture
 func GetPipelineInstance() *DataPipelineConfig {
 	once.Do(func() {
 		pipelineInstance = &DataPipelineConfig{}
