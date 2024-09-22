@@ -9,8 +9,8 @@ import (
 	"github.com/knadh/koanf/v2"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	pipeline "github.com/tgk/wire/pipeline"
-	"github.com/tgk/wire/server"
+	pipeline "github.com/tarungka/wire/pipeline"
+	"github.com/tarungka/wire/server"
 )
 
 var (

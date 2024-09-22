@@ -1,4 +1,4 @@
-module github.com/tgk/wire
+module github.com/tarungka/wire
 
 go 1.23.1
 

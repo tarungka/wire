@@ -8,9 +8,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
-	"github.com/tgk/wire/pipeline"
-	"github.com/tgk/wire/sinks"
-	"github.com/tgk/wire/sources"
+	"github.com/tarungka/wire/pipeline"
+	"github.com/tarungka/wire/sinks"
+	"github.com/tarungka/wire/sources"
 )
 
 func ConnectorRouter(done <-chan interface{}, wg *sync.WaitGroup) chi.Router {

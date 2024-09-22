@@ -5,8 +5,8 @@ import (
 	"sync"
 
 	"github.com/rs/zerolog/log"
-	"github.com/tgk/wire/sinks"
-	"github.com/tgk/wire/sources"
+	"github.com/tarungka/wire/sinks"
+	"github.com/tarungka/wire/sources"
 )
 
 type DataSource interface {
