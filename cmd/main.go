@@ -64,7 +64,6 @@ func main() {
 		server.Run(done, &wg, ko)
 	}(ko)
 
-
 	// Start pipelines that have been specified in the config file
 	// var dataPipelineConfig pipeline.PipelineDataObject
 	dataPipelineConfig := pipeline.GetPipelineInstance()

@@ -76,7 +76,7 @@ func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 	wg.Add(1)
 	go func(ctx context.Context, done <-chan interface{}, opStream chan<- []byte) {
 
-		defer func () {
+		defer func() {
 			log.Trace().Msg("Done Reading from the kafka source")
 			wg.Done()
 		}()
@@ -156,7 +156,7 @@ func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 
 	}(ctx, done, changeStreamChan)
 
-	return   changeStreamChan, nil
+	return changeStreamChan, nil
 }
 
 func (k *KafkaSource) Key() (string, error) {

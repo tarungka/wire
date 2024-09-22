@@ -104,12 +104,12 @@ func (k *KafkaSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan 
 				})
 				wgKafkaSend.Wait()
 				log.Trace().Msg("After wait")
-			// case <-done:
-			// 	// This probably should not happen, as this function should return only when
-			// 	// the upstream channel is closed
-			// 	log.Debug().Msg("Received done signal, terminating write operation")
-			// 	return nil
-			// default:
+				// case <-done:
+				// 	// This probably should not happen, as this function should return only when
+				// 	// the upstream channel is closed
+				// 	log.Debug().Msg("Received done signal, terminating write operation")
+				// 	return nil
+				// default:
 			}
 		}
 	}()

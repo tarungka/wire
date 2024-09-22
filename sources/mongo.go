@@ -98,7 +98,6 @@ func (m *MongoSource) getCollectionInstance() error {
 // func (m *MongoSource) Watch() (<-chan []byte, error) {
 func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}, wg *sync.WaitGroup) (<-chan []byte, error) {
 
-
 	// This is to get the entire document along with the changes in the payload
 	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
 	stream, err := m.collection.Watch(ctx, mongo.Pipeline{}, opts)
@@ -118,7 +117,7 @@ func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 	wg.Add(1)
 	// TODO: review this later, do i need a go function like this?
 	go func(mongoStream *mongo.ChangeStream, opStream chan<- []byte) {
-		defer func () {
+		defer func() {
 			log.Trace().Msg("Done Reading from the mongodb source")
 			wg.Done()
 		}()
