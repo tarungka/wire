@@ -156,7 +156,7 @@ func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 
 	}(ctx, done, changeStreamChan)
 
-	return changeStreamChan, nil
+	return   changeStreamChan, nil
 }
 
 func (k *KafkaSource) Key() (string, error) {
