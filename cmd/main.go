@@ -61,6 +61,7 @@ func main() {
 	go func(ko *koanf.Koanf) {
 		log.Info().Msg("Starting the web server...")
 		server.Init(ko)
+		// wg is used only for creating a new pipeline
 		server.Run(done, &wg, ko)
 	}(ko)
 

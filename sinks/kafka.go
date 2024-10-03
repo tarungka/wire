@@ -67,49 +67,62 @@ func (k *KafkaSink) Connect(ctx context.Context) error {
 // 	return nil
 // }
 
-// BUG: There is an error when trying to clean up/ close this channel/ function; unsure what the error is
-func (k *KafkaSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan <-chan []byte) error {
+func (k *KafkaSink) sendMessageToKafka(ctx context.Context, docBytes []byte) {
+	var wgKafkaSend sync.WaitGroup
+	wgKafkaSend.Add(1)
+	record := &kgo.Record{Value: docBytes}
+	k.kafkaProducerClient.Produce(ctx, record, func(record *kgo.Record, err error) {
+		defer wgKafkaSend.Done()
+		if err != nil {
+			log.Err(err).Interface("record", record).Msg("record had a produce error")
+		} else {
+			log.Debug().Msgf("Successfully produced message")
+			log.Trace().Msgf("Successfully produced message: %v\n", string(record.Value))
+		}
+	})
+	wgKafkaSend.Wait()
+}
 
-	// wg.Add(1)
+// BUG: There is an error when trying to clean up/ close this channel/ function; unsure what the error is
+func (k *KafkaSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan <-chan []byte, initialDataChan <-chan []byte) error {
+
 	defer func() {
-		// log.Trace().Msg("Done Writing to the kafka sink")
 		wg.Done()
 	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		defer cancel()
+		defer func() {
+			log.Debug().Msg("Write go routine is cleaning up")
+			cancel()
+		}()
 		for {
 			select {
 			case docBytes, ok := <-dataChan:
 				if !ok {
 					// dataChan is closed, return from the function
 					log.Debug().Msg("The upstream channel (dataChan) closed")
-					// return nil
+					return
 				}
 
 				log.Debug().Msg("New data on the channel")
-				var wgKafkaSend sync.WaitGroup
-				wgKafkaSend.Add(1)
-				record := &kgo.Record{Value: docBytes}
-				k.kafkaProducerClient.Produce(ctx, record, func(record *kgo.Record, err error) {
-					defer wgKafkaSend.Done()
-					if err != nil {
-						log.Err(err).Interface("record", record).Msg("record had a produce error")
-					} else {
-						log.Debug().Msgf("Successfully produced message")
-						log.Trace().Msgf("Successfully produced message: %v\n", string(record.Value))
-					}
-				})
-				wgKafkaSend.Wait()
+				k.sendMessageToKafka(ctx, docBytes)
 				log.Trace().Msg("After wait")
-			// case <-done:
-			// 	// This probably should not happen, as this function should return only when
-			// 	// the upstream channel is closed
-			// 	log.Debug().Msg("Received done signal, terminating write operation")
-			// 	return nil
+			case docBytes, ok := <-initialDataChan:
+				if !ok{
+					log.Info().Msg("Initial data channel closed")
+				}
+				log.Debug().Msg("New initial data on the channel")
+				k.sendMessageToKafka(ctx, docBytes)
+				log.Trace().Msg("After wait")
 			// default:
+				// case <-done:
+				// 	// This probably should not happen, as this function should return only when
+				// 	// the upstream channel is closed
+				// 	log.Debug().Msg("Received done signal, terminating write operation")
+				// 	return nil
+				// default:
 			}
 		}
 	}()

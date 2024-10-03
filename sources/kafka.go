@@ -99,7 +99,7 @@ func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 
 			fetches := k.kafkaConsumerClient.PollFetches(ctx)
 			if errs := fetches.Errors(); len(errs) > 0 {
-				// All errors are retried internally when fetching, but non-retriable errors are
+				// All errors are retried internally when fetching, but non-retirable errors are
 				// returned from polls so that users can notice and take action.
 				log.Error().Msg(fmt.Sprint(errs))
 			}
@@ -146,7 +146,7 @@ func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 				case <-ctx.Done():
 					return
 				case opStream <- jsonByteData:
-					// Dont ever add default here, this needs to be a blocking operation
+					// Don't ever add default here, this needs to be a blocking operation
 					// If I put default here there are chances of loosing data when the channel
 					// is full and data is read but not pushed to the output stream, right?
 					// default:
@@ -178,4 +178,13 @@ func (k *KafkaSource) Disconnect() error {
 
 func (m *KafkaSource) Info() string {
 	return fmt.Sprintf("Key:%s|Name:%s|Type:%s", m.pipelineKey, m.pipelineName, m.pipelineConnectionType)
+}
+
+func (m *KafkaSource) LoadInitialData(ctx context.Context, done <-chan interface{}, wg *sync.WaitGroup) (<-chan []byte, error) {
+	// Will implement this at a later point, for now just change the consumer groupe name
+	// to get all the data in the topic
+	dataChan := make(chan []byte)
+	defer close(dataChan)
+
+	return dataChan, nil
 }
