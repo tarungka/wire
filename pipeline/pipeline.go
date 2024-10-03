@@ -17,6 +17,10 @@ type DataSource interface {
 	// Connect to the Source
 	Connect(context.Context) error
 
+	// Load all initial data from the source
+	// There are exceptions to this, i.e kafka
+	LoadInitialData(context.Context, <-chan interface{}, *sync.WaitGroup) (<-chan []byte, error)
+
 	// Read is responsible to create a write only channel that is accessible to
 	// downstream stages and is the owner of the channel
 	Read(context.Context, <-chan interface{}, *sync.WaitGroup) (<-chan []byte, error)
@@ -44,7 +48,7 @@ type DataSink interface {
 
 	// Write is responsible to read data from the upstream input channel and
 	// write data to the sink
-	Write(<-chan interface{}, *sync.WaitGroup, <-chan []byte) error
+	Write(<-chan interface{}, *sync.WaitGroup, <-chan []byte, <-chan []byte) error
 
 	// Get the key
 	Key() (string, error)
@@ -108,6 +112,10 @@ func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
 	}
 
 	// TODO: The code to read the initial/existing data will come here
+	initialDataChannel, err := dp.Source.LoadInitialData(ctx, done, wg)
+	if err != nil {
+		log.Err(err).Msg("Error when loading initial data")
+	}
 
 	// TODO: This code IMO will only hold good for low throughput scenarios
 	// and does not scale when there are multiple pipelines running.
@@ -121,7 +129,7 @@ func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
 	// Not going to send the context to the Sink as I only want to close the
 	// sink when the upstream channel is closed and not when the context is invalidated
 	// or closed/timed out.
-	if err := dp.Sink.Write(done, wg, dataChannel); err != nil {
+	if err := dp.Sink.Write(done, wg, dataChannel, initialDataChannel); err != nil {
 		log.Err(err).Msg("Error when writing to the data sink")
 	}
 

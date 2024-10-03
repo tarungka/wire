@@ -95,9 +95,53 @@ func (m *MongoSource) getCollectionInstance() error {
 // 	return []byte("data from MongoDB"), nil
 // }
 
+// As of now this function is not optimized to handled a lot of data, do not use this
+// for huge amounts of data a it holds the initial loaded data in memory
+func (m *MongoSource) LoadInitialData(ctx context.Context, done <-chan interface{}, wg *sync.WaitGroup) (<-chan []byte, error) {
+
+	initialDataStreamChan := make(chan []byte, 5)
+
+	wg.Add(1)
+
+	go func() {
+		defer func() {
+			close(initialDataStreamChan)
+			wg.Done()
+		}()
+
+		log.Debug().Msg("Loading initial data from mongodb")
+		cursor, err := m.collection.Find(ctx, bson.D{})
+		if err != nil {
+			log.Err(err).Msg("Error when loading initial data from mongodb")
+		}
+		defer cursor.Close(ctx)
+
+		var results []bson.M
+		if err = cursor.All(ctx, &results); err != nil {
+			log.Err(err).Msg("Error when reading data from cursor")
+		}
+
+		// Print the results
+		for _, result := range results {
+			// fmt.Println(result)
+			jsonData, err := json.Marshal(result)
+			if err != nil {
+				log.Err(err).Msg("Error marshalling change document to JSON")
+				continue
+			}
+
+			initialDataStreamChan <- jsonData
+		}
+
+		<-done
+
+	}()
+
+	return initialDataStreamChan, nil
+}
+
 // func (m *MongoSource) Watch() (<-chan []byte, error) {
 func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}, wg *sync.WaitGroup) (<-chan []byte, error) {
-
 
 	// This is to get the entire document along with the changes in the payload
 	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
@@ -118,7 +162,7 @@ func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 	wg.Add(1)
 	// TODO: review this later, do i need a go function like this?
 	go func(mongoStream *mongo.ChangeStream, opStream chan<- []byte) {
-		defer func () {
+		defer func() {
 			log.Trace().Msg("Done Reading from the mongodb source")
 			wg.Done()
 		}()

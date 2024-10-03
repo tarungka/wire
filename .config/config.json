@@ -5,6 +5,7 @@
       "name": "MongoDb User Data",
       "type": "mongodb",
       "key": "mongo_user_pipeline",
+      "load_initial_data": true,
       "config": {
         "uri": "MONGO_URI",
         "database": "MONGO_DB",
@@ -16,6 +17,7 @@
       "name": "Kafka User Data (Kafka Consumer)",
       "type": "kafka",
       "key": "mongo_user_pipeline",
+      "load_initial_data": true,
       "config": {
         "bootstrap_servers": "localhost:9092",
         "topic": "foo"
