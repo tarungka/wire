@@ -11,6 +11,8 @@ import (
 	"github.com/rs/zerolog/log"
 	pipeline "github.com/tarungka/wire/pipeline"
 	"github.com/tarungka/wire/server"
+
+	"github.com/tarungka/wire/internal/communication"
 )
 
 var (
@@ -56,6 +58,15 @@ func main() {
 	done := make(chan interface{}, 1)
 
 	var wg sync.WaitGroup
+
+	advertisedListeners := ko.Strings("advertised_listeners")
+	// Service Discovery
+	communication.DiscoverPeers(advertisedListeners)
+
+	// Setup the communication module
+	log.Debug().Msgf("The advertised listeners are: %v", advertisedListeners)
+	communication.Test()
+
 
 	// Run the web server
 	go func(ko *koanf.Koanf) {

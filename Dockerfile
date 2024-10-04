@@ -2,10 +2,10 @@
 FROM golang:1.23.1 AS builder
 
 # Install dependencies
-RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# RUN apt-get update && apt-get install -y \
+#     git \
+#     curl \
+#     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -20,7 +20,12 @@ RUN go mod download
 COPY *.go ./
 COPY ./cmd ./cmd
 COPY ./sources ./sources
+COPY ./server ./server
 COPY ./sinks ./sinks
+COPY ./server ./server
+COPY ./utils ./utils
+COPY ./pipeline ./pipeline
+COPY ./internal ./internal
 COPY ./.config ./.config
 COPY ./.config/config.json ./.config/config.json
 COPY ./.config/config.yaml ./.config/config.yaml
