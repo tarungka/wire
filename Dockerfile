@@ -21,6 +21,9 @@ COPY *.go ./
 COPY ./cmd ./cmd
 COPY ./sources ./sources
 COPY ./sinks ./sinks
+COPY ./server ./server
+COPY ./utils ./utils
+COPY ./pipeline ./pipeline
 COPY ./.config ./.config
 COPY ./.config/config.json ./.config/config.json
 COPY ./.config/config.yaml ./.config/config.yaml
