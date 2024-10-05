@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.23.1 AS builder
+FROM golang:1.23.1-bullseye AS builder
 
 # Install dependencies
 # RUN apt-get update && apt-get install -y \
@@ -27,8 +27,10 @@ COPY ./utils ./utils
 COPY ./pipeline ./pipeline
 COPY ./internal ./internal
 COPY ./.config ./.config
-COPY ./.config/config.json ./.config/config.json
-COPY ./.config/config.yaml ./.config/config.yaml
+# TODO: Revert this
+# COPY ./.config/config.json ./.config/config.json
+# COPY ./.config/config.yaml ./.config/config.yaml
+COPY ./tests/mongodb-kafka/config.json ./.config/config.json
 
 # Build the application binary
 RUN go build -o /wire ./cmd
@@ -42,7 +44,7 @@ WORKDIR /app
 # Copy only the built binary from the previous stage
 COPY --from=builder /wire /wire
 
-# Copy the config folder
+# Copy the config folder from the previous build pipeline
 COPY ./.config ./.config
 
 # Define the default config path using an environment variable

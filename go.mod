@@ -19,8 +19,10 @@ require (
 )
 
 require (
+	github.com/DistributedClocks/GoVector v0.0.0-20240117185643-ae07272d0ebd // indirect
 	github.com/coreos/go-semver v0.3.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
+	github.com/daviddengcn/go-colortext v1.0.0 // indirect
 	github.com/elastic/elastic-transport-go/v8 v8.3.0 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.1.0 // indirect
@@ -36,6 +38,8 @@ require (
 	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/twmb/franz-go/pkg/kmsg v1.8.0 // indirect
+	github.com/vmihailenco/msgpack/v5 v5.1.4 // indirect
+	github.com/vmihailenco/tagparser v0.1.2 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.1.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect

@@ -51,6 +51,20 @@ func initFlags(ko *koanf.Koanf) {
 			log.Debug().Msgf("The config is: %v", ko.All())
 			err := ko.Load(file.Provider(f), parser)
 			if err != nil {
+				f, err := os.Open("./.config/")
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+				files, err := f.Readdir(0)
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+
+				for _, v := range files {
+					fmt.Println(v.Name(), v.IsDir())
+				}
 				log.Fatal().Msgf("1. error reading config: %v", err)
 			} else {
 				log.Trace().Msg("Successfully read the contents of the config file")
