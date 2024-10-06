@@ -44,7 +44,9 @@ func main() {
 		log.Info().Str("build:", buildString).Msgf("Build Version: %s", buildString)
 	}
 
-	log.Info().Msg("Starting the application")
+	log.Info().Msg("Starting the application...")
+
+	startProfile("cpuprofile.prof", "memprofile.prof", "traceprofile.prof")
 
 	// This way the command line arguments are overridden by the remote/other configs
 	if ko.Bool("override") {
@@ -114,4 +116,7 @@ func main() {
 
 	// For for graceful shutdown
 	wg.Wait()
+
+	stopProfile()
+	log.Info().Msg("Wire server stopped")
 }
