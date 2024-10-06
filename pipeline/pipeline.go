@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/rs/zerolog/log"
+	"github.com/tarungka/wire/internal/partitioner"
 	"github.com/tarungka/wire/sinks"
 	"github.com/tarungka/wire/sources"
 )
@@ -64,11 +65,19 @@ type DataSink interface {
 }
 
 type DataPipeline struct {
-	Source       DataSource
-	Sink         DataSink
-	cancel       context.CancelFunc
-	key          string
+
+	// A data source object
+	Source DataSource
+	// A data sink object
+	Sink DataSink
+	// context for the datapipeline
+	cancel context.CancelFunc
+	// Unique identifier for the data pipeline
+	key string
+	// To shutdown only the pipeline
 	pipelineDone chan interface{}
+	// Mutex
+	mu sync.Mutex
 }
 
 func (dp *DataPipeline) Init() error {
@@ -102,16 +111,16 @@ func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
 	ctx, cancel := context.WithCancel(context.Background())
 	dp.cancel = cancel
 
-	// Connect
+	// Connect to source
 	if sourceConnectError := dp.Source.Connect(ctx); sourceConnectError != nil {
 		log.Err(sourceConnectError).Msg("Error when connecting to source")
 	}
 
+	// Connect to sink
 	if sinkConnectError := dp.Sink.Connect(ctx); sinkConnectError != nil {
 		log.Err(sinkConnectError).Msg("Error when connecting to sink")
 	}
 
-	// TODO: The code to read the initial/existing data will come here
 	initialDataChannel, err := dp.Source.LoadInitialData(ctx, done, wg)
 	if err != nil {
 		log.Err(err).Msg("Error when loading initial data")
@@ -125,16 +134,36 @@ func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
 		return
 	}
 
-	wg.Add(1)
-	// Not going to send the context to the Sink as I only want to close the
-	// sink when the upstream channel is closed and not when the context is invalidated
-	// or closed/timed out.
-	if err := dp.Sink.Write(done, wg, dataChannel, initialDataChannel); err != nil {
-		log.Err(err).Msg("Error when writing to the data sink")
+	// TODO: abstract this out of there, create a default hash function
+	// and make this overrideable
+	hashFn := partitioner.HashFnv
+
+	// TODO: Implement code make the channel to a job and process the job
+	// Partition the data into multiple jobs (channel)
+	jobCount := 5 // Number of concurrent jobs
+
+	jobPartitioner := partitioner.NewPartitoner[[]byte](jobCount, hashFn)
+
+	partitionedInitialDataChannels := jobPartitioner.PartitionData(initialDataChannel)
+	partitionedDataChannels := jobPartitioner.PartitionData(dataChannel)
+
+	for i := 0; i < jobCount; i++ {
+		wg.Add(1)
+		go dp.processJob(done, wg, partitionedDataChannels[i], partitionedInitialDataChannels[i])
 	}
 
 	<-done
 	dp.Close() // the context is cancelled in here
+}
+
+// Process job as of now only writes the data to the sink in a non deterministic manner
+// i.e the writes can be in a different order to the reads
+func (dp *DataPipeline) processJob(done <-chan interface{}, wg *sync.WaitGroup, dataChannel <-chan []byte, initialDataChannel <-chan []byte) {
+	defer wg.Done()
+
+	if err := dp.Sink.Write(done, wg, dataChannel, initialDataChannel); err != nil {
+		log.Err(err).Msg("Error when writing to the data sink")
+	}
 }
 
 // Shows the `source name` -> `sink name`
