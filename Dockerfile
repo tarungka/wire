@@ -24,6 +24,7 @@ COPY ./sinks ./sinks
 COPY ./server ./server
 COPY ./utils ./utils
 COPY ./pipeline ./pipeline
+COPY ./internal ./internal
 COPY ./.config ./.config
 COPY ./.config/config.json ./.config/config.json
 COPY ./.config/config.yaml ./.config/config.yaml
