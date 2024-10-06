@@ -112,7 +112,8 @@ func (k *KafkaSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan 
 				log.Trace().Msg("After wait")
 			case docBytes, ok := <-initialDataChan:
 				if !ok{
-					log.Info().Msg("Initial data channel closed")
+					// log.Info().Msg("Initial data channel closed")
+					continue
 				}
 				log.Debug().Msg("New initial data on the channel")
 				k.sendMessageToKafka(ctx, docBytes)

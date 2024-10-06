@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -42,6 +43,7 @@ type MongoSource struct {
 	pipelineKey            string
 	pipelineName           string
 	pipelineConnectionType string
+	loadInitialData        bool
 	project                bson.D
 	csProject              bson.D
 	filter                 bson.D
@@ -54,6 +56,12 @@ func (m *MongoSource) Init(args SourceConfig) error {
 	m.pipelineKey = args.Key
 	m.pipelineName = args.Name
 	m.pipelineConnectionType = args.ConnectionType
+	loadInitialData, err := strconv.ParseBool(args.Config["load_initial_data"])
+	if err != nil {
+		log.Err(err).Msg("error when reading value for load_initial_data, defaulting to false")
+		loadInitialData = false
+	}
+	m.loadInitialData = loadInitialData
 	m.mongoDbUri = args.Config["uri"]
 	m.mongoDbDb = args.Config["database"]
 	m.mongoDbCol = args.Config["collection"]
@@ -68,6 +76,7 @@ func (m *MongoSource) Init(args SourceConfig) error {
 func (m *MongoSource) Connect(ctx context.Context) error {
 
 	if m.client != nil {
+		log.Trace().Msg("Client already exists, not creating a new instance")
 		return nil
 	}
 
@@ -108,6 +117,12 @@ func (m *MongoSource) LoadInitialData(ctx context.Context, done <-chan interface
 			close(initialDataStreamChan)
 			wg.Done()
 		}()
+
+		if !m.loadInitialData {
+			return
+		}
+
+		log.Info().Msg("Loading initial data from the source...")
 
 		log.Debug().Msg("Loading initial data from mongodb")
 		cursor, err := m.collection.Find(ctx, bson.D{})
