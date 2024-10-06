@@ -56,7 +56,7 @@ func (p *Partitoner[T]) PartitionData(dataChannel <-chan T) []chan T {
 
 func (p Partitoner[T]) Examine(){
 	log.Info().Msgf("Partitions: %v", p.partitions)
-	log.Info().Msgf("HashFn: %v", p.hashFn)
+	// log.Info().Msgf("HashFn: %v", p.hashFn)
 	log.Info().Msgf("bufferSize: %v", p.bufferSize)
 	log.Info().Msgf("maxRetires: %v", p.maxRetries)
 	log.Info().Msgf("ctx: %v", p.ctx)
