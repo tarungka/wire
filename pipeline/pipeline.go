@@ -74,6 +74,8 @@ type DataPipeline struct {
 	cancel context.CancelFunc
 	// Unique identifier for the data pipeline
 	key string
+	// Num jobs
+	jobCount uint
 	// To shutdown only the pipeline
 	pipelineDone chan interface{}
 	// Mutex
@@ -142,10 +144,17 @@ func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
 	// Partition the data into multiple jobs (channel)
 	jobCount := 5 // Number of concurrent jobs
 
-	jobPartitioner := partitioner.NewPartitoner[[]byte](jobCount, hashFn)
+	jobPartitioner := partitioner.NewPartitoner(jobCount, hashFn) // data type is []byte or uint8
 
 	partitionedInitialDataChannels := jobPartitioner.PartitionData(initialDataChannel)
 	partitionedDataChannels := jobPartitioner.PartitionData(dataChannel)
+
+	// jobPartitioner.Examine()
+
+	// for i := 0; i < jobCount; i++ {
+	// 	fmt.Printf("Channel [%v] = %v\n", i, partitionedInitialDataChannels[i])
+	// 	fmt.Printf("|Channel [%v] = %v\n", i, partitionedDataChannels[i])
+	// }
 
 	for i := 0; i < jobCount; i++ {
 		wg.Add(1)
@@ -159,8 +168,9 @@ func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
 // Process job as of now only writes the data to the sink in a non deterministic manner
 // i.e the writes can be in a different order to the reads
 func (dp *DataPipeline) processJob(done <-chan interface{}, wg *sync.WaitGroup, dataChannel <-chan []byte, initialDataChannel <-chan []byte) {
-	defer wg.Done()
+	// defer wg.Done()
 
+	// TODO: wg.Done is called in Write, not very readable code, need to refactor this
 	if err := dp.Sink.Write(done, wg, dataChannel, initialDataChannel); err != nil {
 		log.Err(err).Msg("Error when writing to the data sink")
 	}

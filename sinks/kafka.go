@@ -87,6 +87,7 @@ func (k *KafkaSink) sendMessageToKafka(ctx context.Context, docBytes []byte) {
 func (k *KafkaSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan <-chan []byte, initialDataChan <-chan []byte) error {
 
 	defer func() {
+		log.Trace().Msg("Created a new write instance, exiting the parent thread!")
 		wg.Done()
 	}()
 

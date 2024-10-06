@@ -2,6 +2,7 @@ package partitioner
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/rs/zerolog/log"
 )
@@ -30,6 +31,7 @@ func (p *Partitoner[T]) PartitionData(dataChannel <-chan T) []chan T {
 		partitionedChannels[i] = make(chan T)
 	}
 
+	// WARNING!: This is goroutine leak
 	go func() {
 		defer func() {
 			for _, ch := range partitionedChannels {
@@ -44,11 +46,20 @@ func (p *Partitoner[T]) PartitionData(dataChannel <-chan T) []chan T {
 				log.Err(err).Msg("Error when hashing the job")
 			}
 			partition := hashedValue % uint64(p.partitions)
+			fmt.Printf("Adding data to partition %v\n", partition)
 			partitionedChannels[partition] <- data
 		}
 	}()
 
 	return partitionedChannels
+}
+
+func (p Partitoner[T]) Examine(){
+	log.Info().Msgf("Partitions: %v", p.partitions)
+	log.Info().Msgf("HashFn: %v", p.hashFn)
+	log.Info().Msgf("bufferSize: %v", p.bufferSize)
+	log.Info().Msgf("maxRetires: %v", p.maxRetries)
+	log.Info().Msgf("ctx: %v", p.ctx)
 }
 
 
