@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tarungka/wire/command/proto"
+	"github.com/tarungka/wire/internal/command/proto"
 	pb "google.golang.org/protobuf/proto"
 )
 

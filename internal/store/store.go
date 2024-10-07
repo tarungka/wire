@@ -3,18 +3,21 @@ package store
 import (
 	"errors"
 	"expvar"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
-	"github.com/knadh/koanf/v2"
 	"github.com/rs/zerolog"
-	"github.com/tarungka/wire/command"
+	"github.com/tarungka/wire/internal/command"
+	"github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/rsync"
 
 	rlog "github.com/tarungka/wire/log"
@@ -74,6 +77,9 @@ const (
 	connectionPoolCount = 5
 	connectionTimeout   = 10 * time.Second
 	trailingScale       = 1.25
+	raftDBPath          = "raft.db"
+	raftLogCacheSize    = 128
+	observerChanLen     = 50
 )
 
 const (
@@ -83,6 +89,12 @@ const (
 	failedHeartbeatObserved = "failed_heartbeat_observed"
 	leaderChangesObserved   = "leader_changes_observed"
 	leaderChangesDropped    = "leader_changes_dropped"
+	numRecoveries           = "num_recoveries"
+	nodesReapedFailed       = "nodes_reaped_failed"
+	nodesReapedOK           = "nodes_reaped_ok"
+	numAutoRestores         = "num_auto_restores"
+	numAutoRestoresSkipped  = "num_auto_restores_skipped"
+	numAutoRestoresFailed   = "num_auto_restores_failed"
 )
 
 // stats captures stats for the Store.
@@ -102,6 +114,12 @@ func ResetStats() {
 	stats.Add(failedHeartbeatObserved, 0)
 	stats.Add(leaderChangesObserved, 0)
 	stats.Add(leaderChangesDropped, 0)
+	stats.Add(numRecoveries, 0)
+	stats.Add(nodesReapedOK, 0)
+	stats.Add(nodesReapedFailed, 0)
+	stats.Add(numAutoRestores, 0)
+	stats.Add(numAutoRestoresSkipped, 0)
+	stats.Add(numAutoRestoresFailed, 0)
 }
 
 // ClusterState defines the possible Raft states the current node can be in
@@ -164,6 +182,10 @@ type Store struct {
 	bootstrapped    bool
 	notifyingNodes  map[string]*Server // List of nodes in the cluster
 
+	// Node-reaping configuration
+	ReapTimeout         time.Duration
+	ReapReadOnlyTimeout time.Duration
+
 	// Latest log entry index actually reflected by the FSM. Due to Raft code
 	// these values are not updated automatically after a Snapshot-restore.
 	fsmIdx        *atomic.Uint64
@@ -179,6 +201,9 @@ type Store struct {
 
 	numTrailingLogs uint64
 
+	restorePath   string
+	restoreDoneCh chan struct{}
+
 	mu sync.Mutex
 }
 
@@ -189,27 +214,27 @@ type Config struct {
 	// Logger *log.Logger // The logger to use to log stuff.
 }
 
-func New(ly Layer, ko *koanf.Koanf) *Store {
+// func New(ly Layer, ko *koanf.Koanf) *Store {
+func New(ly Layer,  c *Config) *Store {
 
-	raftDir := ko.String("raft_dir")
-	raftId := ko.String("raft_id")
+	// raftDir := ko.String("raft_dir")
+	// raftId := ko.String("node_id")
 
 	// TODO: create a zerolog logger
 	logger := zerolog.Logger{}
 
 	return &Store{
-		open:          rsync.NewAtomicBool(),
-		ly:            ly,
-		raftDir:       raftDir,
-		raftID:        raftId,
-		peersPath:     filepath.Join(raftDir, peersPath),
-		peersInfoPath: filepath.Join(raftDir, peersInfoPath),
-
+		open:            rsync.NewAtomicBool(),
+		ly:              ly,
+		raftDir:         c.Dir,
+		raftID:          c.ID,
+		peersPath:       filepath.Join(c.Dir, peersPath),
+		peersInfoPath:   filepath.Join(c.Dir, peersInfoPath),
+		restoreDoneCh:   make(chan struct{}),
 		leaderObservers: make([]chan<- struct{}, 0),
 		reqMarshaller:   command.NewRequestMarshaler(),
 		notifyingNodes:  make(map[string]*Server),
 		ApplyTimeout:    applyTimeout,
-		// snapshotCAS:     rsync.NewCheckAndSet(),
 		fsmIdx:         &atomic.Uint64{},
 		fsmTarget:      rsync.NewReadyTarget[uint64](),
 		fsmTerm:        &atomic.Uint64{},
@@ -217,6 +242,7 @@ func New(ly Layer, ko *koanf.Koanf) *Store {
 		appendedAtTime: rsync.NewAtomicTime(),
 		dbModifiedTime: rsync.NewAtomicTime(),
 		logger:         logger,
+		// snapshotCAS:     rsync.NewCheckAndSet(),
 		// Unsure if I need the following data
 		// dbAppliedIdx:    &atomic.Uint64{},
 		// appliedTarget:   rsync.NewReadyTarget[uint64](),
@@ -232,6 +258,8 @@ func (s *Store) Open() (retError error) {
 			s.open.Set()
 		}
 	}()
+
+	var err error
 
 	s.fsmIdx.Store(0)
 	s.fsmTarget.Reset()
@@ -258,6 +286,60 @@ func (s *Store) Open() (retError error) {
 
 	config := s.raftConfig()
 	config.LocalID = raft.ServerID(s.raftID)
+
+	// TODO: impl snapshot
+	//
+	//
+	//
+
+	// Create the log store and stable store
+	s.boltStore, err = rlog.New(filepath.Join(s.raftDir, raftDBPath), s.NoFreeListSync)
+	if err != nil {
+		return fmt.Errorf("new log store: %s", err)
+	}
+	s.raftStable = s.boltStore
+	s.raftLog, err = raft.NewLogCache(raftLogCacheSize, s.boltStore)
+	if err != nil {
+		return fmt.Errorf("new cached store: %s", err)
+	}
+
+	// Request to recover node?
+	if pathExists(s.peersPath) {
+		s.logger.Printf("attempting node recovery using %s", s.peersPath)
+		config, err := raft.ReadConfigJSON(s.peersPath)
+		if err != nil {
+			return fmt.Errorf("failed to read peers file: %s", err.Error())
+		}
+		s.logger.Debug().Msgf("The config is: %v", config)
+		// if err = RecoverNode(s.raftDir, s.logger, s.raftLog, s.boltStore, s.snapshotStore, s.raftTn, config); err != nil {
+		// 	return fmt.Errorf("failed to recover node: %s", err.Error())
+		// }
+		// if err := os.Rename(s.peersPath, s.peersInfoPath); err != nil {
+		// 	return fmt.Errorf("failed to move %s after recovery: %s", s.peersPath, err.Error())
+		// }
+		// s.logger.Printf("node recovered successfully using %s", s.peersPath)
+		stats.Add(numRecoveries, 1)
+	}
+
+	// Instantiate the Raft system.
+	// ra, err := raft.NewRaft(config, NewFSM(s), s.raftLog, s.raftStable, s.snapshotStore, s.raftTn)
+	ra, err := raft.NewRaft(config, NewFSM(s), s.raftLog, s.raftStable, nil, s.raftTn)
+	if err != nil {
+		return fmt.Errorf("creating the raft system failed: %s", err)
+	}
+	s.raft = ra
+
+	// Open the observer channels.
+	s.observerChan = make(chan raft.Observation, observerChanLen)
+	s.observer = raft.NewObserver(s.observerChan, false, func(o *raft.Observation) bool {
+		_, isLeaderChange := o.Data.(raft.LeaderObservation)
+		_, isFailedHeartBeat := o.Data.(raft.FailedHeartbeatObservation)
+		return isLeaderChange || isFailedHeartBeat
+	})
+
+	// Register and listen for leader changes.
+	s.raft.RegisterObserver(s.observer)
+	s.observerClose, s.observerDone = s.observe()
 
 	return nil
 }
@@ -292,4 +374,174 @@ func (s *Store) raftConfig() *raft.Config {
 
 func (s *Store) hcLogLevel() hclog.Level {
 	return hclog.LevelFromString(s.RaftLogLevel)
+}
+
+// pathExists returns true if the given path exists.
+func pathExists(p string) bool {
+	if _, err := os.Lstat(p); err != nil && os.IsNotExist(err) {
+		return false
+	}
+	return true
+}
+
+func (s *Store) observe() (closeCh, doneCh chan struct{}) {
+	closeCh = make(chan struct{})
+	doneCh = make(chan struct{})
+
+	go func() {
+		defer close(doneCh)
+		for {
+			select {
+			case o := <-s.observerChan:
+				switch signal := o.Data.(type) {
+				case raft.FailedHeartbeatObservation:
+					stats.Add(failedHeartbeatObserved, 1)
+
+					nodes, err := s.Nodes()
+					if err != nil {
+						s.logger.Info().Msgf("failed to get nodes configuration during reap check: %s", err.Error())
+					}
+					servers := Servers(nodes)
+					id := string(signal.PeerID)
+					dur := time.Since(signal.LastContact)
+
+					isReadOnly, found := servers.IsReadOnly(id)
+					if !found {
+						s.logger.Info().Msgf("node %s (failing heartbeat) is not present in configuration", id)
+						break
+					}
+
+					if (isReadOnly && s.ReapReadOnlyTimeout > 0 && dur > s.ReapReadOnlyTimeout) ||
+						(!isReadOnly && s.ReapTimeout > 0 && dur > s.ReapTimeout) {
+						pn := "voting node"
+						if isReadOnly {
+							pn = "non-voting node"
+						}
+						if err := s.remove(id); err != nil {
+							stats.Add(nodesReapedFailed, 1)
+							s.logger.Printf("failed to reap %s %s: %s", pn, id, err.Error())
+						} else {
+							stats.Add(nodesReapedOK, 1)
+							s.logger.Printf("successfully reaped %s %s", pn, id)
+						}
+					}
+				case raft.LeaderObservation:
+					s.leaderObserversMu.RLock()
+					for i := range s.leaderObservers {
+						select {
+						case s.leaderObservers[i] <- struct{}{}:
+							stats.Add(leaderChangesObserved, 1)
+						default:
+							stats.Add(leaderChangesDropped, 1)
+						}
+					}
+					s.leaderObserversMu.RUnlock()
+					s.selfLeaderChange(signal.LeaderID == raft.ServerID(s.raftID))
+					if signal.LeaderID == raft.ServerID(s.raftID) {
+						s.logger.Printf("this node (ID=%s) is now Leader", s.raftID)
+					} else {
+						if signal.LeaderID == "" {
+							s.logger.Printf("Leader is now unknown")
+						} else {
+							s.logger.Printf("node %s is now Leader", signal.LeaderID)
+						}
+					}
+				}
+
+			case <-closeCh:
+				return
+			}
+		}
+	}()
+	return closeCh, doneCh
+}
+
+// Nodes returns the slice of nodes in the cluster, sorted by ID ascending.
+func (s *Store) Nodes() ([]*Server, error) {
+	if !s.open.Is() {
+		return nil, ErrNotOpen
+	}
+
+	f := s.raft.GetConfiguration()
+	if f.Error() != nil {
+		return nil, f.Error()
+	}
+
+	rs := f.Configuration().Servers
+	servers := make([]*Server, len(rs))
+	for i := range rs {
+		servers[i] = &Server{
+			ID:       string(rs[i].ID),
+			Addr:     string(rs[i].Address),
+			Suffrage: rs[i].Suffrage.String(),
+		}
+	}
+
+	sort.Sort(Servers(servers))
+	return servers, nil
+}
+
+// selfLeaderChange is called when this node detects that its leadership
+// status has changed.
+func (s *Store) selfLeaderChange(leader bool) {
+	if s.restorePath != "" {
+		defer func() {
+			// Whatever happens, this is a one-shot attempt to perform a restore
+			err := os.Remove(s.restorePath)
+			if err != nil {
+				s.logger.Printf("failed to remove restore path after restore %s: %s",
+					s.restorePath, err.Error())
+			}
+			s.restorePath = ""
+			close(s.restoreDoneCh)
+		}()
+
+		if !leader {
+			s.logger.Printf("different node became leader, not performing auto-restore")
+			stats.Add(numAutoRestoresSkipped, 1)
+		} else {
+			s.logger.Printf("this node is now leader, auto-restoring from %s", s.restorePath)
+			if err := s.installRestore(); err != nil {
+				s.logger.Printf("failed to auto-restore from %s: %s", s.restorePath, err.Error())
+				stats.Add(numAutoRestoresFailed, 1)
+				return
+			}
+			stats.Add(numAutoRestores, 1)
+			s.logger.Printf("node auto-restored successfully from %s", s.restorePath)
+		}
+	}
+}
+
+func (s *Store) installRestore() error {
+	f, err := os.Open(s.restorePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return err
+	}
+	lr := &proto.LoadRequest{
+		Data: b,
+	}
+	return s.load(lr)
+}
+
+func (s *Store) load(lr *proto.LoadRequest) error {
+	return nil
+}
+
+func (s *Store) remove(id string) error {
+	f := s.raft.RemoveServer(raft.ServerID(id), 0, 0)
+	if f.Error() != nil && f.Error() == raft.ErrNotLeader {
+		return ErrNotLeader
+	}
+	return f.Error()
+}
+
+func IsNewNode(raftDir string) bool {
+	// If there is any preexisting Raft state, then this node
+	// has already been created.
+	return !pathExists(filepath.Join(raftDir, raftDBPath))
 }

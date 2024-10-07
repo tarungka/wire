@@ -10,7 +10,7 @@ import (
 
 	"github.com/rqlite/rqlite/v8/progress"
 	"github.com/rqlite/rqlite/v8/random"
-	"github.com/tarungka/wire/command/proto"
+	"github.com/tarungka/wire/internal/command/proto"
 )
 
 const (

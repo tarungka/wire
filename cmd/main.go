@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -14,10 +13,10 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/cluster"
+	"github.com/tarungka/wire/internal/store"
+	"github.com/tarungka/wire/internal/tcp"
 	pipeline "github.com/tarungka/wire/pipeline"
 	"github.com/tarungka/wire/server"
-	"github.com/tarungka/wire/store"
-	"github.com/tarungka/wire/tcp"
 )
 
 var (
@@ -80,34 +79,35 @@ func main() {
 	if err != nil {
 		log.Fatal().Msgf("failed to create store: %s", err.Error())
 	}
+	log.Debug().Msgf("The store is:", str)
 
-	// Create cluster service now, so nodes will be able to learn information about each other.
-	clstrServ, err := clusterService(ko, mux.Listen(cluster.MuxClusterHeader), str)
-	if err != nil {
-		log.Fatal().Msgf("failed to create cluster service: %s", err.Error())
-	}
+	// // Create cluster service now, so nodes will be able to learn information about each other.
+	// clstrServ, err := clusterService(ko, mux.Listen(cluster.MuxClusterHeader), str)
+	// if err != nil {
+	// 	log.Fatal().Msgf("failed to create cluster service: %s", err.Error())
+	// }
 
-	clstrClient, err := createClusterClient(ko, clstrServ)
-	if err != nil {
-		log.Fatal().Msgf("failed to create cluster client: %s", err.Error())
-	}
-	httpServ, err := startHTTPService(ko, str, clstrClient)
-	if err != nil {
-		log.Fatal().Msgf("failed to start HTTP server: %s", err.Error())
-	}
+	// clstrClient, err := createClusterClient(ko, clstrServ)
+	// if err != nil {
+	// 	log.Fatal().Msgf("failed to create cluster client: %s", err.Error())
+	// }
+	// httpServ, err := startHTTPService(ko, str, clstrClient)
+	// if err != nil {
+	// 	log.Fatal().Msgf("failed to start HTTP server: %s", err.Error())
+	// }
 
-	log.Debug().Msgf("HTTP server is not configured. %v", httpServ)
+	// log.Debug().Msgf("HTTP server is not configured. %v", httpServ)
 
 	// Creating a main context; will need to move this code up
-	mainCtx := context.Background()
+	// mainCtx := context.Background()
 
 	// Create the cluster!
-	nodes, err := str.Nodes()
-	if err != nil {
-		log.Fatal().Msgf("failed to get nodes %s", err.Error())
-	}
+	// nodes, err := str.Nodes()
+	// if err != nil {
+	// 	log.Fatal().Msgf("failed to get nodes %s", err.Error())
+	// }
 
-	fmt.Printf("%v %v\n", mainCtx, nodes)
+	// fmt.Printf("%v %v\n", mainCtx, nodes)
 	// if err := createCluster(mainCtx, ko, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
 	// 	log.Fatal().Msgf("clustering failure: %s", err.Error())
 	// }
@@ -252,22 +252,17 @@ func createClusterClient(ko *koanf.Koanf, clstr *cluster.Service) (*cluster.Clie
 }
 
 func createStore(ko *koanf.Koanf, ln *tcp.Layer) (*store.Store, error) {
-	dbConf := store.NewDBConfig()
-	dbConf.OnDiskPath = ko.String("OnDiskPath")
-	dbConf.FKConstraints = ko.Bool("FKConstraints")
-	// dbConf.Extensions = extensions
 
 	str := store.New(ln, &store.Config{
-		DBConf: dbConf,
-		Dir:    ko.String("DataPath"),
-		ID:     ko.String("NodeID"),
+		Dir:    ko.String("raft_dir"),
+		ID:     ko.String("node_id"),
 	})
 
 	// Set optional parameters on store.
 	str.RaftLogLevel = ko.String("RaftLogLevel")
 	str.ShutdownOnRemove = ko.Bool("RaftShutdownOnRemove")
 	str.SnapshotThreshold = uint64(ko.Int64("RaftSnapThreshold"))
-	str.SnapshotThresholdWALSize = uint64(ko.Int64("RaftSnapThresholdWALSize"))
+	// str.SnapshotThresholdWALSize = uint64(ko.Int64("RaftSnapThresholdWALSize"))
 	str.SnapshotInterval = time.Duration(ko.Int64("RaftSnapInterval")) * time.Second
 	str.LeaderLeaseTimeout = time.Duration(ko.Int64("RaftLeaderLeaseTimeout")) * time.Second
 	str.HeartbeatTimeout = time.Duration(ko.Int64("RaftHeartbeatTimeout")) * time.Second
@@ -279,7 +274,7 @@ func createStore(ko *koanf.Koanf, ln *tcp.Layer) (*store.Store, error) {
 	str.AutoVacInterval = time.Duration(ko.Int64("AutoVacInterval")) * time.Second
 	str.AutoOptimizeInterval = time.Duration(ko.Int64("AutoOptimizeInterval")) * time.Second
 
-	if store.IsNewNode(ko.String("DataPath")) {
+	if store.IsNewNode(ko.String("raft_dir")) {
 		log.Printf("no preexisting node state detected in %s, node may be bootstrapping", ko.String("DataPath"))
 	} else {
 		log.Printf("preexisting node state detected in %s", ko.String("DataPath"))

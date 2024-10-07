@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/tarungka/wire/command/proto"
+	"github.com/tarungka/wire/internal/command/proto"
 )
 
 var (

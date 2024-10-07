@@ -3,8 +3,8 @@ package store
 import (
 	"log"
 
-	"github.com/tarungka/wire/command/chunking"
-	"github.com/tarungka/wire/command/proto"
+	"github.com/tarungka/wire/internal/command/chunking"
+	"github.com/tarungka/wire/internal/command/proto"
 )
 
 // ExecuteQueryResponses is a slice of ExecuteQueryResponse, which detects mutations.

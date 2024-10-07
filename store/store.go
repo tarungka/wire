@@ -31,9 +31,9 @@ import (
 	"github.com/rqlite/rqlite/v8/progress"
 	"github.com/rqlite/rqlite/v8/random"
 	"github.com/rqlite/rqlite/v8/snapshot"
-	"github.com/tarungka/wire/command"
-	"github.com/tarungka/wire/command/chunking"
-	"github.com/tarungka/wire/command/proto"
+	"github.com/tarungka/wire/internal/command"
+	"github.com/tarungka/wire/internal/command/chunking"
+	"github.com/tarungka/wire/internal/command/proto"
 	rlog "github.com/tarungka/wire/log"
 	"github.com/tarungka/wire/rsync"
 )
