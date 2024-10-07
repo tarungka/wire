@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/knadh/koanf/v2"
-	"github.com/rqlite/rqlite/auth"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/cluster"
@@ -52,14 +51,14 @@ func main() {
 		log.Info().Str("build:", buildString).Msgf("Build Version: %s", buildString)
 	}
 
-	log.Info().Msg("Starting the application")
+	log.Info().Msg("Starting the application...")
 
 	raftAddress := ko.String("raft_addr")
-	muxLn, err := net.Listen("tcp", raftAddress)
+	muxListener, err := net.Listen("tcp", raftAddress)
 	if err != nil {
 		log.Fatal().Err(err).Msgf("failed to listen on %s: %s", raftAddress, err.Error())
 	}
-	mux, err := startNodeMux(ko, muxLn)
+	mux, err := startNodeMux(ko, muxListener)
 	if err != nil {
 		log.Fatal().Msgf("failed to start node mux: %s", err.Error())
 	}
@@ -107,9 +106,11 @@ func main() {
 	if err != nil {
 		log.Fatal().Msgf("failed to get nodes %s", err.Error())
 	}
-	if err := createCluster(mainCtx, ko, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
-		log.Fatal().Msgf("clustering failure: %s", err.Error())
-	}
+
+	fmt.Printf("%v %v\n", mainCtx, nodes)
+	// if err := createCluster(mainCtx, ko, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
+	// 	log.Fatal().Msgf("clustering failure: %s", err.Error())
+	// }
 
 	// This way the command line arguments are overridden by the remote/other configs
 	if ko.Bool("override") {
@@ -314,140 +315,140 @@ func startHTTPService(ko *koanf.Koanf, str *store.Store, cltr *cluster.Client) (
 }
 
 // TODO: This code needs major rework, will work on this later
-func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *cluster.Client, str *store.Store,
-	httpServ *httpd.Service, credStr *auth.CredentialsStore) error {
-	joins := cfg.JoinAddresses()
-	if err := networkCheckJoinAddrs(joins); err != nil {
-		return err
-	}
-	if joins == nil && cfg.DiscoMode == "" && !hasPeers {
-		if cfg.RaftNonVoter {
-			return fmt.Errorf("cannot create a new non-voting node without joining it to an existing cluster")
-		}
+// func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *cluster.Client, str *store.Store,
+// 	httpServ *httpd.Service, credStr *auth.CredentialsStore) error {
+// 	joins := cfg.JoinAddresses()
+// 	if err := networkCheckJoinAddrs(joins); err != nil {
+// 		return err
+// 	}
+// 	if joins == nil && cfg.DiscoMode == "" && !hasPeers {
+// 		if cfg.RaftNonVoter {
+// 			return fmt.Errorf("cannot create a new non-voting node without joining it to an existing cluster")
+// 		}
 
-		// Brand new node, told to bootstrap itself. So do it.
-		log.Info().Msg("bootstrapping single new node")
-		if err := str.Bootstrap(store.NewServer(str.ID(), cfg.RaftAdv, true)); err != nil {
-			return fmt.Errorf("failed to bootstrap single new node: %s", err.Error())
-		}
-		return nil
-	}
+// 		// Brand new node, told to bootstrap itself. So do it.
+// 		log.Info().Msg("bootstrapping single new node")
+// 		if err := str.Bootstrap(store.NewServer(str.ID(), cfg.RaftAdv, true)); err != nil {
+// 			return fmt.Errorf("failed to bootstrap single new node: %s", err.Error())
+// 		}
+// 		return nil
+// 	}
 
-	// Prepare definition of being part of a cluster.
-	bootDoneFn := func() bool {
-		leader, _ := str.LeaderAddr()
-		return leader != ""
-	}
-	clusterSuf := cluster.VoterSuffrage(!cfg.RaftNonVoter)
+// 	// Prepare definition of being part of a cluster.
+// 	bootDoneFn := func() bool {
+// 		leader, _ := str.LeaderAddr()
+// 		return leader != ""
+// 	}
+// 	clusterSuf := cluster.VoterSuffrage(!cfg.RaftNonVoter)
 
-	joiner := cluster.NewJoiner(client, cfg.JoinAttempts, cfg.JoinInterval)
-	joiner.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
-	if joins != nil && cfg.BootstrapExpect == 0 {
-		// Explicit join operation requested, so do it.
-		j, err := joiner.Do(ctx, joins, str.ID(), cfg.RaftAdv, clusterSuf)
-		if err != nil {
-			return fmt.Errorf("failed to join cluster: %s", err.Error())
-		}
-		log.Info().Msg("successfully joined cluster at", j)
-		return nil
-	}
+// 	joiner := cluster.NewJoiner(client, cfg.JoinAttempts, cfg.JoinInterval)
+// 	joiner.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
+// 	if joins != nil && cfg.BootstrapExpect == 0 {
+// 		// Explicit join operation requested, so do it.
+// 		j, err := joiner.Do(ctx, joins, str.ID(), cfg.RaftAdv, clusterSuf)
+// 		if err != nil {
+// 			return fmt.Errorf("failed to join cluster: %s", err.Error())
+// 		}
+// 		log.Info().Msg("successfully joined cluster at", j)
+// 		return nil
+// 	}
 
-	if joins != nil && cfg.BootstrapExpect > 0 {
-		// Bootstrap with explicit join addresses requests.
-		bs := cluster.NewBootstrapper(cluster.NewAddressProviderString(joins), client)
-		bs.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
-		return bs.Boot(ctx, str.ID(), cfg.RaftAdv, clusterSuf, bootDoneFn, cfg.BootstrapExpectTimeout)
-	}
+// 	if joins != nil && cfg.BootstrapExpect > 0 {
+// 		// Bootstrap with explicit join addresses requests.
+// 		bs := cluster.NewBootstrapper(cluster.NewAddressProviderString(joins), client)
+// 		bs.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
+// 		return bs.Boot(ctx, str.ID(), cfg.RaftAdv, clusterSuf, bootDoneFn, cfg.BootstrapExpectTimeout)
+// 	}
 
-	if cfg.DiscoMode == "" {
-		// No more clustering techniques to try. Node will just sit, probably using
-		// existing Raft state.
-		return nil
-	}
+// 	if cfg.DiscoMode == "" {
+// 		// No more clustering techniques to try. Node will just sit, probably using
+// 		// existing Raft state.
+// 		return nil
+// 	}
 
-	// DNS-based discovery requested. It's OK to proceed with this even if this node
-	// is already part of a cluster. Re-joining and re-notifying other nodes will be
-	// ignored when the node is already part of the cluster.
-	log.Printf("discovery mode: %s", cfg.DiscoMode)
-	switch cfg.DiscoMode {
-	case DiscoModeDNS, DiscoModeDNSSRV:
-		rc := cfg.DiscoConfigReader()
-		defer func() {
-			if rc != nil {
-				rc.Close()
-			}
-		}()
+// 	// DNS-based discovery requested. It's OK to proceed with this even if this node
+// 	// is already part of a cluster. Re-joining and re-notifying other nodes will be
+// 	// ignored when the node is already part of the cluster.
+// 	log.Printf("discovery mode: %s", cfg.DiscoMode)
+// 	switch cfg.DiscoMode {
+// 	case DiscoModeDNS, DiscoModeDNSSRV:
+// 		rc := cfg.DiscoConfigReader()
+// 		defer func() {
+// 			if rc != nil {
+// 				rc.Close()
+// 			}
+// 		}()
 
-		var provider interface {
-			cluster.AddressProvider
-			httpd.StatusReporter
-		}
-		if cfg.DiscoMode == DiscoModeDNS {
-			dnsCfg, err := dns.NewConfigFromReader(rc)
-			if err != nil {
-				return fmt.Errorf("error reading DNS configuration: %s", err.Error())
-			}
-			provider = dns.NewWithPort(dnsCfg, cfg.RaftPort())
+// 		var provider interface {
+// 			cluster.AddressProvider
+// 			httpd.StatusReporter
+// 		}
+// 		if cfg.DiscoMode == DiscoModeDNS {
+// 			dnsCfg, err := dns.NewConfigFromReader(rc)
+// 			if err != nil {
+// 				return fmt.Errorf("error reading DNS configuration: %s", err.Error())
+// 			}
+// 			provider = dns.NewWithPort(dnsCfg, cfg.RaftPort())
 
-		} else {
-			dnssrvCfg, err := dnssrv.NewConfigFromReader(rc)
-			if err != nil {
-				return fmt.Errorf("error reading DNS configuration: %s", err.Error())
-			}
-			provider = dnssrv.New(dnssrvCfg)
-		}
+// 		} else {
+// 			dnssrvCfg, err := dnssrv.NewConfigFromReader(rc)
+// 			if err != nil {
+// 				return fmt.Errorf("error reading DNS configuration: %s", err.Error())
+// 			}
+// 			provider = dnssrv.New(dnssrvCfg)
+// 		}
 
-		bs := cluster.NewBootstrapper(provider, client)
-		bs.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
-		httpServ.RegisterStatus("disco", provider)
-		return bs.Boot(ctx, str.ID(), cfg.RaftAdv, clusterSuf, bootDoneFn, cfg.BootstrapExpectTimeout)
+// 		bs := cluster.NewBootstrapper(provider, client)
+// 		bs.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
+// 		httpServ.RegisterStatus("disco", provider)
+// 		return bs.Boot(ctx, str.ID(), cfg.RaftAdv, clusterSuf, bootDoneFn, cfg.BootstrapExpectTimeout)
 
-	case DiscoModeEtcdKV, DiscoModeConsulKV:
-		discoService, err := createDiscoService(cfg, str)
-		if err != nil {
-			return fmt.Errorf("failed to start discovery service: %s", err.Error())
-		}
-		// Safe to start reporting before doing registration. If the node hasn't bootstrapped
-		// yet, or isn't leader, reporting will just be a no-op until something changes.
-		go discoService.StartReporting(cfg.NodeID, cfg.HTTPURL(), cfg.RaftAdv)
-		httpServ.RegisterStatus("disco", discoService)
+// 	case DiscoModeEtcdKV, DiscoModeConsulKV:
+// 		discoService, err := createDiscoService(cfg, str)
+// 		if err != nil {
+// 			return fmt.Errorf("failed to start discovery service: %s", err.Error())
+// 		}
+// 		// Safe to start reporting before doing registration. If the node hasn't bootstrapped
+// 		// yet, or isn't leader, reporting will just be a no-op until something changes.
+// 		go discoService.StartReporting(cfg.NodeID, cfg.HTTPURL(), cfg.RaftAdv)
+// 		httpServ.RegisterStatus("disco", discoService)
 
-		if hasPeers {
-			log.Printf("preexisting node configuration detected, not registering with discovery service")
-			return nil
-		}
-		log.Info().Msg("no preexisting nodes, registering with discovery service")
+// 		if hasPeers {
+// 			log.Printf("preexisting node configuration detected, not registering with discovery service")
+// 			return nil
+// 		}
+// 		log.Info().Msg("no preexisting nodes, registering with discovery service")
 
-		leader, addr, err := discoService.Register(str.ID(), cfg.HTTPURL(), cfg.RaftAdv)
-		if err != nil {
-			return fmt.Errorf("failed to register with discovery service: %s", err.Error())
-		}
-		if leader {
-			log.Info().Msg("node registered as leader using discovery service")
-			if err := str.Bootstrap(store.NewServer(str.ID(), str.Addr(), true)); err != nil {
-				return fmt.Errorf("failed to bootstrap single new node: %s", err.Error())
-			}
-		} else {
-			for {
-				log.Printf("discovery service returned %s as join address", addr)
-				if j, err := joiner.Do(ctx, []string{addr}, str.ID(), cfg.RaftAdv, clusterSuf); err != nil {
-					log.Printf("failed to join cluster at %s: %s", addr, err.Error())
+// 		leader, addr, err := discoService.Register(str.ID(), cfg.HTTPURL(), cfg.RaftAdv)
+// 		if err != nil {
+// 			return fmt.Errorf("failed to register with discovery service: %s", err.Error())
+// 		}
+// 		if leader {
+// 			log.Info().Msg("node registered as leader using discovery service")
+// 			if err := str.Bootstrap(store.NewServer(str.ID(), str.Addr(), true)); err != nil {
+// 				return fmt.Errorf("failed to bootstrap single new node: %s", err.Error())
+// 			}
+// 		} else {
+// 			for {
+// 				log.Printf("discovery service returned %s as join address", addr)
+// 				if j, err := joiner.Do(ctx, []string{addr}, str.ID(), cfg.RaftAdv, clusterSuf); err != nil {
+// 					log.Printf("failed to join cluster at %s: %s", addr, err.Error())
 
-					time.Sleep(time.Second)
-					_, addr, err = discoService.Register(str.ID(), cfg.HTTPURL(), cfg.RaftAdv)
-					if err != nil {
-						log.Printf("failed to get updated leader: %s", err.Error())
-					}
-					continue
-				} else {
-					log.Info().Msg("successfully joined cluster at", j)
-					break
-				}
-			}
-		}
+// 					time.Sleep(time.Second)
+// 					_, addr, err = discoService.Register(str.ID(), cfg.HTTPURL(), cfg.RaftAdv)
+// 					if err != nil {
+// 						log.Printf("failed to get updated leader: %s", err.Error())
+// 					}
+// 					continue
+// 				} else {
+// 					log.Info().Msg("successfully joined cluster at", j)
+// 					break
+// 				}
+// 			}
+// 		}
 
-	default:
-		return fmt.Errorf("invalid disco mode %s", cfg.DiscoMode)
-	}
-	return nil
-}
+// 	default:
+// 		return fmt.Errorf("invalid disco mode %s", cfg.DiscoMode)
+// 	}
+// 	return nil
+// }

@@ -24,18 +24,18 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
-	"github.com/rqlite/rqlite/v8/command"
-	"github.com/rqlite/rqlite/v8/command/chunking"
-	"github.com/rqlite/rqlite/v8/command/proto"
 	"github.com/rqlite/rqlite/v8/db"
 	sql "github.com/rqlite/rqlite/v8/db"
 	"github.com/rqlite/rqlite/v8/db/humanize"
 	wal "github.com/rqlite/rqlite/v8/db/wal"
-	rlog "github.com/rqlite/rqlite/v8/log"
 	"github.com/rqlite/rqlite/v8/progress"
 	"github.com/rqlite/rqlite/v8/random"
-	"github.com/rqlite/rqlite/v8/rsync"
 	"github.com/rqlite/rqlite/v8/snapshot"
+	"github.com/tarungka/wire/command"
+	"github.com/tarungka/wire/command/chunking"
+	"github.com/tarungka/wire/command/proto"
+	rlog "github.com/tarungka/wire/log"
+	"github.com/tarungka/wire/rsync"
 )
 
 var (
@@ -519,21 +519,21 @@ func (s *Store) Open() (retErr error) {
 	}
 
 	// Request to recover node?
-	if pathExists(s.peersPath) {
-		s.logger.Printf("attempting node recovery using %s", s.peersPath)
-		config, err := raft.ReadConfigJSON(s.peersPath)
-		if err != nil {
-			return fmt.Errorf("failed to read peers file: %s", err.Error())
-		}
-		if err = RecoverNode(s.raftDir, s.logger, s.raftLog, s.boltStore, s.snapshotStore, s.raftTn, config); err != nil {
-			return fmt.Errorf("failed to recover node: %s", err.Error())
-		}
-		if err := os.Rename(s.peersPath, s.peersInfoPath); err != nil {
-			return fmt.Errorf("failed to move %s after recovery: %s", s.peersPath, err.Error())
-		}
-		s.logger.Printf("node recovered successfully using %s", s.peersPath)
-		stats.Add(numRecoveries, 1)
-	}
+	// if pathExists(s.peersPath) {
+	// 	s.logger.Printf("attempting node recovery using %s", s.peersPath)
+	// 	config, err := raft.ReadConfigJSON(s.peersPath)
+	// 	if err != nil {
+	// 		return fmt.Errorf("failed to read peers file: %s", err.Error())
+	// 	}
+	// 	if err = RecoverNode(s.raftDir, s.logger, s.raftLog, s.boltStore, s.snapshotStore, s.raftTn, config); err != nil {
+	// 		return fmt.Errorf("failed to recover node: %s", err.Error())
+	// 	}
+	// 	if err := os.Rename(s.peersPath, s.peersInfoPath); err != nil {
+	// 		return fmt.Errorf("failed to move %s after recovery: %s", s.peersPath, err.Error())
+	// 	}
+	// 	s.logger.Printf("node recovered successfully using %s", s.peersPath)
+	// 	stats.Add(numRecoveries, 1)
+	// }
 
 	s.db, err = openOnDisk(s.dbPath, s.dbConf.FKConstraints, s.dbConf.Extensions)
 	if err != nil {

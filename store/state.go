@@ -2,19 +2,15 @@ package store
 
 import (
 	"fmt"
-	"log"
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/raft"
-	"github.com/rqlite/rqlite/v8/command/chunking"
 	"github.com/rqlite/rqlite/v8/command/proto"
-	sql "github.com/rqlite/rqlite/v8/db"
-	rlog "github.com/rqlite/rqlite/v8/log"
-	"github.com/rqlite/rqlite/v8/snapshot"
+
+	rlog "github.com/tarungka/wire/log"
 )
 
 // PragmaCheckRequest is a type that wraps a proto.Request and checks
@@ -27,9 +23,11 @@ func (p *PragmaCheckRequest) Check() error {
 		return nil
 	}
 	for _, stmt := range p.Statements {
-		if sql.IsBreakingPragma(stmt.Sql) {
-			return fmt.Errorf("disallowed pragma")
-		}
+		fmt.Printf("", stmt) // NOOP
+		return nil
+		// if sql.IsBreakingPragma(stmt.Sql) {
+		// 	return fmt.Errorf("disallowed pragma")
+		// }
 	}
 	return nil
 }
@@ -87,17 +85,17 @@ func HasData(dir string) (bool, error) {
 	if !dirExists(dir) {
 		return false, nil
 	}
-	sstr, err := snapshot.NewStore(filepath.Join(dir, snapshotsDirName))
-	if err != nil {
-		return false, err
-	}
-	snaps, err := sstr.List()
-	if err != nil {
-		return false, err
-	}
-	if len(snaps) > 0 {
-		return true, nil
-	}
+	// sstr, err := snapshot.NewStore(filepath.Join(dir, snapshotsDirName))
+	// if err != nil {
+	// 	return false, err
+	// }
+	// snaps, err := sstr.List()
+	// if err != nil {
+	// 	return false, err
+	// }
+	// if len(snaps) > 0 {
+	// 	return true, nil
+	// }
 	logs, err := rlog.New(filepath.Join(dir, raftDBPath), false)
 	if err != nil {
 		return false, err
@@ -113,128 +111,129 @@ func HasData(dir string) (bool, error) {
 // RecoverNode is used to manually force a new configuration, in the event that
 // quorum cannot be restored. This borrows heavily from RecoverCluster functionality
 // of the Hashicorp Raft library, but has been customized for rqlite use.
-func RecoverNode(dataDir string, logger *log.Logger, logs raft.LogStore, stable *rlog.Log,
-	snaps raft.SnapshotStore, tn raft.Transport, conf raft.Configuration) error {
-	logPrefix := logger.Prefix()
-	logger.SetPrefix(fmt.Sprintf("%s[recovery] ", logPrefix))
-	defer logger.SetPrefix(logPrefix)
+// func RecoverNode(dataDir string, logger *log.Logger, logs raft.LogStore, stable *rlog.Log,
+// 	snaps raft.SnapshotStore, tn raft.Transport, conf raft.Configuration) error {
+// 	logPrefix := logger.Prefix()
+// 	logger.SetPrefix(fmt.Sprintf("%s[recovery] ", logPrefix))
+// 	defer logger.SetPrefix(logPrefix)
 
-	// Sanity check the Raft peer configuration.
-	if err := checkRaftConfiguration(conf); err != nil {
-		return err
-	}
+// 	// Sanity check the Raft peer configuration.
+// 	if err := checkRaftConfiguration(conf); err != nil {
+// 		return err
+// 	}
 
-	// Get a path to a temporary file to use for a temporary database.
-	tmpDBPath := filepath.Join(dataDir, "recovery.db")
-	defer os.Remove(tmpDBPath)
+// 	// Get a path to a temporary file to use for a temporary database.
+// 	tmpDBPath := filepath.Join(dataDir, "recovery.db")
+// 	defer os.Remove(tmpDBPath)
 
-	// Attempt to restore any latest snapshot.
-	var (
-		snapshotIndex uint64
-		snapshotTerm  uint64
-	)
+// 	// Attempt to restore any latest snapshot.
+// 	var (
+// 		snapshotIndex uint64
+// 		snapshotTerm  uint64
+// 	)
 
-	snapshots, err := snaps.List()
-	if err != nil {
-		return fmt.Errorf("failed to list snapshots: %s", err)
-	}
-	logger.Printf("recovery detected %d snapshots", len(snapshots))
-	if len(snapshots) > 0 {
-		if err := func() error {
-			snapID := snapshots[0].ID
-			_, rc, err := snaps.Open(snapID)
-			if err != nil {
-				return fmt.Errorf("failed to open snapshot %s: %s", snapID, err)
-			}
-			defer rc.Close()
-			_, err = copyFromReaderToFile(tmpDBPath, rc)
-			if err != nil {
-				return fmt.Errorf("failed to copy snapshot %s to temporary database: %s", snapID, err)
-			}
-			snapshotIndex = snapshots[0].Index
-			snapshotTerm = snapshots[0].Term
-			return nil
-		}(); err != nil {
-			return err
-		}
-	}
+// 	snapshots, err := snaps.List()
+// 	if err != nil {
+// 		return fmt.Errorf("failed to list snapshots: %s", err)
+// 	}
+// 	logger.Printf("recovery detected %d snapshots", len(snapshots))
+// 	if len(snapshots) > 0 {
+// 		if err := func() error {
+// 			snapID := snapshots[0].ID
+// 			_, rc, err := snaps.Open(snapID)
+// 			if err != nil {
+// 				return fmt.Errorf("failed to open snapshot %s: %s", snapID, err)
+// 			}
+// 			defer rc.Close()
+// 			_, err = copyFromReaderToFile(tmpDBPath, rc)
+// 			if err != nil {
+// 				return fmt.Errorf("failed to copy snapshot %s to temporary database: %s", snapID, err)
+// 			}
+// 			snapshotIndex = snapshots[0].Index
+// 			snapshotTerm = snapshots[0].Term
+// 			return nil
+// 		}(); err != nil {
+// 			return err
+// 		}
+// 	}
 
-	// Now, open the database so we can replay any outstanding Raft log entries.
-	db, err := sql.OpenSwappable(tmpDBPath, false, true)
-	if err != nil {
-		return fmt.Errorf("failed to open temporary database: %s", err)
-	}
-	defer db.Close()
+// 	// Now, open the database so we can replay any outstanding Raft log entries.
+// 	// db, err := sql.OpenSwappable(tmpDBPath, false, true)
+// 	// if err != nil {
+// 	// 	return fmt.Errorf("failed to open temporary database: %s", err)
+// 	// }
+// 	// defer db.Close()
 
-	// Need a dechunker manager to handle any chunked load requests.
-	decMgmr, err := chunking.NewDechunkerManager(dataDir)
-	if err != nil {
-		return fmt.Errorf("failed to create dechunker manager: %s", err.Error())
-	}
-	cmdProc := NewCommandProcessor(logger, decMgmr)
+// 	// Need a dechunker manager to handle any chunked load requests.
+// 	// decMgmr, err := chunking.NewDechunkerManager(dataDir)
+// 	// if err != nil {
+// 	// 	return fmt.Errorf("failed to create dechunker manager: %s", err.Error())
+// 	// }
+// 	// cmdProc := NewCommandProcessor(logger, decMgmr)
 
-	// The snapshot information is the best known end point for the data
-	// until we play back the Raft log entries.
-	lastIndex := snapshotIndex
-	lastTerm := snapshotTerm
+// 	// The snapshot information is the best known end point for the data
+// 	// until we play back the Raft log entries.
+// 	lastIndex := snapshotIndex
+// 	lastTerm := snapshotTerm
 
-	// Apply any Raft log entries past the snapshot.
-	lastLogIndex, err := logs.LastIndex()
-	if err != nil {
-		return fmt.Errorf("failed to find last log: %v", err)
-	}
-	logger.Printf("snapshot's last index is %d, last index written to log is %d, last term is %d",
-		lastIndex, lastLogIndex, lastTerm)
+// 	// Apply any Raft log entries past the snapshot.
+// 	lastLogIndex, err := logs.LastIndex()
+// 	if err != nil {
+// 		return fmt.Errorf("failed to find last log: %v", err)
+// 	}
+// 	logger.Printf("snapshot's last index is %d, last index written to log is %d, last term is %d",
+// 		lastIndex, lastLogIndex, lastTerm)
 
-	for index := snapshotIndex + 1; index <= lastLogIndex; index++ {
-		var entry raft.Log
-		if err = logs.GetLog(index, &entry); err != nil {
-			return fmt.Errorf("failed to get log at index %d: %v", index, err)
-		}
-		if entry.Type == raft.LogCommand {
-			cmdProc.Process(entry.Data, db)
-		}
-		lastIndex = entry.Index
-		lastTerm = entry.Term
-	}
-	if snapshotIndex+1 <= lastLogIndex {
-		logger.Printf("replayed logs from %d to %d", snapshotIndex+1, lastLogIndex)
-		logger.Printf("last index is now %d, last term is %d", lastIndex, lastTerm)
-	}
+// 	for index := snapshotIndex + 1; index <= lastLogIndex; index++ {
+// 		var entry raft.Log
+// 		if err = logs.GetLog(index, &entry); err != nil {
+// 			return fmt.Errorf("failed to get log at index %d: %v", index, err)
+// 		}
+// 		if entry.Type == raft.LogCommand {
+// 			fmt.Printf("The command is LOG COMMAND!")
+// 			// cmdProc.Process(entry.Data, db)
+// 		}
+// 		lastIndex = entry.Index
+// 		lastTerm = entry.Term
+// 	}
+// 	if snapshotIndex+1 <= lastLogIndex {
+// 		logger.Printf("replayed logs from %d to %d", snapshotIndex+1, lastLogIndex)
+// 		logger.Printf("last index is now %d, last term is %d", lastIndex, lastTerm)
+// 	}
 
-	// Create a new snapshot, placing the configuration in as if it was
-	// committed at index 1.
-	if err := db.Checkpoint(sql.CheckpointTruncate); err != nil {
-		return fmt.Errorf("failed to checkpoint database: %s", err)
-	}
-	tmpDBFD, err := os.Open(tmpDBPath)
-	if err != nil {
-		return fmt.Errorf("failed to open temporary database file: %s", err)
-	}
-	fsmSnapshot := snapshot.NewSnapshot(tmpDBFD) // tmpDBPath contains full state now.
-	sink, err := snaps.Create(1, lastIndex, lastTerm, conf, 1, tn)
-	if err != nil {
-		return fmt.Errorf("failed to create snapshot: %v", err)
-	}
-	if err = fsmSnapshot.Persist(sink); err != nil {
-		return fmt.Errorf("failed to persist snapshot: %v", err)
-	}
-	if err = sink.Close(); err != nil {
-		return fmt.Errorf("failed to finalize snapshot: %v", err)
-	}
-	logger.Printf("recovery snapshot %s created successfully using %s", sink.ID(), tmpDBPath)
+// 	// Create a new snapshot, placing the configuration in as if it was
+// 	// committed at index 1.
+// 	// if err := db.Checkpoint(sql.CheckpointTruncate); err != nil {
+// 	// 	return fmt.Errorf("failed to checkpoint database: %s", err)
+// 	// }
+// 	tmpDBFD, err := os.Open(tmpDBPath)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to open temporary database file: %s", err)
+// 	}
+// 	fsmSnapshot := snapshot.NewSnapshot(tmpDBFD) // tmpDBPath contains full state now.
+// 	sink, err := snaps.Create(1, lastIndex, lastTerm, conf, 1, tn)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to create snapshot: %v", err)
+// 	}
+// 	if err = fsmSnapshot.Persist(sink); err != nil {
+// 		return fmt.Errorf("failed to persist snapshot: %v", err)
+// 	}
+// 	if err = sink.Close(); err != nil {
+// 		return fmt.Errorf("failed to finalize snapshot: %v", err)
+// 	}
+// 	logger.Printf("recovery snapshot %s created successfully using %s", sink.ID(), tmpDBPath)
 
-	// Compact the log so that we don't get bad interference from any
-	// configuration change log entries that might be there.
-	firstLogIndex, err := logs.FirstIndex()
-	if err != nil {
-		return fmt.Errorf("failed to get first log index: %v", err)
-	}
-	if err := logs.DeleteRange(firstLogIndex, lastLogIndex); err != nil {
-		return fmt.Errorf("log compaction failed: %v", err)
-	}
-	return nil
-}
+// 	// Compact the log so that we don't get bad interference from any
+// 	// configuration change log entries that might be there.
+// 	firstLogIndex, err := logs.FirstIndex()
+// 	if err != nil {
+// 		return fmt.Errorf("failed to get first log index: %v", err)
+// 	}
+// 	if err := logs.DeleteRange(firstLogIndex, lastLogIndex); err != nil {
+// 		return fmt.Errorf("log compaction failed: %v", err)
+// 	}
+// 	return nil
+// }
 
 // checkRaftConfiguration tests a cluster membership configuration for common
 // errors.
