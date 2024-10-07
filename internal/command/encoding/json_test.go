@@ -3,7 +3,7 @@ package encoding
 import (
 	"testing"
 
-	"github.com/rqlite/rqlite/v8/command/proto"
+	"github.com/tarungka/wire/internal/command/proto"
 )
 
 // TestByteSliceAsArray_MarshalJSON_Empty tests marshaling an empty ByteSliceAsArray.

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
-	"github.com/rqlite/rqlite/v8/command/proto"
+	"github.com/tarungka/wire/internal/command/proto"
 
 	rlog "github.com/tarungka/wire/log"
 )

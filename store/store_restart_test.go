@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	command "github.com/rqlite/rqlite/v8/command/proto"
+	command "github.com/tarungka/wire/internal/command/proto"
 )
 
 // Test_OpenStoreCloseStartupSingleNode tests various restart scenarios.

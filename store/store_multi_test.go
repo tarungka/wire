@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rqlite/rqlite/v8/command/proto"
 	"github.com/rqlite/rqlite/v8/db"
+	"github.com/tarungka/wire/internal/command/proto"
 )
 
 // Test_MultiNodeSimple tests that a the core operation of a multi-node

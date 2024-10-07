@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/rqlite/rqlite/v8/auth"
-	"github.com/rqlite/rqlite/v8/cluster/proto"
-	command "github.com/rqlite/rqlite/v8/command/proto"
 	"github.com/rqlite/rqlite/v8/rtls"
 	"github.com/rqlite/rqlite/v8/tcp/pool"
+	"github.com/tarungka/wire/cluster/proto"
+	command "github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/tcp"
 	pb "google.golang.org/protobuf/proto"
 )

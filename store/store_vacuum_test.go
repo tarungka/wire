@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rqlite/rqlite/v8/command/proto"
 	"github.com/rqlite/rqlite/v8/db"
 	"github.com/rqlite/rqlite/v8/rarchive"
+	"github.com/tarungka/wire/internal/command/proto"
 )
 
 // Test_SingleNodeBackupBinary tests that requesting a binary-formatted

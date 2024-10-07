@@ -1,9 +1,10 @@
 syntax = "proto3";
 package cluster;
 
-import "command/proto/command.proto";
+// import "command/proto/command.proto";
+import "internal/command/proto/command.proto";
 
-option go_package = "github.com/rqlite/rqlite/v8/cluster/proto";
+option go_package = "github.com/tarungka/wire/cluster/proto";
 
 message Credentials {
     string username = 1;
