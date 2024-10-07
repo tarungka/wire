@@ -24,7 +24,13 @@ func initFlags(ko *koanf.Koanf) {
 	f.StringSlice("config", []string{".config/config.json"}, "path to one or more config files (will be merged in order)")
 	f.String("port", "8080", "port to host the web server on")
 	f.Bool("version", false, "show current version of the build")
+	f.Bool("debug", false, "run in debug mode - better logs")
 	f.Bool("override", false, "override the command line arguments with the specified config file")
+
+	// flags related to the raft consensus
+	f.String("raft_addr", "localhost:10092", "address of the raft connection")
+	f.String("raft_dir", "./raft_database", "address of the raft connection")
+	f.String("node_id", "node0", "address of the raft connection")
 
 	if err := f.Parse(os.Args[1:]); err != nil {
 		log.Fatal().Msgf("error loading flags: %v", err)
@@ -32,6 +38,7 @@ func initFlags(ko *koanf.Koanf) {
 		log.Trace().Msg("No errors when parsing the flags")
 	}
 
+	// override the command line configs with the config file
 	override, _ := f.GetBool("override")
 	if !override {
 		configs, _ := f.GetStringSlice("config")

@@ -6,6 +6,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,8 +28,10 @@ var (
 
 func main() {
 
+	var logger zerolog.Logger
+
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	zerolog.SetGlobalLevel(zerolog.TraceLevel)
+	// zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	// logs will be written to both server.log and stdout
 	logFile, err := os.OpenFile("server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
@@ -42,6 +46,37 @@ func main() {
 	log.Logger = zerolog.New(multi).With().Timestamp().Logger()
 
 	initFlags(ko)
+
+	// Set up zerolog for development mode (human-readable logs)
+	isDevelopment := ko.Bool("debug")
+
+	if isDevelopment {
+		consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339,
+			FormatLevel: func(i interface{}) string {
+				return strings.ToUpper(fmt.Sprintf("[%5s]", i))
+			},
+			FormatMessage: func(i interface{}) string {
+				return fmt.Sprintf("| %s |", i)
+			},
+			FormatCaller: func(i interface{}) string {
+				return filepath.Base(fmt.Sprintf("~%s", i))
+			},
+			PartsExclude: []string{
+				zerolog.TimestampFieldName,
+			}}
+		// Use multi-writer for file and readable console output
+		multiDev := zerolog.MultiLevelWriter(consoleWriter, logFile)
+		logger = zerolog.New(multiDev).Level(zerolog.TraceLevel).With().Timestamp().Caller().Logger()
+	} else {
+		// Production: Use default JSON format for logs
+	}
+
+	// Assign the logger as the global logger
+	log.Logger = logger
+
+	if(isDevelopment){
+		log.Debug().Msgf("The process ID is: %v", os.Getpid())
+	}
 
 	if ko.Bool("version") {
 		fmt.Println(buildString)
@@ -254,8 +289,8 @@ func createClusterClient(ko *koanf.Koanf, clstr *cluster.Service) (*cluster.Clie
 func createStore(ko *koanf.Koanf, ln *tcp.Layer) (*store.Store, error) {
 
 	str := store.New(ln, &store.Config{
-		Dir:    ko.String("raft_dir"),
-		ID:     ko.String("node_id"),
+		Dir: ko.String("raft_dir"),
+		ID:  ko.String("node_id"),
 	})
 
 	// Set optional parameters on store.

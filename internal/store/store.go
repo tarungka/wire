@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
+	zlog "github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/command"
 	"github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/rsync"
@@ -219,6 +220,7 @@ func New(ly Layer,  c *Config) *Store {
 
 	// raftDir := ko.String("raft_dir")
 	// raftId := ko.String("node_id")
+	zlog.Debug().Msg("Creating a new store!")
 
 	// TODO: create a zerolog logger
 	logger := zerolog.Logger{}
@@ -261,6 +263,7 @@ func (s *Store) Open() (retError error) {
 
 	var err error
 
+	// Reset/set the defaults
 	s.fsmIdx.Store(0)
 	s.fsmTarget.Reset()
 	s.fsmTerm.Store(0)
