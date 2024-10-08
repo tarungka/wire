@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tarungka/wire/cluster/proto"
+	"github.com/tarungka/wire/internal/cluster/proto"
 	commandProto "github.com/tarungka/wire/internal/command/proto"
 	pb "google.golang.org/protobuf/proto"
 )

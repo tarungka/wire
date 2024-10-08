@@ -17,7 +17,7 @@ import (
 	"github.com/rqlite/rqlite/v8/auth"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/tarungka/wire/cluster"
+	"github.com/tarungka/wire/internal/cluster"
 	"github.com/tarungka/wire/internal/cmd"
 	httpd "github.com/tarungka/wire/internal/http"
 	"github.com/tarungka/wire/internal/store"

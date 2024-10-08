@@ -26,7 +26,7 @@ import (
 	"github.com/tarungka/wire/internal/snapshot"
 	"github.com/tarungka/wire/internal/utils"
 
-	rlog "github.com/tarungka/wire/log"
+	rlog "github.com/tarungka/wire/internal/log"
 )
 
 var (

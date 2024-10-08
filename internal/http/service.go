@@ -23,7 +23,7 @@ import (
 	"github.com/rqlite/rqlite/v8/auth"
 	"github.com/rqlite/rqlite/v8/queue"
 	"github.com/rqlite/rqlite/v8/rtls"
-	clstrPB "github.com/tarungka/wire/cluster/proto"
+	clstrPB "github.com/tarungka/wire/internal/cluster/proto"
 	"github.com/tarungka/wire/internal/command/encoding"
 	command "github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/store"

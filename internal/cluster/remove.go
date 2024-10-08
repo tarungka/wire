@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/tarungka/wire/cluster/proto"
+	"github.com/tarungka/wire/internal/cluster/proto"
 	command "github.com/tarungka/wire/internal/command/proto"
 )
 
