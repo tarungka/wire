@@ -183,6 +183,7 @@ func (s *Service) EnableHTTPS(b bool) {
 func (s *Service) SetAPIAddr(addr string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.logger.Printf("Setting the api address as %s", addr)
 	s.apiAddr = addr
 }
 
@@ -218,10 +219,12 @@ func (s *Service) Stats() (map[string]interface{}, error) {
 
 func (s *Service) serve() error {
 	for {
-		conn, err := s.ln.Accept()
+		s.logger.Println("waiting for request")
+		conn, err := s.ln.Accept() // I think this is blocking until a request
 		if err != nil {
 			return err
 		}
+		s.logger.Println("up and accepting requests")
 
 		go s.handleConn(conn)
 	}

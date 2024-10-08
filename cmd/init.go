@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/knadh/koanf/parsers/json"
 	"github.com/knadh/koanf/parsers/yaml"
@@ -13,6 +14,9 @@ import (
 	"github.com/rs/zerolog/log"
 	flag "github.com/spf13/pflag"
 )
+
+// TODO: need to create a config struct, too many parameters to manage and remember
+// add a validate function to validate the parameters
 
 func initFlags(ko *koanf.Koanf) {
 	f := flag.NewFlagSet("config", flag.ContinueOnError)
@@ -32,6 +36,15 @@ func initFlags(ko *koanf.Koanf) {
 	f.String("http_addr", "localhost:8081", "address of the http server")
 	f.String("raft_dir", "./raft_database", "address of the raft connection")
 	f.String("node_id", "node0", "address of the raft connection")
+
+	f.String("join", "", "comma-delimited list of nodes, in host:port form, through which a cluster can be joined")
+	f.String("disco_mode", "", "choose clustering discovery mode. If not set, no node discovery is performed")
+	f.Bool("raft_non_voter", false, "configure as non-voting node")
+	f.String("join-as", "", "Username in authentication file to join as. If not set, joins anonymously")
+	f.Int("join-attempts", 5, "Number of join attempts to make")
+	f.Duration("join-interval", 3*time.Second, "Period between join attempts")
+	f.Duration("bootstrap-expect-timeout", 120*time.Second, "Maximum time for bootstrap process")
+	f.Int("bootstrap-expect", 0, "Minimum number of nodes required for a bootstrap")
 
 	if err := f.Parse(os.Args[1:]); err != nil {
 		log.Fatal().Msgf("error loading flags: %v", err)

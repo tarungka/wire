@@ -300,6 +300,7 @@ type Config struct {
 }
 
 // func New(ly Layer, ko *koanf.Koanf) *Store {
+// allocate a new store in memory and initialize
 func New(ly Layer, c *Config) *Store {
 
 	// raftDir := ko.String("raft_dir")
@@ -338,8 +339,9 @@ func New(ly Layer, c *Config) *Store {
 	}
 }
 
-func (s *Store) Open() (retError error) {
 
+// open the store
+func (s *Store) Open() (retError error) {
 	defer func() {
 		if retError == nil {
 			s.open.Set()
@@ -347,6 +349,10 @@ func (s *Store) Open() (retError error) {
 	}()
 
 	var err error
+
+	// s.logger.Debug().Msg("Opening the store")
+	fmt.Printf("Opening the store")
+
 
 	// Reset/set the defaults
 	s.fsmIdx.Store(0)
@@ -549,6 +555,8 @@ func (s *Store) Nodes() ([]*Server, error) {
 	if !s.open.Is() {
 		return nil, ErrNotOpen
 	}
+
+	s.logger.Debug().Msg("a node exists!")
 
 	f := s.raft.GetConfiguration()
 	if f.Error() != nil {
@@ -808,6 +816,8 @@ func (s *Store) IsVoter() (bool, error) {
 	if !s.open.Is() {
 		return false, ErrNotOpen
 	}
+
+
 	cfg := s.raft.GetConfiguration()
 	if err := cfg.Error(); err != nil {
 		return false, err
@@ -972,4 +982,25 @@ func (s *Store) tryCompress(rq command.Requester) ([]byte, bool, error) {
 		stats.Add(numUncompressedCommands, 1)
 	}
 	return b, compressed, nil
+}
+
+// ID returns the Raft ID of the store.
+func (s *Store) ID() string {
+	return s.raftID
+}
+
+// Bootstrap executes a cluster bootstrap on this node, using the given
+// Servers as the configuration.
+func (s *Store) Bootstrap(servers ...*Server) error {
+	raftServers := make([]raft.Server, len(servers))
+	for i := range servers {
+		raftServers[i] = raft.Server{
+			ID:      raft.ServerID(servers[i].ID),
+			Address: raft.ServerAddress(servers[i].Addr),
+		}
+	}
+	fut := s.raft.BootstrapCluster(raft.Configuration{
+		Servers: raftServers,
+	})
+	return fut.Error()
 }
