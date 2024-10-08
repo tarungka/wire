@@ -23,6 +23,7 @@ import (
 	"github.com/tarungka/wire/internal/command/proto"
 	commandProto "github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/rsync"
+	"github.com/tarungka/wire/internal/snapshot"
 	"github.com/tarungka/wire/internal/utils"
 
 	rlog "github.com/tarungka/wire/log"
@@ -92,6 +93,7 @@ const (
 	raftLogCacheSize       = 128
 	observerChanLen        = 50
 	commitEquivalenceDelay = 50 * time.Millisecond
+	snapshotsDirName       = "wsnapshots"
 )
 
 const (
@@ -216,6 +218,20 @@ const (
 	Unknown
 )
 
+// SnapshotStore is the interface Snapshot stores must implement.
+type SnapshotStore interface {
+	raft.SnapshotStore
+
+	// FullNeeded returns true if a full snapshot is needed.
+	FullNeeded() (bool, error)
+
+	// SetFullNeeded explicitly sets that a full snapshot is needed.
+	SetFullNeeded() error
+
+	// Stats returns stats about the Snapshot Store.
+	Stats() (map[string]interface{}, error)
+}
+
 // Wire Store is a BBolt database, where all changes are made via Raft consensus.
 type Store struct {
 	open          *rsync.AtomicBool
@@ -289,6 +305,10 @@ type Store struct {
 	// Channels that must be closed for the Store to be considered ready.
 	readyChans *rsync.ReadyChannels
 
+	// Snapshot
+	snapshotDir   string
+	snapshotStore SnapshotStore // Snapshot store.
+
 	mu sync.Mutex
 }
 
@@ -330,6 +350,7 @@ func New(ly Layer, c *Config) *Store {
 		dbModifiedTime:  rsync.NewAtomicTime(),
 		logger:          logger,
 		readyChans:      rsync.NewReadyChannels(),
+		snapshotDir:     filepath.Join(c.Dir, snapshotsDirName),
 		// snapshotCAS:     rsync.NewCheckAndSet(),
 		// Unsure if I need the following data
 		// dbAppliedIdx:    &atomic.Uint64{},
@@ -338,7 +359,6 @@ func New(ly Layer, c *Config) *Store {
 		// numSnapshots:    &atomic.Uint64{},
 	}
 }
-
 
 // open the store
 func (s *Store) Open() (retError error) {
@@ -351,8 +371,7 @@ func (s *Store) Open() (retError error) {
 	var err error
 
 	// s.logger.Debug().Msg("Opening the store")
-	fmt.Printf("Opening the store")
-
+	fmt.Printf("Opening the store\n")
 
 	// Reset/set the defaults
 	s.fsmIdx.Store(0)
@@ -362,7 +381,7 @@ func (s *Store) Open() (retError error) {
 	s.appendedAtTime.Store(time.Time{})
 	s.openT = time.Now()
 
-	s.logger.Info().Msgf("Opening store with node ID %s, listening on %s", s.raftID, s.ly.Addr().String())
+	// s.logger.Info().Msgf("Opening store with node ID %s, listening on %s", s.raftID, s.ly.Addr().String())
 
 	s.logger.Info().Msgf("Ensuring data directories exist %s", s.raftDir)
 	if err := os.MkdirAll(filepath.Dir(s.raftDir), 0755); err != nil {
@@ -381,10 +400,18 @@ func (s *Store) Open() (retError error) {
 	config := s.raftConfig()
 	config.LocalID = raft.ServerID(s.raftID)
 
-	// TODO: impl snapshot
-	//
-	//
-	//
+	// Create store for the Snapshots.
+	snapshotStore, err := snapshot.NewStore(filepath.Join(s.snapshotDir))
+	if err != nil {
+		return fmt.Errorf("failed to create snapshot store: %s", err)
+	}
+	snapshotStore.LogReaping = s.hcLogLevel() < hclog.Warn
+	s.snapshotStore = snapshotStore
+	snaps, err := s.snapshotStore.List()
+	if err != nil {
+		return fmt.Errorf("list snapshots: %s", err)
+	}
+	s.logger.Printf("%d preexisting snapshots present", len(snaps))
 
 	// Create the log store and stable store
 	s.boltStore, err = rlog.New(filepath.Join(s.raftDir, raftDBPath), s.NoFreeListSync)
@@ -415,9 +442,13 @@ func (s *Store) Open() (retError error) {
 		stats.Add(numRecoveries, 1)
 	}
 
+	if s.raftLog == nil || s.raftStable == nil || s.raftTn == nil {
+		fmt.Print("Something is wrong")
+		return fmt.Errorf("error something went horribly wrong")
+	}
+
 	// Instantiate the Raft system.
-	// ra, err := raft.NewRaft(config, NewFSM(s), s.raftLog, s.raftStable, s.snapshotStore, s.raftTn)
-	ra, err := raft.NewRaft(config, NewFSM(s), s.raftLog, s.raftStable, nil, s.raftTn)
+	ra, err := raft.NewRaft(config, NewFSM(s), s.raftLog, s.raftStable, s.snapshotStore, s.raftTn)
 	if err != nil {
 		return fmt.Errorf("creating the raft system failed: %s", err)
 	}
@@ -817,7 +848,6 @@ func (s *Store) IsVoter() (bool, error) {
 		return false, ErrNotOpen
 	}
 
-
 	cfg := s.raft.GetConfiguration()
 	if err := cfg.Error(); err != nil {
 		return false, err
@@ -864,7 +894,6 @@ func (s *Store) Stats() (map[string]interface{}, error) {
 	raftStats["bolt"] = s.boltStore.Stats()
 	raftStats["transport"] = s.raftTn.Stats()
 
-
 	dirSz, err := utils.DirSize(s.raftDir)
 	if err != nil {
 		return nil, err
@@ -908,9 +937,7 @@ func (s *Store) Stats() (map[string]interface{}, error) {
 	return status, nil
 }
 
-
 // Cluster interface implementation
-
 
 // Execute executes queries that return no rows, but do modify the database.
 // func (s *Store) Execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
@@ -964,7 +991,6 @@ func (s *Store) Stats() (map[string]interface{}, error) {
 // 	r := af.Response().(*fsmExecuteQueryResponse)
 // 	return r.results, r.error
 // }
-
 
 // tryCompress attempts to compress the given command. If the command is
 // successfully compressed, the compressed byte slice is returned, along with
