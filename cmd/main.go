@@ -324,10 +324,16 @@ func createStore(ko *koanf.Koanf, ln *tcp.Layer) (*store.Store, error) {
 }
 
 // func startHTTPService(ko *koanf.Koanf, str *store.Store, cltr *cluster.Client, credStr *auth.CredentialsStore) (string, error) {
-func startHTTPService(ko *koanf.Koanf, str *store.Store, cltr *cluster.Client) (string, error) {
-	// Create HTTP server and load authentication information.
-	s := httpd.New(ko.String(""), str, cltr, nil)
+func startHTTPService(ko *koanf.Koanf, str *store.Store, cltr *cluster.Client) (*httpd.Service, error) {
 
+	defer func(){
+		log.Debug().Msg("Http service started/failed!")
+	}()
+
+	// Create HTTP server and load authentication information.
+	s := httpd.New(ko.String("http_addr"), str, cltr, nil)
+
+	log.Debug().Msg("Started the HTTP service!")
 	// s.CACertFile = cfg.HTTPx509CACert
 	// s.CertFile = cfg.HTTPx509Cert
 	// s.KeyFile = cfg.HTTPx509Key

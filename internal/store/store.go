@@ -79,6 +79,8 @@ var (
 	ErrNotImplemented = errors.New("Not implemented")
 )
 
+type PragmaCheckRequest proto.Request
+
 const (
 	applyTimeout           = 10 * time.Second
 	peersInfoPath          = "raft/peers.info"
@@ -640,8 +642,7 @@ func (s *Store) LeaderAddr() (string, error) {
 	if s.open.Is() {
 		return "", nil
 	}
-	addr, id := s.raft.LeaderWithID()
-	s.logger.Debug().Msgf("The address and id of the leader is: %v, %v", addr, id)
+	addr, _ := s.raft.LeaderWithID()
 	return string(addr), nil
 }
 
@@ -696,11 +697,11 @@ func (s *Store) CommitIndex() (uint64, error) {
 }
 
 func (s *Store) Remove(rn *commandProto.RemoveNodeRequest) error {
-	return nil
+	return ErrNotImplemented
 }
 
 func (s *Store) Notify(n *commandProto.NotifyRequest) error {
-	return nil
+	return ErrNotImplemented
 }
 
 func (s *Store) Join(n *commandProto.JoinRequest) error {
@@ -750,6 +751,7 @@ func (s *Store) Backup(br *proto.BackupRequest, dst io.Writer) (retErr error) {
 }
 
 func (s *Store) Ready() bool {
+	// if and and has a leader
 	return s.open.Is() && s.readyChans.Ready() && s.HasLeader()
 }
 
@@ -894,4 +896,80 @@ func (s *Store) Stats() (map[string]interface{}, error) {
 	}
 
 	return status, nil
+}
+
+
+// Cluster interface implementation
+
+
+// Execute executes queries that return no rows, but do modify the database.
+// func (s *Store) Execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
+// 	p := (*PragmaCheckRequest)(ex.Request)
+// 	if err := p.Check(); err != nil {
+// 		return nil, err
+// 	}
+
+// 	if !s.open.Is() {
+// 		return nil, ErrNotOpen
+// 	}
+
+// 	if s.raft.State() != raft.Leader {
+// 		return nil, ErrNotLeader
+// 	}
+// 	if !s.Ready() {
+// 		return nil, ErrNotReady
+// 	}
+// 	return s.execute(ex)
+// }
+
+// type fsmExecuteQueryResponse struct {
+// 	results []*proto.ExecuteQueryResponse
+// 	error   error
+// }
+
+// func (s *Store) execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
+// 	b, compressed, err := s.tryCompress(ex)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	c := &proto.Command{
+// 		Type:       proto.Command_COMMAND_TYPE_EXECUTE,
+// 		SubCommand: b,
+// 		Compressed: compressed,
+// 	}
+
+// 	b, err = command.Marshal(c)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	af := s.raft.Apply(b, s.ApplyTimeout)
+// 	if af.Error() != nil {
+// 		if af.Error() == raft.ErrNotLeader {
+// 			return nil, ErrNotLeader
+// 		}
+// 		return nil, af.Error()
+// 	}
+// 	r := af.Response().(*fsmExecuteQueryResponse)
+// 	return r.results, r.error
+// }
+
+
+// tryCompress attempts to compress the given command. If the command is
+// successfully compressed, the compressed byte slice is returned, along with
+// a boolean true. If the command cannot be compressed, the uncompressed byte
+// slice is returned, along with a boolean false. The stats are updated
+// accordingly.
+func (s *Store) tryCompress(rq command.Requester) ([]byte, bool, error) {
+	b, compressed, err := s.reqMarshaller.Marshal(rq)
+	if err != nil {
+		return nil, false, err
+	}
+	if compressed {
+		stats.Add(numCompressedCommands, 1)
+	} else {
+		stats.Add(numUncompressedCommands, 1)
+	}
+	return b, compressed, nil
 }

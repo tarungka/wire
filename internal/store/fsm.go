@@ -41,6 +41,7 @@ type FSMSnapshot struct {
 
 	raft.FSMSnapshot
 	persistSucceeded bool
+	// TODO: change this to zerolog
 	logger           *log.Logger
 }
 

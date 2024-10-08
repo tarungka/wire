@@ -21,11 +21,11 @@ import (
 	"time"
 
 	"github.com/rqlite/rqlite/v8/auth"
-	command "github.com/rqlite/rqlite/v8/command/proto"
 	"github.com/rqlite/rqlite/v8/queue"
 	"github.com/rqlite/rqlite/v8/rtls"
 	clstrPB "github.com/tarungka/wire/cluster/proto"
 	"github.com/tarungka/wire/internal/command/encoding"
+	command "github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/store"
 )
 
@@ -93,7 +93,7 @@ type Store interface {
 	// ReadFrom reads and loads a SQLite database into the node, initially bypassing
 	// the Raft system. It then triggers a Raft snapshot, which will then make
 	// Raft aware of the new data.
-	ReadFrom(r io.Reader) (int64, error)
+	// ReadFrom(r io.Reader) (int64, error)
 }
 
 // GetAddresser is the interface that wraps the GetNodeAPIAddr method.
@@ -107,19 +107,19 @@ type Cluster interface {
 	GetAddresser
 
 	// Execute performs an Execute Request on a remote node.
-	Execute(er *command.ExecuteRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) ([]*command.ExecuteQueryResponse, error)
+	// Execute(er *command.ExecuteRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) ([]*command.ExecuteQueryResponse, error)
 
-	// Query performs an Query Request on a remote node.
-	Query(qr *command.QueryRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration) ([]*command.QueryRows, error)
+	// // Query performs an Query Request on a remote node.
+	// Query(qr *command.QueryRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration) ([]*command.QueryRows, error)
 
-	// Request performs an ExecuteQuery Request on a remote node.
-	Request(eqr *command.ExecuteQueryRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) ([]*command.ExecuteQueryResponse, error)
+	// // Request performs an ExecuteQuery Request on a remote node.
+	// Request(eqr *command.ExecuteQueryRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) ([]*command.ExecuteQueryResponse, error)
 
-	// Backup retrieves a backup from a remote node and writes to the io.Writer.
-	Backup(br *command.BackupRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, w io.Writer) error
+	// // Backup retrieves a backup from a remote node and writes to the io.Writer.
+	// Backup(br *command.BackupRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, w io.Writer) error
 
-	// Load loads a SQLite database into the node.
-	Load(lr *command.LoadRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) error
+	// // Load loads a SQLite database into the node.
+	// Load(lr *command.LoadRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) error
 
 	// RemoveNode removes a node from the cluster.
 	RemoveNode(rn *command.RemoveNodeRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration) error
@@ -367,6 +367,11 @@ func New(addr string, store Store, cluster Cluster, credentials CredentialStore)
 
 // Start starts the service.
 func (s *Service) Start() error {
+
+	defer func(){
+		s.logger.Print("Finished attempting to start the HTTP server")
+	}()
+
 	s.httpServer = http.Server{
 		Handler: s,
 	}
@@ -410,7 +415,7 @@ func (s *Service) Start() error {
 	s.queueDone = make(chan struct{})
 
 	s.stmtQueue = queue.New[*command.Statement](s.DefaultQueueCap, s.DefaultQueueBatchSz, s.DefaultQueueTimeout)
-	go s.runQueue()
+	// go s.runQueue()
 	s.logger.Printf("execute queue processing started with capacity %d, batch size %d, timeout %s",
 		s.DefaultQueueCap, s.DefaultQueueBatchSz, s.DefaultQueueTimeout.String())
 
@@ -481,21 +486,21 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/" || r.URL.Path == "":
 		http.Redirect(w, r, "/status", http.StatusFound)
-	case strings.HasPrefix(r.URL.Path, "/db/execute"):
-		stats.Add(numExecutions, 1)
-		s.handleExecute(w, r, params)
-	case strings.HasPrefix(r.URL.Path, "/db/query"):
-		stats.Add(numQueries, 1)
-		s.handleQuery(w, r, params)
-	case strings.HasPrefix(r.URL.Path, "/db/request"):
-		stats.Add(numRequests, 1)
-		s.handleRequest(w, r, params)
-	case strings.HasPrefix(r.URL.Path, "/db/backup"):
-		stats.Add(numBackups, 1)
-		s.handleBackup(w, r, params)
-	case strings.HasPrefix(r.URL.Path, "/db/load"):
-		stats.Add(numLoad, 1)
-		s.handleLoad(w, r, params)
+	// case strings.HasPrefix(r.URL.Path, "/db/execute"):
+	// 	stats.Add(numExecutions, 1)
+	// 	s.handleExecute(w, r, params)
+	// case strings.HasPrefix(r.URL.Path, "/db/query"):
+	// 	stats.Add(numQueries, 1)
+	// 	s.handleQuery(w, r, params)
+	// case strings.HasPrefix(r.URL.Path, "/db/request"):
+	// 	stats.Add(numRequests, 1)
+	// 	s.handleRequest(w, r, params)
+	// case strings.HasPrefix(r.URL.Path, "/db/backup"):
+	// 	stats.Add(numBackups, 1)
+	// 	s.handleBackup(w, r, params)
+	// case strings.HasPrefix(r.URL.Path, "/db/load"):
+	// 	stats.Add(numLoad, 1)
+	// 	s.handleLoad(w, r, params)
 	case r.URL.Path == "/boot":
 		stats.Add(numBoot, 1)
 		s.handleBoot(w, r)
@@ -615,110 +620,110 @@ func (s *Service) handleRemove(w http.ResponseWriter, r *http.Request, qp QueryP
 }
 
 // handleBackup returns the consistent database snapshot.
-func (s *Service) handleBackup(w http.ResponseWriter, r *http.Request, qp QueryParams) {
-	if !s.CheckRequestPerm(r, auth.PermBackup) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
+// func (s *Service) handleBackup(w http.ResponseWriter, r *http.Request, qp QueryParams) {
+// 	if !s.CheckRequestPerm(r, auth.PermBackup) {
+// 		w.WriteHeader(http.StatusUnauthorized)
+// 		return
+// 	}
 
-	if r.Method != "GET" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+// 	if r.Method != "GET" {
+// 		w.WriteHeader(http.StatusMethodNotAllowed)
+// 		return
+// 	}
 
-	br := &command.BackupRequest{
-		Format:   qp.BackupFormat(),
-		Leader:   !qp.NoLeader(),
-		Vacuum:   qp.Vacuum(),
-		Compress: qp.Compress(),
-	}
-	addBackupFormatHeader(w, qp)
+// 	br := &command.BackupRequest{
+// 		Format:   qp.BackupFormat(),
+// 		Leader:   !qp.NoLeader(),
+// 		Vacuum:   qp.Vacuum(),
+// 		Compress: qp.Compress(),
+// 	}
+// 	addBackupFormatHeader(w, qp)
 
-	err := s.store.Backup(br, w)
-	if err != nil {
-		if err == store.ErrNotLeader {
-			if s.DoRedirect(w, r, qp) {
-				return
-			}
+// 	err := s.store.Backup(br, w)
+// 	if err != nil {
+// 		if err == store.ErrNotLeader {
+// 			if s.DoRedirect(w, r, qp) {
+// 				return
+// 			}
 
-			addr, err := s.store.LeaderAddr()
-			if err != nil {
-				http.Error(w, fmt.Sprintf("leader address: %s", err.Error()),
-					http.StatusInternalServerError)
-				return
-			}
-			if addr == "" {
-				stats.Add(numLeaderNotFound, 1)
-				http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
-				return
-			}
+// 			addr, err := s.store.LeaderAddr()
+// 			if err != nil {
+// 				http.Error(w, fmt.Sprintf("leader address: %s", err.Error()),
+// 					http.StatusInternalServerError)
+// 				return
+// 			}
+// 			if addr == "" {
+// 				stats.Add(numLeaderNotFound, 1)
+// 				http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
+// 				return
+// 			}
 
-			username, password, ok := r.BasicAuth()
-			if !ok {
-				username = ""
-			}
+// 			username, password, ok := r.BasicAuth()
+// 			if !ok {
+// 				username = ""
+// 			}
 
-			w.Header().Add(ServedByHTTPHeader, addr)
-			backupErr := s.cluster.Backup(br, addr, makeCredentials(username, password), qp.Timeout(defaultTimeout), w)
-			if backupErr != nil {
-				if backupErr.Error() == "unauthorized" {
-					http.Error(w, "remote backup not authorized", http.StatusUnauthorized)
-				} else {
-					http.Error(w, backupErr.Error(), http.StatusInternalServerError)
-				}
-				return
-			}
-			stats.Add(numRemoteBackups, 1)
-			return
-		} else if err == store.ErrInvalidVacuum {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+// 			w.Header().Add(ServedByHTTPHeader, addr)
+// 			backupErr := s.cluster.Backup(br, addr, makeCredentials(username, password), qp.Timeout(defaultTimeout), w)
+// 			if backupErr != nil {
+// 				if backupErr.Error() == "unauthorized" {
+// 					http.Error(w, "remote backup not authorized", http.StatusUnauthorized)
+// 				} else {
+// 					http.Error(w, backupErr.Error(), http.StatusInternalServerError)
+// 				}
+// 				return
+// 			}
+// 			stats.Add(numRemoteBackups, 1)
+// 			return
+// 		} else if err == store.ErrInvalidVacuum {
+// 			http.Error(w, err.Error(), http.StatusBadRequest)
+// 			return
+// 		}
+// 		http.Error(w, err.Error(), http.StatusInternalServerError)
+// 		return
+// 	}
 
-	s.lastBackup = time.Now()
-}
+// 	s.lastBackup = time.Now()
+// }
 
 // handleLoad loads the database from the given SQLite database file or SQLite dump.
-func (s *Service) handleLoad(w http.ResponseWriter, r *http.Request, qp QueryParams) {
-	if !s.CheckRequestPerm(r, auth.PermLoad) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
+// func (s *Service) handleLoad(w http.ResponseWriter, r *http.Request, qp QueryParams) {
+// 	if !s.CheckRequestPerm(r, auth.PermLoad) {
+// 		w.WriteHeader(http.StatusUnauthorized)
+// 		return
+// 	}
 
-	if r.Method != "POST" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+// 	if r.Method != "POST" {
+// 		w.WriteHeader(http.StatusMethodNotAllowed)
+// 		return
+// 	}
 
-	resp := NewResponse()
-	b, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	r.Body.Close()
+// 	resp := NewResponse()
+// 	b, err := io.ReadAll(r.Body)
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusBadRequest)
+// 		return
+// 	}
+// 	r.Body.Close()
 
-	// No JSON structure expected for this API.
-	queries := []string{string(b)}
-	er := executeRequestFromStrings(queries, qp.Timings(), false)
+// 	// No JSON structure expected for this API.
+// 	queries := []string{string(b)}
+// 	er := executeRequestFromStrings(queries, qp.Timings(), false)
 
-	response, err := s.store.Execute(er)
-	if err != nil {
-		if err == store.ErrNotLeader {
-			if s.DoRedirect(w, r, qp) {
-				return
-			}
-		}
-		resp.Error = err.Error()
-	} else {
-		resp.Results.ExecuteQueryResponse = response
-	}
-	resp.end = time.Now()
-	s.writeResponse(w, qp, resp)
-}
+// 	response, err := s.store.Execute(er)
+// 	if err != nil {
+// 		if err == store.ErrNotLeader {
+// 			if s.DoRedirect(w, r, qp) {
+// 				return
+// 			}
+// 		}
+// 		resp.Error = err.Error()
+// 	} else {
+// 		resp.Results.ExecuteQueryResponse = response
+// 	}
+// 	resp.end = time.Now()
+// 	s.writeResponse(w, qp, resp)
+// }
 
 // handleBoot handles booting this node using a SQLite file.
 func (s *Service) handleBoot(w http.ResponseWriter, r *http.Request) {
@@ -999,26 +1004,26 @@ func (s *Service) handleReadyz(w http.ResponseWriter, r *http.Request, qp QueryP
 	w.Write([]byte(okMsg))
 }
 
-func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request, qp QueryParams) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+// func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request, qp QueryParams) {
+// 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
-	if !s.CheckRequestPerm(r, auth.PermExecute) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
+// 	if !s.CheckRequestPerm(r, auth.PermExecute) {
+// 		w.WriteHeader(http.StatusUnauthorized)
+// 		return
+// 	}
 
-	if r.Method != "POST" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+// 	if r.Method != "POST" {
+// 		w.WriteHeader(http.StatusMethodNotAllowed)
+// 		return
+// 	}
 
-	if qp.Queue() {
-		stats.Add(numQueuedExecutions, 1)
-		s.queuedExecute(w, r, qp)
-	} else {
-		s.execute(w, r, qp)
-	}
-}
+// 	if qp.Queue() {
+// 		stats.Add(numQueuedExecutions, 1)
+// 		s.queuedExecute(w, r, qp)
+// 	} else {
+// 		s.execute(w, r, qp)
+// 	}
+// }
 
 // queuedExecute handles queued queries that modify the database.
 func (s *Service) queuedExecute(w http.ResponseWriter, r *http.Request, qp QueryParams) {
@@ -1077,257 +1082,257 @@ func (s *Service) queuedExecute(w http.ResponseWriter, r *http.Request, qp Query
 }
 
 // execute handles queries that modify the database.
-func (s *Service) execute(w http.ResponseWriter, r *http.Request, qp QueryParams) {
-	resp := NewResponse()
-	stmts, err := ParseRequest(r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	stats.Add(numExecuteStmtsRx, int64(len(stmts)))
-	// if !qp.NoParse() {
-	// 	if err := sql.Process(stmts, !qp.NoRewriteRandom()); err != nil {
-	// 		http.Error(w, fmt.Sprintf("SQL rewrite: %s", err.Error()), http.StatusInternalServerError)
-	// 		return
-	// 	}
-	// }
+// func (s *Service) execute(w http.ResponseWriter, r *http.Request, qp QueryParams) {
+// 	resp := NewResponse()
+// 	stmts, err := ParseRequest(r.Body)
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusBadRequest)
+// 		return
+// 	}
+// 	stats.Add(numExecuteStmtsRx, int64(len(stmts)))
+// 	// if !qp.NoParse() {
+// 	// 	if err := sql.Process(stmts, !qp.NoRewriteRandom()); err != nil {
+// 	// 		http.Error(w, fmt.Sprintf("SQL rewrite: %s", err.Error()), http.StatusInternalServerError)
+// 	// 		return
+// 	// 	}
+// 	// }
 
-	er := &command.ExecuteRequest{
-		Request: &command.Request{
-			Transaction: qp.Tx(),
-			DbTimeout:   int64(qp.DBTimeout(0)),
-			Statements:  stmts,
-		},
-		Timings: qp.Timings(),
-	}
+// 	er := &command.ExecuteRequest{
+// 		Request: &command.Request{
+// 			Transaction: qp.Tx(),
+// 			DbTimeout:   int64(qp.DBTimeout(0)),
+// 			Statements:  stmts,
+// 		},
+// 		Timings: qp.Timings(),
+// 	}
 
-	results, resultsErr := s.store.Execute(er)
-	if resultsErr != nil && resultsErr == store.ErrNotLeader {
-		if s.DoRedirect(w, r, qp) {
-			return
-		}
+// 	results, resultsErr := s.store.Execute(er)
+// 	if resultsErr != nil && resultsErr == store.ErrNotLeader {
+// 		if s.DoRedirect(w, r, qp) {
+// 			return
+// 		}
 
-		addr, err := s.store.LeaderAddr()
-		if err != nil {
-			http.Error(w, fmt.Sprintf("leader address: %s", err.Error()),
-				http.StatusInternalServerError)
-			return
-		}
-		if addr == "" {
-			stats.Add(numLeaderNotFound, 1)
-			http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
-			return
-		}
+// 		addr, err := s.store.LeaderAddr()
+// 		if err != nil {
+// 			http.Error(w, fmt.Sprintf("leader address: %s", err.Error()),
+// 				http.StatusInternalServerError)
+// 			return
+// 		}
+// 		if addr == "" {
+// 			stats.Add(numLeaderNotFound, 1)
+// 			http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
+// 			return
+// 		}
 
-		username, password, ok := r.BasicAuth()
-		if !ok {
-			username = ""
-		}
+// 		username, password, ok := r.BasicAuth()
+// 		if !ok {
+// 			username = ""
+// 		}
 
-		w.Header().Add(ServedByHTTPHeader, addr)
-		results, resultsErr = s.cluster.Execute(er, addr, makeCredentials(username, password),
-			qp.Timeout(defaultTimeout), qp.Retries(0))
-		if resultsErr != nil {
-			stats.Add(numRemoteExecutionsFailed, 1)
-			if resultsErr.Error() == "unauthorized" {
-				http.Error(w, "remote Execute not authorized", http.StatusUnauthorized)
-				return
-			}
-			resultsErr = fmt.Errorf("node failed to process Execute on remote node at %s: %s",
-				addr, resultsErr.Error())
-		}
-		stats.Add(numRemoteExecutions, 1)
-	}
+// 		w.Header().Add(ServedByHTTPHeader, addr)
+// 		results, resultsErr = s.cluster.Execute(er, addr, makeCredentials(username, password),
+// 			qp.Timeout(defaultTimeout), qp.Retries(0))
+// 		if resultsErr != nil {
+// 			stats.Add(numRemoteExecutionsFailed, 1)
+// 			if resultsErr.Error() == "unauthorized" {
+// 				http.Error(w, "remote Execute not authorized", http.StatusUnauthorized)
+// 				return
+// 			}
+// 			resultsErr = fmt.Errorf("node failed to process Execute on remote node at %s: %s",
+// 				addr, resultsErr.Error())
+// 		}
+// 		stats.Add(numRemoteExecutions, 1)
+// 	}
 
-	if resultsErr != nil {
-		resp.Error = resultsErr.Error()
-	} else {
-		resp.Results.ExecuteQueryResponse = results
-	}
-	resp.end = time.Now()
-	s.writeResponse(w, qp, resp)
-}
+// 	if resultsErr != nil {
+// 		resp.Error = resultsErr.Error()
+// 	} else {
+// 		resp.Results.ExecuteQueryResponse = results
+// 	}
+// 	resp.end = time.Now()
+// 	s.writeResponse(w, qp, resp)
+// }
 
 // handleQuery handles queries that do not modify the database.
-func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request, qp QueryParams) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+// func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request, qp QueryParams) {
+// 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
-	if !s.CheckRequestPerm(r, auth.PermQuery) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
+// 	if !s.CheckRequestPerm(r, auth.PermQuery) {
+// 		w.WriteHeader(http.StatusUnauthorized)
+// 		return
+// 	}
 
-	if r.Method != "GET" && r.Method != "POST" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+// 	if r.Method != "GET" && r.Method != "POST" {
+// 		w.WriteHeader(http.StatusMethodNotAllowed)
+// 		return
+// 	}
 
-	// Get the query statement(s), and do tx if necessary.
-	queries, err := requestQueries(r, qp)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	stats.Add(numQueryStmtsRx, int64(len(queries)))
+// 	// Get the query statement(s), and do tx if necessary.
+// 	queries, err := requestQueries(r, qp)
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusBadRequest)
+// 		return
+// 	}
+// 	stats.Add(numQueryStmtsRx, int64(len(queries)))
 
-	// No point rewriting queries if they don't go through the Raft log, since they
-	// will never be replayed from the log anyway.
-	// if qp.Level() == command.QueryRequest_QUERY_REQUEST_LEVEL_STRONG {
-	// 	if !qp.NoParse() {
-	// 		if err := sql.Process(queries, qp.NoRewriteRandom()); err != nil {
-	// 			http.Error(w, fmt.Sprintf("SQL rewrite: %s", err.Error()), http.StatusInternalServerError)
-	// 			return
-	// 		}
-	// 	}
-	// }
+// 	// No point rewriting queries if they don't go through the Raft log, since they
+// 	// will never be replayed from the log anyway.
+// 	// if qp.Level() == command.QueryRequest_QUERY_REQUEST_LEVEL_STRONG {
+// 	// 	if !qp.NoParse() {
+// 	// 		if err := sql.Process(queries, qp.NoRewriteRandom()); err != nil {
+// 	// 			http.Error(w, fmt.Sprintf("SQL rewrite: %s", err.Error()), http.StatusInternalServerError)
+// 	// 			return
+// 	// 		}
+// 	// 	}
+// 	// }
 
-	resp := NewResponse()
-	resp.Results.AssociativeJSON = qp.Associative()
-	resp.Results.BlobsAsArrays = qp.BlobArray()
+// 	resp := NewResponse()
+// 	resp.Results.AssociativeJSON = qp.Associative()
+// 	resp.Results.BlobsAsArrays = qp.BlobArray()
 
-	qr := &command.QueryRequest{
-		Request: &command.Request{
-			Transaction: qp.Tx(),
-			DbTimeout:   int64(qp.DBTimeout(0)),
-			Statements:  queries,
-		},
-		Timings:         qp.Timings(),
-		Level:           qp.Level(),
-		Freshness:       qp.Freshness().Nanoseconds(),
-		FreshnessStrict: qp.FreshnessStrict(),
-	}
+// 	qr := &command.QueryRequest{
+// 		Request: &command.Request{
+// 			Transaction: qp.Tx(),
+// 			DbTimeout:   int64(qp.DBTimeout(0)),
+// 			Statements:  queries,
+// 		},
+// 		Timings:         qp.Timings(),
+// 		Level:           qp.Level(),
+// 		Freshness:       qp.Freshness().Nanoseconds(),
+// 		FreshnessStrict: qp.FreshnessStrict(),
+// 	}
 
-	results, resultsErr := s.store.Query(qr)
-	if resultsErr != nil && resultsErr == store.ErrNotLeader {
-		if s.DoRedirect(w, r, qp) {
-			return
-		}
+// 	results, resultsErr := s.store.Query(qr)
+// 	if resultsErr != nil && resultsErr == store.ErrNotLeader {
+// 		if s.DoRedirect(w, r, qp) {
+// 			return
+// 		}
 
-		addr, err := s.store.LeaderAddr()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if addr == "" {
-			stats.Add(numLeaderNotFound, 1)
-			http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		username, password, ok := r.BasicAuth()
-		if !ok {
-			username = ""
-		}
+// 		addr, err := s.store.LeaderAddr()
+// 		if err != nil {
+// 			http.Error(w, err.Error(), http.StatusInternalServerError)
+// 			return
+// 		}
+// 		if addr == "" {
+// 			stats.Add(numLeaderNotFound, 1)
+// 			http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
+// 			return
+// 		}
+// 		username, password, ok := r.BasicAuth()
+// 		if !ok {
+// 			username = ""
+// 		}
 
-		w.Header().Add(ServedByHTTPHeader, addr)
-		results, resultsErr = s.cluster.Query(qr, addr, makeCredentials(username, password), qp.Timeout(defaultTimeout))
-		if resultsErr != nil {
-			stats.Add(numRemoteQueriesFailed, 1)
-			if resultsErr.Error() == "unauthorized" {
-				http.Error(w, "remote query not authorized", http.StatusUnauthorized)
-				return
-			}
-			resultsErr = fmt.Errorf("node failed to process Query on remote node at %s: %s",
-				addr, resultsErr.Error())
-		}
-		stats.Add(numRemoteQueries, 1)
-	}
+// 		w.Header().Add(ServedByHTTPHeader, addr)
+// 		results, resultsErr = s.cluster.Query(qr, addr, makeCredentials(username, password), qp.Timeout(defaultTimeout))
+// 		if resultsErr != nil {
+// 			stats.Add(numRemoteQueriesFailed, 1)
+// 			if resultsErr.Error() == "unauthorized" {
+// 				http.Error(w, "remote query not authorized", http.StatusUnauthorized)
+// 				return
+// 			}
+// 			resultsErr = fmt.Errorf("node failed to process Query on remote node at %s: %s",
+// 				addr, resultsErr.Error())
+// 		}
+// 		stats.Add(numRemoteQueries, 1)
+// 	}
 
-	if resultsErr != nil {
-		resp.Error = resultsErr.Error()
-	} else {
-		resp.Results.QueryRows = results
-	}
-	resp.end = time.Now()
-	s.writeResponse(w, qp, resp)
-}
+// 	if resultsErr != nil {
+// 		resp.Error = resultsErr.Error()
+// 	} else {
+// 		resp.Results.QueryRows = results
+// 	}
+// 	resp.end = time.Now()
+// 	s.writeResponse(w, qp, resp)
+// }
 
-func (s *Service) handleRequest(w http.ResponseWriter, r *http.Request, qp QueryParams) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+// func (s *Service) handleRequest(w http.ResponseWriter, r *http.Request, qp QueryParams) {
+// 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
-	if !s.CheckRequestPermAll(r, auth.PermQuery, auth.PermExecute) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
+// 	if !s.CheckRequestPermAll(r, auth.PermQuery, auth.PermExecute) {
+// 		w.WriteHeader(http.StatusUnauthorized)
+// 		return
+// 	}
 
-	if r.Method != "POST" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+// 	if r.Method != "POST" {
+// 		w.WriteHeader(http.StatusMethodNotAllowed)
+// 		return
+// 	}
 
-	stmts, err := ParseRequest(r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	stats.Add(numRequestStmtsRx, int64(len(stmts)))
+// 	stmts, err := ParseRequest(r.Body)
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusBadRequest)
+// 		return
+// 	}
+// 	stats.Add(numRequestStmtsRx, int64(len(stmts)))
 
-	// if !qp.NoParse() {
-	// 	if err := sql.Process(stmts, qp.NoRewriteRandom()); err != nil {
-	// 		http.Error(w, fmt.Sprintf("SQL rewrite: %s", err.Error()), http.StatusInternalServerError)
-	// 		return
-	// 	}
-	// }
+// 	// if !qp.NoParse() {
+// 	// 	if err := sql.Process(stmts, qp.NoRewriteRandom()); err != nil {
+// 	// 		http.Error(w, fmt.Sprintf("SQL rewrite: %s", err.Error()), http.StatusInternalServerError)
+// 	// 		return
+// 	// 	}
+// 	// }
 
-	resp := NewResponse()
-	resp.Results.AssociativeJSON = qp.Associative()
-	resp.Results.BlobsAsArrays = qp.BlobArray()
+// 	resp := NewResponse()
+// 	resp.Results.AssociativeJSON = qp.Associative()
+// 	resp.Results.BlobsAsArrays = qp.BlobArray()
 
-	eqr := &command.ExecuteQueryRequest{
-		Request: &command.Request{
-			Transaction: qp.Tx(),
-			Statements:  stmts,
-			DbTimeout:   int64(qp.DBTimeout(0)),
-		},
-		Timings:         qp.Timings(),
-		Level:           qp.Level(),
-		Freshness:       qp.Freshness().Nanoseconds(),
-		FreshnessStrict: qp.FreshnessStrict(),
-	}
+// 	eqr := &command.ExecuteQueryRequest{
+// 		Request: &command.Request{
+// 			Transaction: qp.Tx(),
+// 			Statements:  stmts,
+// 			DbTimeout:   int64(qp.DBTimeout(0)),
+// 		},
+// 		Timings:         qp.Timings(),
+// 		Level:           qp.Level(),
+// 		Freshness:       qp.Freshness().Nanoseconds(),
+// 		FreshnessStrict: qp.FreshnessStrict(),
+// 	}
 
-	results, resultsErr := s.store.Request(eqr)
-	if resultsErr != nil && resultsErr == store.ErrNotLeader {
-		if s.DoRedirect(w, r, qp) {
-			return
-		}
+// 	results, resultsErr := s.store.Request(eqr)
+// 	if resultsErr != nil && resultsErr == store.ErrNotLeader {
+// 		if s.DoRedirect(w, r, qp) {
+// 			return
+// 		}
 
-		addr, err := s.store.LeaderAddr()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if addr == "" {
-			stats.Add(numLeaderNotFound, 1)
-			http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		username, password, ok := r.BasicAuth()
-		if !ok {
-			username = ""
-		}
+// 		addr, err := s.store.LeaderAddr()
+// 		if err != nil {
+// 			http.Error(w, err.Error(), http.StatusInternalServerError)
+// 			return
+// 		}
+// 		if addr == "" {
+// 			stats.Add(numLeaderNotFound, 1)
+// 			http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
+// 			return
+// 		}
+// 		username, password, ok := r.BasicAuth()
+// 		if !ok {
+// 			username = ""
+// 		}
 
-		w.Header().Add(ServedByHTTPHeader, addr)
-		results, resultsErr = s.cluster.Request(eqr, addr, makeCredentials(username, password),
-			qp.Timeout(defaultTimeout), qp.Retries(0))
-		if resultsErr != nil {
-			stats.Add(numRemoteRequestsFailed, 1)
-			if resultsErr.Error() == "unauthorized" {
-				http.Error(w, "remote Request not authorized", http.StatusUnauthorized)
-				return
-			}
-			resultsErr = fmt.Errorf("node failed to process Request on remote node at %s: %s",
-				addr, resultsErr.Error())
-		}
-		stats.Add(numRemoteRequests, 1)
-	}
+// 		w.Header().Add(ServedByHTTPHeader, addr)
+// 		results, resultsErr = s.cluster.Request(eqr, addr, makeCredentials(username, password),
+// 			qp.Timeout(defaultTimeout), qp.Retries(0))
+// 		if resultsErr != nil {
+// 			stats.Add(numRemoteRequestsFailed, 1)
+// 			if resultsErr.Error() == "unauthorized" {
+// 				http.Error(w, "remote Request not authorized", http.StatusUnauthorized)
+// 				return
+// 			}
+// 			resultsErr = fmt.Errorf("node failed to process Request on remote node at %s: %s",
+// 				addr, resultsErr.Error())
+// 		}
+// 		stats.Add(numRemoteRequests, 1)
+// 	}
 
-	if resultsErr != nil {
-		resp.Error = resultsErr.Error()
-	} else {
-		resp.Results.ExecuteQueryResponse = results
-	}
-	resp.end = time.Now()
-	s.writeResponse(w, qp, resp)
-}
+// 	if resultsErr != nil {
+// 		resp.Error = resultsErr.Error()
+// 	} else {
+// 		resp.Results.ExecuteQueryResponse = results
+// 	}
+// 	resp.end = time.Now()
+// 	s.writeResponse(w, qp, resp)
+// }
 
 // handleExpvar serves registered expvar information over HTTP.
 func (s *Service) handleExpvar(w http.ResponseWriter, r *http.Request, qp QueryParams) {
@@ -1475,73 +1480,73 @@ func (s *Service) LeaderAPIAddr() string {
 	return apiAddr
 }
 
-func (s *Service) runQueue() {
-	defer close(s.queueDone)
-	retryDelay := time.Second
+// func (s *Service) runQueue() {
+// 	defer close(s.queueDone)
+// 	retryDelay := time.Second
 
-	var err error
-	for {
-		select {
-		case <-s.closeCh:
-			return
-		case req := <-s.stmtQueue.C:
-			er := &command.ExecuteRequest{
-				Request: &command.Request{
-					Statements:  req.Objects,
-					Transaction: s.DefaultQueueTx,
-				},
-			}
-			stats.Add(numQueuedExecutionsStmtsRx, int64(len(req.Objects)))
+// 	var err error
+// 	for {
+// 		select {
+// 		case <-s.closeCh:
+// 			return
+// 		case req := <-s.stmtQueue.C:
+// 			er := &command.ExecuteRequest{
+// 				Request: &command.Request{
+// 					Statements:  req.Objects,
+// 					Transaction: s.DefaultQueueTx,
+// 				},
+// 			}
+// 			stats.Add(numQueuedExecutionsStmtsRx, int64(len(req.Objects)))
 
-			// Nil statements are valid, as clients may want to just send
-			// a "checkpoint" through the queue.
-			if er.Request.Statements != nil {
-				for {
-					_, err = s.store.Execute(er)
-					if err == nil {
-						// Success!
-						break
-					}
+// 			// Nil statements are valid, as clients may want to just send
+// 			// a "checkpoint" through the queue.
+// 			if er.Request.Statements != nil {
+// 				for {
+// 					_, err = s.store.Execute(er)
+// 					if err == nil {
+// 						// Success!
+// 						break
+// 					}
 
-					if err == store.ErrNotLeader {
-						addr, err := s.store.LeaderAddr()
-						if err != nil || addr == "" {
-							s.logger.Printf("execute queue can't find leader for sequence number %d on node %s",
-								req.SequenceNumber, s.Addr().String())
-							stats.Add(numQueuedExecutionsNoLeader, 1)
-						} else {
-							_, err = s.cluster.Execute(er, addr, nil, defaultTimeout, 0)
-							if err != nil {
-								s.logger.Printf("execute queue write failed for sequence number %d on node %s: %s",
-									req.SequenceNumber, s.Addr().String(), err.Error())
-								if err.Error() == "leadership lost while committing log" {
-									stats.Add(numQueuedExecutionsLeadershipLost, 1)
-								} else if err.Error() == "not leader" {
-									stats.Add(numQueuedExecutionsNotLeader, 1)
-								} else {
-									stats.Add(numQueuedExecutionsUnknownError, 1)
-								}
-							} else {
-								// Success!
-								stats.Add(numRemoteExecutions, 1)
-								break
-							}
-						}
-					}
+// 					if err == store.ErrNotLeader {
+// 						addr, err := s.store.LeaderAddr()
+// 						if err != nil || addr == "" {
+// 							s.logger.Printf("execute queue can't find leader for sequence number %d on node %s",
+// 								req.SequenceNumber, s.Addr().String())
+// 							stats.Add(numQueuedExecutionsNoLeader, 1)
+// 						} else {
+// 							_, err = s.cluster.Execute(er, addr, nil, defaultTimeout, 0)
+// 							if err != nil {
+// 								s.logger.Printf("execute queue write failed for sequence number %d on node %s: %s",
+// 									req.SequenceNumber, s.Addr().String(), err.Error())
+// 								if err.Error() == "leadership lost while committing log" {
+// 									stats.Add(numQueuedExecutionsLeadershipLost, 1)
+// 								} else if err.Error() == "not leader" {
+// 									stats.Add(numQueuedExecutionsNotLeader, 1)
+// 								} else {
+// 									stats.Add(numQueuedExecutionsUnknownError, 1)
+// 								}
+// 							} else {
+// 								// Success!
+// 								stats.Add(numRemoteExecutions, 1)
+// 								break
+// 							}
+// 						}
+// 					}
 
-					stats.Add(numQueuedExecutionsFailed, 1)
-					time.Sleep(retryDelay)
-				}
-			}
+// 					stats.Add(numQueuedExecutionsFailed, 1)
+// 					time.Sleep(retryDelay)
+// 				}
+// 			}
 
-			// Perform post-write processing.
-			atomic.StoreInt64(&s.seqNum, req.SequenceNumber)
-			req.Close()
-			stats.Add(numQueuedExecutionsStmtsTx, int64(len(req.Objects)))
-			stats.Add(numQueuedExecutionsOK, 1)
-		}
-	}
-}
+// 			// Perform post-write processing.
+// 			atomic.StoreInt64(&s.seqNum, req.SequenceNumber)
+// 			req.Close()
+// 			stats.Add(numQueuedExecutionsStmtsTx, int64(len(req.Objects)))
+// 			stats.Add(numQueuedExecutionsOK, 1)
+// 		}
+// 	}
+// }
 
 // addBuildVersion adds the build version to the HTTP response.
 func (s *Service) addBuildVersion(w http.ResponseWriter) {

@@ -29,6 +29,7 @@ func initFlags(ko *koanf.Koanf) {
 
 	// flags related to the raft consensus
 	f.String("raft_addr", "localhost:10092", "address of the raft connection")
+	f.String("http_addr", "localhost:8081", "address of the http server")
 	f.String("raft_dir", "./raft_database", "address of the raft connection")
 	f.String("node_id", "node0", "address of the raft connection")
 

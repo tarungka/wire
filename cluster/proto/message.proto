@@ -1,7 +1,6 @@
 syntax = "proto3";
 package cluster;
 
-// import "command/proto/command.proto";
 import "internal/command/proto/command.proto";
 
 option go_package = "github.com/tarungka/wire/cluster/proto";

@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	command "github.com/rqlite/rqlite/v8/command/proto"
-	"github.com/rqlite/rqlite/v8/db"
+	command "github.com/tarungka/wire/internal/command/proto"
 )
 
 var (
@@ -182,21 +181,21 @@ func makeParameter(name string, i interface{}) (*command.Parameter, error) {
 			Name: name,
 		}, nil
 	case string:
-		b, err := db.ParseHex(v)
-		if err != nil {
+		// b, err := db.ParseHex(v)
+		// if err != nil {
 			return &command.Parameter{
 				Value: &command.Parameter_S{
 					S: v,
 				},
 				Name: name,
 			}, nil
-		}
-		return &command.Parameter{
-			Value: &command.Parameter_Y{
-				Y: b,
-			},
-			Name: name,
-		}, nil
+		// }
+		// return &command.Parameter{
+		// 	Value: &command.Parameter_Y{
+		// 		Y: b,
+		// 	},
+		// 	Name: name,
+		// }, nil
 	case []interface{}:
 		b := make([]byte, len(v))
 		for i, e := range v {
