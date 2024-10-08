@@ -7,14 +7,17 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/knadh/koanf/v2"
+	"github.com/rqlite/rqlite/v8/cmd"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/cluster"
+	httpd "github.com/tarungka/wire/internal/http"
 	"github.com/tarungka/wire/internal/store"
 	"github.com/tarungka/wire/internal/tcp"
 	pipeline "github.com/tarungka/wire/pipeline"
@@ -59,7 +62,7 @@ func main() {
 				return fmt.Sprintf("| %s |", i)
 			},
 			FormatCaller: func(i interface{}) string {
-				return filepath.Base(fmt.Sprintf("~%s", i))
+				return filepath.Base(fmt.Sprintf("%s", i))
 			},
 			PartsExclude: []string{
 				zerolog.TimestampFieldName,
@@ -109,7 +112,7 @@ func main() {
 
 	log.Debug().Msgf("A raft layer is ready, will use it: %v", raftTn)
 
-	// The store has the impl for the manager
+	// Create the store
 	str, err := createStore(ko, raftTn)
 	if err != nil {
 		log.Fatal().Msgf("failed to create store: %s", err.Error())
@@ -117,21 +120,23 @@ func main() {
 	log.Debug().Msgf("The store is:", str)
 
 	// // Create cluster service now, so nodes will be able to learn information about each other.
-	// clstrServ, err := clusterService(ko, mux.Listen(cluster.MuxClusterHeader), str)
-	// if err != nil {
-	// 	log.Fatal().Msgf("failed to create cluster service: %s", err.Error())
-	// }
+	clstrServ, err := clusterService(ko, mux.Listen(cluster.MuxClusterHeader), str)
+	if err != nil {
+		log.Fatal().Msgf("failed to create cluster service: %s", err.Error())
+	}
+	log.Debug().Msgf("Created the cluster service: %v", clstrServ)
 
-	// clstrClient, err := createClusterClient(ko, clstrServ)
-	// if err != nil {
-	// 	log.Fatal().Msgf("failed to create cluster client: %s", err.Error())
-	// }
-	// httpServ, err := startHTTPService(ko, str, clstrClient)
-	// if err != nil {
-	// 	log.Fatal().Msgf("failed to start HTTP server: %s", err.Error())
-	// }
+	clstrClient, err := createClusterClient(ko, clstrServ)
+	if err != nil {
+		log.Fatal().Msgf("failed to create cluster client: %s", err.Error())
+	}
+	log.Debug().Msgf("Created the cluster client: %v", clstrClient)
+	httpServ, err := startHTTPService(ko, str, clstrClient)
+	if err != nil {
+		log.Fatal().Msgf("failed to start HTTP server: %s", err.Error())
+	}
 
-	// log.Debug().Msgf("HTTP server is not configured. %v", httpServ)
+	log.Debug().Msgf("HTTP server is not configured. %v", httpServ)
 
 	// Creating a main context; will need to move this code up
 	// mainCtx := context.Background()
@@ -310,7 +315,7 @@ func createStore(ko *koanf.Koanf, ln *tcp.Layer) (*store.Store, error) {
 	str.AutoOptimizeInterval = time.Duration(ko.Int64("AutoOptimizeInterval")) * time.Second
 
 	if store.IsNewNode(ko.String("raft_dir")) {
-		log.Printf("no preexisting node state detected in %s, node may be bootstrapping", ko.String("DataPath"))
+		log.Printf("no preexisting node state detected in %s, node may be bootstrapping", ko.String("raft_dir"))
 	} else {
 		log.Printf("preexisting node state detected in %s", ko.String("DataPath"))
 	}
@@ -320,9 +325,8 @@ func createStore(ko *koanf.Koanf, ln *tcp.Layer) (*store.Store, error) {
 
 // func startHTTPService(ko *koanf.Koanf, str *store.Store, cltr *cluster.Client, credStr *auth.CredentialsStore) (string, error) {
 func startHTTPService(ko *koanf.Koanf, str *store.Store, cltr *cluster.Client) (string, error) {
-	return "", nil
 	// Create HTTP server and load authentication information.
-	// s := httpd.New(cfg.HTTPAddr, str, cltr, credStr)
+	s := httpd.New(ko.String(""), str, cltr, nil)
 
 	// s.CACertFile = cfg.HTTPx509CACert
 	// s.CertFile = cfg.HTTPx509Cert
@@ -332,16 +336,16 @@ func startHTTPService(ko *koanf.Koanf, str *store.Store, cltr *cluster.Client) (
 	// s.DefaultQueueBatchSz = cfg.WriteQueueBatchSz
 	// s.DefaultQueueTimeout = cfg.WriteQueueTimeout
 	// s.DefaultQueueTx = cfg.WriteQueueTx
-	// s.BuildInfo = map[string]interface{}{
-	// 	"commit":             cmd.Commit,
-	// 	"branch":             cmd.Branch,
-	// 	"version":            cmd.Version,
-	// 	"compiler_toolchain": runtime.Compiler,
-	// 	"compiler_command":   cmd.CompilerCommand,
-	// 	"build_time":         cmd.Buildtime,
-	// }
+	s.BuildInfo = map[string]interface{}{
+		"commit":             cmd.Commit,
+		"branch":             cmd.Branch,
+		"version":            cmd.Version,
+		"compiler_toolchain": runtime.Compiler,
+		"compiler_command":   cmd.CompilerCommand,
+		"build_time":         cmd.Buildtime,
+	}
 	// s.SetAllowOrigin(cfg.HTTPAllowOrigin)
-	// return s, s.Start()
+	return s, s.Start()
 }
 
 // TODO: This code needs major rework, will work on this later

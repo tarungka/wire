@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,7 +21,9 @@ import (
 	zlog "github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/command"
 	"github.com/tarungka/wire/internal/command/proto"
-	"github.com/tarungka/wire/rsync"
+	commandProto "github.com/tarungka/wire/internal/command/proto"
+	"github.com/tarungka/wire/internal/rsync"
+	"github.com/tarungka/wire/internal/utils"
 
 	rlog "github.com/tarungka/wire/log"
 )
@@ -69,33 +73,73 @@ var (
 	// ErrLoadInProgress is returned when a load is already in progress and the
 	// requested operation cannot be performed.
 	ErrLoadInProgress = errors.New("load in progress")
+
+	// ErrNotImplemented when there is no implementation of the function
+	// will only exits until this application in under development
+	ErrNotImplemented = errors.New("Not implemented")
 )
 
 const (
-	applyTimeout        = 10 * time.Second
-	peersInfoPath       = "raft/peers.info"
-	peersPath           = "raft/peers.json"
-	connectionPoolCount = 5
-	connectionTimeout   = 10 * time.Second
-	trailingScale       = 1.25
-	raftDBPath          = "raft.db"
-	raftLogCacheSize    = 128
-	observerChanLen     = 50
+	applyTimeout           = 10 * time.Second
+	peersInfoPath          = "raft/peers.info"
+	peersPath              = "raft/peers.json"
+	connectionPoolCount    = 5
+	connectionTimeout      = 10 * time.Second
+	trailingScale          = 1.25
+	raftDBPath             = "raft.db"
+	raftLogCacheSize       = 128
+	observerChanLen        = 50
+	commitEquivalenceDelay = 50 * time.Millisecond
 )
 
 const (
-	numBoots                = "num_boots"
-	numLoads                = "num_loads"
-	numJoins                = "num_joins"
-	failedHeartbeatObserved = "failed_heartbeat_observed"
-	leaderChangesObserved   = "leader_changes_observed"
-	leaderChangesDropped    = "leader_changes_dropped"
-	numRecoveries           = "num_recoveries"
-	nodesReapedFailed       = "nodes_reaped_failed"
-	nodesReapedOK           = "nodes_reaped_ok"
-	numAutoRestores         = "num_auto_restores"
-	numAutoRestoresSkipped  = "num_auto_restores_skipped"
-	numAutoRestoresFailed   = "num_auto_restores_failed"
+	numSnapshots                      = "num_snapshots"
+	numSnapshotsFailed                = "num_snapshots_failed"
+	numUserSnapshots                  = "num_user_snapshots"
+	numUserSnapshotsFailed            = "num_user_snapshots_failed"
+	numWALSnapshots                   = "num_wal_snapshots"
+	numWALSnapshotsFailed             = "num_wal_snapshots_failed"
+	numSnapshotsFull                  = "num_snapshots_full"
+	numSnapshotsIncremental           = "num_snapshots_incremental"
+	numFullCheckpointFailed           = "num_full_checkpoint_failed"
+	numWALCheckpointTruncateFailed    = "num_wal_checkpoint_truncate_failed"
+	numAutoVacuums                    = "num_auto_vacuums"
+	numAutoVacuumsFailed              = "num_auto_vacuums_failed"
+	autoVacuumDuration                = "auto_vacuum_duration"
+	numAutoOptimizes                  = "num_auto_optimizes"
+	numAutoOptimizesFailed            = "num_auto_optimizes_failed"
+	autoOptimizeDuration              = "auto_optimize_duration"
+	numBoots                          = "num_boots"
+	numBackups                        = "num_backups"
+	numLoads                          = "num_loads"
+	numRestores                       = "num_restores"
+	numRestoresFailed                 = "num_restores_failed"
+	numAutoRestores                   = "num_auto_restores"
+	numAutoRestoresSkipped            = "num_auto_restores_skipped"
+	numAutoRestoresFailed             = "num_auto_restores_failed"
+	numRecoveries                     = "num_recoveries"
+	numProviderChecks                 = "num_provider_checks"
+	numProviderProvides               = "num_provider_provides"
+	numProviderProvidesFail           = "num_provider_provides_fail"
+	numUncompressedCommands           = "num_uncompressed_commands"
+	numCompressedCommands             = "num_compressed_commands"
+	numJoins                          = "num_joins"
+	numIgnoredJoins                   = "num_ignored_joins"
+	numRemovedBeforeJoins             = "num_removed_before_joins"
+	numDBStatsErrors                  = "num_db_stats_errors"
+	snapshotCreateDuration            = "snapshot_create_duration"
+	snapshotCreateChkTruncateDuration = "snapshot_create_chk_truncate_duration"
+	snapshotCreateWALCompactDuration  = "snapshot_create_wal_compact_duration"
+	numSnapshotPersists               = "num_snapshot_persists"
+	numSnapshotPersistsFailed         = "num_snapshot_persists_failed"
+	snapshotPersistDuration           = "snapshot_persist_duration"
+	snapshotPrecompactWALSize         = "snapshot_precompact_wal_size"
+	snapshotWALSize                   = "snapshot_wal_size"
+	leaderChangesObserved             = "leader_changes_observed"
+	leaderChangesDropped              = "leader_changes_dropped"
+	failedHeartbeatObserved           = "failed_heartbeat_observed"
+	nodesReapedOK                     = "nodes_reaped_ok"
+	nodesReapedFailed                 = "nodes_reaped_failed"
 )
 
 // stats captures stats for the Store.
@@ -109,18 +153,53 @@ func init() {
 // ResetStats resets the expvar stats for this module. Mostly for test purposes.
 func ResetStats() {
 	stats.Init()
+	stats.Add(numSnapshots, 0)
+	stats.Add(numSnapshotsFailed, 0)
+	stats.Add(numUserSnapshots, 0)
+	stats.Add(numUserSnapshotsFailed, 0)
+	stats.Add(numWALSnapshots, 0)
+	stats.Add(numWALSnapshotsFailed, 0)
+	stats.Add(numSnapshotsFull, 0)
+	stats.Add(numSnapshotsIncremental, 0)
+	stats.Add(numFullCheckpointFailed, 0)
+	stats.Add(numWALCheckpointTruncateFailed, 0)
+	stats.Add(numAutoVacuums, 0)
+	stats.Add(numAutoVacuumsFailed, 0)
+	stats.Add(autoVacuumDuration, 0)
+	stats.Add(numAutoOptimizes, 0)
+	stats.Add(numAutoOptimizesFailed, 0)
+	stats.Add(autoOptimizeDuration, 0)
 	stats.Add(numBoots, 0)
+	stats.Add(numBackups, 0)
 	stats.Add(numLoads, 0)
-	stats.Add(numJoins, 0)
-	stats.Add(failedHeartbeatObserved, 0)
-	stats.Add(leaderChangesObserved, 0)
-	stats.Add(leaderChangesDropped, 0)
+	stats.Add(numRestores, 0)
+	stats.Add(numRestoresFailed, 0)
 	stats.Add(numRecoveries, 0)
-	stats.Add(nodesReapedOK, 0)
-	stats.Add(nodesReapedFailed, 0)
+	stats.Add(numProviderChecks, 0)
+	stats.Add(numProviderProvides, 0)
+	stats.Add(numProviderProvidesFail, 0)
 	stats.Add(numAutoRestores, 0)
 	stats.Add(numAutoRestoresSkipped, 0)
 	stats.Add(numAutoRestoresFailed, 0)
+	stats.Add(numUncompressedCommands, 0)
+	stats.Add(numCompressedCommands, 0)
+	stats.Add(numJoins, 0)
+	stats.Add(numIgnoredJoins, 0)
+	stats.Add(numRemovedBeforeJoins, 0)
+	stats.Add(numDBStatsErrors, 0)
+	stats.Add(snapshotCreateDuration, 0)
+	stats.Add(snapshotCreateChkTruncateDuration, 0)
+	stats.Add(snapshotCreateWALCompactDuration, 0)
+	stats.Add(numSnapshotPersists, 0)
+	stats.Add(numSnapshotPersistsFailed, 0)
+	stats.Add(snapshotPersistDuration, 0)
+	stats.Add(snapshotPrecompactWALSize, 0)
+	stats.Add(snapshotWALSize, 0)
+	stats.Add(leaderChangesObserved, 0)
+	stats.Add(leaderChangesDropped, 0)
+	stats.Add(failedHeartbeatObserved, 0)
+	stats.Add(nodesReapedOK, 0)
+	stats.Add(nodesReapedFailed, 0)
 }
 
 // ClusterState defines the possible Raft states the current node can be in
@@ -205,6 +284,9 @@ type Store struct {
 	restorePath   string
 	restoreDoneCh chan struct{}
 
+	// Channels that must be closed for the Store to be considered ready.
+	readyChans *rsync.ReadyChannels
+
 	mu sync.Mutex
 }
 
@@ -216,7 +298,7 @@ type Config struct {
 }
 
 // func New(ly Layer, ko *koanf.Koanf) *Store {
-func New(ly Layer,  c *Config) *Store {
+func New(ly Layer, c *Config) *Store {
 
 	// raftDir := ko.String("raft_dir")
 	// raftId := ko.String("node_id")
@@ -237,13 +319,14 @@ func New(ly Layer,  c *Config) *Store {
 		reqMarshaller:   command.NewRequestMarshaler(),
 		notifyingNodes:  make(map[string]*Server),
 		ApplyTimeout:    applyTimeout,
-		fsmIdx:         &atomic.Uint64{},
-		fsmTarget:      rsync.NewReadyTarget[uint64](),
-		fsmTerm:        &atomic.Uint64{},
-		fsmUpdateTime:  rsync.NewAtomicTime(),
-		appendedAtTime: rsync.NewAtomicTime(),
-		dbModifiedTime: rsync.NewAtomicTime(),
-		logger:         logger,
+		fsmIdx:          &atomic.Uint64{},
+		fsmTarget:       rsync.NewReadyTarget[uint64](),
+		fsmTerm:         &atomic.Uint64{},
+		fsmUpdateTime:   rsync.NewAtomicTime(),
+		appendedAtTime:  rsync.NewAtomicTime(),
+		dbModifiedTime:  rsync.NewAtomicTime(),
+		logger:          logger,
+		readyChans:      rsync.NewReadyChannels(),
 		// snapshotCAS:     rsync.NewCheckAndSet(),
 		// Unsure if I need the following data
 		// dbAppliedIdx:    &atomic.Uint64{},
@@ -547,4 +630,268 @@ func IsNewNode(raftDir string) bool {
 	// If there is any preexisting Raft state, then this node
 	// has already been created.
 	return !pathExists(filepath.Join(raftDir, raftDBPath))
+}
+
+// Implementation of the manager
+
+// LeaderAddr returns the address of the current leader. Returns a
+// blank string if there is no leader or if the Store is not open.
+func (s *Store) LeaderAddr() (string, error) {
+	if s.open.Is() {
+		return "", nil
+	}
+	addr, id := s.raft.LeaderWithID()
+	s.logger.Debug().Msgf("The address and id of the leader is: %v, %v", addr, id)
+	return string(addr), nil
+}
+
+// LeaderID returns the node ID of the Raft leader. Returns a
+// blank string if there is no leader, or an error.
+func (s *Store) LeaderID() (string, error) {
+	if !s.open.Is() {
+		return "", nil
+	}
+	_, id := s.raft.LeaderWithID()
+	return string(id), nil
+}
+
+// LeaderWithID is used to return the current leader address and ID of the cluster.
+// It may return empty strings if there is no current leader or the leader is unknown.
+func (s *Store) LeaderWithID() (string, string) {
+	if !s.open.Is() {
+		return "", ""
+	}
+	addr, id := s.raft.LeaderWithID()
+	return string(addr), string(id)
+}
+
+// HasLeaderID returns true if the cluster has a leader ID, false otherwise.
+func (s *Store) HasLeaderID() bool {
+	id, err := s.LeaderID()
+	if err != nil {
+		s.logger.Err(err).Msg("Error when getting leader id")
+		return false
+	}
+	return id != ""
+}
+
+// LeaderCommitIndex returns the Raft leader commit index, as indicated
+// by the latest AppendEntries RPC. If this node is the Leader then the
+// commit index is returned directly from the Raft object.
+func (s *Store) LeaderCommitIndex() (uint64, error) {
+	if !s.open.Is() {
+		return 0, ErrNotOpen
+	}
+	if s.raft.State() == raft.Leader {
+		return s.raft.CommitIndex(), nil
+	}
+	return s.raftTn.LeaderCommitIndex(), nil
+}
+
+func (s *Store) CommitIndex() (uint64, error) {
+	if !s.open.Is() {
+		return 0, ErrNotOpen
+	}
+	return s.raft.CommitIndex(), nil
+}
+
+func (s *Store) Remove(rn *commandProto.RemoveNodeRequest) error {
+	return nil
+}
+
+func (s *Store) Notify(n *commandProto.NotifyRequest) error {
+	return nil
+}
+
+func (s *Store) Join(n *commandProto.JoinRequest) error {
+	return nil
+}
+
+// Implementation for the HTTP daemon
+
+// Snapshot performs a snapshot, leaving n trailing logs behind. If n
+// is greater than zero, that many logs are left in the log after
+// snapshotting. If n is zero, then the number set at Store creation is used.
+// Finally, once this function returns, the trailing log configuration value
+// is reset to the value set at Store creation.
+func (s *Store) Snapshot(n uint64) (retError error) {
+	defer func() {
+		if retError != nil {
+			stats.Add(numUserSnapshotsFailed, 1)
+			s.logger.Printf("failed to generate user-requested snapshot: %s", retError.Error())
+		}
+	}()
+
+	if n > 0 {
+		cfg := s.raft.ReloadableConfig()
+		defer func() {
+			cfg.TrailingLogs = s.numTrailingLogs
+			if err := s.raft.ReloadConfig(cfg); err != nil {
+				s.logger.Printf("failed to reload Raft config: %s", err.Error())
+			}
+		}()
+		cfg.TrailingLogs = n
+		if err := s.raft.ReloadConfig(cfg); err != nil {
+			return fmt.Errorf("failed to reload Raft config: %s", err.Error())
+		}
+	}
+	if err := s.raft.Snapshot().Error(); err != nil {
+		if strings.Contains(err.Error(), ErrLoadInProgress.Error()) {
+			return ErrLoadInProgress
+		}
+		return err
+	}
+	stats.Add(numUserSnapshots, 1)
+	return nil
+}
+
+func (s *Store) Backup(br *proto.BackupRequest, dst io.Writer) (retErr error) {
+	return ErrNotImplemented
+}
+
+func (s *Store) Ready() bool {
+	return s.open.Is() && s.readyChans.Ready() && s.HasLeader()
+}
+
+// HasLeader returns true if the cluster has a leader, false otherwise.
+func (s *Store) HasLeader() bool {
+	if !s.open.Is() {
+		return false
+	}
+	return s.raft.Leader() != ""
+}
+
+// Committed blocks until the local commit index is greater than or
+// equal to the Leader index, as checked when the function is called.
+// It returns the committed index. If the Leader index is 0, then the
+// system waits until the commit index is at least 1.
+func (s *Store) Committed(timeout time.Duration) (uint64, error) {
+	lci, err := s.LeaderCommitIndex()
+	if err != nil {
+		return lci, err
+	}
+	return lci, s.WaitForCommitIndex(max(1, lci), timeout)
+}
+
+// WaitForCommitIndex blocks until the local Raft commit index is equal to
+// or greater the given index, or the timeout expires.
+func (s *Store) WaitForCommitIndex(idx uint64, timeout time.Duration) error {
+	check := func() bool {
+		return s.raft.CommitIndex() >= idx
+	}
+	return rsync.NewPollTrue(check, commitEquivalenceDelay, timeout).Run("commit index")
+}
+
+// Addr returns the address of the store.
+func (s *Store) Addr() string {
+	if !s.open.Is() {
+		return ""
+	}
+	return string(s.raftTn.LocalAddr())
+}
+
+// logSize returns the size of the Raft log on disk.
+func (s *Store) logSize() (int64, error) {
+	fi, err := os.Stat(filepath.Join(s.raftDir, raftDBPath))
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
+}
+
+// IsVoter returns true if the current node is a voter in the cluster. If there
+// is no reference to the current node in the current cluster configuration then
+// false will also be returned.
+func (s *Store) IsVoter() (bool, error) {
+	if !s.open.Is() {
+		return false, ErrNotOpen
+	}
+	cfg := s.raft.GetConfiguration()
+	if err := cfg.Error(); err != nil {
+		return false, err
+	}
+	for _, srv := range cfg.Configuration().Servers {
+		if srv.ID == raft.ServerID(s.raftID) {
+			return srv.Suffrage == raft.Voter, nil
+		}
+	}
+	return false, nil
+}
+
+// Stats returns stats for the store.
+func (s *Store) Stats() (map[string]interface{}, error) {
+	if !s.open.Is() {
+		return map[string]interface{}{
+			"open": false,
+		}, nil
+	}
+
+	nodes, err := s.Nodes()
+	if err != nil {
+		return nil, err
+	}
+	leaderAddr, leaderID := s.LeaderWithID()
+
+	// Perform type-conversion to actual numbers where possible.
+	raftStats := make(map[string]interface{})
+	for k, v := range s.raft.Stats() {
+		if s, err := strconv.ParseInt(v, 10, 64); err != nil {
+			raftStats[k] = v
+		} else {
+			raftStats[k] = s
+		}
+	}
+	raftStats["log_size"], err = s.logSize()
+	if err != nil {
+		return nil, err
+	}
+	raftStats["voter"], err = s.IsVoter()
+	if err != nil {
+		return nil, err
+	}
+	raftStats["bolt"] = s.boltStore.Stats()
+	raftStats["transport"] = s.raftTn.Stats()
+
+
+	dirSz, err := utils.DirSize(s.raftDir)
+	if err != nil {
+		return nil, err
+	}
+
+	status := map[string]interface{}{
+		"open":            s.open,
+		"node_id":         s.raftID,
+		"raft":            raftStats,
+		"fsm_index":       s.fsmIdx.Load(),
+		"fsm_term":        s.fsmTerm.Load(),
+		"fsm_update_time": s.fsmUpdateTime.Load(),
+		"addr":            s.Addr(),
+		"leader": map[string]string{
+			"node_id": leaderID,
+			"addr":    leaderAddr,
+		},
+		"leader_appended_at_time": s.appendedAtTime.Load(),
+		"ready":                   s.Ready(),
+		"observer": map[string]uint64{
+			"observed": s.observer.GetNumObserved(),
+			"dropped":  s.observer.GetNumDropped(),
+		},
+		"apply_timeout":      s.ApplyTimeout.String(),
+		"heartbeat_timeout":  s.HeartbeatTimeout.String(),
+		"election_timeout":   s.ElectionTimeout.String(),
+		"snapshot_threshold": s.SnapshotThreshold,
+		"snapshot_interval":  s.SnapshotInterval.String(),
+		// "snapshot_cas":           s.snapshotCAS.Stats(),
+		"reap_timeout":           s.ReapTimeout.String(),
+		"reap_read_only_timeout": s.ReapReadOnlyTimeout.String(),
+		"no_freelist_sync":       s.NoFreeListSync,
+		"trailing_logs":          s.numTrailingLogs,
+		"request_marshaler":      s.reqMarshaller.Stats(),
+		"nodes":                  nodes,
+		"dir":                    s.raftDir,
+		"dir_size":               dirSz,
+		"dir_size_friendly":      utils.FriendlyBytes(uint64(dirSz)),
+	}
+
+	return status, nil
 }

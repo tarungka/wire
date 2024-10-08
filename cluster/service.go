@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/tarungka/wire/cluster/proto"
-	command "github.com/tarungka/wire/internal/command/proto"
+	commandProto "github.com/tarungka/wire/internal/command/proto"
 	pb "google.golang.org/protobuf/proto"
 )
 
@@ -88,19 +88,19 @@ type Dialer interface {
 // Database is the interface any queryable system must implement
 type Database interface {
 	// Execute executes a slice of SQL statements.
-	Execute(er *command.ExecuteRequest) ([]*command.ExecuteQueryResponse, error)
+	Execute(er *commandProto.ExecuteRequest) ([]*commandProto.ExecuteQueryResponse, error)
 
 	// Query executes a slice of queries, each of which returns rows.
-	Query(qr *command.QueryRequest) ([]*command.QueryRows, error)
+	Query(qr *commandProto.QueryRequest) ([]*commandProto.QueryRows, error)
 
 	// Request processes a request that can both executes and queries.
-	Request(rr *command.ExecuteQueryRequest) ([]*command.ExecuteQueryResponse, error)
+	Request(rr *commandProto.ExecuteQueryRequest) ([]*commandProto.ExecuteQueryResponse, error)
 
 	// Backup writes a backup of the database to the writer.
-	Backup(br *command.BackupRequest, dst io.Writer) error
+	Backup(br *commandProto.BackupRequest, dst io.Writer) error
 
 	// Loads an entire SQLite file into the database
-	Load(lr *command.LoadRequest) error
+	Load(lr *commandProto.LoadRequest) error
 }
 
 // Manager is the interface node-management systems must implement
@@ -112,14 +112,14 @@ type Manager interface {
 	CommitIndex() (uint64, error)
 
 	// Remove removes the node, given by id, from the cluster
-	Remove(rn *command.RemoveNodeRequest) error
+	Remove(rn *commandProto.RemoveNodeRequest) error
 
 	// Notify notifies this node that a remote node is ready
 	// for bootstrapping.
-	Notify(n *command.NotifyRequest) error
+	Notify(n *commandProto.NotifyRequest) error
 
 	// Join joins a remote node to the cluster.
-	Join(n *command.JoinRequest) error
+	Join(n *commandProto.JoinRequest) error
 }
 
 // CredentialStore is the interface credential stores must support.
@@ -140,6 +140,7 @@ type Service struct {
 	apiAddr string // host:port this node serves the HTTP API.
 
 	logger *log.Logger
+	// logger zerolog.Logger
 }
 
 // New returns a new instance of the cluster service
@@ -149,6 +150,7 @@ func New(ln net.Listener,  m Manager) *Service {
 		addr:            ln.Addr(),
 		mgr:             m,
 		logger:          log.New(os.Stderr, "[cluster] ", log.LstdFlags),
+		// logger:          zerolog.Logger{},
 	}
 }
 

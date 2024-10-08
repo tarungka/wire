@@ -34,8 +34,8 @@ import (
 	"github.com/tarungka/wire/internal/command"
 	"github.com/tarungka/wire/internal/command/chunking"
 	"github.com/tarungka/wire/internal/command/proto"
+	"github.com/tarungka/wire/internal/rsync"
 	rlog "github.com/tarungka/wire/log"
-	"github.com/tarungka/wire/rsync"
 )
 
 var (
