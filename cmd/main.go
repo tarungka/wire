@@ -27,35 +27,55 @@ import (
 )
 
 var (
-	buildString = "unknown"
-	ko          = koanf.New(".")
+	ko = koanf.New(".")
 )
+
+// Need to make up my mind on some of these:
+// The high-performance, distributed stream processing platform.
+// Seamless Streaming for Dynamic Workloads.
+// There is a new line at the start of this logo
+
+const logo = `
+ __      __.________________________
+/  \    /  \   \______   \_   _____/
+\   \/\/   /   ||       _/|    __)_    Seamless Streaming for
+ \        /|   ||    |   \|        \   Dynamic Workloads.
+  \__/\  / |___||____|_  /_______  /   www.github.com/tarungka/wire
+       \/              \/        \/
+`
+
+const name = `wire`
+const desc = `Wire is a powerful, distributed stream processing platform designed to handle real-time data flows with exceptional efficiency. Engineered for scalability and performance, Wire simplifies stream processing, enabling seamless, fault-tolerant data pipelines for even the most demanding workloads.
+
+Visit https://www.github.com/tarungka/wire to learn more.`
 
 func main() {
 
 	var logger zerolog.Logger
 
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	// zerolog.SetGlobalLevel(zerolog.InfoLevel)
+
 	// logs will be written to both server.log and stdout
 	logFile, err := os.OpenFile("server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to open log file")
+		fmt.Printf("failed to create log file")
 	}
 	defer logFile.Close()
 
-	// Create a multi-writer to write to both the console and the log file
-	multi := zerolog.MultiLevelWriter(os.Stdout, logFile)
+	cfg, err := initFlags(name, desc, &BuildInfo{
+		Version: cmd.Version,
+		Commit:  cmd.Commit,
+		Branch:  cmd.Branch,
+	})
+	if err != nil {
+		fmt.Printf("failed to parse command-line flags: %s", err.Error())
+	}
+	fmt.Println(logo)
 
-	// Set up zerolog to write to the multi-writer
-	log.Logger = zerolog.New(multi).With().Timestamp().Logger()
-
-	initFlags(ko)
-
-	// Set up zerolog for development mode (human-readable logs)
-	isDevelopment := ko.Bool("debug")
+	isDevelopment := cfg.DebugMode
 
 	if isDevelopment {
+		// Set up zerolog for development mode (human-readable logs)
 		consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339,
 			FormatLevel: func(i interface{}) string {
 				return strings.ToUpper(fmt.Sprintf("[%5s]", i))
@@ -83,30 +103,20 @@ func main() {
 		log.Debug().Msgf("The process ID is: %v", os.Getpid())
 	}
 
-	if ko.Bool("version") {
-		fmt.Println(buildString)
-		os.Exit(0)
-	} else {
-		log.Info().Str("build:", buildString).Msgf("Build Version: %s", buildString)
-	}
-
 	log.Info().Msg("Starting the application...")
 
-	raftAddress := ko.String("raft_addr")
-	muxListener, err := net.Listen("tcp", raftAddress)
+	muxListener, err := net.Listen("tcp", cfg.RaftAddr)
 	if err != nil {
-		log.Fatal().Err(err).Msgf("failed to listen on %s: %s", raftAddress, err.Error())
+		log.Fatal().Err(err).Msgf("failed to listen on %s: %s", cfg.RaftAddr, err.Error())
 	}
-	mux, err := startNodeMux(ko, muxListener)
+	mux, err := startNodeMux(cfg, muxListener)
 	if err != nil {
 		log.Fatal().Msgf("failed to start node mux: %s", err.Error())
 	}
 
-	nodeVerifyServername := ko.String("node_verify_server_name")
-	noNodeVerify := ko.Bool("no_node_verify")
 	// Raft internode layer
 	raftLn := mux.Listen(cluster.MuxRaftHeader)
-	raftDialer, err := cluster.CreateRaftDialer("", "", "", nodeVerifyServername, noNodeVerify)
+	raftDialer, err := cluster.CreateRaftDialer("", "", "", cfg.NodeVerifyServerName, cfg.NoNodeVerify)
 	if err != nil {
 		log.Fatal().Msgf("failed to create Raft dialer: %s", err.Error())
 	}
@@ -115,30 +125,29 @@ func main() {
 	log.Debug().Msgf("A raft layer is ready, will use it: %v", raftTn)
 
 	// Create the store
-	str, err := createStore(ko, raftTn)
+	str, err := createStore(cfg, raftTn)
 	if err != nil {
 		log.Fatal().Msgf("failed to create store: %s", err.Error())
 	}
 	log.Debug().Msgf("The store is:", str)
 
 	// Create cluster service now, so nodes will be able to learn information about each other.
-	clstrServ, err := clusterService(ko, mux.Listen(cluster.MuxClusterHeader), str)
+	clstrServ, err := clusterService(cfg, mux.Listen(cluster.MuxClusterHeader), str)
 	if err != nil {
 		log.Fatal().Msgf("failed to create cluster service: %s", err.Error())
 	}
 	log.Debug().Msgf("Created the cluster service: %v", clstrServ)
 
-	clstrClient, err := createClusterClient(ko, clstrServ)
+	clstrClient, err := createClusterClient(cfg, clstrServ)
 	if err != nil {
 		log.Fatal().Msgf("failed to create cluster client: %s", err.Error())
 	}
 	log.Debug().Msgf("Created the cluster client: %v", clstrClient)
-	httpServ, err := startHTTPService(ko, str, clstrClient)
+	httpServ, err := startHTTPService(cfg, str, clstrClient)
 	if err != nil {
 		log.Fatal().Msgf("failed to start HTTP server: %s", err.Error())
 	}
 	log.Debug().Msgf("Started the HTTP service!", httpServ)
-
 
 	// Now, open the store
 	if err := str.Open(); err != nil {
@@ -155,17 +164,11 @@ func main() {
 	}
 	log.Debug().Msgf("The number of nodes are: %s", nodes)
 
-	if err := createCluster(mainCtx, ko, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
+	if err := createCluster(mainCtx, cfg, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
 		log.Fatal().Msgf("clustering failure: %s", err.Error())
 	}
 
-	// This way the command line arguments are overridden by the remote/other configs
-	if ko.Bool("override") {
-		if initError := initConfig(ko); initError != nil {
-			log.Err(initError).Msg("Error when initializing the config!")
-		}
-	}
-
+	// TODO: create a global context which manages the startup and teardown of the process
 	done := make(chan interface{}, 1)
 
 	var wg sync.WaitGroup
@@ -230,30 +233,28 @@ func main() {
 
 // startNodeMux starts the TCP mux on the given listener, which should be already
 // bound to the relevant interface.
-func startNodeMux(ko *koanf.Koanf, ln net.Listener) (*tcp.Mux, error) {
-	raftAddress := ko.String("raft_addr")
+func startNodeMux(cfg *Config, ln net.Listener) (*tcp.Mux, error) {
 	var err error
 	adv := tcp.NameAddress{
-		Address: raftAddress,
+		Address: cfg.RaftAdv,
 	}
 
 	var mux *tcp.Mux
-	if ko.String("NodeX509Cert") != "" {
+	if cfg.NodeX509Cert != "" {
 		// TODO: Implement this later
-		// var b strings.Builder
-		// b.WriteString(fmt.Sprintf("enabling node-to-node encryption with cert: %s, key: %s",
-		// 	cfg.NodeX509Cert, cfg.NodeX509Key))
-		// if cfg.NodeX509CACert != "" {
-		// 	b.WriteString(fmt.Sprintf(", CA cert %s", cfg.NodeX509CACert))
-		// }
-		// if cfg.NodeVerifyClient {
-		// 	b.WriteString(", mutual TLS enabled")
-		// } else {
-		// 	b.WriteString(", mutual TLS disabled")
-		// }
-		// log.Println(b.String())
-		// mux, err = tcp.NewTLSMux(ln, adv, cfg.NodeX509Cert, cfg.NodeX509Key, cfg.NodeX509CACert,
-		// 	cfg.NoNodeVerify, cfg.NodeVerifyClient)
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("enabling node-to-node encryption with cert: %s, key: %s",
+			cfg.NodeX509Cert, cfg.NodeX509Key))
+		if cfg.NodeX509CACert != "" {
+			b.WriteString(fmt.Sprintf(", CA cert %s", cfg.NodeX509CACert))
+		}
+		if cfg.NodeVerifyClient {
+			b.WriteString(", mutual TLS enabled")
+		} else {
+			b.WriteString(", mutual TLS disabled")
+		}
+		mux, err = tcp.NewTLSMux(ln, adv, cfg.NodeX509Cert, cfg.NodeX509Key, cfg.NodeX509CACert,
+			cfg.NoNodeVerify, cfg.NodeVerifyClient)
 	} else {
 		mux, err = tcp.NewMux(ln, adv)
 	}
@@ -264,19 +265,18 @@ func startNodeMux(ko *koanf.Koanf, ln net.Listener) (*tcp.Mux, error) {
 	return mux, nil
 }
 
-func clusterService(ko *koanf.Koanf, ln net.Listener, mgr cluster.Manager) (*cluster.Service, error) {
+func clusterService(cfg *Config, ln net.Listener, mgr cluster.Manager) (*cluster.Service, error) {
 	c := cluster.New(ln, mgr)
-	apiAddress := ko.String("http_adv")
-	c.SetAPIAddr(apiAddress)
+	c.SetAPIAddr(cfg.HTTPAddr)
 	// TODO: support HTTP over SSL
-	c.EnableHTTPS(false) // Conditions met for an HTTPS API
+	c.EnableHTTPS(cfg.HTTPx509Cert != "" && cfg.HTTPx509Key != "") // Conditions met for an HTTPS API
 	if err := c.Open(); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-func createClusterClient(ko *koanf.Koanf, clstr *cluster.Service) (*cluster.Client, error) {
+func createClusterClient(cfg *Config, clstr *cluster.Service) (*cluster.Client, error) {
 	var dialerTLSConfig *tls.Config
 	// TODO: Dialer over SSL
 	// var err error
@@ -288,59 +288,50 @@ func createClusterClient(ko *koanf.Koanf, clstr *cluster.Service) (*cluster.Clie
 	// 	}
 	// }
 
-	// clusterConnectTimeout := ko.Int64("cluster_connect_timeout")
-	raftAddress := ko.String("raft_addr")
 	clstrDialer := tcp.NewDialer(cluster.MuxClusterHeader, dialerTLSConfig)
 	clstrClient := cluster.NewClient(clstrDialer, 10*time.Second)
-	if err := clstrClient.SetLocal(raftAddress, clstr); err != nil {
+	if err := clstrClient.SetLocal(cfg.RaftAdv, clstr); err != nil {
 		return nil, fmt.Errorf("failed to set cluster client local parameters: %s", err.Error())
 	}
 	return clstrClient, nil
 }
 
-func createStore(ko *koanf.Koanf, ln *tcp.Layer) (*store.Store, error) {
+func createStore(cfg *Config, ln *tcp.Layer) (*store.Store, error) {
 
 	str := store.New(ln, &store.Config{
-		Dir: ko.String("raft_dir"),
-		ID:  ko.String("node_id"),
+		Dir: cfg.DataPath,
+		ID:  cfg.NodeID,
 	})
 
 	// Set optional parameters on store.
-	str.RaftLogLevel = ko.String("RaftLogLevel")
-	str.ShutdownOnRemove = ko.Bool("RaftShutdownOnRemove")
-	str.SnapshotThreshold = uint64(ko.Int64("RaftSnapThreshold"))
-	// str.SnapshotThresholdWALSize = uint64(ko.Int64("RaftSnapThresholdWALSize"))
-	str.SnapshotInterval = time.Duration(ko.Int64("RaftSnapInterval")) * time.Second
-	str.LeaderLeaseTimeout = time.Duration(ko.Int64("RaftLeaderLeaseTimeout")) * time.Second
-	str.HeartbeatTimeout = time.Duration(ko.Int64("RaftHeartbeatTimeout")) * time.Second
-	str.ElectionTimeout = time.Duration(ko.Int64("RaftElectionTimeout")) * time.Second
-	str.ApplyTimeout = time.Duration(ko.Int64("RaftApplyTimeout")) * time.Second
-	str.BootstrapExpect = ko.Int("BootstrapExpect")
-	str.ReapTimeout = time.Duration(ko.Int64("RaftReapNodeTimeout")) * time.Second
-	str.ReapReadOnlyTimeout = time.Duration(ko.Int64("RaftReapReadOnlyNodeTimeout")) * time.Second
-	str.AutoVacInterval = time.Duration(ko.Int64("AutoVacInterval")) * time.Second
-	str.AutoOptimizeInterval = time.Duration(ko.Int64("AutoOptimizeInterval")) * time.Second
+	str.RaftLogLevel = cfg.RaftLogLevel
+	str.ShutdownOnRemove = cfg.RaftShutdownOnRemove
+	str.SnapshotThreshold = cfg.RaftSnapThreshold
+	str.SnapshotInterval = cfg.RaftSnapInterval
+	str.LeaderLeaseTimeout = cfg.RaftLeaderLeaseTimeout
+	str.HeartbeatTimeout = cfg.RaftHeartbeatTimeout
+	str.ElectionTimeout = cfg.RaftElectionTimeout
+	str.ApplyTimeout = cfg.RaftApplyTimeout
+	str.BootstrapExpect = cfg.BootstrapExpect
+	str.ReapTimeout = cfg.RaftReapNodeTimeout
+	str.ReapReadOnlyTimeout = cfg.RaftReapReadOnlyNodeTimeout
+	str.AutoVacInterval = cfg.AutoVacInterval
+	str.AutoOptimizeInterval = cfg.AutoOptimizeInterval
 
-	if store.IsNewNode(ko.String("raft_dir")) {
-		log.Printf("no preexisting node state detected in %s, node may be bootstrapping", ko.String("raft_dir"))
+	if store.IsNewNode(cfg.DataPath) {
+		log.Printf("no preexisting node state detected in %s, node may be bootstrapping", cfg.DataPath)
 	} else {
-		log.Printf("preexisting node state detected in %s", ko.String("DataPath"))
+		log.Printf("preexisting node state detected in %s", cfg.DataPath)
 	}
 
 	return str, nil
 }
 
-// func startHTTPService(ko *koanf.Koanf, str *store.Store, cltr *cluster.Client, credStr *auth.CredentialsStore) (string, error) {
-func startHTTPService(ko *koanf.Koanf, str *store.Store, cltr *cluster.Client) (*httpd.Service, error) {
-
-	defer func() {
-		log.Debug().Msg("Http service started/failed!")
-	}()
-
+func startHTTPService(cfg *Config, str *store.Store, cltr *cluster.Client) (*httpd.Service, error) {
 	// Create HTTP server and load authentication information.
-	s := httpd.New(ko.String("http_addr"), str, cltr, nil)
+	s := httpd.New(cfg.HTTPAddr, str, cltr, nil)
 
-	log.Debug().Msg("Started the HTTP service!")
+	// TODO: Need to support HTTPS
 	// s.CACertFile = cfg.HTTPx509CACert
 	// s.CertFile = cfg.HTTPx509Cert
 	// s.KeyFile = cfg.HTTPx509Key
@@ -357,29 +348,25 @@ func startHTTPService(ko *koanf.Koanf, str *store.Store, cltr *cluster.Client) (
 		"compiler_command":   cmd.CompilerCommand,
 		"build_time":         cmd.Buildtime,
 	}
-	// s.SetAllowOrigin(cfg.HTTPAllowOrigin)
+	s.SetAllowOrigin(cfg.HTTPAllowOrigin)
 	return s, s.Start()
 }
 
 // TODO: This code needs major rework, will work on this later
-func createCluster(ctx context.Context, ko *koanf.Koanf, hasPeers bool, client *cluster.Client, str *store.Store,
+func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *cluster.Client, str *store.Store,
 	httpServ *httpd.Service, credStr *auth.CredentialsStore) error {
-	// joins := cfg.JoinAddresses()
-	joins, err := joinAddresses(ko.String("join"))
-	if err != nil {
-		log.Fatal().Msgf("Invalid input for join: %s", ko.String("join"))
-	}
+	joins := cfg.JoinAddresses()
 	if err := networkCheckJoinAddrs(joins); err != nil {
 		return err
 	}
-	if joins == nil && ko.String("disco_mode") == "" && !hasPeers {
-		if ko.Bool("raft-non-voter") {
+	if joins == nil && cfg.DiscoMode == "" && !hasPeers {
+		if cfg.RaftNonVoter {
 			return fmt.Errorf("cannot create a new non-voting node without joining it to an existing cluster")
 		}
 
 		// Brand new node, told to bootstrap itself. So do it.
 		log.Info().Msg("bootstrapping single new node")
-		if err := str.Bootstrap(store.NewServer(str.ID(), ko.String("raft_addr"), true)); err != nil {
+		if err := str.Bootstrap(store.NewServer(str.ID(), cfg.RaftAdv, true)); err != nil {
 			return fmt.Errorf("failed to bootstrap single new node: %s", err.Error())
 		}
 		return nil
@@ -390,13 +377,13 @@ func createCluster(ctx context.Context, ko *koanf.Koanf, hasPeers bool, client *
 		leader, _ := str.LeaderAddr()
 		return leader != ""
 	}
-	clusterSuf := cluster.VoterSuffrage(!ko.Bool("raft-non-voter"))
+	clusterSuf := cluster.VoterSuffrage(!cfg.RaftNonVoter)
 
-	joiner := cluster.NewJoiner(client, ko.Int("join-attempts"), ko.Duration("join-interval"))
-	joiner.SetCredentials(cluster.CredentialsFor(credStr, ko.String("join-as")))
-	if joins != nil && ko.Int("bootstrap-expect") == 0 {
+	joiner := cluster.NewJoiner(client, cfg.JoinAttempts, cfg.JoinInterval)
+	joiner.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
+	if joins != nil && cfg.BootstrapExpect == 0 {
 		// Explicit join operation requested, so do it.
-		j, err := joiner.Do(ctx, joins, str.ID(), ko.String("raft_addr"), clusterSuf)
+		j, err := joiner.Do(ctx, joins, str.ID(), cfg.RaftAdv, clusterSuf)
 		if err != nil {
 			return fmt.Errorf("failed to join cluster: %s", err.Error())
 		}
@@ -404,14 +391,14 @@ func createCluster(ctx context.Context, ko *koanf.Koanf, hasPeers bool, client *
 		return nil
 	}
 
-	if joins != nil && ko.Int("bootstrap-expect") > 0 {
+	if joins != nil && cfg.BootstrapExpect > 0 {
 		// Bootstrap with explicit join addresses requests.
 		bs := cluster.NewBootstrapper(cluster.NewAddressProviderString(joins), client)
-		bs.SetCredentials(cluster.CredentialsFor(credStr, ko.String("join-as")))
-		return bs.Boot(ctx, str.ID(), ko.String("raft_addr"), clusterSuf, bootDoneFn, ko.Duration("bootstrap-expect-timeout"))
+		bs.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
+		return bs.Boot(ctx, str.ID(), cfg.RaftAdv, clusterSuf, bootDoneFn, cfg.BootstrapExpectTimeout)
 	}
 
-	if ko.String("disco_mode") == "" {
+	if cfg.DiscoMode == "" {
 		// No more clustering techniques to try. Node will just sit, probably using
 		// existing Raft state.
 		return nil
@@ -420,9 +407,9 @@ func createCluster(ctx context.Context, ko *koanf.Koanf, hasPeers bool, client *
 	// DNS-based discovery requested. It's OK to proceed with this even if this node
 	// is already part of a cluster. Re-joining and re-notifying other nodes will be
 	// ignored when the node is already part of the cluster.
-	log.Printf("discovery mode: %s", ko.String("disco_mode"))
-	switch ko.String("disco_mode") {
-	// TODO: will impl this later
+	log.Printf("discovery mode: %s", cfg.DiscoMode)
+	switch cfg.DiscoMode {
+		// TODO: need to impl this
 	// case DiscoModeDNS, DiscoModeDNSSRV:
 	// 	rc := cfg.DiscoConfigReader()
 	// 	defer func() {
@@ -453,7 +440,7 @@ func createCluster(ctx context.Context, ko *koanf.Koanf, hasPeers bool, client *
 	// 	bs := cluster.NewBootstrapper(provider, client)
 	// 	bs.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
 	// 	httpServ.RegisterStatus("disco", provider)
-	// 	return bs.Boot(ctx, str.ID(), ko.String("raft_addr"), clusterSuf, bootDoneFn, cfg.BootstrapExpectTimeout)
+	// 	return bs.Boot(ctx, str.ID(), cfg.RaftAdv, clusterSuf, bootDoneFn, cfg.BootstrapExpectTimeout)
 
 	// case DiscoModeEtcdKV, DiscoModeConsulKV:
 	// 	discoService, err := createDiscoService(cfg, str)
@@ -462,45 +449,45 @@ func createCluster(ctx context.Context, ko *koanf.Koanf, hasPeers bool, client *
 	// 	}
 	// 	// Safe to start reporting before doing registration. If the node hasn't bootstrapped
 	// 	// yet, or isn't leader, reporting will just be a no-op until something changes.
-	// 	go discoService.StartReporting(cfg.NodeID, cfg.HTTPURL(), ko.String("raft_addr"))
+	// 	go discoService.StartReporting(cfg.NodeID, cfg.HTTPURL(), cfg.RaftAdv)
 	// 	httpServ.RegisterStatus("disco", discoService)
 
 	// 	if hasPeers {
 	// 		log.Printf("preexisting node configuration detected, not registering with discovery service")
 	// 		return nil
 	// 	}
-	// 	log.Info().Msg("no preexisting nodes, registering with discovery service")
+	// 	log.Println("no preexisting nodes, registering with discovery service")
 
-	// 	leader, addr, err := discoService.Register(str.ID(), cfg.HTTPURL(), ko.String("raft_addr"))
+	// 	leader, addr, err := discoService.Register(str.ID(), cfg.HTTPURL(), cfg.RaftAdv)
 	// 	if err != nil {
 	// 		return fmt.Errorf("failed to register with discovery service: %s", err.Error())
 	// 	}
 	// 	if leader {
-	// 		log.Info().Msg("node registered as leader using discovery service")
+	// 		log.Println("node registered as leader using discovery service")
 	// 		if err := str.Bootstrap(store.NewServer(str.ID(), str.Addr(), true)); err != nil {
 	// 			return fmt.Errorf("failed to bootstrap single new node: %s", err.Error())
 	// 		}
 	// 	} else {
 	// 		for {
 	// 			log.Printf("discovery service returned %s as join address", addr)
-	// 			if j, err := joiner.Do(ctx, []string{addr}, str.ID(), ko.String("raft_addr"), clusterSuf); err != nil {
+	// 			if j, err := joiner.Do(ctx, []string{addr}, str.ID(), cfg.RaftAdv, clusterSuf); err != nil {
 	// 				log.Printf("failed to join cluster at %s: %s", addr, err.Error())
 
 	// 				time.Sleep(time.Second)
-	// 				_, addr, err = discoService.Register(str.ID(), cfg.HTTPURL(), ko.String("raft_addr"))
+	// 				_, addr, err = discoService.Register(str.ID(), cfg.HTTPURL(), cfg.RaftAdv)
 	// 				if err != nil {
 	// 					log.Printf("failed to get updated leader: %s", err.Error())
 	// 				}
 	// 				continue
 	// 			} else {
-	// 				log.Info().Msg("successfully joined cluster at", j)
+	// 				log.Println("successfully joined cluster at", j)
 	// 				break
 	// 			}
 	// 		}
 	// 	}
 
 	default:
-		return fmt.Errorf("invalid disco mode %s", ko.String("disco_mode"))
+		return fmt.Errorf("invalid disco mode %s", cfg.DiscoMode)
 	}
 	return nil
 }
