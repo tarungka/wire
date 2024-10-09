@@ -146,19 +146,18 @@ func main() {
 	}
 
 	// Creating a main context; will need to move this code up
-	// mainCtx := context.Background()
+	mainCtx := context.Background()
 
-	// // Create the cluster!
-	// nodes, err := str.Nodes()
-	// if err != nil {
-	// 	log.Fatal().Msgf("failed to get nodes %s", err.Error())
-	// }
-	// log.Debug().Msgf("The number of nodes is: %s", nodes)
+	// Create the cluster!
+	nodes, err := str.Nodes()
+	if err != nil {
+		log.Fatal().Msgf("failed to get nodes %s", err.Error())
+	}
+	log.Debug().Msgf("The number of nodes are: %s", nodes)
 
-	// // fmt.Printf("%v %v\n", mainCtx, nodes)
-	// if err := createCluster(mainCtx, ko, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
-	// 	log.Fatal().Msgf("clustering failure: %s", err.Error())
-	// }
+	if err := createCluster(mainCtx, ko, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
+		log.Fatal().Msgf("clustering failure: %s", err.Error())
+	}
 
 	// This way the command line arguments are overridden by the remote/other configs
 	if ko.Bool("override") {
@@ -507,6 +506,9 @@ func createCluster(ctx context.Context, ko *koanf.Koanf, hasPeers bool, client *
 }
 
 func joinAddresses(joinAddrs string) ([]string, error) {
+	if joinAddrs == "" {
+		return nil, nil
+	}
 	addrs := strings.Split(joinAddrs, ",")
 	for i := range addrs {
 		if _, _, err := net.SplitHostPort(addrs[i]); err != nil {
