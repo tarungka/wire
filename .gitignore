@@ -31,5 +31,20 @@ go.work
 tests/
 tmp/
 .DS_Store
+
 # Log files
 *.log
+
+# misc files
+wsnapshots/
+raft/
+raft_db/
+raft_db1/
+raft_db2/
+raft_db3/
+raft_database/
+raft_database1/
+raft_database2/
+raft_database3/
+raft.db
+wire
