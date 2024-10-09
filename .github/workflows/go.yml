@@ -6,21 +6,39 @@ name: Go
 on:
   push:
     branches: [ "master" ]
-  # Do not run on pr on master
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".github/**"
+      - "**.txt"
+      - "**.json"
+      - "**.yaml"
+      - "**.yml"
+      - "LICENSE"
+  # Do not run pr on master
   # pull_request:
   #   branches: [ "master" ]
+  #   paths-ignore:
+  #     - "**.md"
+  #     - "docs/**"
+  #     - ".github/**"
+  #     - "**.txt"
+  #     - "**.json"
+  #     - "**.yaml"
+  #     - "**.yml"
+  #     - "LICENSE"
 
 jobs:
-
   build:
     runs-on: ubuntu-latest
+
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Go
-      uses: actions/setup-go@v3
+      uses: actions/setup-go@v5
       with:
-        go-version: 1.23
+        go-version: "1.23.x"
 
     - name: Build
       run: go build -v ./...

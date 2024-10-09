@@ -240,7 +240,7 @@ type Config struct {
 }
 
 // Validate checks the configuration for internal consistency, and activates
-// important rqlite policies. It must be called at least once on a Config
+// important rockdb policies. It must be called at least once on a Config
 // object before the Config object is used. It is OK to call more than
 // once.
 func (c *Config) Validate() error {
