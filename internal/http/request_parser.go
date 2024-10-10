@@ -183,12 +183,12 @@ func makeParameter(name string, i interface{}) (*command.Parameter, error) {
 	case string:
 		// b, err := db.ParseHex(v)
 		// if err != nil {
-			return &command.Parameter{
-				Value: &command.Parameter_S{
-					S: v,
-				},
-				Name: name,
-			}, nil
+		return &command.Parameter{
+			Value: &command.Parameter_S{
+				S: v,
+			},
+			Name: name,
+		}, nil
 		// }
 		// return &command.Parameter{
 		// 	Value: &command.Parameter_Y{

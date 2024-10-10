@@ -409,7 +409,7 @@ func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *clus
 	// ignored when the node is already part of the cluster.
 	log.Printf("discovery mode: %s", cfg.DiscoMode)
 	switch cfg.DiscoMode {
-		// TODO: need to impl this
+	// TODO: need to impl this
 	// case DiscoModeDNS, DiscoModeDNSSRV:
 	// 	rc := cfg.DiscoConfigReader()
 	// 	defer func() {

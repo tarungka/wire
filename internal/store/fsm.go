@@ -42,7 +42,7 @@ type FSMSnapshot struct {
 	raft.FSMSnapshot
 	persistSucceeded bool
 	// TODO: change this to zerolog
-	logger           *log.Logger
+	logger *log.Logger
 }
 
 // Persist writes the snapshot to the given sink.
@@ -127,7 +127,6 @@ func (s *Store) fsmSnapshot() (fSnap raft.FSMSnapshot, retErr error) {
 
 	return nil, nil
 }
-
 
 // TODO: implementation is not complete
 // fsmRestore restores the node to a previous state. The Hashicorp docs state this

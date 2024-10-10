@@ -25,7 +25,6 @@ var (
 	once             sync.Once           // Setting the scope of this to the global package
 )
 
-
 // Add a new key to the config, if exists does nothing
 func (p *DataPipelineConfig) addKey(s string) {
 	if p.keys == nil {
@@ -204,7 +203,6 @@ func (p *DataPipelineConfig) Close(key string) (bool, error) {
 
 	return false, fmt.Errorf("key does not exist")
 }
-
 
 // Information about all the configs
 func (p *DataPipelineConfig) Info() {

@@ -54,14 +54,13 @@ func (p *Partitoner[T]) PartitionData(dataChannel <-chan T) []chan T {
 	return partitionedChannels
 }
 
-func (p Partitoner[T]) Examine(){
+func (p Partitoner[T]) Examine() {
 	log.Info().Msgf("Partitions: %v", p.partitions)
 	// log.Info().Msgf("HashFn: %v", p.hashFn)
 	log.Info().Msgf("bufferSize: %v", p.bufferSize)
 	log.Info().Msgf("maxRetires: %v", p.maxRetries)
 	log.Info().Msgf("ctx: %v", p.ctx)
 }
-
 
 func WithBufferSize[T any](size int) PartitonerOption[T] {
 	return func(p *Partitoner[T]) {
@@ -81,13 +80,12 @@ func WithContext[T any](ctx context.Context) PartitonerOption[T] {
 	}
 }
 
-
 // Partitoner factory function
 func NewPartitoner[T any](partitions int, hashFn func(T) (uint64, error), opts ...PartitonerOption[T]) *Partitoner[T] {
 
 	// Create a default partitioner with basic values
 	p := &Partitoner[T]{
-		partitions:   partitions,
+		partitions: partitions,
 		hashFn:     hashFn,
 		bufferSize: 100,                  // Default buffer size
 		maxRetries: 3,                    // Default retries

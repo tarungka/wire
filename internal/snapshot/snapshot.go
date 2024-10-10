@@ -21,7 +21,6 @@ func NewSnapshot(rc io.ReadCloser) *Snapshot {
 	}
 }
 
-
 // TODO: need to impl this
 // Persist writes the snapshot to the given sink.
 func (s *Snapshot) Persist(sink raft.SnapshotSink) error {

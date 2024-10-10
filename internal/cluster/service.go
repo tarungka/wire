@@ -133,7 +133,7 @@ type Service struct {
 	ln   net.Listener // Incoming connections to the service
 	addr net.Addr     // Address on which this service is listening
 
-	mgr Manager  // The cluster management system.
+	mgr Manager // The cluster management system.
 
 	mu      sync.RWMutex
 	https   bool   // Serving HTTPS?
@@ -144,12 +144,12 @@ type Service struct {
 }
 
 // New returns a new instance of the cluster service
-func New(ln net.Listener,  m Manager) *Service {
+func New(ln net.Listener, m Manager) *Service {
 	return &Service{
-		ln:              ln,
-		addr:            ln.Addr(),
-		mgr:             m,
-		logger:          log.New(os.Stderr, "[cluster] ", log.LstdFlags),
+		ln:     ln,
+		addr:   ln.Addr(),
+		mgr:    m,
+		logger: log.New(os.Stderr, "[cluster] ", log.LstdFlags),
 		// logger:          zerolog.Logger{},
 	}
 }

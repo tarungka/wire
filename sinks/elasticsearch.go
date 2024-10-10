@@ -58,7 +58,7 @@ func (e *ElasticSink) Connect(ctx context.Context) error {
 }
 
 // Accepts a byte array of json data and writes to elastic search index
-func (e *ElasticSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan <-chan []byte, initialDataChan <- chan[]byte) error {
+func (e *ElasticSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan <-chan []byte, initialDataChan <-chan []byte) error {
 	// Receive data from the MongoSource channel
 
 	wg.Add(1)
