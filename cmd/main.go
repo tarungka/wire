@@ -160,6 +160,17 @@ func main() {
 		log.Fatal().Msgf("failed to open store: %s", err.Error())
 	}
 
+	// Register remaining status providers.
+	if err := httpServ.RegisterStatus("cluster", clstrServ); err != nil {
+		log.Fatal().Msgf("failed to register cluster status provider: %s", err.Error())
+	}
+	if err := httpServ.RegisterStatus("network", tcp.NetworkReporter{}); err != nil {
+		log.Fatal().Msgf("failed to register network status provider: %s", err.Error())
+	}
+	if err := httpServ.RegisterStatus("mux", mux); err != nil {
+		log.Fatal().Msgf("failed to register mux status provider: %s", err.Error())
+	}
+
 	// Creating a main context; will need to move this code up
 	mainCtx := context.Background()
 
