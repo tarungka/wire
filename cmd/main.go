@@ -94,6 +94,7 @@ func main() {
 		logger = zerolog.New(multiDev).Level(zerolog.TraceLevel).With().Timestamp().Caller().Logger()
 	} else {
 		// Production: Use default JSON format for logs
+		logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
 	}
 
 	// Assign the logger as the global logger
