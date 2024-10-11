@@ -18,13 +18,16 @@ RUN apk add --no-cache \
     pkgconf \
     zlib-dev \
     zip
+# want glibc? add this
+# \
+# gcompat
 
 COPY . /app
 
 # Build the application binary
 WORKDIR /app
 ENV CGO_ENABLED=1
-RUN go build -o /wire -ldflags=" \
+RUN go build -o ./wire -ldflags=" \
     -w -s -X github.com/tarungka/wire/internal/cmd.CompilerCommand=musl-gcc \
     -X github.com/tarungka/wire/internal/cmd.Version=${VERSION} \
     -X github.com/tarungka/wire/internal/cmd.Branch=${BRANCH} \
