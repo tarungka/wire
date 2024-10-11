@@ -36,7 +36,7 @@ var (
 // There is a new line at the start of this logo
 
 const logo = `
- __      __.________________________
+ __      __ ________________________
 /  \    /  \   \______   \_   _____/
 \   \/\/   /   ||       _/|    __)_    Seamless Streaming for
  \        /|   ||    |   \|        \   Dynamic Workloads.
@@ -105,6 +105,7 @@ func main() {
 
 	log.Info().Msg("Starting the application...")
 
+	// Create internode network mux and configure.
 	muxListener, err := net.Listen("tcp", cfg.RaftAddr)
 	if err != nil {
 		log.Fatal().Err(err).Msgf("failed to listen on %s: %s", cfg.RaftAddr, err.Error())
@@ -113,6 +114,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Msgf("failed to start node mux: %s", err.Error())
 	}
+	log.Debug().Msgf("node mux started")
 
 	// Raft internode layer
 	raftLn := mux.Listen(cluster.MuxRaftHeader)
@@ -121,33 +123,37 @@ func main() {
 		log.Fatal().Msgf("failed to create Raft dialer: %s", err.Error())
 	}
 	raftTn := tcp.NewLayer(raftLn, raftDialer)
-
-	log.Debug().Msgf("A raft layer is ready, will use it: %v", raftTn)
+	log.Debug().Msgf("raft layer is ready")
 
 	// Create the store
 	str, err := createStore(cfg, raftTn)
 	if err != nil {
 		log.Fatal().Msgf("failed to create store: %s", err.Error())
 	}
-	log.Debug().Msgf("The store is:", str)
+	log.Debug().Msgf("store created")
 
 	// Create cluster service now, so nodes will be able to learn information about each other.
-	clstrServ, err := clusterService(cfg, mux.Listen(cluster.MuxClusterHeader), str)
+	clstrLn := mux.Listen(cluster.MuxClusterHeader)
+	clstrServ, err := clusterService(cfg, clstrLn, str)
 	if err != nil {
 		log.Fatal().Msgf("failed to create cluster service: %s", err.Error())
 	}
-	log.Debug().Msgf("Created the cluster service: %v", clstrServ)
+	log.Debug().Msgf("created the cluster service")
 
 	clstrClient, err := createClusterClient(cfg, clstrServ)
 	if err != nil {
 		log.Fatal().Msgf("failed to create cluster client: %s", err.Error())
 	}
-	log.Debug().Msgf("Created the cluster client: %v", clstrClient)
+
+	// Create the HTTP service.
+	//
+	// We want to start the HTTP server as soon as possible, so the node is responsive and external
+	// systems can see that it's running. We still have to open the Store though, so the node won't
+	// be able to do much until that happens however.
 	httpServ, err := startHTTPService(cfg, str, clstrClient)
 	if err != nil {
 		log.Fatal().Msgf("failed to start HTTP server: %s", err.Error())
 	}
-	log.Debug().Msgf("Started the HTTP service!", httpServ)
 
 	// Now, open the store
 	if err := str.Open(); err != nil {
@@ -162,7 +168,10 @@ func main() {
 	if err != nil {
 		log.Fatal().Msgf("failed to get nodes %s", err.Error())
 	}
-	log.Debug().Msgf("The number of nodes are: %s", nodes)
+	log.Debug().Msgf("The number of nodes are: %d", len(nodes))
+	for idx, eachNode := range nodes {
+		log.Debug().Msgf("%d. Node information is: %v", idx, eachNode)
+	}
 
 	if err := createCluster(mainCtx, cfg, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
 		log.Fatal().Msgf("clustering failure: %s", err.Error())
@@ -239,6 +248,8 @@ func startNodeMux(cfg *Config, ln net.Listener) (*tcp.Mux, error) {
 		Address: cfg.RaftAdv,
 	}
 
+	log.Debug().Msgf("advertised mux address is: %s", cfg.RaftAdv)
+
 	var mux *tcp.Mux
 	if cfg.NodeX509Cert != "" {
 		// TODO: Implement this later
@@ -297,7 +308,6 @@ func createClusterClient(cfg *Config, clstr *cluster.Service) (*cluster.Client, 
 }
 
 func createStore(cfg *Config, ln *tcp.Layer) (*store.Store, error) {
-
 	str := store.New(ln, &store.Config{
 		Dir: cfg.DataPath,
 		ID:  cfg.NodeID,
@@ -332,14 +342,14 @@ func startHTTPService(cfg *Config, str *store.Store, cltr *cluster.Client) (*htt
 	s := httpd.New(cfg.HTTPAddr, str, cltr, nil)
 
 	// TODO: Need to support HTTPS
-	// s.CACertFile = cfg.HTTPx509CACert
-	// s.CertFile = cfg.HTTPx509Cert
-	// s.KeyFile = cfg.HTTPx509Key
-	// s.ClientVerify = cfg.HTTPVerifyClient
-	// s.DefaultQueueCap = cfg.WriteQueueCap
-	// s.DefaultQueueBatchSz = cfg.WriteQueueBatchSz
-	// s.DefaultQueueTimeout = cfg.WriteQueueTimeout
-	// s.DefaultQueueTx = cfg.WriteQueueTx
+	s.CACertFile = cfg.HTTPx509CACert
+	s.CertFile = cfg.HTTPx509Cert
+	s.KeyFile = cfg.HTTPx509Key
+	s.ClientVerify = cfg.HTTPVerifyClient
+	s.DefaultQueueCap = cfg.WriteQueueCap
+	s.DefaultQueueBatchSz = cfg.WriteQueueBatchSz
+	s.DefaultQueueTimeout = cfg.WriteQueueTimeout
+	s.DefaultQueueTx = cfg.WriteQueueTx
 	s.BuildInfo = map[string]interface{}{
 		"commit":             cmd.Commit,
 		"branch":             cmd.Branch,

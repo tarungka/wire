@@ -367,11 +367,6 @@ func New(addr string, store Store, cluster Cluster, credentials CredentialStore)
 
 // Start starts the service.
 func (s *Service) Start() error {
-
-	defer func() {
-		s.logger.Print("Finished attempting to start the HTTP server")
-	}()
-
 	s.httpServer = http.Server{
 		Handler: s,
 	}

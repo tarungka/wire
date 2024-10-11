@@ -15,13 +15,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dgraph-io/badger/v4"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
-	zlog "github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/command"
 	"github.com/tarungka/wire/internal/command/proto"
 	commandProto "github.com/tarungka/wire/internal/command/proto"
+	"github.com/tarungka/wire/internal/db"
 	"github.com/tarungka/wire/internal/rsync"
 	"github.com/tarungka/wire/internal/snapshot"
 	"github.com/tarungka/wire/internal/utils"
@@ -309,6 +310,10 @@ type Store struct {
 	snapshotDir   string
 	snapshotStore SnapshotStore // Snapshot store.
 
+	// Database
+	dbDir string
+	db    *badger.DB
+
 	mu sync.Mutex
 }
 
@@ -322,14 +327,6 @@ type Config struct {
 // func New(ly Layer, ko *koanf.Koanf) *Store {
 // allocate a new store in memory and initialize
 func New(ly Layer, c *Config) *Store {
-
-	// raftDir := ko.String("raft_dir")
-	// raftId := ko.String("node_id")
-	zlog.Debug().Msg("Creating a new store!")
-
-	// TODO: create a zerolog logger
-	logger := zerolog.Logger{}
-
 	return &Store{
 		open:            rsync.NewAtomicBool(),
 		ly:              ly,
@@ -348,7 +345,7 @@ func New(ly Layer, c *Config) *Store {
 		fsmUpdateTime:   rsync.NewAtomicTime(),
 		appendedAtTime:  rsync.NewAtomicTime(),
 		dbModifiedTime:  rsync.NewAtomicTime(),
-		logger:          logger,
+		logger:          zerolog.Logger{},
 		readyChans:      rsync.NewReadyChannels(),
 		snapshotDir:     filepath.Join(c.Dir, snapshotsDirName),
 		// snapshotCAS:     rsync.NewCheckAndSet(),
@@ -370,8 +367,8 @@ func (s *Store) Open() (retError error) {
 
 	var err error
 
-	// s.logger.Debug().Msg("Opening the store")
-	fmt.Printf("Opening the store\n")
+	s.logger.Debug().Msg("Opening the store")
+	// fmt.Printf("Opening the store\n")
 
 	// Reset/set the defaults
 	s.fsmIdx.Store(0)
@@ -424,7 +421,7 @@ func (s *Store) Open() (retError error) {
 		return fmt.Errorf("new cached store: %s", err)
 	}
 
-	// Request to recover node?
+	// TODO: Request to recover node?
 	if pathExists(s.peersPath) {
 		s.logger.Printf("attempting node recovery using %s", s.peersPath)
 		config, err := raft.ReadConfigJSON(s.peersPath)
@@ -440,6 +437,12 @@ func (s *Store) Open() (retError error) {
 		// }
 		// s.logger.Printf("node recovered successfully using %s", s.peersPath)
 		stats.Add(numRecoveries, 1)
+	}
+
+	// TODO: add a path here
+	s.db, err = db.Open("")
+	if err != nil {
+		s.logger.Fatal().Err(err).Msgf("failed to create on disk database: %s", err)
 	}
 
 	if s.raftLog == nil || s.raftStable == nil || s.raftTn == nil {
@@ -656,6 +659,7 @@ func (s *Store) installRestore() error {
 }
 
 func (s *Store) load(lr *proto.LoadRequest) error {
+	// s.db.
 	return nil
 }
 
@@ -667,6 +671,7 @@ func (s *Store) remove(id string) error {
 	return f.Error()
 }
 
+// IsNewNode checks if this the a new or pre-existing node
 func IsNewNode(raftDir string) bool {
 	// If there is any preexisting Raft state, then this node
 	// has already been created.

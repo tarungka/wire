@@ -146,9 +146,10 @@ type Service struct {
 // New returns a new instance of the cluster service
 func New(ln net.Listener, m Manager) *Service {
 	return &Service{
-		ln:     ln,
-		addr:   ln.Addr(),
-		mgr:    m,
+		ln:   ln,
+		addr: ln.Addr(),
+		mgr:  m,
+		// TODO: update the logger
 		logger: log.New(os.Stderr, "[cluster] ", log.LstdFlags),
 		// logger:          zerolog.Logger{},
 	}
@@ -224,7 +225,6 @@ func (s *Service) serve() error {
 		if err != nil {
 			return err
 		}
-		s.logger.Println("up and accepting requests")
 
 		go s.handleConn(conn)
 	}

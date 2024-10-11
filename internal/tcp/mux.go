@@ -72,7 +72,7 @@ func (l *Layer) Addr() net.Addr {
 type Mux struct {
 	ln   net.Listener
 	addr net.Addr
-	m    map[byte]*listener
+	m    map[byte]*listener // muxing on the byte to listener
 
 	wg sync.WaitGroup
 
@@ -98,7 +98,8 @@ func NewMux(ln net.Listener, adv net.Addr) (*Mux, error) {
 		addr:    addr,
 		m:       make(map[byte]*listener),
 		Timeout: DefaultTimeout,
-		Logger:  log.New(os.Stderr, "[mux] ", log.LstdFlags),
+		// TODO: update this to zerolog
+		Logger: log.New(os.Stderr, "[mux] ", log.LstdFlags),
 	}, nil
 }
 
@@ -135,7 +136,7 @@ func newTLSMux(ln net.Listener, adv net.Addr, cert, key, caCert string, mutual b
 	return mux, nil
 }
 
-// Serve handles connections from ln and multiplexes then across registered listener.
+// Serve handles connections from ln and multiplexes them across registered listener.
 func (mux *Mux) Serve() error {
 	tlsStr := ""
 	if mux.tlsConfig != nil {
