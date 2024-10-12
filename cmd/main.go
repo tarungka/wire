@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -15,11 +14,11 @@ import (
 
 	"github.com/knadh/koanf/v2"
 	"github.com/rqlite/rqlite/v8/auth"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/cluster"
 	"github.com/tarungka/wire/internal/cmd"
 	httpd "github.com/tarungka/wire/internal/http"
+	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/store"
 	"github.com/tarungka/wire/internal/tcp"
 	pipeline "github.com/tarungka/wire/pipeline"
@@ -51,10 +50,6 @@ Visit https://www.github.com/tarungka/wire to learn more.`
 
 func main() {
 
-	var logger zerolog.Logger
-
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-
 	// logs will be written to both server.log and stdout
 	logFile, err := os.OpenFile("server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
@@ -72,36 +67,21 @@ func main() {
 	}
 	fmt.Println(logo)
 
-	isDevelopment := cfg.DebugMode
+	logger.SetDevelopment(cfg.DebugMode)
+	logger.SetLogFile(logFile)
 
-	if isDevelopment {
-		// Set up zerolog for development mode (human-readable logs)
-		consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339,
-			FormatLevel: func(i interface{}) string {
-				return strings.ToUpper(fmt.Sprintf("[%5s]", i))
-			},
-			FormatMessage: func(i interface{}) string {
-				return fmt.Sprintf("| %s |", i)
-			},
-			FormatCaller: func(i interface{}) string {
-				return filepath.Base(fmt.Sprintf("%s", i))
-			},
-			PartsExclude: []string{
-				zerolog.TimestampFieldName,
-			}}
-		// Use multi-writer for file and readable console output
-		multiDev := zerolog.MultiLevelWriter(consoleWriter, logFile)
-		logger = zerolog.New(multiDev).Level(zerolog.TraceLevel).With().Timestamp().Caller().Logger()
-	} else {
-		// Production: Use default JSON format for logs
-		logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
-	}
+	log.Logger = logger.GetLogger("main")
 
-	// Assign the logger as the global logger
-	log.Logger = logger
-
-	if isDevelopment {
-		log.Debug().Msgf("The process ID is: %v", os.Getpid())
+	if cfg.DebugMode {
+		hostName, err := os.Hostname()
+		if err != nil {
+			log.Debug().Err(err).Msgf("error when getting hostname: %v", err)
+		}
+		hostIP, err := getHostIP()
+		if err != nil {
+			log.Debug().Err(err).Msgf("error when getting host IP: %v", err)
+		}
+		log.Debug().Msgf("PID: %v | PPID: %v | Host ID: %v | Host IP: %v", os.Getpid(), os.Getppid(), hostName, hostIP)
 	}
 
 	log.Info().Msg("Starting the application...")
@@ -111,6 +91,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msgf("failed to listen on %s: %s", cfg.RaftAddr, err.Error())
 	}
+	log.Debug().Msgf("listener mux address is: %s", cfg.RaftAddr)
 	mux, err := startNodeMux(cfg, muxListener)
 	if err != nil {
 		log.Fatal().Msgf("failed to start node mux: %s", err.Error())
@@ -536,4 +517,20 @@ func networkCheckJoinAddrs(joinAddrs []string) error {
 		}
 	}
 	return nil
+}
+
+func getHostIP() (string, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", fmt.Errorf("error getting IP addresses: %v", err)
+	}
+
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			if ipNet.IP.To4() != nil {
+				return ipNet.IP.String(), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("error getting IP address")
 }

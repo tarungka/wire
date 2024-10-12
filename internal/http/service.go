@@ -9,7 +9,6 @@ import (
 	"expvar"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/http/pprof"
@@ -23,9 +22,11 @@ import (
 	"github.com/rqlite/rqlite/v8/auth"
 	"github.com/rqlite/rqlite/v8/queue"
 	"github.com/rqlite/rqlite/v8/rtls"
+	"github.com/rs/zerolog"
 	clstrPB "github.com/tarungka/wire/internal/cluster/proto"
 	"github.com/tarungka/wire/internal/command/encoding"
 	command "github.com/tarungka/wire/internal/command/proto"
+	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/store"
 )
 
@@ -345,7 +346,8 @@ type Service struct {
 
 	BuildInfo map[string]interface{}
 
-	logger *log.Logger
+	// logger *log.Logger
+	logger zerolog.Logger
 }
 
 // New returns an uninitialized HTTP service. If credentials is nil, then
@@ -361,7 +363,8 @@ func New(addr string, store Store, cluster Cluster, credentials CredentialStore)
 		start:               time.Now(),
 		statuses:            make(map[string]StatusReporter),
 		credentialStore:     credentials,
-		logger:              log.New(os.Stderr, "[http] ", log.LstdFlags),
+		// logger:              log.New(os.Stderr, "[http] ", log.LstdFlags),
+		logger:              logger.GetLogger("http"),
 	}
 }
 
@@ -402,7 +405,7 @@ func (s *Service) Start() error {
 			b.WriteString(", mutual TLS disabled")
 		}
 		// print the message
-		s.logger.Println(b.String())
+		// s.logger.Print(b.String())
 	}
 	s.ln = ln
 
@@ -420,16 +423,16 @@ func (s *Service) Start() error {
 			s.logger.Printf("HTTP service on %s stopped: %s", s.ln.Addr().String(), err.Error())
 		}
 	}()
-	s.logger.Println("service listening on", s.Addr())
+	s.logger.Printf("service listening on %s", s.Addr())
 
 	return nil
 }
 
 // Close closes the service.
 func (s *Service) Close() {
-	s.logger.Println("closing HTTP service on", s.ln.Addr().String())
+	s.logger.Print("closing HTTP service on", s.ln.Addr().String())
 	if err := s.httpServer.Shutdown(context.Background()); err != nil {
-		s.logger.Println("HTTP service shutdown error:", err.Error())
+		s.logger.Print("HTTP service shutdown error:", err.Error())
 	}
 
 	s.stmtQueue.Close()
@@ -885,7 +888,7 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request, qp QueryP
 
 	_, err = w.Write(b)
 	if err != nil {
-		s.logger.Println("failed to write status to client", err.Error())
+		s.logger.Print("failed to write status to client", err.Error())
 		return
 	}
 }
@@ -1613,7 +1616,7 @@ func (s *Service) writeResponse(w http.ResponseWriter, qp QueryParams, j Respons
 	}
 	_, err = w.Write(b)
 	if err != nil {
-		s.logger.Println("writing response failed:", err.Error())
+		s.logger.Print("writing response failed:", err.Error())
 	}
 }
 

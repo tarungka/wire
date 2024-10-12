@@ -7,15 +7,15 @@ import (
 	"expvar"
 	"fmt"
 	"io"
-	"log"
 	"net"
-	"os"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/cluster/proto"
 	commandProto "github.com/tarungka/wire/internal/command/proto"
+	"github.com/tarungka/wire/internal/logger"
 	pb "google.golang.org/protobuf/proto"
 )
 
@@ -139,8 +139,8 @@ type Service struct {
 	https   bool   // Serving HTTPS?
 	apiAddr string // host:port this node serves the HTTP API.
 
-	logger *log.Logger
-	// logger zerolog.Logger
+	// logger *log.Logger
+	logger zerolog.Logger
 }
 
 // New returns a new instance of the cluster service
@@ -149,16 +149,15 @@ func New(ln net.Listener, m Manager) *Service {
 		ln:   ln,
 		addr: ln.Addr(),
 		mgr:  m,
-		// TODO: update the logger
-		logger: log.New(os.Stderr, "[cluster] ", log.LstdFlags),
-		// logger:          zerolog.Logger{},
+		// logger: log.New(os.Stderr, "[cluster] ", log.LstdFlags),
+		logger: logger.GetLogger("cluster"),
 	}
 }
 
 // Open opens the Service.
 func (s *Service) Open() error {
 	go s.serve()
-	s.logger.Println("service listening on", s.addr)
+	// s.logger.Print("service listening on", s.addr)
 	return nil
 }
 
@@ -184,7 +183,7 @@ func (s *Service) EnableHTTPS(b bool) {
 func (s *Service) SetAPIAddr(addr string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.logger.Printf("Setting the api address as %s", addr)
+	s.logger.Printf("setting api address as %s", addr)
 	s.apiAddr = addr
 }
 
@@ -220,7 +219,7 @@ func (s *Service) Stats() (map[string]interface{}, error) {
 
 func (s *Service) serve() error {
 	for {
-		s.logger.Println("waiting for request")
+		s.logger.Print("waiting for request")
 		conn, err := s.ln.Accept() // I think this is blocking until a request
 		if err != nil {
 			return err

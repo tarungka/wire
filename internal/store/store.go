@@ -23,6 +23,7 @@ import (
 	"github.com/tarungka/wire/internal/command/proto"
 	commandProto "github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/db"
+	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/rsync"
 	"github.com/tarungka/wire/internal/snapshot"
 	"github.com/tarungka/wire/internal/utils"
@@ -321,12 +322,13 @@ type Config struct {
 	Dir string    // The working directory for raft.
 	Tn  Transport // The underlying Transport for raft.
 	ID  string    // Node ID.
-	// Logger *log.Logger // The logger to use to log stuff.
 }
 
 // func New(ly Layer, ko *koanf.Koanf) *Store {
 // allocate a new store in memory and initialize
 func New(ly Layer, c *Config) *Store {
+	newLogger := logger.GetLogger("store")
+	newLogger.Print("creating new store")
 	return &Store{
 		open:            rsync.NewAtomicBool(),
 		ly:              ly,
@@ -345,7 +347,7 @@ func New(ly Layer, c *Config) *Store {
 		fsmUpdateTime:   rsync.NewAtomicTime(),
 		appendedAtTime:  rsync.NewAtomicTime(),
 		dbModifiedTime:  rsync.NewAtomicTime(),
-		logger:          zerolog.Logger{},
+		logger:          newLogger,
 		readyChans:      rsync.NewReadyChannels(),
 		snapshotDir:     filepath.Join(c.Dir, snapshotsDirName),
 		// snapshotCAS:     rsync.NewCheckAndSet(),
@@ -496,6 +498,7 @@ func (s *Store) raftConfig() *raft.Config {
 	opts := hclog.DefaultOptions
 	opts.Name = ""
 	opts.Level = s.hcLogLevel()
+	// Todo: need to update this?
 	config.Logger = hclog.FromStandardLogger(log.New(os.Stderr, "[raft] ", log.LstdFlags), opts)
 	return config
 }

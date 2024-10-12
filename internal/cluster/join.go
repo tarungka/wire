@@ -3,12 +3,12 @@ package cluster
 import (
 	"context"
 	"errors"
-	"log"
-	"os"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/cluster/proto"
 	command "github.com/tarungka/wire/internal/command/proto"
+	"github.com/tarungka/wire/internal/logger"
 )
 
 var (
@@ -32,7 +32,8 @@ type Joiner struct {
 
 	client *Client
 	creds  *proto.Credentials
-	logger *log.Logger
+	// logger *log.Logger
+	logger zerolog.Logger
 }
 
 // NewJoiner returns an instantiated Joiner.
@@ -41,7 +42,8 @@ func NewJoiner(client *Client, numAttempts int, attemptInterval time.Duration) *
 		client:          client,
 		numAttempts:     numAttempts,
 		attemptInterval: attemptInterval,
-		logger:          log.New(os.Stderr, "[cluster-join] ", log.LstdFlags),
+		// logger:          log.New(os.Stderr, "[cluster-join] ", log.LstdFlags),
+		logger:          logger.GetLogger("cluster-join"),
 	}
 }
 

@@ -6,13 +6,13 @@ import (
 	"expvar"
 	"fmt"
 	"io"
-	"log"
 	"net"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/rqlite/rqlite/v8/rtls"
+	"github.com/rs/zerolog"
+	"github.com/tarungka/wire/internal/logger"
 )
 
 const (
@@ -41,27 +41,36 @@ type Layer struct {
 	ln     net.Listener
 	addr   net.Addr
 	dialer *Dialer
+	logger zerolog.Logger
 }
 
 // NewLayer returns a new instance of Layer.
 func NewLayer(ln net.Listener, dialer *Dialer) *Layer {
+	newLogger := logger.GetLogger("layer")
+	newLogger.Print("creating a new layer")
 	return &Layer{
 		ln:     ln,
 		addr:   ln.Addr(),
 		dialer: dialer,
+		logger: newLogger,
 	}
 }
 
 // Dial creates a new network connection.
 func (l *Layer) Dial(addr string, timeout time.Duration) (net.Conn, error) {
+	l.logger.Printf("dialing %v", addr)
 	return l.dialer.Dial(addr, timeout)
 }
 
 // Accept waits for the next connection.
-func (l *Layer) Accept() (net.Conn, error) { return l.ln.Accept() }
+func (l *Layer) Accept() (net.Conn, error) {
+	l.logger.Print("accepting new connection")
+	return l.ln.Accept() }
 
 // Close closes the layer.
-func (l *Layer) Close() error { return l.ln.Close() }
+func (l *Layer) Close() error {
+	l.logger.Info().Msg("closing the layer")
+	return l.ln.Close() }
 
 // Addr returns the local address for the layer.
 func (l *Layer) Addr() net.Addr {
@@ -80,7 +89,8 @@ type Mux struct {
 	Timeout time.Duration
 
 	// Out-of-band error logger
-	Logger *log.Logger
+	// Logger *log.Logger
+	Logger zerolog.Logger
 
 	tlsConfig *tls.Config
 }
@@ -99,7 +109,8 @@ func NewMux(ln net.Listener, adv net.Addr) (*Mux, error) {
 		m:       make(map[byte]*listener),
 		Timeout: DefaultTimeout,
 		// TODO: update this to zerolog
-		Logger: log.New(os.Stderr, "[mux] ", log.LstdFlags),
+		// Logger: log.New(os.Stderr, "[mux] ", log.LstdFlags),
+		Logger: logger.GetLogger("mux"),
 	}, nil
 }
 
@@ -222,6 +233,7 @@ func (mux *Mux) handleConn(conn net.Conn) {
 		mux.Logger.Printf("cannot read header byte: %s", err)
 		return
 	}
+	mux.Logger.Printf("read header byte: %s", typ)
 
 	// Reset read deadline and let the listener handle that.
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {
