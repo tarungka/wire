@@ -4,7 +4,7 @@
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 # Get the latest commit hash
-COMMIT=$(git rev-parse --short HEAD)
+COMMIT=$(git describe --always --dirty --abbrev=7)
 
 # Get the current date
 DATE=$(date +"%Y-%m-%dT%H:%M:%S")
