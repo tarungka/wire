@@ -355,7 +355,6 @@ func startHTTPService(cfg *Config, str *store.Store, cltr *cluster.Client) (*htt
 	return s, s.Start()
 }
 
-// TODO: This code needs major rework, will work on this later
 func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *cluster.Client, str *store.Store,
 	httpServ *httpd.Service, credStr *auth.CredentialsStore) error {
 	joins := cfg.JoinAddresses()
@@ -516,6 +515,7 @@ func networkCheckJoinAddrs(joinAddrs []string) error {
 			return fmt.Errorf("join address %s appears to be serving HTTP when it should be Raft", addr)
 		}
 	}
+	log.Printf("none of the %v are serving HTTP", joinAddrs)
 	return nil
 }
 

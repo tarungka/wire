@@ -224,7 +224,7 @@ func (s *Service) serve() error {
 		if err != nil {
 			return err
 		}
-
+		s.logger.Print("got a new request")
 		go s.handleConn(conn)
 	}
 }
@@ -254,6 +254,7 @@ func (s *Service) handleConn(conn net.Conn) {
 
 		switch c.Type {
 		case proto.Command_COMMAND_TYPE_GET_NODE_API_URL:
+			s.logger.Print("got a command to get node api url")
 			stats.Add(numGetNodeAPIRequest, 1)
 			ci, err := s.mgr.CommitIndex()
 			if err != nil {
@@ -273,6 +274,7 @@ func (s *Service) handleConn(conn net.Conn) {
 			stats.Add(numGetNodeAPIResponse, 1)
 
 		case proto.Command_COMMAND_TYPE_LOAD_CHUNK:
+			s.logger.Print("got a command to load chunk")
 			resp := &proto.CommandLoadChunkResponse{
 				Error: "unsupported",
 			}
@@ -281,6 +283,7 @@ func (s *Service) handleConn(conn net.Conn) {
 			}
 
 		case proto.Command_COMMAND_TYPE_REMOVE_NODE:
+			s.logger.Print("got a command to remove a node")
 			stats.Add(numRemoveNodeRequest, 1)
 			resp := &proto.CommandRemoveNodeResponse{}
 
@@ -299,6 +302,7 @@ func (s *Service) handleConn(conn net.Conn) {
 			}
 
 		case proto.Command_COMMAND_TYPE_NOTIFY:
+			s.logger.Print("got a command to notify")
 			stats.Add(numNotifyRequest, 1)
 			resp := &proto.CommandNotifyResponse{}
 
@@ -317,6 +321,7 @@ func (s *Service) handleConn(conn net.Conn) {
 			}
 
 		case proto.Command_COMMAND_TYPE_JOIN:
+			s.logger.Print("got a command to join")
 			stats.Add(numJoinRequest, 1)
 			resp := &proto.CommandJoinResponse{}
 
@@ -325,8 +330,7 @@ func (s *Service) handleConn(conn net.Conn) {
 				resp.Error = "JoinRequest is nil"
 			} else {
 				// TODO: These logics are wrong, need to rewrite them
-				if (jr.Voter && true) ||
-					(!jr.Voter && true) {
+				if jr.Voter {
 					if err := s.mgr.Join(jr); err != nil {
 						resp.Error = err.Error()
 						if err.Error() == "not leader" {

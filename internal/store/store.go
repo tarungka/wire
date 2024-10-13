@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -234,7 +235,7 @@ type SnapshotStore interface {
 	Stats() (map[string]interface{}, error)
 }
 
-// Wire Store is a BBolt database, where all changes are made via Raft consensus.
+// Wire Store is a BBolt/badgerDB database, where all changes are made via Raft consensus.
 type Store struct {
 	open          *rsync.AtomicBool
 	raftDir       string
@@ -316,6 +317,14 @@ type Store struct {
 	db    *badger.DB
 
 	mu sync.Mutex
+
+	// For whitebox testing
+	numFullSnapshots int
+	numAutoVacuums   int
+	numAutoOptimizes int
+	numIgnoredJoins  int
+	numNoops         *atomic.Uint64
+	numSnapshots     *atomic.Uint64
 }
 
 type Config struct {
@@ -744,14 +753,155 @@ func (s *Store) CommitIndex() (uint64, error) {
 }
 
 func (s *Store) Remove(rn *commandProto.RemoveNodeRequest) error {
-	return ErrNotImplemented
+	if !s.open.Is() {
+		return ErrNotOpen
+	}
+	id := rn.Id
+
+	s.logger.Printf("received request to remove node %s", id)
+	if err := s.remove(id); err != nil {
+		return err
+	}
+
+	s.logger.Printf("node %s removed successfully", id)
+	return nil
 }
 
-func (s *Store) Notify(n *commandProto.NotifyRequest) error {
-	return ErrNotImplemented
+// Notify notifies this Store that a node is ready for bootstrapping at the
+// given address. Once the number of known nodes reaches the expected level
+// bootstrapping will be attempted using this Store. "Expected level" includes
+// this node, so this node must self-notify to ensure the cluster bootstraps
+// with the *advertised Raft address* which the Store doesn't know about.
+//
+// Notifying is idempotent. A node may repeatedly notify the Store without issue.
+func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
+	if !s.open.Is() {
+		return ErrNotOpen
+	}
+
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+
+	if s.BootstrapExpect == 0 || s.bootstrapped || s.HasLeader() {
+		// There is no reason this node will bootstrap.
+		//
+		// - Read-only nodes require that BootstrapExpect is set to 0, so this
+		// block ensures that notifying a read-only node will not cause a bootstrap.
+		// - If the node is already bootstrapped, then there is nothing to do.
+		// - If the node already has a leader, then no bootstrapping is required.
+		return nil
+	}
+
+	if _, ok := s.notifyingNodes[nr.Id]; ok {
+		return nil
+	}
+
+	// Confirm that this node can resolve the remote address. This can happen due
+	// to incomplete DNS records across the underlying infrastructure. If it can't
+	// then don't consider this Notify attempt successful -- so the notifying node
+	// will presumably try again.
+	if addr, err := resolvableAddress(nr.Address); err != nil {
+		return fmt.Errorf("failed to resolve %s: %w", addr, err)
+	}
+
+	s.notifyingNodes[nr.Id] = &Server{nr.Id, nr.Address, "voter"}
+	if len(s.notifyingNodes) < s.BootstrapExpect {
+		return nil
+	}
+
+	raftServers := make([]raft.Server, 0, len(s.notifyingNodes))
+	for _, n := range s.notifyingNodes {
+		raftServers = append(raftServers, raft.Server{
+			ID:      raft.ServerID(n.ID),
+			Address: raft.ServerAddress(n.Addr),
+		})
+	}
+
+	s.logger.Printf("reached expected bootstrap count of %d, starting cluster bootstrap",
+		s.BootstrapExpect)
+	bf := s.raft.BootstrapCluster(raft.Configuration{
+		Servers: raftServers,
+	})
+	if bf.Error() != nil {
+		s.logger.Printf("cluster bootstrap failed: %s", bf.Error())
+	} else {
+		s.logger.Printf("cluster bootstrap successful, servers: %s", raftServers)
+	}
+	s.bootstrapped = true
+	return nil
 }
 
-func (s *Store) Join(n *commandProto.JoinRequest) error {
+// Join request to join this store
+func (s *Store) Join(jr *commandProto.JoinRequest) error {
+	s.logger.Print("got a join request to the store")
+	if !s.open.Is() {
+		return ErrNotOpen
+	}
+
+	if s.raft.State() != raft.Leader {
+		s.logger.Print("join request to store; but not the leader")
+		return ErrNotLeader
+	}
+
+	id := jr.Id
+	addr := jr.Address
+	voter := jr.Voter
+
+	// Confirm that this node can resolve the remote address. This can happen due
+	// to incomplete DNS records across the underlying infrastructure. If it can't
+	// then don't consider this join attempt successful -- so the joining node
+	// will presumably try again.
+	if addr, err := resolvableAddress(addr); err != nil {
+		s.logger.Info().Msgf("failed to resolve %s: %w", addr, err)
+		return fmt.Errorf("failed to resolve %s: %w", addr, err)
+	}
+
+	configFuture := s.raft.GetConfiguration()
+	if err := configFuture.Error(); err != nil {
+		s.logger.Printf("failed to get raft configuration: %v", err)
+		return err
+	}
+	s.logger.Printf("the raft configuration is: %v", configFuture)
+
+	for _, srv := range configFuture.Configuration().Servers {
+		// If a node already exists with either the joining node's ID or address,
+		// that node may need to be removed from the config first.
+		if srv.ID == raft.ServerID(id) || srv.Address == raft.ServerAddress(addr) {
+			// However, if *both* the ID and the address are the same, then no
+			// join is actually needed.
+			if srv.Address == raft.ServerAddress(addr) && srv.ID == raft.ServerID(id) {
+				stats.Add(numIgnoredJoins, 1)
+				s.numIgnoredJoins++
+				s.logger.Printf("node %s at %s already member of cluster, ignoring join request", id, addr)
+				return nil
+			}
+
+			if err := s.remove(id); err != nil {
+				s.logger.Printf("failed to remove node %s: %v", id, err)
+				return err
+			}
+			stats.Add(numRemovedBeforeJoins, 1)
+			s.logger.Printf("removed node %s prior to rejoin with changed ID or address", id)
+		}
+	}
+
+	var f raft.IndexFuture
+	if voter {
+		s.logger.Info().Msgf("adding %v:%v as a voter", id, addr)
+		f = s.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 0)
+	} else {
+		s.logger.Info().Msgf("adding %v:%v as a NON-voter", id, addr)
+		f = s.raft.AddNonvoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 0)
+	}
+	// TODO: understand why would this error
+	if e := f.(raft.Future); e.Error() != nil {
+		if e.Error() == raft.ErrNotLeader {
+			return ErrNotLeader
+		}
+		return e.Error()
+	}
+	stats.Add(numJoins, 1)
+	s.logger.Printf("node with ID %s, at %s, joined successfully as %s", id, addr, prettyVoter(voter))
 	return nil
 }
 
@@ -793,7 +943,11 @@ func (s *Store) Snapshot(n uint64) (retError error) {
 	return nil
 }
 
+// Backup writes a consistent snapshot of the underlying database to dst. This
+// can be called while writes are being made to the system. The backup may fail
+// if the system is actively snapshotting. The client can just retry in this case.
 func (s *Store) Backup(br *proto.BackupRequest, dst io.Writer) (retErr error) {
+	// TODO: need to impl
 	return ErrNotImplemented
 }
 
@@ -1037,4 +1191,22 @@ func (s *Store) Bootstrap(servers ...*Server) error {
 		Servers: raftServers,
 	})
 	return fut.Error()
+}
+
+func resolvableAddress(addr string) (string, error) {
+	h, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Just try the given address directly.
+		h = addr
+	}
+	_, err = net.LookupHost(h)
+	return h, err
+}
+
+// prettyVoter converts bool to "voter" or "non-voter"
+func prettyVoter(v bool) string {
+	if v {
+		return "voter"
+	}
+	return "non-voter"
 }
