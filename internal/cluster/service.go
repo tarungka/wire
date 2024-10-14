@@ -365,6 +365,7 @@ func marshalAndWrite(conn net.Conn, m pb.Message) error {
 func writeBytesWithLength(conn net.Conn, p []byte) error {
 	b := make([]byte, protoBufferLengthSize)
 	binary.LittleEndian.PutUint64(b[0:], uint64(len(p)))
+	logger.AdHocLogger.Debug().Msgf("writeBytesWithLength: %v", b)
 	_, err := conn.Write(b)
 	if err != nil {
 		return err

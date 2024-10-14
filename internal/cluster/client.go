@@ -90,7 +90,7 @@ func NewClient(dl Dialer, t time.Duration) *Client {
 		dialer:  dl,
 		timeout: t,
 		pools:   make(map[string]pool.Pool),
-		logger: newLogger,
+		logger:  newLogger,
 	}
 }
 
@@ -398,7 +398,7 @@ func (c *Client) Notify(nr *command.NotifyRequest, nodeAddr string, creds *proto
 func (c *Client) Join(jr *command.JoinRequest, nodeAddr string, creds *proto.Credentials, timeout time.Duration) error {
 	c.logger.Printf("joining client with %v", nodeAddr)
 	for {
-		conn, err := c.dial(nodeAddr)
+		conn, err := c.dial(nodeAddr) // get a connection from a pool
 		if err != nil {
 			return err
 		}
@@ -412,6 +412,10 @@ func (c *Client) Join(jr *command.JoinRequest, nodeAddr string, creds *proto.Cre
 			},
 			Credentials: creds,
 		}
+
+		c.logger.Printf("Type: %v | Request: %v | Credentials: %v", proto.Command_COMMAND_TYPE_JOIN, proto.Command_JoinRequest{
+			JoinRequest: jr,
+		}, creds)
 
 		if err := writeCommand(conn, command, timeout); err != nil {
 			handleConnError(conn)

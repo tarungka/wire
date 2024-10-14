@@ -508,7 +508,7 @@ func (s *Store) raftConfig() *raft.Config {
 	opts.Name = ""
 	opts.Level = s.hcLogLevel()
 	// Todo: need to update this?
-	config.Logger = hclog.FromStandardLogger(log.New(os.Stderr, "[raft] ", log.LstdFlags), opts)
+	config.Logger = hclog.FromStandardLogger(log.New(os.Stderr, "[ raft] ", log.LstdFlags), opts)
 	return config
 }
 

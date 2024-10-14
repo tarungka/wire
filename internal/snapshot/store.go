@@ -132,7 +132,7 @@ type Store struct {
 	dir            string
 	fullNeededPath string
 	// logger         *log.Logger
-	logger         zerolog.Logger
+	logger zerolog.Logger
 
 	mrsw *rsync.MultiRSW
 
@@ -150,8 +150,8 @@ func NewStore(dir string) (*Store, error) {
 		dir:            dir,
 		fullNeededPath: filepath.Join(dir, fullNeededFile),
 		// logger:         log.New(os.Stderr, "[snapshot-store] ", log.LstdFlags),
-		logger:         logger.GetLogger("snapshot-store"),
-		mrsw:           rsync.NewMultiRSW(),
+		logger: logger.GetLogger("snapshot-store"),
+		mrsw:   rsync.NewMultiRSW(),
 	}
 	str.logger.Printf("store initialized using %s", dir)
 

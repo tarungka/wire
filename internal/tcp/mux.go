@@ -65,12 +65,14 @@ func (l *Layer) Dial(addr string, timeout time.Duration) (net.Conn, error) {
 // Accept waits for the next connection.
 func (l *Layer) Accept() (net.Conn, error) {
 	l.logger.Print("accepting new connection")
-	return l.ln.Accept() }
+	return l.ln.Accept()
+}
 
 // Close closes the layer.
 func (l *Layer) Close() error {
 	l.logger.Info().Msg("closing the layer")
-	return l.ln.Close() }
+	return l.ln.Close()
+}
 
 // Addr returns the local address for the layer.
 func (l *Layer) Addr() net.Addr {
@@ -233,7 +235,7 @@ func (mux *Mux) handleConn(conn net.Conn) {
 		mux.Logger.Printf("cannot read header byte: %s", err)
 		return
 	}
-	mux.Logger.Printf("read header byte: %s", typ)
+	mux.Logger.Printf("read header byte: %v", typ) // print as byte
 
 	// Reset read deadline and let the listener handle that.
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {

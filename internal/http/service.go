@@ -364,7 +364,7 @@ func New(addr string, store Store, cluster Cluster, credentials CredentialStore)
 		statuses:            make(map[string]StatusReporter),
 		credentialStore:     credentials,
 		// logger:              log.New(os.Stderr, "[http] ", log.LstdFlags),
-		logger:              logger.GetLogger("http"),
+		logger: logger.GetLogger("http"),
 	}
 }
 

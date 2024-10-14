@@ -14,7 +14,15 @@ var (
 	isDevelopment = false // if running in debug mode
 
 	logFile *os.File = nil
+
+	AdHocLogger zerolog.Logger
 )
+
+func init() {
+	// Create a general logger that can be easily accessed for
+	// when you do not want to create a new logger
+	AdHocLogger = zerolog.New(os.Stderr).With().Timestamp().Str("service", "ad-hoc-logger").Caller().Logger()
+}
 
 func GetLogger(serviceName string) zerolog.Logger {
 

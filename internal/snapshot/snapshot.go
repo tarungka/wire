@@ -10,7 +10,7 @@ import (
 
 // Snapshot represents a snapshot of the database state.
 type Snapshot struct {
-	rc     io.ReadCloser
+	rc io.ReadCloser
 	// logger *log.Logger
 	logger zerolog.Logger
 }
@@ -18,7 +18,7 @@ type Snapshot struct {
 // NewSnapshot creates a new snapshot.
 func NewSnapshot(rc io.ReadCloser) *Snapshot {
 	return &Snapshot{
-		rc:     rc,
+		rc: rc,
 		// logger: log.New(log.Writer(), "[snapshot] ", log.LstdFlags),
 		logger: logger.GetLogger("snapshot"),
 	}
