@@ -1,5 +1,53 @@
 package store
 
+/*                             NEED TO IMPLEMENT
+Following are the functions that still need to be implemented or are partially
+implemented and need to complete based on the other features being built
+
+func (s *Store) Backup(br *commandProto.BackupRequest, dst io.Writer) (retErr error)
+func (s *Store) load(lr *commandProto.LoadRequest) error
+func (s *Store) SetRestorePath(path string) error
+func (s *Store) fsmSnapshot() (fSnap raft.FSMSnapshot, retErr error)
+func (s *Store) fsmRestore(rc io.ReadCloser) (retErr error)
+func (s *Store) fsmApply(l *raft.Log) (e interface{})
+func (s *Store) Close(wait bool) (retErr error)
+func (s *Store) DBAppliedIndex() uint64
+func (s *Store) Database(leader bool) ([]byte, error)
+func (s *Store) DeregisterObserver(o *raft.Observer)
+func (s *Store) Execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error)
+func (s *Store) LastOptimizeTime() (time.Time, error)
+func (s *Store) LastVacuumTime() (time.Time, error)
+func (s *Store) Noop(id string) (raft.ApplyFuture, error)
+func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error)
+func (s *Store) RORWCount(eqr *proto.ExecuteQueryRequest) (nRW int, nRO int)
+func (s *Store) ReadFrom(r io.Reader) (int64, error)
+func (s *Store) RegisterLeaderChange(c chan<- struct{})
+func (s *Store) RegisterObserver(o *raft.Observer)
+func (s *Store) Request(eqr *proto.ExecuteQueryRequest) ([]*proto.ExecuteQueryResponse, error)
+func (s *Store) SetRequestCompression(batch int, size int)
+func (s *Store) Stats() (map[string]interface{}, error)
+func (s *Store) Vacuum() error
+func (s *Store) WaitForAllApplied(timeout time.Duration) error
+func (s *Store) WaitForAppliedFSM(timeout time.Duration) (uint64, error)
+func (s *Store) WaitForAppliedIndex(idx uint64, timeout time.Duration) error
+func (s *Store) WaitForFSMIndex(idx uint64, timeout time.Duration) (uint64, error)
+func (s *Store) WaitForLeader(timeout time.Duration) (string, error)
+func (s *Store) WaitForRemoval(id string, timeout time.Duration) error
+func (s *Store) autoOptimizeNeeded(t time.Time) (bool, error)
+func (s *Store) autoVacNeeded(t time.Time) (bool, error)
+func (s *Store) clearKeyTime(key string) error
+func (s *Store) dbModified() bool
+func (s *Store) execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error)
+func (s *Store) getKeyTime(key string) (time.Time, error)
+func (s *Store) initOptimizeTime() error
+func (s *Store) initVacuumTime() error
+func (s *Store) isStaleRead(freshness int64, strict bool) bool
+func (s *Store) logBackup() bool
+func (s *Store) logIncremental() bool
+func (s *Store) runWALSnapshotting() (closeCh chan struct{}, doneCh chan struct{})
+func (s *Store) setKeyTime(key string, t time.Time) error
+*/
+
 import (
 	"errors"
 	"expvar"
@@ -516,6 +564,14 @@ func (s *Store) hcLogLevel() hclog.Level {
 	return hclog.LevelFromString(s.RaftLogLevel)
 }
 
+func (s *Store) logIncremental() bool {
+	return s.hcLogLevel() < hclog.Warn
+}
+
+func (s *Store) logBackup() bool {
+	return s.hcLogLevel() < hclog.Warn
+}
+
 // pathExists returns true if the given path exists.
 func pathExists(p string) bool {
 	if _, err := os.Lstat(p); err != nil && os.IsNotExist(err) {
@@ -600,6 +656,66 @@ func (s *Store) observe() (closeCh, doneCh chan struct{}) {
 	return closeCh, doneCh
 }
 
+// Stepdown forces this node to relinquish leadership to another node in
+// the cluster. If this node is not the leader, and 'wait' is true, an error
+// will be returned.
+func (s *Store) Stepdown(wait bool) error {
+	if !s.open.Is() {
+		return ErrNotOpen
+	}
+	f := s.raft.LeadershipTransfer()
+	if !wait {
+		return nil
+	}
+	return f.Error()
+}
+
+// Close closes the store. If wait is true, waits for a graceful shutdown.
+// functionality is incomplete
+func (s *Store) Close(wait bool) (retErr error) {
+	defer func() {
+		if retErr == nil {
+			s.logger.Printf("store closed with node ID %s, listening on %s", s.raftID, s.ly.Addr().String())
+			s.open.Unset()
+		}
+	}()
+	if !s.open.Is() {
+		// Protect against closing already-closed resource, such as channels.
+		return nil
+	}
+	// if err := s.snapshotCAS.BeginWithRetry("close", 10*time.Millisecond, 10*time.Second); err != nil {
+	// 	return err
+	// }
+	// defer s.snapshotCAS.End()
+
+	// s.dechunkManager.Close()
+
+	// close(s.observerClose)
+	// <-s.observerDone
+
+	// close(s.snapshotWClose)
+	// <-s.snapshotWDone
+
+	f := s.raft.Shutdown()
+	if wait {
+		if f.Error() != nil {
+			return f.Error()
+		}
+	}
+	if err := s.raftTn.Close(); err != nil {
+		return err
+	}
+
+	// Only shutdown Bolt and SQLite when Raft is done.
+	if err := s.db.Close(); err != nil {
+		return err
+	}
+	if err := s.boltStore.Close(); err != nil {
+		return err
+	}
+	return nil
+}
+
 // Nodes returns the slice of nodes in the cluster, sorted by ID ascending.
 func (s *Store) Nodes() ([]*Server, error) {
 	if !s.open.Is() {
@@ -658,6 +774,7 @@ func (s *Store) selfLeaderChange(leader bool) {
 	}
 }
 
+// installRestore restores data from a restorePath
 func (s *Store) installRestore() error {
 	f, err := os.Open(s.restorePath)
 	if err != nil {
@@ -674,11 +791,7 @@ func (s *Store) installRestore() error {
 	return s.load(lr)
 }
 
-func (s *Store) load(lr *proto.LoadRequest) error {
-	// s.db.
-	return nil
-}
-
+// remove removes the node, with the given ID, from the cluster.
 func (s *Store) remove(id string) error {
 	f := s.raft.RemoveServer(raft.ServerID(id), 0, 0)
 	if f.Error() != nil && f.Error() == raft.ErrNotLeader {
@@ -1032,6 +1145,7 @@ func (s *Store) IsVoter() (bool, error) {
 }
 
 // Stats returns stats for the store.
+// Not complete: does not include badger db stats
 func (s *Store) Stats() (map[string]interface{}, error) {
 	if !s.open.Is() {
 		return map[string]interface{}{
@@ -1103,6 +1217,13 @@ func (s *Store) Stats() (map[string]interface{}, error) {
 		"dir":                    s.raftDir,
 		"dir_size":               dirSz,
 		"dir_size_friendly":      utils.FriendlyBytes(uint64(dirSz)),
+	}
+
+	// Snapshot stats may be in flux if a snapshot is in progress. Only
+	// report them if they are available.
+	snapsStats, err := s.snapshotStore.Stats()
+	if err == nil {
+		status["snapshot_store"] = snapsStats
 	}
 
 	return status, nil
@@ -1218,4 +1339,177 @@ func prettyVoter(v bool) string {
 		return "voter"
 	}
 	return "non-voter"
+}
+
+// Database related functions
+
+// Loads an entire BadgerDB file into the database, sending the request
+// through the Raft log.
+func (s *Store) Load(lr *proto.LoadRequest) error {
+	if !s.open.Is() {
+		return ErrNotOpen
+	}
+
+	if !s.Ready() {
+		return ErrNotReady
+	}
+
+	if err := s.load(lr); err != nil {
+		return err
+	}
+	stats.Add(numLoads, 1)
+	return nil
+}
+
+// load loads an entire BadgerDb file into the database, and is for internal use
+// only. It does not check for readiness, and does not update statistics.
+func (s *Store) load(lr *proto.LoadRequest) error {
+	startT := time.Now()
+
+	b, err := command.MarshalLoadRequest(lr)
+	if err != nil {
+		s.logger.Printf("load failed during load-request marshalling %s", err.Error())
+		return err
+	}
+
+	c := &proto.Command{
+		Type:       proto.Command_COMMAND_TYPE_LOAD,
+		SubCommand: b,
+	}
+
+	b, err = command.Marshal(c)
+	if err != nil {
+		return err
+	}
+
+	// TODO: need to test if the FSM is aware of these changes to flush it
+	// to the BadgerDB
+	// TODO: the impl is incomplete
+	af := s.raft.Apply(b, s.ApplyTimeout)
+	if af.Error() != nil {
+		if af.Error() == raft.ErrNotLeader {
+			return ErrNotLeader
+		}
+		s.logger.Printf("load failed during Apply: %s", af.Error())
+		return af.Error()
+	}
+	s.logger.Printf("node loaded in %s (%d bytes)", time.Since(startT), len(b))
+	return nil
+}
+
+// fsmSnapshot returns a snapshot of the database.
+//
+// Hashicorp Raft guarantees that this function will not be called concurrently
+// with Apply, as it states Apply() and Snapshot() are always called from the same
+// thread.
+func (s *Store) fsmSnapshot() (fSnap raft.FSMSnapshot, retErr error) {
+	return nil, ErrNotImplemented
+}
+
+func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
+	return ErrNotImplemented
+}
+
+// TODO: implementation is not complete
+// fsmRestore restores the node to a previous state. The Hashicorp docs state this
+// will not be called concurrently with Apply(), so synchronization with Execute()
+// is not necessary.
+func (s *Store) fsmRestore(rc io.ReadCloser) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			// stats.Add(numRestoresFailed, 1)
+		}
+	}()
+	s.logger.Printf("initiating node restore on node ID %s", s.raftID)
+
+	return nil
+
+	// startT := time.Now()
+	// // Create a scatch file to write the restore data to.
+	// tmpFile, err := createTemp(s.dbDir, restoreScratchPattern)
+	// if err != nil {
+	// 	return fmt.Errorf("error creating temporary file for restore operation: %v", err)
+	// }
+	// defer os.Remove(tmpFile.Name())
+	// defer tmpFile.Close()
+
+	// // Copy it from the reader to the temporary file.
+	// _, err = io.Copy(tmpFile, rc)
+	// if err != nil {
+	// 	return fmt.Errorf("error copying restore data: %v", err)
+	// }
+	// if err := tmpFile.Close(); err != nil {
+	// 	return fmt.Errorf("error creating temporary file for restore operation: %v", err)
+	// }
+
+	// if err := s.db.Swap(tmpFile.Name(), s.dbConf.FKConstraints, true); err != nil {
+	// 	return fmt.Errorf("error swapping database file: %v", err)
+	// }
+	// s.logger.Printf("successfully opened database at %s due to restore", s.db.Path())
+
+	// // Take conservative approach and assume that everything has changed, so update
+	// // the indexes. It is possible that dbAppliedIdx is now ahead of some other nodes'
+	// // same value, since the last index is not necessarily a database-changing index,
+	// // but that is OK. Worse that can happen is that anything paying attention to the
+	// // index might consider the database to be changed when it is not, *logically* speaking.
+	// li, tm, err := snapshot.LatestIndexTerm(s.snapshotDir)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to get latest snapshot index post restore: %s", err)
+	// }
+	// s.fsmIdx.Store(li)
+	// s.fsmTarget.Signal(li)
+	// s.fsmTerm.Store(tm)
+	// s.dbAppliedIdx.Store(li)
+	// s.appliedTarget.Signal(li)
+	// lt, err := s.db.DBLastModified()
+	// if err != nil {
+	// 	return fmt.Errorf("failed to get last modified time: %s", err)
+	// }
+	// s.dbModifiedTime.Store(lt)
+
+	// stats.Add(numRestores, 1)
+	// s.logger.Printf("node restored in %s", time.Since(startT))
+	// rc.Close()
+	// return nil
+}
+
+// Common raft functions
+
+// IsLeader return true if the node is the cluster leader else returns false
+func (s *Store) IsLeader() bool {
+	if !s.open.Is() {
+		return false
+	}
+	return s.raft.State() == raft.Leader
+}
+
+// Path returns the path to the store's storage directory.
+func (s *Store) Path() string {
+	return s.raftDir
+}
+
+// State returns the current node's Raft state
+func (s *Store) State() ClusterState {
+	if !s.open.Is() {
+		return Unknown
+	}
+	state := s.raft.State()
+	switch state {
+	case raft.Leader:
+		return Leader
+	case raft.Candidate:
+		return Candidate
+	case raft.Follower:
+		return Follower
+	case raft.Shutdown:
+		return Shutdown
+	default:
+		return Unknown
+	}
+}
+
+// RegisterReadyChannel registers a channel that must be closed before the
+// store is considered "ready" to serve requests.
+func (s *Store) RegisterReadyChannel(ch <-chan struct{}) {
+	s.readyChans.Register(ch)
 }
