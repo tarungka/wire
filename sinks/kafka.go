@@ -111,14 +111,14 @@ func (k *KafkaSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan 
 				k.sendMessageToKafka(ctx, docBytes)
 				log.Trace().Msg("After wait")
 			case docBytes, ok := <-initialDataChan:
-				if !ok{
+				if !ok {
 					// log.Info().Msg("Initial data channel closed")
 					continue
 				}
 				log.Debug().Msg("New initial data on the channel")
 				k.sendMessageToKafka(ctx, docBytes)
 				log.Trace().Msg("After wait")
-			// default:
+				// default:
 				// case <-done:
 				// 	// This probably should not happen, as this function should return only when
 				// 	// the upstream channel is closed
