@@ -161,7 +161,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Msgf("failed to get nodes %s", err.Error())
 	}
-	log.Debug().Msgf("The number of nodes are: %d", len(nodes))
+	log.Debug().Msgf("the number of nodes are: %d", len(nodes))
 	for idx, eachNode := range nodes {
 		log.Debug().Msgf("%d. Node information is: %v", idx, eachNode)
 	}
@@ -361,6 +361,7 @@ func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *clus
 	if err := networkCheckJoinAddrs(joins); err != nil {
 		return err
 	}
+	// When this is a single node cluster
 	if joins == nil && cfg.DiscoMode == "" && !hasPeers {
 		if cfg.RaftNonVoter {
 			return fmt.Errorf("cannot create a new non-voting node without joining it to an existing cluster")
@@ -368,7 +369,8 @@ func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *clus
 
 		// Brand new node, told to bootstrap itself. So do it.
 		log.Info().Msg("bootstrapping single new node")
-		if err := str.Bootstrap(store.NewServer(str.ID(), cfg.RaftAdv, true)); err != nil {
+		newServer := store.NewServer(str.ID(), cfg.RaftAdv, true)
+		if err := str.Bootstrap(newServer); err != nil {
 			return fmt.Errorf("failed to bootstrap single new node: %s", err.Error())
 		}
 		return nil
@@ -379,12 +381,15 @@ func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *clus
 		leader, _ := str.LeaderAddr()
 		return leader != ""
 	}
-	clusterSuf := cluster.VoterSuffrage(!cfg.RaftNonVoter)
+	clusterSuf := cluster.VoterSuffrage(!cfg.RaftNonVoter) // The suffrage of the node in the cluster
+	log.Debug().Msgf("the suffrage of the node in the cluster is: %v", clusterSuf)
 
 	joiner := cluster.NewJoiner(client, cfg.JoinAttempts, cfg.JoinInterval)
-	joiner.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
+	joiner.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs)) // This is not necessary for now as we do not support TLS
+	// If there is NO min quorum required to create a cluster
 	if joins != nil && cfg.BootstrapExpect == 0 {
 		// Explicit join operation requested, so do it.
+		log.Debug().Msgf("joining a cluster with no min quorum")
 		j, err := joiner.Do(ctx, joins, str.ID(), cfg.RaftAdv, clusterSuf)
 		if err != nil {
 			return fmt.Errorf("failed to join cluster: %s", err.Error())
@@ -393,6 +398,7 @@ func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *clus
 		return nil
 	}
 
+	// If there is a min quorum required to create a cluster
 	if joins != nil && cfg.BootstrapExpect > 0 {
 		// Bootstrap with explicit join addresses requests.
 		bs := cluster.NewBootstrapper(cluster.NewAddressProviderString(joins), client)
@@ -515,7 +521,7 @@ func networkCheckJoinAddrs(joinAddrs []string) error {
 			return fmt.Errorf("join address %s appears to be serving HTTP when it should be Raft", addr)
 		}
 	}
-	log.Printf("none of the %v are serving HTTP", joinAddrs)
+	log.Printf("none of the nodes %v are serving HTTP", joinAddrs)
 	return nil
 }
 

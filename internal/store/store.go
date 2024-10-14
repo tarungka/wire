@@ -530,11 +530,13 @@ func (s *Store) observe() (closeCh, doneCh chan struct{}) {
 
 	go func() {
 		defer close(doneCh)
+		s.logger.Print("observing for leader changes")
 		for {
 			select {
 			case o := <-s.observerChan:
 				switch signal := o.Data.(type) {
 				case raft.FailedHeartbeatObservation:
+					s.logger.Print("heartbeat failed")
 					stats.Add(failedHeartbeatObserved, 1)
 
 					nodes, err := s.Nodes()
@@ -566,6 +568,7 @@ func (s *Store) observe() (closeCh, doneCh chan struct{}) {
 						}
 					}
 				case raft.LeaderObservation:
+					s.logger.Print("leader change")
 					s.leaderObserversMu.RLock()
 					for i := range s.leaderObservers {
 						select {
@@ -589,6 +592,7 @@ func (s *Store) observe() (closeCh, doneCh chan struct{}) {
 				}
 
 			case <-closeCh:
+				s.logger.Print("stopping to observe changes for leader")
 				return
 			}
 		}
@@ -775,6 +779,7 @@ func (s *Store) Remove(rn *commandProto.RemoveNodeRequest) error {
 //
 // Notifying is idempotent. A node may repeatedly notify the Store without issue.
 func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
+	s.logger.Printf("notifying node %v", nr)
 	if !s.open.Is() {
 		return ErrNotOpen
 	}
@@ -793,6 +798,7 @@ func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
 	}
 
 	if _, ok := s.notifyingNodes[nr.Id]; ok {
+		s.logger.Printf("failed to notify a node %s", nr.Id)
 		return nil
 	}
 
@@ -803,9 +809,11 @@ func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
 	if addr, err := resolvableAddress(nr.Address); err != nil {
 		return fmt.Errorf("failed to resolve %s: %w", addr, err)
 	}
+	s.logger.Printf("resolved node %s:%s", nr.Id, nr.Address)
 
 	s.notifyingNodes[nr.Id] = &Server{nr.Id, nr.Address, "voter"}
 	if len(s.notifyingNodes) < s.BootstrapExpect {
+		s.logger.Printf("not reached a quorum of nodes; current number of nodes are: %d expect: %d", len(s.notifyingNodes), s.BootstrapExpect)
 		return nil
 	}
 
@@ -948,11 +956,12 @@ func (s *Store) Snapshot(n uint64) (retError error) {
 // if the system is actively snapshotting. The client can just retry in this case.
 func (s *Store) Backup(br *proto.BackupRequest, dst io.Writer) (retErr error) {
 	// TODO: need to impl
+	s.logger.Panic().Msgf("%s", ErrNotImplemented)
 	return ErrNotImplemented
 }
 
 func (s *Store) Ready() bool {
-	// if and and has a leader
+	// if store is open and all readyChans are closed and has a leader
 	return s.open.Is() && s.readyChans.Ready() && s.HasLeader()
 }
 

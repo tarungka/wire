@@ -247,7 +247,7 @@ func (mux *Mux) handleConn(conn net.Conn) {
 	if handler == nil {
 		conn.Close()
 		stats.Add(numUnregisteredHandlers, 1)
-		mux.Logger.Printf("handler not registered for request from %s: %d (unsupported protocol?)",
+		mux.Logger.Error().Msgf("handler not registered for request from %s: %d (unsupported protocol?)",
 			conn.RemoteAddr().String(), typ[0])
 		return
 	}
