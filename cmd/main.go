@@ -226,8 +226,40 @@ func main() {
 
 	log.Info().Msg("Process interrupted, shutting down...")
 
+
+
 	// Close the done channel to signal all goroutines to exit
 	close(done)
+
+	// Stop the HTTP server and other network access first so clients get notification as soon as
+	// possible that the node is going away.
+	httpServ.Close()
+	clstrServ.Close()
+
+	if cfg.RaftClusterRemoveOnShutdown {
+		remover := cluster.NewRemover(clstrClient, 5*time.Second, str)
+		// TODO: not support TLS for now, will work on it later
+		// remover.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
+		log.Info().Msgf("initiating removal of this node from cluster before shutdown")
+		if err := remover.Do(cfg.NodeID, true); err != nil {
+			log.Error().Msgf("failed to remove this node from cluster before shutdown: %s", err.Error())
+		}
+		log.Info().Msgf("removed this node successfully from cluster before shutdown")
+	}
+
+	if cfg.RaftStepdownOnShutdown {
+		if str.IsLeader() {
+			// Don't log a confusing message if (probably) not Leader
+			log.Info().Msgf("stepping down as Leader before shutdown")
+		}
+		// Perform a stepdown, ignore any errors.
+		str.Stepdown(true)
+	}
+	muxListener.Close()
+
+	if err := str.Close(true); err != nil {
+		log.Info().Msgf("failed to close store: %s", err.Error())
+	}
 
 	// For for graceful shutdown
 	wg.Wait()

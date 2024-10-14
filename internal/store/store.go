@@ -143,7 +143,9 @@ const (
 	raftDBPath             = "raft.db"
 	raftLogCacheSize       = 128
 	observerChanLen        = 50
+	appliedWaitDelay       = 100 * time.Millisecond
 	commitEquivalenceDelay = 50 * time.Millisecond
+	leaderWaitDelay        = 100 * time.Millisecond
 	snapshotsDirName       = "wsnapshots"
 )
 
@@ -1512,4 +1514,33 @@ func (s *Store) State() ClusterState {
 // store is considered "ready" to serve requests.
 func (s *Store) RegisterReadyChannel(ch <-chan struct{}) {
 	s.readyChans.Register(ch)
+}
+
+// WaitForLeader blocks until a leader is detected, or the timeout expires.
+func (s *Store) WaitForLeader(timeout time.Duration) (string, error) {
+	var leaderAddr string
+	check := func() bool {
+		var chkErr error
+		leaderAddr, chkErr = s.LeaderAddr()
+		return chkErr == nil && leaderAddr != ""
+	}
+	err := rsync.NewPollTrue(check, leaderWaitDelay, timeout).Run("leader")
+	if err != nil {
+		return "", ErrWaitForLeaderTimeout
+	}
+	return leaderAddr, err
+}
+
+// WaitForRemoval blocks until a node with the given ID is removed from the
+// cluster or the timeout expires.
+func (s *Store) WaitForRemoval(id string, timeout time.Duration) error {
+	check := func() bool {
+		nodes, err := s.Nodes()
+		return err == nil && !Servers(nodes).Contains(id)
+	}
+	err := rsync.NewPollTrue(check, appliedWaitDelay, timeout).Run("removal")
+	if err != nil {
+		return ErrWaitForRemovalTimeout
+	}
+	return nil
 }
