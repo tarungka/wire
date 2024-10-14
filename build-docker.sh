@@ -13,10 +13,9 @@ DATE=$(date +"%Y-%m-%dT%H:%M:%S")
 VERSION=$(git describe --tags --always --dirty)
 
 # Build the binary with dynamic ldflags
-go build -o wire -ldflags=" \
-    -w -s \
-    -X github.com/tarungka/wire/internal/cmd.CompilerCommand=musl-gcc \
-    -X github.com/tarungka/wire/internal/cmd.Version=${VERSION} \
-    -X github.com/tarungka/wire/internal/cmd.Branch=${BRANCH} \
-    -X github.com/tarungka/wire/internal/cmd.Commit=${COMMIT} \
-    -X github.com/tarungka/wire/internal/cmd.Buildtime=${DATE}" ./cmd/.
+docker build \
+    --build-arg VERSION="$VERSION" \
+    --build-arg COMMIT="$COMMIT" \
+    --build-arg BRANCH="$BRANCH" \
+    --build-arg DATE="$DATE" \
+    -t wire/wire:latest .

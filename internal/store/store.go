@@ -1,11 +1,60 @@
 package store
 
+/*                             NEED TO IMPLEMENT
+Following are the functions that still need to be implemented or are partially
+implemented and need to complete based on the other features being built
+
+func (s *Store) Backup(br *commandProto.BackupRequest, dst io.Writer) (retErr error)
+func (s *Store) load(lr *commandProto.LoadRequest) error
+func (s *Store) SetRestorePath(path string) error
+func (s *Store) fsmSnapshot() (fSnap raft.FSMSnapshot, retErr error)
+func (s *Store) fsmRestore(rc io.ReadCloser) (retErr error)
+func (s *Store) fsmApply(l *raft.Log) (e interface{})
+func (s *Store) Close(wait bool) (retErr error)
+func (s *Store) DBAppliedIndex() uint64
+func (s *Store) Database(leader bool) ([]byte, error)
+func (s *Store) DeregisterObserver(o *raft.Observer)
+func (s *Store) Execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error)
+func (s *Store) LastOptimizeTime() (time.Time, error)
+func (s *Store) LastVacuumTime() (time.Time, error)
+func (s *Store) Noop(id string) (raft.ApplyFuture, error)
+func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error)
+func (s *Store) RORWCount(eqr *proto.ExecuteQueryRequest) (nRW int, nRO int)
+func (s *Store) ReadFrom(r io.Reader) (int64, error)
+func (s *Store) RegisterLeaderChange(c chan<- struct{})
+func (s *Store) RegisterObserver(o *raft.Observer)
+func (s *Store) Request(eqr *proto.ExecuteQueryRequest) ([]*proto.ExecuteQueryResponse, error)
+func (s *Store) SetRequestCompression(batch int, size int)
+func (s *Store) Stats() (map[string]interface{}, error)
+func (s *Store) Vacuum() error
+func (s *Store) WaitForAllApplied(timeout time.Duration) error
+func (s *Store) WaitForAppliedFSM(timeout time.Duration) (uint64, error)
+func (s *Store) WaitForAppliedIndex(idx uint64, timeout time.Duration) error
+func (s *Store) WaitForFSMIndex(idx uint64, timeout time.Duration) (uint64, error)
+func (s *Store) WaitForLeader(timeout time.Duration) (string, error)
+func (s *Store) WaitForRemoval(id string, timeout time.Duration) error
+func (s *Store) autoOptimizeNeeded(t time.Time) (bool, error)
+func (s *Store) autoVacNeeded(t time.Time) (bool, error)
+func (s *Store) clearKeyTime(key string) error
+func (s *Store) dbModified() bool
+func (s *Store) execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error)
+func (s *Store) getKeyTime(key string) (time.Time, error)
+func (s *Store) initOptimizeTime() error
+func (s *Store) initVacuumTime() error
+func (s *Store) isStaleRead(freshness int64, strict bool) bool
+func (s *Store) logBackup() bool
+func (s *Store) logIncremental() bool
+func (s *Store) runWALSnapshotting() (closeCh chan struct{}, doneCh chan struct{})
+func (s *Store) setKeyTime(key string, t time.Time) error
+*/
+
 import (
 	"errors"
 	"expvar"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,13 +64,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dgraph-io/badger/v4"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
-	zlog "github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/command"
 	"github.com/tarungka/wire/internal/command/proto"
 	commandProto "github.com/tarungka/wire/internal/command/proto"
+	"github.com/tarungka/wire/internal/db"
+	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/rsync"
 	"github.com/tarungka/wire/internal/snapshot"
 	"github.com/tarungka/wire/internal/utils"
@@ -92,7 +143,9 @@ const (
 	raftDBPath             = "raft.db"
 	raftLogCacheSize       = 128
 	observerChanLen        = 50
+	appliedWaitDelay       = 100 * time.Millisecond
 	commitEquivalenceDelay = 50 * time.Millisecond
+	leaderWaitDelay        = 100 * time.Millisecond
 	snapshotsDirName       = "wsnapshots"
 )
 
@@ -232,7 +285,7 @@ type SnapshotStore interface {
 	Stats() (map[string]interface{}, error)
 }
 
-// Wire Store is a BBolt database, where all changes are made via Raft consensus.
+// Wire Store is a BBolt/badgerDB database, where all changes are made via Raft consensus.
 type Store struct {
 	open          *rsync.AtomicBool
 	raftDir       string
@@ -309,27 +362,32 @@ type Store struct {
 	snapshotDir   string
 	snapshotStore SnapshotStore // Snapshot store.
 
+	// Database
+	dbDir string
+	db    *badger.DB
+
 	mu sync.Mutex
+
+	// For whitebox testing
+	numFullSnapshots int
+	numAutoVacuums   int
+	numAutoOptimizes int
+	numIgnoredJoins  int
+	numNoops         *atomic.Uint64
+	numSnapshots     *atomic.Uint64
 }
 
 type Config struct {
 	Dir string    // The working directory for raft.
 	Tn  Transport // The underlying Transport for raft.
 	ID  string    // Node ID.
-	// Logger *log.Logger // The logger to use to log stuff.
 }
 
 // func New(ly Layer, ko *koanf.Koanf) *Store {
 // allocate a new store in memory and initialize
 func New(ly Layer, c *Config) *Store {
-
-	// raftDir := ko.String("raft_dir")
-	// raftId := ko.String("node_id")
-	zlog.Debug().Msg("Creating a new store!")
-
-	// TODO: create a zerolog logger
-	logger := zerolog.Logger{}
-
+	newLogger := logger.GetLogger("store")
+	newLogger.Print("creating new store")
 	return &Store{
 		open:            rsync.NewAtomicBool(),
 		ly:              ly,
@@ -348,7 +406,7 @@ func New(ly Layer, c *Config) *Store {
 		fsmUpdateTime:   rsync.NewAtomicTime(),
 		appendedAtTime:  rsync.NewAtomicTime(),
 		dbModifiedTime:  rsync.NewAtomicTime(),
-		logger:          logger,
+		logger:          newLogger,
 		readyChans:      rsync.NewReadyChannels(),
 		snapshotDir:     filepath.Join(c.Dir, snapshotsDirName),
 		// snapshotCAS:     rsync.NewCheckAndSet(),
@@ -370,8 +428,8 @@ func (s *Store) Open() (retError error) {
 
 	var err error
 
-	// s.logger.Debug().Msg("Opening the store")
-	fmt.Printf("Opening the store\n")
+	s.logger.Debug().Msg("Opening the store")
+	// fmt.Printf("Opening the store\n")
 
 	// Reset/set the defaults
 	s.fsmIdx.Store(0)
@@ -424,7 +482,7 @@ func (s *Store) Open() (retError error) {
 		return fmt.Errorf("new cached store: %s", err)
 	}
 
-	// Request to recover node?
+	// TODO: Request to recover node?
 	if pathExists(s.peersPath) {
 		s.logger.Printf("attempting node recovery using %s", s.peersPath)
 		config, err := raft.ReadConfigJSON(s.peersPath)
@@ -440,6 +498,12 @@ func (s *Store) Open() (retError error) {
 		// }
 		// s.logger.Printf("node recovered successfully using %s", s.peersPath)
 		stats.Add(numRecoveries, 1)
+	}
+
+	// TODO: add a path here
+	s.db, err = db.Open("")
+	if err != nil {
+		s.logger.Fatal().Err(err).Msgf("failed to create on disk database: %s", err)
 	}
 
 	if s.raftLog == nil || s.raftStable == nil || s.raftTn == nil {
@@ -493,12 +557,21 @@ func (s *Store) raftConfig() *raft.Config {
 	opts := hclog.DefaultOptions
 	opts.Name = ""
 	opts.Level = s.hcLogLevel()
-	config.Logger = hclog.FromStandardLogger(log.New(os.Stderr, "[raft] ", log.LstdFlags), opts)
+	// Todo: need to update this?
+	config.Logger = hclog.FromStandardLogger(log.New(os.Stderr, "[ raft] ", log.LstdFlags), opts)
 	return config
 }
 
 func (s *Store) hcLogLevel() hclog.Level {
 	return hclog.LevelFromString(s.RaftLogLevel)
+}
+
+func (s *Store) logIncremental() bool {
+	return s.hcLogLevel() < hclog.Warn
+}
+
+func (s *Store) logBackup() bool {
+	return s.hcLogLevel() < hclog.Warn
 }
 
 // pathExists returns true if the given path exists.
@@ -515,11 +588,13 @@ func (s *Store) observe() (closeCh, doneCh chan struct{}) {
 
 	go func() {
 		defer close(doneCh)
+		s.logger.Print("observing for leader changes")
 		for {
 			select {
 			case o := <-s.observerChan:
 				switch signal := o.Data.(type) {
 				case raft.FailedHeartbeatObservation:
+					s.logger.Print("heartbeat failed")
 					stats.Add(failedHeartbeatObserved, 1)
 
 					nodes, err := s.Nodes()
@@ -551,6 +626,7 @@ func (s *Store) observe() (closeCh, doneCh chan struct{}) {
 						}
 					}
 				case raft.LeaderObservation:
+					s.logger.Print("leader change")
 					s.leaderObserversMu.RLock()
 					for i := range s.leaderObservers {
 						select {
@@ -574,11 +650,72 @@ func (s *Store) observe() (closeCh, doneCh chan struct{}) {
 				}
 
 			case <-closeCh:
+				s.logger.Print("stopping to observe changes for leader")
 				return
 			}
 		}
 	}()
 	return closeCh, doneCh
+}
+
+// Stepdown forces this node to relinquish leadership to another node in
+// the cluster. If this node is not the leader, and 'wait' is true, an error
+// will be returned.
+func (s *Store) Stepdown(wait bool) error {
+	if !s.open.Is() {
+		return ErrNotOpen
+	}
+	f := s.raft.LeadershipTransfer()
+	if !wait {
+		return nil
+	}
+	return f.Error()
+}
+
+// Close closes the store. If wait is true, waits for a graceful shutdown.
+// functionality is incomplete
+func (s *Store) Close(wait bool) (retErr error) {
+	defer func() {
+		if retErr == nil {
+			s.logger.Printf("store closed with node ID %s, listening on %s", s.raftID, s.ly.Addr().String())
+			s.open.Unset()
+		}
+	}()
+	if !s.open.Is() {
+		// Protect against closing already-closed resource, such as channels.
+		return nil
+	}
+	// if err := s.snapshotCAS.BeginWithRetry("close", 10*time.Millisecond, 10*time.Second); err != nil {
+	// 	return err
+	// }
+	// defer s.snapshotCAS.End()
+
+	// s.dechunkManager.Close()
+
+	// close(s.observerClose)
+	// <-s.observerDone
+
+	// close(s.snapshotWClose)
+	// <-s.snapshotWDone
+
+	f := s.raft.Shutdown()
+	if wait {
+		if f.Error() != nil {
+			return f.Error()
+		}
+	}
+	if err := s.raftTn.Close(); err != nil {
+		return err
+	}
+
+	// Only shutdown Bolt and SQLite when Raft is done.
+	if err := s.db.Close(); err != nil {
+		return err
+	}
+	if err := s.boltStore.Close(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Nodes returns the slice of nodes in the cluster, sorted by ID ascending.
@@ -639,6 +776,7 @@ func (s *Store) selfLeaderChange(leader bool) {
 	}
 }
 
+// installRestore restores data from a restorePath
 func (s *Store) installRestore() error {
 	f, err := os.Open(s.restorePath)
 	if err != nil {
@@ -655,10 +793,7 @@ func (s *Store) installRestore() error {
 	return s.load(lr)
 }
 
-func (s *Store) load(lr *proto.LoadRequest) error {
-	return nil
-}
-
+// remove removes the node, with the given ID, from the cluster.
 func (s *Store) remove(id string) error {
 	f := s.raft.RemoveServer(raft.ServerID(id), 0, 0)
 	if f.Error() != nil && f.Error() == raft.ErrNotLeader {
@@ -667,6 +802,7 @@ func (s *Store) remove(id string) error {
 	return f.Error()
 }
 
+// IsNewNode checks if this the a new or pre-existing node
 func IsNewNode(raftDir string) bool {
 	// If there is any preexisting Raft state, then this node
 	// has already been created.
@@ -736,14 +872,159 @@ func (s *Store) CommitIndex() (uint64, error) {
 }
 
 func (s *Store) Remove(rn *commandProto.RemoveNodeRequest) error {
-	return ErrNotImplemented
+	if !s.open.Is() {
+		return ErrNotOpen
+	}
+	id := rn.Id
+
+	s.logger.Printf("received request to remove node %s", id)
+	if err := s.remove(id); err != nil {
+		return err
+	}
+
+	s.logger.Printf("node %s removed successfully", id)
+	return nil
 }
 
-func (s *Store) Notify(n *commandProto.NotifyRequest) error {
-	return ErrNotImplemented
+// Notify notifies this Store that a node is ready for bootstrapping at the
+// given address. Once the number of known nodes reaches the expected level
+// bootstrapping will be attempted using this Store. "Expected level" includes
+// this node, so this node must self-notify to ensure the cluster bootstraps
+// with the *advertised Raft address* which the Store doesn't know about.
+//
+// Notifying is idempotent. A node may repeatedly notify the Store without issue.
+func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
+	s.logger.Printf("notifying node %v", nr)
+	if !s.open.Is() {
+		return ErrNotOpen
+	}
+
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+
+	if s.BootstrapExpect == 0 || s.bootstrapped || s.HasLeader() {
+		// There is no reason this node will bootstrap.
+		//
+		// - Read-only nodes require that BootstrapExpect is set to 0, so this
+		// block ensures that notifying a read-only node will not cause a bootstrap.
+		// - If the node is already bootstrapped, then there is nothing to do.
+		// - If the node already has a leader, then no bootstrapping is required.
+		return nil
+	}
+
+	if _, ok := s.notifyingNodes[nr.Id]; ok {
+		s.logger.Printf("failed to notify a node %s", nr.Id)
+		return nil
+	}
+
+	// Confirm that this node can resolve the remote address. This can happen due
+	// to incomplete DNS records across the underlying infrastructure. If it can't
+	// then don't consider this Notify attempt successful -- so the notifying node
+	// will presumably try again.
+	if addr, err := resolvableAddress(nr.Address); err != nil {
+		return fmt.Errorf("failed to resolve %s: %w", addr, err)
+	}
+	s.logger.Printf("resolved node %s:%s", nr.Id, nr.Address)
+
+	s.notifyingNodes[nr.Id] = &Server{nr.Id, nr.Address, "voter"}
+	if len(s.notifyingNodes) < s.BootstrapExpect {
+		s.logger.Printf("not reached a quorum of nodes; current number of nodes are: %d expect: %d", len(s.notifyingNodes), s.BootstrapExpect)
+		return nil
+	}
+
+	raftServers := make([]raft.Server, 0, len(s.notifyingNodes))
+	for _, n := range s.notifyingNodes {
+		raftServers = append(raftServers, raft.Server{
+			ID:      raft.ServerID(n.ID),
+			Address: raft.ServerAddress(n.Addr),
+		})
+	}
+
+	s.logger.Printf("reached expected bootstrap count of %d, starting cluster bootstrap",
+		s.BootstrapExpect)
+	bf := s.raft.BootstrapCluster(raft.Configuration{
+		Servers: raftServers,
+	})
+	if bf.Error() != nil {
+		s.logger.Printf("cluster bootstrap failed: %s", bf.Error())
+	} else {
+		s.logger.Printf("cluster bootstrap successful, servers: %s", raftServers)
+	}
+	s.bootstrapped = true
+	return nil
 }
 
-func (s *Store) Join(n *commandProto.JoinRequest) error {
+// Join request to join this store
+func (s *Store) Join(jr *commandProto.JoinRequest) error {
+	s.logger.Print("got a join request to the store")
+	if !s.open.Is() {
+		return ErrNotOpen
+	}
+
+	if s.raft.State() != raft.Leader {
+		s.logger.Print("join request to store; but not the leader")
+		return ErrNotLeader
+	}
+
+	id := jr.Id
+	addr := jr.Address
+	voter := jr.Voter
+
+	// Confirm that this node can resolve the remote address. This can happen due
+	// to incomplete DNS records across the underlying infrastructure. If it can't
+	// then don't consider this join attempt successful -- so the joining node
+	// will presumably try again.
+	if addr, err := resolvableAddress(addr); err != nil {
+		s.logger.Info().Msgf("failed to resolve %s: %w", addr, err)
+		return fmt.Errorf("failed to resolve %s: %w", addr, err)
+	}
+
+	configFuture := s.raft.GetConfiguration()
+	if err := configFuture.Error(); err != nil {
+		s.logger.Printf("failed to get raft configuration: %v", err)
+		return err
+	}
+	s.logger.Printf("the raft configuration is: %v", configFuture)
+
+	for _, srv := range configFuture.Configuration().Servers {
+		// If a node already exists with either the joining node's ID or address,
+		// that node may need to be removed from the config first.
+		if srv.ID == raft.ServerID(id) || srv.Address == raft.ServerAddress(addr) {
+			// However, if *both* the ID and the address are the same, then no
+			// join is actually needed.
+			if srv.Address == raft.ServerAddress(addr) && srv.ID == raft.ServerID(id) {
+				stats.Add(numIgnoredJoins, 1)
+				s.numIgnoredJoins++
+				s.logger.Printf("node %s at %s already member of cluster, ignoring join request", id, addr)
+				return nil
+			}
+
+			if err := s.remove(id); err != nil {
+				s.logger.Printf("failed to remove node %s: %v", id, err)
+				return err
+			}
+			stats.Add(numRemovedBeforeJoins, 1)
+			s.logger.Printf("removed node %s prior to rejoin with changed ID or address", id)
+		}
+	}
+
+	var f raft.IndexFuture
+	if voter {
+		s.logger.Info().Msgf("adding %v:%v as a voter", id, addr)
+		f = s.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 0)
+	} else {
+		s.logger.Info().Msgf("adding %v:%v as a NON-voter", id, addr)
+		f = s.raft.AddNonvoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 0)
+	}
+	// TODO: understand why would this error
+	if e := f.(raft.Future); e.Error() != nil {
+		if e.Error() == raft.ErrNotLeader {
+			return ErrNotLeader
+		}
+		return e.Error()
+	}
+	stats.Add(numJoins, 1)
+	s.logger.Printf("node with ID %s, at %s, joined successfully as %s", id, addr, prettyVoter(voter))
 	return nil
 }
 
@@ -785,12 +1066,17 @@ func (s *Store) Snapshot(n uint64) (retError error) {
 	return nil
 }
 
+// Backup writes a consistent snapshot of the underlying database to dst. This
+// can be called while writes are being made to the system. The backup may fail
+// if the system is actively snapshotting. The client can just retry in this case.
 func (s *Store) Backup(br *proto.BackupRequest, dst io.Writer) (retErr error) {
+	// TODO: need to impl
+	s.logger.Panic().Msgf("%s", ErrNotImplemented)
 	return ErrNotImplemented
 }
 
 func (s *Store) Ready() bool {
-	// if and and has a leader
+	// if store is open and all readyChans are closed and has a leader
 	return s.open.Is() && s.readyChans.Ready() && s.HasLeader()
 }
 
@@ -861,6 +1147,7 @@ func (s *Store) IsVoter() (bool, error) {
 }
 
 // Stats returns stats for the store.
+// Not complete: does not include badger db stats
 func (s *Store) Stats() (map[string]interface{}, error) {
 	if !s.open.Is() {
 		return map[string]interface{}{
@@ -932,6 +1219,13 @@ func (s *Store) Stats() (map[string]interface{}, error) {
 		"dir":                    s.raftDir,
 		"dir_size":               dirSz,
 		"dir_size_friendly":      utils.FriendlyBytes(uint64(dirSz)),
+	}
+
+	// Snapshot stats may be in flux if a snapshot is in progress. Only
+	// report them if they are available.
+	snapsStats, err := s.snapshotStore.Stats()
+	if err == nil {
+		status["snapshot_store"] = snapsStats
 	}
 
 	return status, nil
@@ -1029,4 +1323,224 @@ func (s *Store) Bootstrap(servers ...*Server) error {
 		Servers: raftServers,
 	})
 	return fut.Error()
+}
+
+func resolvableAddress(addr string) (string, error) {
+	h, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Just try the given address directly.
+		h = addr
+	}
+	_, err = net.LookupHost(h)
+	return h, err
+}
+
+// prettyVoter converts bool to "voter" or "non-voter"
+func prettyVoter(v bool) string {
+	if v {
+		return "voter"
+	}
+	return "non-voter"
+}
+
+// Database related functions
+
+// Loads an entire BadgerDB file into the database, sending the request
+// through the Raft log.
+func (s *Store) Load(lr *proto.LoadRequest) error {
+	if !s.open.Is() {
+		return ErrNotOpen
+	}
+
+	if !s.Ready() {
+		return ErrNotReady
+	}
+
+	if err := s.load(lr); err != nil {
+		return err
+	}
+	stats.Add(numLoads, 1)
+	return nil
+}
+
+// load loads an entire BadgerDb file into the database, and is for internal use
+// only. It does not check for readiness, and does not update statistics.
+func (s *Store) load(lr *proto.LoadRequest) error {
+	startT := time.Now()
+
+	b, err := command.MarshalLoadRequest(lr)
+	if err != nil {
+		s.logger.Printf("load failed during load-request marshalling %s", err.Error())
+		return err
+	}
+
+	c := &proto.Command{
+		Type:       proto.Command_COMMAND_TYPE_LOAD,
+		SubCommand: b,
+	}
+
+	b, err = command.Marshal(c)
+	if err != nil {
+		return err
+	}
+
+	// TODO: need to test if the FSM is aware of these changes to flush it
+	// to the BadgerDB
+	// TODO: the impl is incomplete
+	af := s.raft.Apply(b, s.ApplyTimeout)
+	if af.Error() != nil {
+		if af.Error() == raft.ErrNotLeader {
+			return ErrNotLeader
+		}
+		s.logger.Printf("load failed during Apply: %s", af.Error())
+		return af.Error()
+	}
+	s.logger.Printf("node loaded in %s (%d bytes)", time.Since(startT), len(b))
+	return nil
+}
+
+// fsmSnapshot returns a snapshot of the database.
+//
+// Hashicorp Raft guarantees that this function will not be called concurrently
+// with Apply, as it states Apply() and Snapshot() are always called from the same
+// thread.
+func (s *Store) fsmSnapshot() (fSnap raft.FSMSnapshot, retErr error) {
+	return nil, ErrNotImplemented
+}
+
+func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
+	return ErrNotImplemented
+}
+
+// TODO: implementation is not complete
+// fsmRestore restores the node to a previous state. The Hashicorp docs state this
+// will not be called concurrently with Apply(), so synchronization with Execute()
+// is not necessary.
+func (s *Store) fsmRestore(rc io.ReadCloser) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			// stats.Add(numRestoresFailed, 1)
+		}
+	}()
+	s.logger.Printf("initiating node restore on node ID %s", s.raftID)
+
+	return nil
+
+	// startT := time.Now()
+	// // Create a scatch file to write the restore data to.
+	// tmpFile, err := createTemp(s.dbDir, restoreScratchPattern)
+	// if err != nil {
+	// 	return fmt.Errorf("error creating temporary file for restore operation: %v", err)
+	// }
+	// defer os.Remove(tmpFile.Name())
+	// defer tmpFile.Close()
+
+	// // Copy it from the reader to the temporary file.
+	// _, err = io.Copy(tmpFile, rc)
+	// if err != nil {
+	// 	return fmt.Errorf("error copying restore data: %v", err)
+	// }
+	// if err := tmpFile.Close(); err != nil {
+	// 	return fmt.Errorf("error creating temporary file for restore operation: %v", err)
+	// }
+
+	// if err := s.db.Swap(tmpFile.Name(), s.dbConf.FKConstraints, true); err != nil {
+	// 	return fmt.Errorf("error swapping database file: %v", err)
+	// }
+	// s.logger.Printf("successfully opened database at %s due to restore", s.db.Path())
+
+	// // Take conservative approach and assume that everything has changed, so update
+	// // the indexes. It is possible that dbAppliedIdx is now ahead of some other nodes'
+	// // same value, since the last index is not necessarily a database-changing index,
+	// // but that is OK. Worse that can happen is that anything paying attention to the
+	// // index might consider the database to be changed when it is not, *logically* speaking.
+	// li, tm, err := snapshot.LatestIndexTerm(s.snapshotDir)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to get latest snapshot index post restore: %s", err)
+	// }
+	// s.fsmIdx.Store(li)
+	// s.fsmTarget.Signal(li)
+	// s.fsmTerm.Store(tm)
+	// s.dbAppliedIdx.Store(li)
+	// s.appliedTarget.Signal(li)
+	// lt, err := s.db.DBLastModified()
+	// if err != nil {
+	// 	return fmt.Errorf("failed to get last modified time: %s", err)
+	// }
+	// s.dbModifiedTime.Store(lt)
+
+	// stats.Add(numRestores, 1)
+	// s.logger.Printf("node restored in %s", time.Since(startT))
+	// rc.Close()
+	// return nil
+}
+
+// Common raft functions
+
+// IsLeader return true if the node is the cluster leader else returns false
+func (s *Store) IsLeader() bool {
+	if !s.open.Is() {
+		return false
+	}
+	return s.raft.State() == raft.Leader
+}
+
+// Path returns the path to the store's storage directory.
+func (s *Store) Path() string {
+	return s.raftDir
+}
+
+// State returns the current node's Raft state
+func (s *Store) State() ClusterState {
+	if !s.open.Is() {
+		return Unknown
+	}
+	state := s.raft.State()
+	switch state {
+	case raft.Leader:
+		return Leader
+	case raft.Candidate:
+		return Candidate
+	case raft.Follower:
+		return Follower
+	case raft.Shutdown:
+		return Shutdown
+	default:
+		return Unknown
+	}
+}
+
+// RegisterReadyChannel registers a channel that must be closed before the
+// store is considered "ready" to serve requests.
+func (s *Store) RegisterReadyChannel(ch <-chan struct{}) {
+	s.readyChans.Register(ch)
+}
+
+// WaitForLeader blocks until a leader is detected, or the timeout expires.
+func (s *Store) WaitForLeader(timeout time.Duration) (string, error) {
+	var leaderAddr string
+	check := func() bool {
+		var chkErr error
+		leaderAddr, chkErr = s.LeaderAddr()
+		return chkErr == nil && leaderAddr != ""
+	}
+	err := rsync.NewPollTrue(check, leaderWaitDelay, timeout).Run("leader")
+	if err != nil {
+		return "", ErrWaitForLeaderTimeout
+	}
+	return leaderAddr, err
+}
+
+// WaitForRemoval blocks until a node with the given ID is removed from the
+// cluster or the timeout expires.
+func (s *Store) WaitForRemoval(id string, timeout time.Duration) error {
+	check := func() bool {
+		nodes, err := s.Nodes()
+		return err == nil && !Servers(nodes).Contains(id)
+	}
+	err := rsync.NewPollTrue(check, appliedWaitDelay, timeout).Run("removal")
+	if err != nil {
+		return ErrWaitForRemovalTimeout
+	}
+	return nil
 }

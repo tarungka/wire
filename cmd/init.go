@@ -14,11 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/knadh/koanf/parsers/json"
-	"github.com/knadh/koanf/parsers/yaml"
-	"github.com/knadh/koanf/providers/file"
-	"github.com/knadh/koanf/v2"
-	"github.com/rs/zerolog/log"
 	"github.com/spf13/pflag"
 )
 
@@ -518,22 +513,36 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, error) {
 	f.String("raft_dir", "./raft_database", "address of the raft connection")
 	f.String("node_id", "node0", "address of the raft connection")
 
-	// f.String("join", "", "comma-delimited list of nodes, in host:port form, through which a cluster can be joined")
-	// f.String("disco_mode", "", "choose clustering discovery mode. If not set, no node discovery is performed")
-	// f.Bool("raft_non_voter", false, "configure as non-voting node")
-	// f.String("join-as", "", "Username in authentication file to join as. If not set, joins anonymously")
-	// f.Int("join-attempts", 5, "Number of join attempts to make")
-	// f.Duration("join-interval", 3*time.Second, "Period between join attempts")
-	// f.Duration("bootstrap-expect-timeout", 120*time.Second, "Maximum time for bootstrap process")
-	// f.Int("bootstrap-expect", 0, "Minimum number of nodes required for a bootstrap")
-
 	// Show version information
 	f.BoolVar(&showVersion, "version", false, "Show version information and exit")
 
 	// New configs
 	f.StringSliceVar(&config.ConfigPath, "config", []string{".config/config.json"}, "path to one or more config files (will be merged in order)")
 	f.StringVar(&config.NodeID, "node-id", "", "Unique ID for node. If not set, set to advertised Raft address")
+	// Raft configs
 	f.StringVar(&config.DataPath, "raft-dir", "", "Raft directory")
+	f.StringVar(&config.RaftAddr, RaftAddrFlag, "localhost:4002", "Raft communication bind address")
+	f.StringVar(&config.RaftAdv, RaftAdvAddrFlag, "", "Advertised Raft communication address. If not set, same as Raft bind address")
+	f.StringVar(&config.JoinAddrs, "join", "", "Comma-delimited list of nodes, in host:port form, through which a cluster can be joined")
+	f.IntVar(&config.JoinAttempts, "join-attempts", 5, "Number of join attempts to make")
+	f.DurationVar(&config.JoinInterval, "join-interval", 3*time.Second, "Period between join attempts")
+	f.StringVar(&config.JoinAs, "join-as", "", "Username in authentication file to join as. If not set, joins anonymously")
+	f.IntVar(&config.BootstrapExpect, "bootstrap-expect", 0, "Minimum number of nodes required for a bootstrap")
+	f.DurationVar(&config.BootstrapExpectTimeout, "bootstrap-expect-timeout", 120*time.Second, "Maximum time for bootstrap process")
+	f.BoolVar(&config.RaftNonVoter, "raft-non-voter", false, "Configure as non-voting node")
+	f.DurationVar(&config.RaftHeartbeatTimeout, "raft-timeout", time.Second, "Raft heartbeat timeout")
+	f.DurationVar(&config.RaftElectionTimeout, "raft-election-timeout", time.Second, "Raft election timeout")
+	f.DurationVar(&config.RaftApplyTimeout, "raft-apply-timeout", 10*time.Second, "Raft apply timeout")
+	f.Uint64Var(&config.RaftSnapThreshold, "raft-snap", 8192, "Number of outstanding log entries which triggers Raft snapshot")
+	f.DurationVar(&config.RaftSnapInterval, "raft-snap-int", 10*time.Second, "Snapshot threshold check interval")
+	f.DurationVar(&config.RaftLeaderLeaseTimeout, "raft-leader-lease-timeout", 0, "Raft leader lease timeout. Use 0s for Raft default")
+	f.BoolVar(&config.RaftStepdownOnShutdown, "raft-shutdown-stepdown", true, "If leader, stepdown before shutting down. Enabled by default")
+	f.BoolVar(&config.RaftShutdownOnRemove, "raft-remove-shutdown", false, "Shutdown Raft if node removed from cluster")
+	f.BoolVar(&config.RaftClusterRemoveOnShutdown, "raft-cluster-remove-shutdown", false, "Node removes itself from cluster on graceful shutdown")
+	f.StringVar(&config.RaftLogLevel, "raft-log-level", "DEBUG", "Minimum log level for Raft module")
+	f.DurationVar(&config.RaftReapNodeTimeout, "raft-reap-node-timeout", 0*time.Hour, "Time after which a non-reachable voting node will be reaped. If not set, no reaping takes place")
+	f.DurationVar(&config.RaftReapReadOnlyNodeTimeout, "raft-reap-read-only-node-timeout", 0*time.Hour, "Time after which a non-reachable non-voting node will be reaped. If not set, no reaping takes place")
+	// Communication configs
 	f.StringVar(&config.HTTPAddr, HTTPAddrFlag, "localhost:4001", "HTTP server bind address. To enable HTTPS, set X.509 certificate and key")
 	f.StringVar(&config.HTTPAdv, HTTPAdvAddrFlag, "", "Advertised HTTP address. If not set, same as HTTP server bind address")
 	f.StringVar(&config.HTTPAllowOrigin, "http-allow-origin", "", "Value to set for Access-Control-Allow-Origin HTTP header")
@@ -547,44 +556,28 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, error) {
 	f.BoolVar(&config.NoNodeVerify, "node-no-verify", false, "Skip verification of any node-node certificate")
 	f.BoolVar(&config.NodeVerifyClient, "node-verify-client", false, "Enable mutual TLS for node-to-node communication")
 	f.StringVar(&config.NodeVerifyServerName, "node-verify-server-name", "", "Hostname to verify on certificate returned by a node")
+
 	f.StringVar(&config.AuthFile, "auth", "", "Path to authentication and authorization file. If not set, not enabled")
 	f.StringVar(&config.AutoBackupFile, "auto-backup", "", "Path to automatic backup configuration file. If not set, not enabled")
 	f.StringVar(&config.AutoRestoreFile, "auto-restore", "", "Path to automatic restore configuration file. If not set, not enabled")
-	f.StringVar(&config.RaftAddr, RaftAddrFlag, "localhost:4002", "Raft communication bind address")
-	f.StringVar(&config.RaftAdv, RaftAdvAddrFlag, "", "Advertised Raft communication address. If not set, same as Raft bind address")
-	f.StringVar(&config.JoinAddrs, "join", "", "Comma-delimited list of nodes, in host:port form, through which a cluster can be joined")
-	f.IntVar(&config.JoinAttempts, "join-attempts", 5, "Number of join attempts to make")
-	f.DurationVar(&config.JoinInterval, "join-interval", 3*time.Second, "Period between join attempts")
-	f.StringVar(&config.JoinAs, "join-as", "", "Username in authentication file to join as. If not set, joins anonymously")
-	f.IntVar(&config.BootstrapExpect, "bootstrap-expect", 0, "Minimum number of nodes required for a bootstrap")
-	f.DurationVar(&config.BootstrapExpectTimeout, "bootstrap-expect-timeout", 120*time.Second, "Maximum time for bootstrap process")
-	f.StringVar(&config.DiscoMode, "disco-mode", "", "Choose clustering discovery mode. If not set, no node discovery is performed")
-	f.StringVar(&config.DiscoKey, "disco-key", "rqlite", "Key prefix for cluster discovery service")
-	f.StringVar(&config.DiscoConfig, "disco-config", "", "Set discovery config, or path to cluster discovery config file")
 	f.DurationVar(&config.AutoVacInterval, "auto-vacuum-int", 0, "Period between automatic VACUUMs. It not set, not enabled")
 	f.DurationVar(&config.AutoOptimizeInterval, "auto-optimize-int", mustParseDuration("24h"), `Period between automatic 'PRAGMA optimize'. Set to 0h to disable`)
-	f.BoolVar(&config.RaftNonVoter, "raft-non-voter", false, "Configure as non-voting node")
-	f.DurationVar(&config.RaftHeartbeatTimeout, "raft-timeout", time.Second, "Raft heartbeat timeout")
-	f.DurationVar(&config.RaftElectionTimeout, "raft-election-timeout", time.Second, "Raft election timeout")
-	f.DurationVar(&config.RaftApplyTimeout, "raft-apply-timeout", 10*time.Second, "Raft apply timeout")
-	f.Uint64Var(&config.RaftSnapThreshold, "raft-snap", 8192, "Number of outstanding log entries which triggers Raft snapshot")
-	f.DurationVar(&config.RaftSnapInterval, "raft-snap-int", 10*time.Second, "Snapshot threshold check interval")
-	f.DurationVar(&config.RaftLeaderLeaseTimeout, "raft-leader-lease-timeout", 0, "Raft leader lease timeout. Use 0s for Raft default")
-	f.BoolVar(&config.RaftStepdownOnShutdown, "raft-shutdown-stepdown", true, "If leader, stepdown before shutting down. Enabled by default")
-	f.BoolVar(&config.RaftShutdownOnRemove, "raft-remove-shutdown", false, "Shutdown Raft if node removed from cluster")
-	f.BoolVar(&config.RaftClusterRemoveOnShutdown, "raft-cluster-remove-shutdown", false, "Node removes itself from cluster on graceful shutdown")
-	f.StringVar(&config.RaftLogLevel, "raft-log-level", "WARN", "Minimum log level for Raft module")
-	f.DurationVar(&config.RaftReapNodeTimeout, "raft-reap-node-timeout", 0*time.Hour, "Time after which a non-reachable voting node will be reaped. If not set, no reaping takes place")
-	f.DurationVar(&config.RaftReapReadOnlyNodeTimeout, "raft-reap-read-only-node-timeout", 0*time.Hour, "Time after which a non-reachable non-voting node will be reaped. If not set, no reaping takes place")
 	f.DurationVar(&config.ClusterConnectTimeout, "cluster-connect-timeout", 30*time.Second, "Timeout for initial connection to other nodes")
 	f.IntVar(&config.WriteQueueCap, "write-queue-capacity", 1024, "QueuedWrites queue capacity")
 	f.IntVar(&config.WriteQueueBatchSz, "write-queue-batch-size", 128, "QueuedWrites queue batch size")
 	f.DurationVar(&config.WriteQueueTimeout, "write-queue-timeout", 50*time.Millisecond, "QueuedWrites queue timeout")
 	f.BoolVar(&config.WriteQueueTx, "write-queue-tx", false, "Use a transaction when processing a queued write")
+	// Stats configs
 	f.StringVar(&config.CPUProfile, "cpu-profile", "", "Path to file for CPU profiling information")
 	f.StringVar(&config.MemProfile, "mem-profile", "", "Path to file for memory profiling information")
 	f.StringVar(&config.TraceProfile, "trace-profile", "", "Path to file for trace profiling information")
+	// Misc configs
 	f.BoolVar(&config.DebugMode, "debug", false, "run in debug mode - better logs")
+
+	// Not supported as now, will add them later
+	// f.StringVar(&config.DiscoMode, "disco-mode", "", "Choose clustering discovery mode. If not set, no node discovery is performed")
+	// f.StringVar(&config.DiscoKey, "disco-key", "rqlite", "Key prefix for cluster discovery service")
+	// f.StringVar(&config.DiscoConfig, "disco-config", "", "Set discovery config, or path to cluster discovery config file")
 
 	f.Usage = func() {
 		fmt.Fprintf(os.Stderr, "\n%s\n\n", desc)
@@ -655,29 +648,29 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, error) {
 	return config, nil
 }
 
-func initConfig(ko *koanf.Koanf) error {
-	log.Info().Msg("Loading configs")
-	for _, f := range ko.Strings("config") {
-		log.Debug().Msgf("Reading config from %s", f)
-		var parser koanf.Parser
-		fileExtension := f[strings.LastIndex(f, ".")+1:]
-		switch fileExtension {
-		case "yaml":
-			parser = yaml.Parser()
-		case "json":
-			parser = json.Parser()
-		default:
-			return fmt.Errorf("unsupported file extension")
-		}
-		log.Debug().Msgf("The config is: %v", ko.All())
-		if err := ko.Load(file.Provider(f), parser); err != nil {
-			log.Fatal().Msgf("error reading config: %v", err)
-		} else {
-			log.Trace().Msg("Successfully read the contents of the config file")
-		}
-	}
-	return nil
-}
+// func initConfig(cfg *Config, ko *koanf.Koanf) error {
+// 	log.Info().Msg("Loading configs")
+// 	for _, f := range ko.Strings("config") {
+// 		log.Debug().Msgf("Reading config from %s", f)
+// 		var parser koanf.Parser
+// 		fileExtension := f[strings.LastIndex(f, ".")+1:]
+// 		switch fileExtension {
+// 		case "yaml":
+// 			parser = yaml.Parser()
+// 		case "json":
+// 			parser = json.Parser()
+// 		default:
+// 			return fmt.Errorf("unsupported file extension")
+// 		}
+// 		log.Debug().Msgf("The config is: %v", ko.All())
+// 		if err := ko.Load(file.Provider(f), parser); err != nil {
+// 			log.Fatal().Msgf("error reading config: %v", err)
+// 		} else {
+// 			log.Trace().Msg("Successfully read the contents of the config file")
+// 		}
+// 	}
+// 	return nil
+// }
 
 func errorExit(code int, msg string) {
 	if code != 0 {

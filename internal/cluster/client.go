@@ -14,8 +14,10 @@ import (
 
 	"github.com/rqlite/rqlite/v8/auth"
 	"github.com/rqlite/rqlite/v8/rtls"
+	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/cluster/proto"
 	command "github.com/tarungka/wire/internal/command/proto"
+	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/tcp"
 	"github.com/tarungka/wire/internal/tcp/pool"
 	pb "google.golang.org/protobuf/proto"
@@ -70,6 +72,9 @@ type Client struct {
 
 	poolMu sync.RWMutex
 	pools  map[string]pool.Pool
+
+	// Logger
+	logger zerolog.Logger
 }
 
 // NewClient returns a client instance for talking to a remote node.
@@ -79,10 +84,13 @@ type Client struct {
 // that the operation failed. In addition, higher-level code will
 // usually retry these operations.
 func NewClient(dl Dialer, t time.Duration) *Client {
+	newLogger := logger.GetLogger("client")
+	newLogger.Printf("creating a new client with dialer: %v", dl)
 	return &Client{
 		dialer:  dl,
 		timeout: t,
 		pools:   make(map[string]pool.Pool),
+		logger:  newLogger,
 	}
 }
 
@@ -388,8 +396,9 @@ func (c *Client) Notify(nr *command.NotifyRequest, nodeAddr string, creds *proto
 
 // Join joins this node to a cluster at the remote address nodeAddr.
 func (c *Client) Join(jr *command.JoinRequest, nodeAddr string, creds *proto.Credentials, timeout time.Duration) error {
+	c.logger.Printf("joining client with %v", nodeAddr)
 	for {
-		conn, err := c.dial(nodeAddr)
+		conn, err := c.dial(nodeAddr) // get a connection from a pool
 		if err != nil {
 			return err
 		}
@@ -403,6 +412,10 @@ func (c *Client) Join(jr *command.JoinRequest, nodeAddr string, creds *proto.Cre
 			},
 			Credentials: creds,
 		}
+
+		c.logger.Printf("Type: %v | Request: %v | Credentials: %v", proto.Command_COMMAND_TYPE_JOIN, proto.Command_JoinRequest{
+			JoinRequest: jr,
+		}, creds)
 
 		if err := writeCommand(conn, command, timeout); err != nil {
 			handleConnError(conn)
@@ -575,7 +588,7 @@ func writeCommand(conn net.Conn, c *proto.Command, timeout time.Duration) error 
 
 func readResponse(conn net.Conn, timeout time.Duration) (buf []byte, retErr error) {
 	defer func() {
-		// Connecting to an open port, but not a rqlite Raft API, may cause a panic
+		// Connecting to an open port, but not a wire Raft API, may cause a panic
 		// when the system tries to read the response. This is a workaround.
 		if r := recover(); r != nil {
 			retErr = fmt.Errorf("panic reading response from node: %v", r)

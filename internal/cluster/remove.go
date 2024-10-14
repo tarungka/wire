@@ -1,12 +1,12 @@
 package cluster
 
 import (
-	"log"
-	"os"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/cluster/proto"
 	command "github.com/tarungka/wire/internal/command/proto"
+	"github.com/tarungka/wire/internal/logger"
 )
 
 const (
@@ -27,7 +27,8 @@ type Remover struct {
 	client  *Client
 	creds   *proto.Credentials
 
-	log *log.Logger
+	// log *log.Logger
+	log zerolog.Logger
 }
 
 // / NewRemover returns an instantiated Remover.
@@ -36,7 +37,8 @@ func NewRemover(client *Client, timeout time.Duration, control Control) *Remover
 		client:  client,
 		timeout: timeout,
 		control: control,
-		log:     log.New(os.Stderr, "[cluster-remove] ", log.LstdFlags),
+		// log:     log.New(os.Stderr, "[cluster-remove] ", log.LstdFlags),
+		log: logger.GetLogger("cluster-remove"),
 	}
 }
 

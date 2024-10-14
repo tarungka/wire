@@ -27,7 +27,7 @@ build:
 		-X github.com/tarungka/wire/internal/cmd.Commit=$(COMMIT) \
 		-X github.com/tarungka/wire/internal/cmd.Buildtime=$(DATE)" ./cmd/.
 
-GOLANGCI_LINT_VERSION := 1.61.1
+GOLANGCI_LINT_VERSION := 1.61.0
 
 lint: check-golangci-lint
 	golangci-lint run ./...

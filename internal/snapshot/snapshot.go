@@ -2,22 +2,25 @@ package snapshot
 
 import (
 	"io"
-	"log"
 
 	"github.com/hashicorp/raft"
+	"github.com/rs/zerolog"
+	"github.com/tarungka/wire/internal/logger"
 )
 
 // Snapshot represents a snapshot of the database state.
 type Snapshot struct {
-	rc     io.ReadCloser
-	logger *log.Logger
+	rc io.ReadCloser
+	// logger *log.Logger
+	logger zerolog.Logger
 }
 
 // NewSnapshot creates a new snapshot.
 func NewSnapshot(rc io.ReadCloser) *Snapshot {
 	return &Snapshot{
-		rc:     rc,
-		logger: log.New(log.Writer(), "[snapshot] ", log.LstdFlags),
+		rc: rc,
+		// logger: log.New(log.Writer(), "[snapshot] ", log.LstdFlags),
+		logger: logger.GetLogger("snapshot"),
 	}
 }
 

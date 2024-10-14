@@ -5,7 +5,6 @@ import (
 	"expvar"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +13,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"github.com/rs/zerolog"
+	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/rsync"
 )
 
@@ -130,7 +131,8 @@ func (l *LockingSnapshot) Close() error {
 type Store struct {
 	dir            string
 	fullNeededPath string
-	logger         *log.Logger
+	// logger         *log.Logger
+	logger zerolog.Logger
 
 	mrsw *rsync.MultiRSW
 
@@ -147,8 +149,9 @@ func NewStore(dir string) (*Store, error) {
 	str := &Store{
 		dir:            dir,
 		fullNeededPath: filepath.Join(dir, fullNeededFile),
-		logger:         log.New(os.Stderr, "[snapshot-store] ", log.LstdFlags),
-		mrsw:           rsync.NewMultiRSW(),
+		// logger:         log.New(os.Stderr, "[snapshot-store] ", log.LstdFlags),
+		logger: logger.GetLogger("snapshot-store"),
+		mrsw:   rsync.NewMultiRSW(),
 	}
 	str.logger.Printf("store initialized using %s", dir)
 

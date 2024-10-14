@@ -7,15 +7,15 @@ import (
 	"expvar"
 	"fmt"
 	"io"
-	"log"
 	"net"
-	"os"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/cluster/proto"
 	commandProto "github.com/tarungka/wire/internal/command/proto"
+	"github.com/tarungka/wire/internal/logger"
 	pb "google.golang.org/protobuf/proto"
 )
 
@@ -139,25 +139,25 @@ type Service struct {
 	https   bool   // Serving HTTPS?
 	apiAddr string // host:port this node serves the HTTP API.
 
-	logger *log.Logger
-	// logger zerolog.Logger
+	// logger *log.Logger
+	logger zerolog.Logger
 }
 
 // New returns a new instance of the cluster service
 func New(ln net.Listener, m Manager) *Service {
 	return &Service{
-		ln:     ln,
-		addr:   ln.Addr(),
-		mgr:    m,
-		logger: log.New(os.Stderr, "[cluster] ", log.LstdFlags),
-		// logger:          zerolog.Logger{},
+		ln:   ln,
+		addr: ln.Addr(),
+		mgr:  m,
+		// logger: log.New(os.Stderr, "[cluster] ", log.LstdFlags),
+		logger: logger.GetLogger("cluster"),
 	}
 }
 
 // Open opens the Service.
 func (s *Service) Open() error {
 	go s.serve()
-	s.logger.Println("service listening on", s.addr)
+	// s.logger.Print("service listening on", s.addr)
 	return nil
 }
 
@@ -183,7 +183,7 @@ func (s *Service) EnableHTTPS(b bool) {
 func (s *Service) SetAPIAddr(addr string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.logger.Printf("Setting the api address as %s", addr)
+	s.logger.Printf("setting api address as %s", addr)
 	s.apiAddr = addr
 }
 
@@ -219,13 +219,12 @@ func (s *Service) Stats() (map[string]interface{}, error) {
 
 func (s *Service) serve() error {
 	for {
-		s.logger.Println("waiting for request")
+		s.logger.Print("waiting for request")
 		conn, err := s.ln.Accept() // I think this is blocking until a request
 		if err != nil {
 			return err
 		}
-		s.logger.Println("up and accepting requests")
-
+		s.logger.Print("got a new request")
 		go s.handleConn(conn)
 	}
 }
@@ -255,6 +254,7 @@ func (s *Service) handleConn(conn net.Conn) {
 
 		switch c.Type {
 		case proto.Command_COMMAND_TYPE_GET_NODE_API_URL:
+			s.logger.Print("got a command to get node api url")
 			stats.Add(numGetNodeAPIRequest, 1)
 			ci, err := s.mgr.CommitIndex()
 			if err != nil {
@@ -274,6 +274,7 @@ func (s *Service) handleConn(conn net.Conn) {
 			stats.Add(numGetNodeAPIResponse, 1)
 
 		case proto.Command_COMMAND_TYPE_LOAD_CHUNK:
+			s.logger.Print("got a command to load chunk")
 			resp := &proto.CommandLoadChunkResponse{
 				Error: "unsupported",
 			}
@@ -282,6 +283,7 @@ func (s *Service) handleConn(conn net.Conn) {
 			}
 
 		case proto.Command_COMMAND_TYPE_REMOVE_NODE:
+			s.logger.Print("got a command to remove a node")
 			stats.Add(numRemoveNodeRequest, 1)
 			resp := &proto.CommandRemoveNodeResponse{}
 
@@ -300,6 +302,7 @@ func (s *Service) handleConn(conn net.Conn) {
 			}
 
 		case proto.Command_COMMAND_TYPE_NOTIFY:
+			s.logger.Print("got a command to notify")
 			stats.Add(numNotifyRequest, 1)
 			resp := &proto.CommandNotifyResponse{}
 
@@ -318,6 +321,7 @@ func (s *Service) handleConn(conn net.Conn) {
 			}
 
 		case proto.Command_COMMAND_TYPE_JOIN:
+			s.logger.Print("got a command to join")
 			stats.Add(numJoinRequest, 1)
 			resp := &proto.CommandJoinResponse{}
 
@@ -326,8 +330,7 @@ func (s *Service) handleConn(conn net.Conn) {
 				resp.Error = "JoinRequest is nil"
 			} else {
 				// TODO: These logics are wrong, need to rewrite them
-				if (jr.Voter && true) ||
-					(!jr.Voter && true) {
+				if jr.Voter {
 					if err := s.mgr.Join(jr); err != nil {
 						resp.Error = err.Error()
 						if err.Error() == "not leader" {
@@ -362,6 +365,7 @@ func marshalAndWrite(conn net.Conn, m pb.Message) error {
 func writeBytesWithLength(conn net.Conn, p []byte) error {
 	b := make([]byte, protoBufferLengthSize)
 	binary.LittleEndian.PutUint64(b[0:], uint64(len(p)))
+	logger.AdHocLogger.Debug().Msgf("writeBytesWithLength: %v", b)
 	_, err := conn.Write(b)
 	if err != nil {
 		return err

@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -15,11 +14,11 @@ import (
 
 	"github.com/knadh/koanf/v2"
 	"github.com/rqlite/rqlite/v8/auth"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/cluster"
 	"github.com/tarungka/wire/internal/cmd"
 	httpd "github.com/tarungka/wire/internal/http"
+	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/store"
 	"github.com/tarungka/wire/internal/tcp"
 	pipeline "github.com/tarungka/wire/pipeline"
@@ -36,7 +35,7 @@ var (
 // There is a new line at the start of this logo
 
 const logo = `
- __      __.________________________
+ __      __ ________________________
 /  \    /  \   \______   \_   _____/
 \   \/\/   /   ||       _/|    __)_    Seamless Streaming for
  \        /|   ||    |   \|        \   Dynamic Workloads.
@@ -51,9 +50,7 @@ Visit https://www.github.com/tarungka/wire to learn more.`
 
 func main() {
 
-	var logger zerolog.Logger
-
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	// Setup logging
 
 	// logs will be written to both server.log and stdout
 	logFile, err := os.OpenFile("server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
@@ -72,47 +69,39 @@ func main() {
 	}
 	fmt.Println(logo)
 
-	isDevelopment := cfg.DebugMode
+	logger.SetDevelopment(cfg.DebugMode)
+	logger.SetLogFile(logFile)
 
-	if isDevelopment {
-		// Set up zerolog for development mode (human-readable logs)
-		consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339,
-			FormatLevel: func(i interface{}) string {
-				return strings.ToUpper(fmt.Sprintf("[%5s]", i))
-			},
-			FormatMessage: func(i interface{}) string {
-				return fmt.Sprintf("| %s |", i)
-			},
-			FormatCaller: func(i interface{}) string {
-				return filepath.Base(fmt.Sprintf("%s", i))
-			},
-			PartsExclude: []string{
-				zerolog.TimestampFieldName,
-			}}
-		// Use multi-writer for file and readable console output
-		multiDev := zerolog.MultiLevelWriter(consoleWriter, logFile)
-		logger = zerolog.New(multiDev).Level(zerolog.TraceLevel).With().Timestamp().Caller().Logger()
-	} else {
-		// Production: Use default JSON format for logs
+	log.Logger = logger.GetLogger("main")
+
+	if cfg.DebugMode {
+		hostName, err := os.Hostname()
+		if err != nil {
+			log.Debug().Err(err).Msgf("error when getting hostname: %v", err)
+		}
+		hostIP, err := getHostIP()
+		if err != nil {
+			log.Debug().Err(err).Msgf("error when getting host IP: %v", err)
+		}
+		log.Debug().Msgf("PID: %v | PPID: %v | Host ID: %v | Host IP: %v", os.Getpid(), os.Getppid(), hostName, hostIP)
 	}
 
-	// Assign the logger as the global logger
-	log.Logger = logger
-
-	if isDevelopment {
-		log.Debug().Msgf("The process ID is: %v", os.Getpid())
-	}
+	// Main context
+	mainCtx := context.Background()
 
 	log.Info().Msg("Starting the application...")
 
+	// Create internode network mux and configure.
 	muxListener, err := net.Listen("tcp", cfg.RaftAddr)
 	if err != nil {
 		log.Fatal().Err(err).Msgf("failed to listen on %s: %s", cfg.RaftAddr, err.Error())
 	}
+	log.Debug().Msgf("listener mux address is: %s", cfg.RaftAddr)
 	mux, err := startNodeMux(cfg, muxListener)
 	if err != nil {
 		log.Fatal().Msgf("failed to start node mux: %s", err.Error())
 	}
+	log.Debug().Msgf("node mux started")
 
 	// Raft internode layer
 	raftLn := mux.Listen(cluster.MuxRaftHeader)
@@ -121,48 +110,64 @@ func main() {
 		log.Fatal().Msgf("failed to create Raft dialer: %s", err.Error())
 	}
 	raftTn := tcp.NewLayer(raftLn, raftDialer)
-
-	log.Debug().Msgf("A raft layer is ready, will use it: %v", raftTn)
+	log.Debug().Msgf("raft layer is ready")
 
 	// Create the store
 	str, err := createStore(cfg, raftTn)
 	if err != nil {
 		log.Fatal().Msgf("failed to create store: %s", err.Error())
 	}
-	log.Debug().Msgf("The store is:", str)
+	log.Debug().Msgf("store created")
 
 	// Create cluster service now, so nodes will be able to learn information about each other.
-	clstrServ, err := clusterService(cfg, mux.Listen(cluster.MuxClusterHeader), str)
+	clstrLn := mux.Listen(cluster.MuxClusterHeader)
+	clstrServ, err := clusterService(cfg, clstrLn, str)
 	if err != nil {
 		log.Fatal().Msgf("failed to create cluster service: %s", err.Error())
 	}
-	log.Debug().Msgf("Created the cluster service: %v", clstrServ)
+	log.Debug().Msgf("created the cluster service")
 
 	clstrClient, err := createClusterClient(cfg, clstrServ)
 	if err != nil {
 		log.Fatal().Msgf("failed to create cluster client: %s", err.Error())
 	}
-	log.Debug().Msgf("Created the cluster client: %v", clstrClient)
+
+	// Create the HTTP service.
+	//
+	// We want to start the HTTP server as soon as possible, so the node is responsive and external
+	// systems can see that it's running. We still have to open the Store though, so the node won't
+	// be able to do much until that happens however.
 	httpServ, err := startHTTPService(cfg, str, clstrClient)
 	if err != nil {
 		log.Fatal().Msgf("failed to start HTTP server: %s", err.Error())
 	}
-	log.Debug().Msgf("Started the HTTP service!", httpServ)
 
 	// Now, open the store
 	if err := str.Open(); err != nil {
 		log.Fatal().Msgf("failed to open store: %s", err.Error())
 	}
 
-	// Creating a main context; will need to move this code up
-	mainCtx := context.Background()
+	// Register remaining status providers.
+	if err := httpServ.RegisterStatus("cluster", clstrServ); err != nil {
+		log.Fatal().Msgf("failed to register cluster status provider: %s", err.Error())
+	}
+	if err := httpServ.RegisterStatus("network", tcp.NetworkReporter{}); err != nil {
+		log.Fatal().Msgf("failed to register network status provider: %s", err.Error())
+	}
+	if err := httpServ.RegisterStatus("mux", mux); err != nil {
+		log.Fatal().Msgf("failed to register mux status provider: %s", err.Error())
+	}
+
 
 	// Create the cluster!
 	nodes, err := str.Nodes()
 	if err != nil {
 		log.Fatal().Msgf("failed to get nodes %s", err.Error())
 	}
-	log.Debug().Msgf("The number of nodes are: %s", nodes)
+	log.Debug().Msgf("the number of nodes are: %d", len(nodes))
+	for idx, eachNode := range nodes {
+		log.Debug().Msgf("%d. Node information is: %v", idx, eachNode)
+	}
 
 	if err := createCluster(mainCtx, cfg, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
 		log.Fatal().Msgf("clustering failure: %s", err.Error())
@@ -227,7 +232,37 @@ func main() {
 	// Close the done channel to signal all goroutines to exit
 	close(done)
 
-	// For for graceful shutdown
+	// Stop the HTTP server and other network access first so clients get notification as soon as
+	// possible that the node is going away.
+	httpServ.Close()
+	clstrServ.Close()
+
+	if cfg.RaftClusterRemoveOnShutdown {
+		remover := cluster.NewRemover(clstrClient, 5*time.Second, str)
+		// TODO: not support TLS for now, will work on it later
+		// remover.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
+		log.Info().Msgf("initiating removal of this node from cluster before shutdown")
+		if err := remover.Do(cfg.NodeID, true); err != nil {
+			log.Error().Msgf("failed to remove this node from cluster before shutdown: %s", err.Error())
+		}
+		log.Info().Msgf("removed this node successfully from cluster before shutdown")
+	}
+
+	if cfg.RaftStepdownOnShutdown {
+		if str.IsLeader() {
+			// Don't log a confusing message if (probably) not Leader
+			log.Info().Msgf("stepping down as Leader before shutdown")
+		}
+		// Perform a stepdown, ignore any errors.
+		str.Stepdown(true)
+	}
+	muxListener.Close()
+
+	if err := str.Close(true); err != nil {
+		log.Info().Msgf("failed to close store: %s", err.Error())
+	}
+
+	// wait for for graceful shutdown
 	wg.Wait()
 }
 
@@ -238,6 +273,8 @@ func startNodeMux(cfg *Config, ln net.Listener) (*tcp.Mux, error) {
 	adv := tcp.NameAddress{
 		Address: cfg.RaftAdv,
 	}
+
+	log.Debug().Msgf("advertised mux address is: %s", cfg.RaftAdv)
 
 	var mux *tcp.Mux
 	if cfg.NodeX509Cert != "" {
@@ -297,7 +334,6 @@ func createClusterClient(cfg *Config, clstr *cluster.Service) (*cluster.Client, 
 }
 
 func createStore(cfg *Config, ln *tcp.Layer) (*store.Store, error) {
-
 	str := store.New(ln, &store.Config{
 		Dir: cfg.DataPath,
 		ID:  cfg.NodeID,
@@ -332,14 +368,14 @@ func startHTTPService(cfg *Config, str *store.Store, cltr *cluster.Client) (*htt
 	s := httpd.New(cfg.HTTPAddr, str, cltr, nil)
 
 	// TODO: Need to support HTTPS
-	// s.CACertFile = cfg.HTTPx509CACert
-	// s.CertFile = cfg.HTTPx509Cert
-	// s.KeyFile = cfg.HTTPx509Key
-	// s.ClientVerify = cfg.HTTPVerifyClient
-	// s.DefaultQueueCap = cfg.WriteQueueCap
-	// s.DefaultQueueBatchSz = cfg.WriteQueueBatchSz
-	// s.DefaultQueueTimeout = cfg.WriteQueueTimeout
-	// s.DefaultQueueTx = cfg.WriteQueueTx
+	s.CACertFile = cfg.HTTPx509CACert
+	s.CertFile = cfg.HTTPx509Cert
+	s.KeyFile = cfg.HTTPx509Key
+	s.ClientVerify = cfg.HTTPVerifyClient
+	s.DefaultQueueCap = cfg.WriteQueueCap
+	s.DefaultQueueBatchSz = cfg.WriteQueueBatchSz
+	s.DefaultQueueTimeout = cfg.WriteQueueTimeout
+	s.DefaultQueueTx = cfg.WriteQueueTx
 	s.BuildInfo = map[string]interface{}{
 		"commit":             cmd.Commit,
 		"branch":             cmd.Branch,
@@ -352,13 +388,13 @@ func startHTTPService(cfg *Config, str *store.Store, cltr *cluster.Client) (*htt
 	return s, s.Start()
 }
 
-// TODO: This code needs major rework, will work on this later
 func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *cluster.Client, str *store.Store,
 	httpServ *httpd.Service, credStr *auth.CredentialsStore) error {
 	joins := cfg.JoinAddresses()
 	if err := networkCheckJoinAddrs(joins); err != nil {
 		return err
 	}
+	// When this is a single node cluster
 	if joins == nil && cfg.DiscoMode == "" && !hasPeers {
 		if cfg.RaftNonVoter {
 			return fmt.Errorf("cannot create a new non-voting node without joining it to an existing cluster")
@@ -366,7 +402,8 @@ func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *clus
 
 		// Brand new node, told to bootstrap itself. So do it.
 		log.Info().Msg("bootstrapping single new node")
-		if err := str.Bootstrap(store.NewServer(str.ID(), cfg.RaftAdv, true)); err != nil {
+		newServer := store.NewServer(str.ID(), cfg.RaftAdv, true)
+		if err := str.Bootstrap(newServer); err != nil {
 			return fmt.Errorf("failed to bootstrap single new node: %s", err.Error())
 		}
 		return nil
@@ -377,12 +414,15 @@ func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *clus
 		leader, _ := str.LeaderAddr()
 		return leader != ""
 	}
-	clusterSuf := cluster.VoterSuffrage(!cfg.RaftNonVoter)
+	clusterSuf := cluster.VoterSuffrage(!cfg.RaftNonVoter) // The suffrage of the node in the cluster
+	log.Debug().Msgf("the suffrage of the node in the cluster is: %v", clusterSuf)
 
 	joiner := cluster.NewJoiner(client, cfg.JoinAttempts, cfg.JoinInterval)
-	joiner.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
+	joiner.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs)) // This is not necessary for now as we do not support TLS
+	// If there is NO min quorum required to create a cluster
 	if joins != nil && cfg.BootstrapExpect == 0 {
 		// Explicit join operation requested, so do it.
+		log.Debug().Msgf("joining a cluster with no min quorum")
 		j, err := joiner.Do(ctx, joins, str.ID(), cfg.RaftAdv, clusterSuf)
 		if err != nil {
 			return fmt.Errorf("failed to join cluster: %s", err.Error())
@@ -391,6 +431,7 @@ func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *clus
 		return nil
 	}
 
+	// If there is a min quorum required to create a cluster
 	if joins != nil && cfg.BootstrapExpect > 0 {
 		// Bootstrap with explicit join addresses requests.
 		bs := cluster.NewBootstrapper(cluster.NewAddressProviderString(joins), client)
@@ -513,5 +554,22 @@ func networkCheckJoinAddrs(joinAddrs []string) error {
 			return fmt.Errorf("join address %s appears to be serving HTTP when it should be Raft", addr)
 		}
 	}
+	log.Printf("none of the nodes %v are serving HTTP", joinAddrs)
 	return nil
+}
+
+func getHostIP() (string, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", fmt.Errorf("error getting IP addresses: %v", err)
+	}
+
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			if ipNet.IP.To4() != nil {
+				return ipNet.IP.String(), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("error getting IP address")
 }

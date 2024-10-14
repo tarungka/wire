@@ -1,4 +1,5 @@
 syntax = "proto3";
+
 package cluster;
 
 import "internal/command/proto/command.proto";
