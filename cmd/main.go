@@ -50,6 +50,8 @@ Visit https://www.github.com/tarungka/wire to learn more.`
 
 func main() {
 
+	// Setup logging
+
 	// logs will be written to both server.log and stdout
 	logFile, err := os.OpenFile("server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
@@ -83,6 +85,9 @@ func main() {
 		}
 		log.Debug().Msgf("PID: %v | PPID: %v | Host ID: %v | Host IP: %v", os.Getpid(), os.Getppid(), hostName, hostIP)
 	}
+
+	// Main context
+	mainCtx := context.Background()
 
 	log.Info().Msg("Starting the application...")
 
@@ -153,8 +158,6 @@ func main() {
 		log.Fatal().Msgf("failed to register mux status provider: %s", err.Error())
 	}
 
-	// Creating a main context; will need to move this code up
-	mainCtx := context.Background()
 
 	// Create the cluster!
 	nodes, err := str.Nodes()
@@ -226,8 +229,6 @@ func main() {
 
 	log.Info().Msg("Process interrupted, shutting down...")
 
-
-
 	// Close the done channel to signal all goroutines to exit
 	close(done)
 
@@ -261,7 +262,7 @@ func main() {
 		log.Info().Msgf("failed to close store: %s", err.Error())
 	}
 
-	// For for graceful shutdown
+	// wait for for graceful shutdown
 	wg.Wait()
 }
 
