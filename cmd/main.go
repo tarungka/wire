@@ -170,6 +170,8 @@ func main() {
 		log.Fatal().Msgf("clustering failure: %s", err.Error())
 	}
 
+	<-mainCtx.Done()
+
 	log.Info().Msg("Process interrupted, shutting down...")
 
 	// Stop the HTTP server and other network access first so clients get notification as soon as
