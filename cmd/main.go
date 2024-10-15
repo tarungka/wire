@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
 	"runtime"
 	"strings"
-	"sync"
+	"syscall"
 	"time"
 
 	"github.com/knadh/koanf/v2"
@@ -21,8 +20,6 @@ import (
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/store"
 	"github.com/tarungka/wire/internal/tcp"
-	pipeline "github.com/tarungka/wire/pipeline"
-	"github.com/tarungka/wire/server"
 )
 
 var (
@@ -50,8 +47,12 @@ Visit https://www.github.com/tarungka/wire to learn more.`
 
 func main() {
 
-	// Setup logging
+	// Handle signals first, so signal handling is established before anything else.
+	sigCh := HandleSignals(syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
+	// Main context
+	mainCtx, _ := CreateContext(sigCh)
 
+	// Setup logging
 	// logs will be written to both server.log and stdout
 	logFile, err := os.OpenFile("server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
@@ -85,9 +86,6 @@ func main() {
 		}
 		log.Debug().Msgf("PID: %v | PPID: %v | Host ID: %v | Host IP: %v", os.Getpid(), os.Getppid(), hostName, hostIP)
 	}
-
-	// Main context
-	mainCtx := context.Background()
 
 	log.Info().Msg("Starting the application...")
 
@@ -173,64 +171,9 @@ func main() {
 		log.Fatal().Msgf("clustering failure: %s", err.Error())
 	}
 
-	// TODO: create a global context which manages the startup and teardown of the process
-	done := make(chan interface{}, 1)
-
-	var wg sync.WaitGroup
-
-	// Run the web server
-	go func(ko *koanf.Koanf) {
-		log.Info().Msg("Starting the web server...")
-		server.Init(ko)
-		// wg is used only for creating a new pipeline
-		server.Run(done, &wg, ko)
-	}(ko)
-
-	// Start pipelines that have been specified in the config file
-	// var dataPipelineConfig pipeline.PipelineDataObject
-	dataPipelineConfig := pipeline.GetPipelineInstance()
-
-	allSourcesConfig, allSinksConfig, err := dataPipelineConfig.ParseConfig(ko)
-	if err != nil {
-		log.Err(err).Msg("Error when reading config")
-	}
-
-	for _, sourceConfig := range allSourcesConfig {
-		dataPipelineConfig.AddSource(sourceConfig)
-	}
-	for _, sinkConfig := range allSinksConfig {
-		dataPipelineConfig.AddSink(sinkConfig)
-	}
-
-	mappedDataPipelines, exists := dataPipelineConfig.GetMappedPipelines()
-	if !exists {
-		log.Debug().Msg("No data pipelines exist")
-	}
-
-	// Run each pipeline
-	for pipelineKey, eachDataPipeline := range mappedDataPipelines {
-		log.Debug().Msgf("Key: %s | Value: %v", pipelineKey, eachDataPipeline)
-		newPipeline := pipeline.NewDataPipeline(eachDataPipeline.Source, eachDataPipeline.Sink)
-		pipelineString, err := newPipeline.Show()
-		if err != nil {
-			log.Err(err).Send()
-		}
-		log.Debug().Msgf("Creating and running pipeline: %s", pipelineString)
-
-		wg.Add(1)
-		go newPipeline.Run(done, &wg)
-	}
-
-	// Wait for an interrupt signal (ctrl+c)
-	signalChannel := make(chan os.Signal, 1)
-	// TODO: Catch SIGTERM and handle it
-	signal.Notify(signalChannel, os.Interrupt)
-	<-signalChannel // Blocks until an interrupt signal is received
+	<-mainCtx.Done()
 
 	log.Info().Msg("Process interrupted, shutting down...")
-
-	// Close the done channel to signal all goroutines to exit
-	close(done)
 
 	// Stop the HTTP server and other network access first so clients get notification as soon as
 	// possible that the node is going away.
@@ -262,8 +205,6 @@ func main() {
 		log.Info().Msgf("failed to close store: %s", err.Error())
 	}
 
-	// wait for for graceful shutdown
-	wg.Wait()
 }
 
 // startNodeMux starts the TCP mux on the given listener, which should be already

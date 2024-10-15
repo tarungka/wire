@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/rqlite/rqlite/v8/auth"
 	"github.com/rqlite/rqlite/v8/queue"
 	"github.com/rqlite/rqlite/v8/rtls"
@@ -465,62 +466,104 @@ func (s *Service) AllowOrigin() string {
 
 // ServeHTTP allows Service to serve HTTP requests.
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.addBuildVersion(w)
-	s.addAllowHeaders(w)
+	// Create a Gin engine and use Gin's context inside the ServeHTTP method
+	engine := gin.New()
 
+	// Convert the http.Request to a Gin context and wrap the ResponseWriter
+	c, _ := gin.CreateTestContext(w)
+	c.Request = r
+
+	// Add your middleware logic here if needed
+
+	// Handle OPTIONS request early on
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	params, err := NewQueryParams(r)
+	// Simulate query parameters extraction (you'll need to adapt this to Gin's context)
+	params, err := NewQueryParams(r) // You'll likely need to adapt this for Gin
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// TODO: migrate this to gin
+	// Define handlers for different routes
+	engine.GET("/", func(c *gin.Context) {
+		c.Redirect(http.StatusFound, "/status")
+	})
 
-	switch {
-	case r.URL.Path == "/" || r.URL.Path == "":
-		http.Redirect(w, r, "/status", http.StatusFound)
-	// case strings.HasPrefix(r.URL.Path, "/db/execute"):
-	// 	stats.Add(numExecutions, 1)
-	// 	s.handleExecute(w, r, params)
-	// case strings.HasPrefix(r.URL.Path, "/db/query"):
-	// 	stats.Add(numQueries, 1)
-	// 	s.handleQuery(w, r, params)
-	// case strings.HasPrefix(r.URL.Path, "/db/request"):
-	// 	stats.Add(numRequests, 1)
-	// 	s.handleRequest(w, r, params)
-	// case strings.HasPrefix(r.URL.Path, "/db/backup"):
-	// 	stats.Add(numBackups, 1)
-	// 	s.handleBackup(w, r, params)
-	// case strings.HasPrefix(r.URL.Path, "/db/load"):
-	// 	stats.Add(numLoad, 1)
-	// 	s.handleLoad(w, r, params)
-	case r.URL.Path == "/boot":
+	engine.GET("/boot", func(c *gin.Context) {
 		stats.Add(numBoot, 1)
-		s.handleBoot(w, r)
-	case r.URL.Path == "/snapshot":
+		s.handleBoot(c.Writer, c.Request)
+	})
+
+	engine.GET("/snapshot", func(c *gin.Context) {
 		stats.Add(numSnapshots, 1)
-		s.handleSnapshot(w, r, params)
-	case strings.HasPrefix(r.URL.Path, "/remove"):
-		s.handleRemove(w, r, params)
-	case strings.HasPrefix(r.URL.Path, "/status"):
+		s.handleSnapshot(c.Writer, c.Request, params)
+	})
+
+	engine.GET("/remove", func(c *gin.Context) {
+		s.handleRemove(c.Writer, c.Request, params)
+	})
+
+	engine.GET("/status", func(c *gin.Context) {
 		stats.Add(numStatus, 1)
-		s.handleStatus(w, r, params)
-	case strings.HasPrefix(r.URL.Path, "/nodes"):
-		s.handleNodes(w, r, params)
-	case strings.HasPrefix(r.URL.Path, "/readyz"):
+		s.handleStatus(c.Writer, c.Request, params)
+	})
+
+	engine.GET("/nodes", func(c *gin.Context) {
+		s.handleNodes(c.Writer, c.Request, params)
+	})
+
+	engine.GET("/readyz", func(c *gin.Context) {
 		stats.Add(numReadyz, 1)
-		s.handleReadyz(w, r, params)
-	case r.URL.Path == "/debug/vars":
-		s.handleExpvar(w, r, params)
-	case strings.HasPrefix(r.URL.Path, "/debug/pprof"):
-		s.handlePprof(w, r)
+		s.handleReadyz(c.Writer, c.Request, params)
+	})
+
+	engine.GET("/debug/vars", func(c *gin.Context) {
+		s.handleExpvar(c.Writer, c.Request, params)
+	})
+
+	engine.GET("/debug/pprof/*any", func(c *gin.Context) {
+		s.handlePprof(c.Writer, c.Request)
+	})
+
+	// Handle all GET, POST, PUT, DELETE under /connector/*
+	engine.GET("/connector/*any", handleConnector)
+	engine.POST("/connector/*any", handleConnector)
+	engine.PUT("/connector/*any", handleConnector)
+	engine.DELETE("/connector/*any", handleConnector)
+
+	// Set up fallback for unknown routes
+	engine.NoRoute(func(c *gin.Context) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
+	})
+
+	// Run the Gin engine with the request
+	engine.ServeHTTP(w, r)
+}
+
+// Function to handle all requests under /connector/*
+func handleConnector(c *gin.Context) {
+	switch c.Request.Method {
+	case http.MethodGet:
+		// Handle GET logic here
+		c.JSON(http.StatusOK, gin.H{"message": "GET request to /connector"})
+
+	case http.MethodPost:
+		createPipeline(c.Writer, c.Request)
+
+	case http.MethodPut:
+		// Handle PUT logic here
+		c.JSON(http.StatusOK, gin.H{"message": "PUT request to /connector"})
+
+	case http.MethodDelete:
+		deletePipeline(c.Writer, c.Request)
+
 	default:
-		w.WriteHeader(http.StatusNotFound)
+		// Fallback for unsupported methods
+		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "Method not allowed"})
 	}
 }
 
@@ -1368,6 +1411,25 @@ func (s *Service) handlePprof(w http.ResponseWriter, r *http.Request) {
 	case "/debug/pprof/profile":
 		pprof.Profile(w, r)
 	case "/debug/pprof/symbol":
+		pprof.Symbol(w, r)
+	default:
+		pprof.Index(w, r)
+	}
+}
+
+
+func (s *Service) handleConnector(w http.ResponseWriter, r *http.Request) {
+	if !s.CheckRequestPerm(r, auth.PermStatus) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	switch r.URL.Path {
+	case "/connector/pprof/cmdline":
+		pprof.Cmdline(w, r)
+	case "/connector/pprof/profile":
+		pprof.Profile(w, r)
+	case "/connector/pprof/symbol":
 		pprof.Symbol(w, r)
 	default:
 		pprof.Index(w, r)
