@@ -1,4 +1,4 @@
-package server
+package http
 
 type ResponseModel struct {
 	Success bool        `json:"success"`
