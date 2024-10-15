@@ -777,9 +777,13 @@ func (s *Service) handleBoot(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
-	return
 
+	// bufReader := bufio.NewReader(r.Body)
+
+	// s.logger.Printf("starting boot process")
+	// _, err = s.store.ReadFrom(bufReader) // TODO: need to impl this
+
+	http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
 }
 
 // handleSnapshot handles a snapshot request.
