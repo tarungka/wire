@@ -1,8 +1,6 @@
-# Wire Connector [UNDER DEVELOPMENT]
+# Wire[UNDER DEVELOPMENT]
 
-Building a pipeline to keep source and sink in sync. Currently works on the basis of Change data capture.
-
-Using native drivers for all sources and sinks
+Wire is an distributed open source stream processing framework with powerful stream and batch-processing capabilities.
 
 ---
 
