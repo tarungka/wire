@@ -65,7 +65,7 @@ func (k *KafkaSource) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}, wg *sync.WaitGroup) (<-chan []byte, error) {
+func (k *KafkaSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan []byte, error) {
 	// This is to get the entire document along with the changes in the payload
 
 	changeStreamChan := make(chan []byte, 5)
@@ -74,7 +74,7 @@ func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 	}()
 
 	wg.Add(1)
-	go func(ctx context.Context, done <-chan interface{}, opStream chan<- []byte) {
+	go func(ctx context.Context, opStream chan<- []byte) {
 
 		defer func() {
 			log.Trace().Msg("Done Reading from the kafka source")
@@ -90,8 +90,6 @@ func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 			// no go like
 
 			select {
-			case <-done:
-				return
 			case <-ctx.Done():
 				return
 			default:
@@ -141,8 +139,6 @@ func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 				}
 
 				select {
-				case <-done:
-					return
 				case <-ctx.Done():
 					return
 				case opStream <- jsonByteData:
@@ -154,7 +150,7 @@ func (k *KafkaSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 			})
 		}
 
-	}(ctx, done, changeStreamChan)
+	}(ctx, changeStreamChan)
 
 	return changeStreamChan, nil
 }
@@ -180,7 +176,7 @@ func (m *KafkaSource) Info() string {
 	return fmt.Sprintf("Key:%s|Name:%s|Type:%s", m.pipelineKey, m.pipelineName, m.pipelineConnectionType)
 }
 
-func (m *KafkaSource) LoadInitialData(ctx context.Context, done <-chan interface{}, wg *sync.WaitGroup) (<-chan []byte, error) {
+func (m *KafkaSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (<-chan []byte, error) {
 	// Will implement this at a later point, for now just change the consumer groupe name
 	// to get all the data in the topic
 	dataChan := make(chan []byte)

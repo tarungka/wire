@@ -106,7 +106,7 @@ func (m *MongoSource) getCollectionInstance() error {
 
 // As of now this function is not optimized to handled a lot of data, do not use this
 // for huge amounts of data a it holds the initial loaded data in memory
-func (m *MongoSource) LoadInitialData(ctx context.Context, done <-chan interface{}, wg *sync.WaitGroup) (<-chan []byte, error) {
+func (m *MongoSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (<-chan []byte, error) {
 
 	initialDataStreamChan := make(chan []byte, 5)
 
@@ -148,7 +148,7 @@ func (m *MongoSource) LoadInitialData(ctx context.Context, done <-chan interface
 			initialDataStreamChan <- jsonData
 		}
 
-		<-done
+		<-ctx.Done()
 
 	}()
 
@@ -156,7 +156,7 @@ func (m *MongoSource) LoadInitialData(ctx context.Context, done <-chan interface
 }
 
 // func (m *MongoSource) Watch() (<-chan []byte, error) {
-func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}, wg *sync.WaitGroup) (<-chan []byte, error) {
+func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan []byte, error) {
 
 	// This is to get the entire document along with the changes in the payload
 	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
@@ -231,8 +231,8 @@ func (m *MongoSource) Read(ctx context.Context, done <-chan interface{}, wg *syn
 			log.Trace().Str("jsonData", string(jsonData)).Msgf("The json data being sent over the channel is: %s", jsonData)
 
 			select {
-			case <-done:
-				log.Trace().Msg("Closing read from mongodb")
+			case <-ctx.Done():
+				log.Trace().Msg("upstream context closed; closing read from mongodb")
 				close(changeStreamChan)
 				return
 			// case data, a<-jsonData:

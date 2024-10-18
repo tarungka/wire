@@ -55,18 +55,6 @@ func (k *KafkaSink) Connect(ctx context.Context) error {
 	return nil
 }
 
-// func (k *KafkaSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan <-chan []byte) error {
-
-// 	defer wg.Done()
-
-// 	for i := 0; i < 10; i++ {
-// 		time.Sleep(1 * time.Second)
-// 		fmt.Printf("after %d seconds\n", i+1)
-// 	}
-
-// 	return nil
-// }
-
 func (k *KafkaSink) sendMessageToKafka(ctx context.Context, docBytes []byte) {
 	var wgKafkaSend sync.WaitGroup
 	wgKafkaSend.Add(1)
@@ -84,7 +72,7 @@ func (k *KafkaSink) sendMessageToKafka(ctx context.Context, docBytes []byte) {
 }
 
 // BUG: There is an error when trying to clean up/ close this channel/ function; unsure what the error is
-func (k *KafkaSink) Write(done <-chan interface{}, wg *sync.WaitGroup, dataChan <-chan []byte, initialDataChan <-chan []byte) error {
+func (k *KafkaSink) Write(ctx context.Context, wg *sync.WaitGroup, dataChan <-chan []byte, initialDataChan <-chan []byte) error {
 
 	defer func() {
 		log.Trace().Msg("Created a new write instance, exiting the parent thread!")
