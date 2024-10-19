@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/tarungka/wire/internal/logger"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -50,9 +52,14 @@ type MongoSource struct {
 	sort                   bson.D
 	client                 *mongo.Client
 	collection             *mongo.Collection
+
+	//
+	logger zerolog.Logger
 }
 
 func (m *MongoSource) Init(args SourceConfig) error {
+	m.logger.Printf("initializing a new mongo source with: %v", args)
+
 	m.pipelineKey = args.Key
 	m.pipelineName = args.Name
 	m.pipelineConnectionType = args.ConnectionType
@@ -275,4 +282,27 @@ func (m *MongoSource) Disconnect() error {
 
 func (m *MongoSource) Info() string {
 	return fmt.Sprintf("Key:%s|Name:%s|Type:%s", m.pipelineKey, m.pipelineName, m.pipelineConnectionType)
+}
+
+
+// NewMongoSource returns a new instance of MongoSource
+func NewMongoSource() *MongoSource {
+	newLogger := logger.GetLogger("mongo-source")
+	newLogger.Print("creating new mongo source")
+	return &MongoSource{
+		mongoDbUri:             "",
+		mongoDbDb:              "",
+		mongoDbCol:             "",
+		pipelineKey:            "",
+		pipelineName:           "",
+		pipelineConnectionType: "",
+		loadInitialData:        false,
+		project:                bson.D{},
+		csProject:              bson.D{},
+		filter:                 bson.D{},
+		sort:                   bson.D{},
+		client:                 nil,
+		collection:             nil,
+		logger:                 newLogger,
+	}
 }

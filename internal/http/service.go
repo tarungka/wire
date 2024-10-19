@@ -417,11 +417,14 @@ func (s *Service) Start(ctx context.Context) error {
 	s.queueDone = make(chan struct{})
 
 	s.stmtQueue = queue.New[*command.Statement](s.DefaultQueueCap, s.DefaultQueueBatchSz, s.DefaultQueueTimeout)
-	// go s.runQueue()
+	go s.runQueue()
 	s.logger.Printf("execute queue processing started with capacity %d, batch size %d, timeout %s",
 		s.DefaultQueueCap, s.DefaultQueueBatchSz, s.DefaultQueueTimeout.String())
 
 	go func() {
+		// Serve always returns a non-nil error and closes l. After
+		// [Server.Shutdown] or [Server.Close], the returned error
+		// is [ErrServerClosed].
 		err := s.httpServer.Serve(s.ln)
 		if err != nil {
 			s.logger.Printf("HTTP service on %s stopped: %s", s.ln.Addr().String(), err.Error())
@@ -434,14 +437,14 @@ func (s *Service) Start(ctx context.Context) error {
 
 // Close closes the service.
 func (s *Service) Close() {
-	s.logger.Print("closing HTTP service on", s.ln.Addr().String())
+	s.logger.Printf("closing HTTP service on %v", s.ln.Addr().String())
 	if err := s.httpServer.Shutdown(context.Background()); err != nil {
 		s.logger.Print("HTTP service shutdown error:", err.Error())
 	}
 
 	s.stmtQueue.Close()
 	select {
-	case <-s.queueDone:
+	case <-s.queueDone: // wait for queueDone
 	default:
 		close(s.closeCh)
 	}
@@ -1528,73 +1531,74 @@ func (s *Service) LeaderAPIAddr() string {
 	return apiAddr
 }
 
-// func (s *Service) runQueue() {
-// 	defer close(s.queueDone)
-// 	retryDelay := time.Second
+func (s *Service) runQueue() {
+	defer close(s.queueDone)
+	// retryDelay := time.Second
 
-// 	var err error
-// 	for {
-// 		select {
-// 		case <-s.closeCh:
-// 			return
-// 		case req := <-s.stmtQueue.C:
-// 			er := &command.ExecuteRequest{
-// 				Request: &command.Request{
-// 					Statements:  req.Objects,
-// 					Transaction: s.DefaultQueueTx,
-// 				},
-// 			}
-// 			stats.Add(numQueuedExecutionsStmtsRx, int64(len(req.Objects)))
+	// var err error
+	for {
+		select {
+		case <-s.closeCh:
+			return
+		case req := <-s.stmtQueue.C:
+			// er := &command.ExecuteRequest{
+			// 	Request: &command.Request{
+			// 		Statements:  req.Objects,
+			// 		Transaction: s.DefaultQueueTx,
+			// 	},
+			// }
+			stats.Add(numQueuedExecutionsStmtsRx, int64(len(req.Objects)))
 
-// 			// Nil statements are valid, as clients may want to just send
-// 			// a "checkpoint" through the queue.
-// 			if er.Request.Statements != nil {
-// 				for {
-// 					_, err = s.store.Execute(er)
-// 					if err == nil {
-// 						// Success!
-// 						break
-// 					}
+			// Nil statements are valid, as clients may want to just send
+			// a "checkpoint" through the queue.
+			// TODO: need to review this and fix this code
+			// if er.Request.Statements != nil {
+			// 	for {
+			// 		_, err = s.store.Execute(er)
+			// 		if err == nil {
+			// 			// Success!
+			// 			break
+			// 		}
 
-// 					if err == store.ErrNotLeader {
-// 						addr, err := s.store.LeaderAddr()
-// 						if err != nil || addr == "" {
-// 							s.logger.Printf("execute queue can't find leader for sequence number %d on node %s",
-// 								req.SequenceNumber, s.Addr().String())
-// 							stats.Add(numQueuedExecutionsNoLeader, 1)
-// 						} else {
-// 							_, err = s.cluster.Execute(er, addr, nil, defaultTimeout, 0)
-// 							if err != nil {
-// 								s.logger.Printf("execute queue write failed for sequence number %d on node %s: %s",
-// 									req.SequenceNumber, s.Addr().String(), err.Error())
-// 								if err.Error() == "leadership lost while committing log" {
-// 									stats.Add(numQueuedExecutionsLeadershipLost, 1)
-// 								} else if err.Error() == "not leader" {
-// 									stats.Add(numQueuedExecutionsNotLeader, 1)
-// 								} else {
-// 									stats.Add(numQueuedExecutionsUnknownError, 1)
-// 								}
-// 							} else {
-// 								// Success!
-// 								stats.Add(numRemoteExecutions, 1)
-// 								break
-// 							}
-// 						}
-// 					}
+			// 		if err == store.ErrNotLeader {
+			// 			addr, err := s.store.LeaderAddr()
+			// 			if err != nil || addr == "" {
+			// 				s.logger.Printf("execute queue can't find leader for sequence number %d on node %s",
+			// 					req.SequenceNumber, s.Addr().String())
+			// 				stats.Add(numQueuedExecutionsNoLeader, 1)
+			// 			} else {
+			// 				_, err = s.cluster.Execute(er, addr, nil, defaultTimeout, 0)
+			// 				if err != nil {
+			// 					s.logger.Printf("execute queue write failed for sequence number %d on node %s: %s",
+			// 						req.SequenceNumber, s.Addr().String(), err.Error())
+			// 					if err.Error() == "leadership lost while committing log" {
+			// 						stats.Add(numQueuedExecutionsLeadershipLost, 1)
+			// 					} else if err.Error() == "not leader" {
+			// 						stats.Add(numQueuedExecutionsNotLeader, 1)
+			// 					} else {
+			// 						stats.Add(numQueuedExecutionsUnknownError, 1)
+			// 					}
+			// 				} else {
+			// 					// Success!
+			// 					stats.Add(numRemoteExecutions, 1)
+			// 					break
+			// 				}
+			// 			}
+			// 		}
 
-// 					stats.Add(numQueuedExecutionsFailed, 1)
-// 					time.Sleep(retryDelay)
-// 				}
-// 			}
+			// 		stats.Add(numQueuedExecutionsFailed, 1)
+			// 		time.Sleep(retryDelay)
+			// 	}
+			// }
 
-// 			// Perform post-write processing.
-// 			atomic.StoreInt64(&s.seqNum, req.SequenceNumber)
-// 			req.Close()
-// 			stats.Add(numQueuedExecutionsStmtsTx, int64(len(req.Objects)))
-// 			stats.Add(numQueuedExecutionsOK, 1)
-// 		}
-// 	}
-// }
+			// Perform post-write processing.
+			atomic.StoreInt64(&s.seqNum, req.SequenceNumber)
+			req.Close()
+			stats.Add(numQueuedExecutionsStmtsTx, int64(len(req.Objects)))
+			stats.Add(numQueuedExecutionsOK, 1)
+		}
+	}
+}
 
 // addBuildVersion adds the build version to the HTTP response.
 func (s *Service) addBuildVersion(w http.ResponseWriter) {

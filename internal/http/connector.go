@@ -36,8 +36,8 @@ func createPipeline(w http.ResponseWriter, r *http.Request, ctx context.Context)
         SendResponseWithHeader(w, false, nil, "invalid request payload", http.StatusBadRequest, nil)
         return
     }
-	fmt.Printf("%v\n", pipelineData.Source)
-	fmt.Printf("%v\n", pipelineData.Sink)
+	fmt.Printf(":->%v\n", pipelineData.Source)
+	fmt.Printf(":->%v\n", pipelineData.Sink)
 
 	var sourceConfig sources.SourceConfig
 	var sinkConfig sinks.SinkConfig

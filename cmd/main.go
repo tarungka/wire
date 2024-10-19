@@ -198,6 +198,7 @@ func main() {
 		// Perform a stepdown, ignore any errors.
 		str.Stepdown(true)
 	}
+	log.Debug().Msgf("closing mux listener listening on %s", muxListener.Addr().String())
 	muxListener.Close()
 
 	if err := str.Close(true); err != nil {

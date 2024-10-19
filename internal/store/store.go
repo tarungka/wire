@@ -364,7 +364,7 @@ type Store struct {
 
 	// Database
 	dbDir string
-	db    *badger.DB
+	db    *badger.DB // pointer to the badgerDB
 
 	mu sync.Mutex
 
@@ -383,7 +383,6 @@ type Config struct {
 	ID  string    // Node ID.
 }
 
-// func New(ly Layer, ko *koanf.Koanf) *Store {
 // allocate a new store in memory and initialize
 func New(ly Layer, c *Config) *Store {
 	newLogger := logger.GetLogger("store")
@@ -683,6 +682,7 @@ func (s *Store) Close(wait bool) (retErr error) {
 	}()
 	if !s.open.Is() {
 		// Protect against closing already-closed resource, such as channels.
+		s.logger.Debug().Msg("closing already closed store")
 		return nil
 	}
 	// if err := s.snapshotCAS.BeginWithRetry("close", 10*time.Millisecond, 10*time.Second); err != nil {
@@ -698,20 +698,25 @@ func (s *Store) Close(wait bool) (retErr error) {
 	// close(s.snapshotWClose)
 	// <-s.snapshotWDone
 
+
+	s.logger.Printf("initiating raft shutdown protocol")
 	f := s.raft.Shutdown()
 	if wait {
 		if f.Error() != nil {
 			return f.Error()
 		}
 	}
+	s.logger.Printf("closing raft connections")
 	if err := s.raftTn.Close(); err != nil {
 		return err
 	}
 
-	// Only shutdown Bolt and SQLite when Raft is done.
+	s.logger.Printf("closing the badger database")
+	// Only shutdown Bolt and badger when Raft is done.
 	if err := s.db.Close(); err != nil {
 		return err
 	}
+	s.logger.Printf("closing the bolt store")
 	if err := s.boltStore.Close(); err != nil {
 		return err
 	}

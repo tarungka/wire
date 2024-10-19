@@ -243,7 +243,7 @@ func DataSourceFactory(config sources.SourceConfig) (DataSource, error) {
 	log.Debug().Msgf("Creating and allocating object for source: %s", sourceType)
 	switch sourceType {
 	case "mongodb":
-		x := &sources.MongoSource{}
+		x := sources.NewMongoSource()
 		x.Init(config)
 		return x, nil
 	case "kafka":

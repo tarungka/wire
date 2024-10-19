@@ -163,6 +163,7 @@ func (s *Service) Open() error {
 
 // Close closes the service.
 func (s *Service) Close() error {
+	s.logger.Printf("closing the listener")
 	s.ln.Close()
 	return nil
 }
