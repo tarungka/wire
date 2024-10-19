@@ -106,14 +106,14 @@ func (d *DataPipeline) SetSink(sink DataSink) {
 
 // Run the data pipeline, connects to the source and sink. Reads data from the source
 // then writes the data to the sink.
-func (dp *DataPipeline) Run(pctx context.Context, wg *sync.WaitGroup) {
+func (dp *DataPipeline) Run(pctx context.Context) {
 
 	defer func() {
 		log.Trace().Msgf("The RUN function is done/returning.[%v]", dp.Sink.Info())
-		wg.Done()
 	}()
 
-	ctx, cancel := context.WithCancel(pctx)
+	var wg sync.WaitGroup
+	ctx, cancel := context.WithCancel(pctx) // create a new context with the parent context
 	dp.cancel = cancel
 
 	dp.open.Store(true) // pipeline is running
@@ -128,14 +128,14 @@ func (dp *DataPipeline) Run(pctx context.Context, wg *sync.WaitGroup) {
 		log.Err(sinkConnectError).Msg("Error when connecting to sink")
 	}
 
-	initialDataChannel, err := dp.Source.LoadInitialData(ctx, wg)
+	initialDataChannel, err := dp.Source.LoadInitialData(ctx, &wg)
 	if err != nil {
 		log.Err(err).Msg("Error when loading initial data")
 	}
 
 	// TODO: This code IMO will only hold good for low throughput scenarios
 	// and does not scale when there are multiple pipelines running.
-	dataChannel, err := dp.Source.Read(ctx, wg)
+	dataChannel, err := dp.Source.Read(ctx, &wg)
 	if err != nil {
 		log.Err(err).Msg("Error when reading from the data source")
 		return
@@ -163,11 +163,12 @@ func (dp *DataPipeline) Run(pctx context.Context, wg *sync.WaitGroup) {
 
 	for i := 0; i < jobCount; i++ {
 		wg.Add(1)
-		go dp.processJob(ctx, wg, partitionedDataChannels[i], partitionedInitialDataChannels[i])
+		go dp.processJob(ctx, &wg, partitionedDataChannels[i], partitionedInitialDataChannels[i])
 	}
 
 	<-ctx.Done()
-	dp.Close() // the context is cancelled in here
+	wg.Wait() // Wait till you finish reading and writing all the data
+	dp.Close() // the pipeline context is cancelled in here
 }
 
 // Process job as of now only writes the data to the sink in a non deterministic manner

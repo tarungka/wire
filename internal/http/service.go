@@ -347,6 +347,8 @@ type Service struct {
 
 	BuildInfo map[string]interface{}
 
+	Context context.Context // Context attached with the instance
+
 	// logger *log.Logger
 	logger zerolog.Logger
 }
@@ -370,11 +372,12 @@ func New(addr string, store Store, cluster Cluster, credentials CredentialStore)
 }
 
 // Start starts the service.
-func (s *Service) Start() error {
+func (s *Service) Start(ctx context.Context) error {
 	s.httpServer = http.Server{
 		Handler: s,
 	}
 
+	s.Context = ctx
 	var ln net.Listener
 	var err error
 	if s.CertFile == "" || s.KeyFile == "" {
@@ -530,10 +533,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Handle all GET, POST, PUT, DELETE under /connector/*
-	engine.GET("/connector/*any", handleConnector)
-	engine.POST("/connector/*any", handleConnector)
-	engine.PUT("/connector/*any", handleConnector)
-	engine.DELETE("/connector/*any", handleConnector)
+	engine.GET("/connector/*any", s.handleConnector)
+	engine.POST("/connector/*any", s.handleConnector)
+	engine.PUT("/connector/*any", s.handleConnector)
+	engine.DELETE("/connector/*any", s.handleConnector)
 
 	// Set up fallback for unknown routes
 	engine.NoRoute(func(c *gin.Context) {
@@ -545,14 +548,14 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Function to handle all requests under /connector/*
-func handleConnector(c *gin.Context) {
+func (s *Service) handleConnector(c *gin.Context) {
 	switch c.Request.Method {
 	case http.MethodGet:
 		// Handle GET logic here
 		c.JSON(http.StatusOK, gin.H{"message": "GET request to /connector"})
 
 	case http.MethodPost:
-		createPipeline(c.Writer, c.Request)
+		createPipeline(c.Writer, c.Request, s.Context)
 
 	case http.MethodPut:
 		// Handle PUT logic here

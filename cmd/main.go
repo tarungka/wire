@@ -135,7 +135,7 @@ func main() {
 	// We want to start the HTTP server as soon as possible, so the node is responsive and external
 	// systems can see that it's running. We still have to open the Store though, so the node won't
 	// be able to do much until that happens however.
-	httpServ, err := startHTTPService(cfg, str, clstrClient)
+	httpServ, err := startHTTPService(cfg, str, mainCtx, clstrClient)
 	if err != nil {
 		log.Fatal().Msgf("failed to start HTTP server: %s", err.Error())
 	}
@@ -302,7 +302,7 @@ func createStore(cfg *Config, ln *tcp.Layer) (*store.Store, error) {
 	return str, nil
 }
 
-func startHTTPService(cfg *Config, str *store.Store, cltr *cluster.Client) (*httpd.Service, error) {
+func startHTTPService(cfg *Config, str *store.Store, ctx context.Context ,cltr *cluster.Client) (*httpd.Service, error) {
 	// Create HTTP server and load authentication information.
 	s := httpd.New(cfg.HTTPAddr, str, cltr, nil)
 
@@ -324,7 +324,7 @@ func startHTTPService(cfg *Config, str *store.Store, cltr *cluster.Client) (*htt
 		"build_time":         cmd.Buildtime,
 	}
 	s.SetAllowOrigin(cfg.HTTPAllowOrigin)
-	return s, s.Start()
+	return s, s.Start(ctx)
 }
 
 func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *cluster.Client, str *store.Store,

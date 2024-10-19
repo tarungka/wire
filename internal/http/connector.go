@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,7 +14,7 @@ import (
 	"github.com/tarungka/wire/sources"
 )
 
-func createPipeline(w http.ResponseWriter, r *http.Request) {
+func createPipeline(w http.ResponseWriter, r *http.Request, ctx context.Context) {
 
 	 // Read the request body
 	 body, err := io.ReadAll(r.Body)
@@ -81,7 +82,7 @@ func createPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Debug().Msgf("Creating and running pipeline: %s", pipelineString)
 
-	// go newPipeline.Run(wg)
+	go newPipeline.Run(ctx)
 
 	SendResponse(w, true, nil, "")
 }
