@@ -80,7 +80,7 @@ func createPipeline(w http.ResponseWriter, r *http.Request, ctx context.Context)
 	if err != nil {
 		log.Err(err).Send()
 	}
-	log.Debug().Msgf("Creating and running pipeline: %s", pipelineString)
+	log.Debug().Str("key", newPipeline.Key()).Msgf("Creating and running pipeline: %s", pipelineString)
 
 	go newPipeline.Run(ctx)
 

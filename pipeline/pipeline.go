@@ -182,6 +182,14 @@ func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, data
 	}
 }
 
+// Key returns the key for the pipeline
+func (dp *DataPipeline) Key() (string) {
+	if dp.open.Load() {
+		return ""
+	}
+	return dp.key
+}
+
 // Shows the `source name` -> `sink name`
 func (dp *DataPipeline) Show() (string, error) {
 	return dp.Source.Name() + " -> " + dp.Sink.Name(), nil

@@ -29,7 +29,7 @@ func (k *KafkaSink) Init(args SinkConfig) error {
 		log.Error().Msg("Error missing config values")
 		return fmt.Errorf("error missing config values")
 	} else {
-		log.Debug().Str("bootstrap_servers", args.Config["bootstrap_servers"]).Str("topic", args.Config["topic"]).Send()
+		log.Debug().Str("bootstrap_servers", args.Config["bootstrap_servers"]).Str("topic", args.Config["topic"]).Msg("")
 	}
 
 	k.bootstrapServers = args.Config["bootstrap_servers"]
