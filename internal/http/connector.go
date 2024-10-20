@@ -82,6 +82,9 @@ func createPipeline(w http.ResponseWriter, r *http.Request, ctx context.Context)
 	}
 	log.Debug().Str("key", newPipeline.Key()).Msgf("Creating and running pipeline: %s", pipelineString)
 
+
+	// store the pipeline in persistent storage
+
 	go newPipeline.Run(ctx)
 
 	SendResponse(w, true, nil, "")

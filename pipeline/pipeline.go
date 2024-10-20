@@ -66,7 +66,6 @@ type DataSink interface {
 }
 
 type DataPipeline struct {
-
 	// pipeline is running
 	open atomic.Bool
 	// A data source object

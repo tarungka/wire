@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -15,6 +16,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
 type ChangeStreamOperation struct {
@@ -38,6 +40,8 @@ type ChangeStreamOperation struct {
 }
 
 type MongoSource struct {
+	open atomic.Bool // if connection is open
+
 	// MongoDB connection details
 	mongoDbUri             string
 	mongoDbDb              string
@@ -77,6 +81,14 @@ func (m *MongoSource) Init(args SourceConfig) error {
 	m.sort = bson.D{}
 	m.csProject = bson.D{}
 
+	if m.pipelineKey == "" || m.pipelineConnectionType == "" || m.pipelineName == "" {
+		m.logger.Fatal().Str("KEY", m.pipelineKey).Str("CONN", m.pipelineConnectionType).Str("NAME", m.pipelineName).Msgf("Missing information!")
+	}
+
+	if m.mongoDbUri == "" || m.mongoDbDb == "" || m.mongoDbCol == "" {
+		m.logger.Fatal().Str("URI", m.mongoDbUri).Str("CONN", m.mongoDbDb).Str("NAME", m.mongoDbCol).Msgf("Missing information!")
+	}
+
 	return nil
 }
 
@@ -91,11 +103,26 @@ func (m *MongoSource) Connect(ctx context.Context) error {
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(m.mongoDbUri))
 	if err != nil {
 		log.Err(err).Msg("Error when connecting to mongodb database!")
-		return fmt.Errorf("%s", err)
+		// return fmt.Errorf("%s", err)
+		return err
 	}
 
 	m.client = client
 	m.getCollectionInstance()
+
+	readPref, err := readpref.New(readpref.PrimaryPreferredMode)
+	if err != nil {
+		m.logger.Err(err).Msgf("error when creating read preference config")
+		return err
+	}
+	err = client.Ping(ctx, readPref)
+	if err != nil {
+		m.logger.Err(err).Msgf("error when trying to connect to mongodb")
+		m.open.Store(false)
+		return err
+	}
+
+	m.open.Store(true)
 
 	return nil
 }
@@ -114,6 +141,10 @@ func (m *MongoSource) getCollectionInstance() error {
 // As of now this function is not optimized to handled a lot of data, do not use this
 // for huge amounts of data a it holds the initial loaded data in memory
 func (m *MongoSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (<-chan []byte, error) {
+
+	if m.open.Load() {
+		return nil, fmt.Errorf("no mongo client")
+	}
 
 	initialDataStreamChan := make(chan []byte, 5)
 
@@ -164,6 +195,10 @@ func (m *MongoSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (
 
 // func (m *MongoSource) Watch() (<-chan []byte, error) {
 func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan []byte, error) {
+
+	if m.open.Load() {
+		return nil, fmt.Errorf("no mongo client")
+	}
 
 	// This is to get the entire document along with the changes in the payload
 	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
@@ -283,7 +318,6 @@ func (m *MongoSource) Disconnect() error {
 func (m *MongoSource) Info() string {
 	return fmt.Sprintf("Key:%s|Name:%s|Type:%s", m.pipelineKey, m.pipelineName, m.pipelineConnectionType)
 }
-
 
 // NewMongoSource returns a new instance of MongoSource
 func NewMongoSource() *MongoSource {
