@@ -99,7 +99,7 @@ type Database interface {
 	// Backup writes a backup of the database to the writer.
 	Backup(br *commandProto.BackupRequest, dst io.Writer) error
 
-	// Loads an entire SQLite file into the database
+	// Loads an entire BadgerDB file into the database
 	Load(lr *commandProto.LoadRequest) error
 }
 
@@ -133,6 +133,7 @@ type Service struct {
 	ln   net.Listener // Incoming connections to the service
 	addr net.Addr     // Address on which this service is listening
 
+	db Database // a database system
 	mgr Manager // The cluster management system.
 
 	mu      sync.RWMutex
@@ -144,10 +145,11 @@ type Service struct {
 }
 
 // New returns a new instance of the cluster service
-func New(ln net.Listener, m Manager) *Service {
+func New(ln net.Listener, db Database, m Manager) *Service {
 	return &Service{
 		ln:   ln,
 		addr: ln.Addr(),
+		db: db,
 		mgr:  m,
 		// logger: log.New(os.Stderr, "[cluster] ", log.LstdFlags),
 		logger: logger.GetLogger("cluster"),
@@ -371,6 +373,7 @@ func writeBytesWithLength(conn net.Conn, p []byte) error {
 	if err != nil {
 		return err
 	}
+	logger.AdHocLogger.Debug().Msgf("writeBytesWithLength: %v", p)
 	_, err = conn.Write(p)
 	return err
 }

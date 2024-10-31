@@ -85,6 +85,7 @@ func createPipeline(w http.ResponseWriter, r *http.Request, ctx context.Context)
 
 	// store the pipeline in persistent storage
 
+
 	go newPipeline.Run(ctx)
 
 	SendResponse(w, true, nil, "")

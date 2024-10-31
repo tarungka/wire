@@ -119,7 +119,7 @@ func main() {
 
 	// Create cluster service now, so nodes will be able to learn information about each other.
 	clstrLn := mux.Listen(cluster.MuxClusterHeader)
-	clstrServ, err := clusterService(cfg, clstrLn, str)
+	clstrServ, err := clusterService(cfg, clstrLn, str, str)
 	if err != nil {
 		log.Fatal().Msgf("failed to create cluster service: %s", err.Error())
 	}
@@ -242,8 +242,8 @@ func startNodeMux(cfg *Config, ln net.Listener) (*tcp.Mux, error) {
 	return mux, nil
 }
 
-func clusterService(cfg *Config, ln net.Listener, mgr cluster.Manager) (*cluster.Service, error) {
-	c := cluster.New(ln, mgr)
+func clusterService(cfg *Config, ln net.Listener, db cluster.Database, mgr cluster.Manager) (*cluster.Service, error) {
+	c := cluster.New(ln, db, mgr)
 	c.SetAPIAddr(cfg.HTTPAddr)
 	// TODO: support HTTP over SSL
 	c.EnableHTTPS(cfg.HTTPx509Cert != "" && cfg.HTTPx509Key != "") // Conditions met for an HTTPS API

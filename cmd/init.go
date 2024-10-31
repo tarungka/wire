@@ -576,7 +576,7 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, error) {
 
 	// Not supported as now, will add them later
 	// f.StringVar(&config.DiscoMode, "disco-mode", "", "Choose clustering discovery mode. If not set, no node discovery is performed")
-	// f.StringVar(&config.DiscoKey, "disco-key", "rqlite", "Key prefix for cluster discovery service")
+	// f.StringVar(&config.DiscoKey, "disco-key", "wire", "Key prefix for cluster discovery service")
 	// f.StringVar(&config.DiscoConfig, "disco-config", "", "Set discovery config, or path to cluster discovery config file")
 
 	f.Usage = func() {

@@ -128,7 +128,10 @@ var (
 
 	// ErrNotImplemented when there is no implementation of the function
 	// will only exits until this application in under development
-	ErrNotImplemented = errors.New("Not implemented")
+	ErrNotImplemented = errors.New("not implemented")
+
+	// ErrDatabaseNotOpen when the database is closed
+	ErrDatabaseNotOpen = errors.New("database is not open")
 )
 
 type PragmaCheckRequest proto.Request
@@ -376,6 +379,12 @@ type Store struct {
 	numNoops         *atomic.Uint64
 	numSnapshots     *atomic.Uint64
 }
+
+// Compile time checks if all the necessary interfaces are implemented
+// kind of hacky - causes circular imports; find a better way
+// var _ http.Database = (*Store)(nil)
+// var _ http.Store = (*Store)(nil)
+// var _ http.Cluster = (*Store)(nil)
 
 type Config struct {
 	Dir string    // The working directory for raft.
@@ -697,7 +706,6 @@ func (s *Store) Close(wait bool) (retErr error) {
 
 	// close(s.snapshotWClose)
 	// <-s.snapshotWDone
-
 
 	s.logger.Printf("initiating raft shutdown protocol")
 	f := s.raft.Shutdown()
@@ -1239,57 +1247,99 @@ func (s *Store) Stats() (map[string]interface{}, error) {
 // Cluster interface implementation
 
 // Execute executes queries that return no rows, but do modify the database.
-// func (s *Store) Execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
-// 	p := (*PragmaCheckRequest)(ex.Request)
-// 	if err := p.Check(); err != nil {
-// 		return nil, err
-// 	}
+func (s *Store) Execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
+	if !s.open.Is() {
+		return nil, ErrNotOpen
+	}
 
-// 	if !s.open.Is() {
-// 		return nil, ErrNotOpen
-// 	}
+	if s.raft.State() != raft.Leader {
+		return nil, ErrNotLeader
+	}
+	if !s.Ready() {
+		return nil, ErrNotReady
+	}
+	return s.execute(ex)
+}
 
-// 	if s.raft.State() != raft.Leader {
-// 		return nil, ErrNotLeader
-// 	}
-// 	if !s.Ready() {
-// 		return nil, ErrNotReady
-// 	}
-// 	return s.execute(ex)
-// }
+type fsmExecuteQueryResponse struct {
+	results []*proto.ExecuteQueryResponse
+	error   error
+}
 
-// type fsmExecuteQueryResponse struct {
-// 	results []*proto.ExecuteQueryResponse
-// 	error   error
-// }
+// executes the command, IMP this can ONLY be run on the leader as
+// we call raft.Apply
+func (s *Store) execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
+	b, compressed, err := s.tryCompress(ex)
+	if err != nil {
+		return nil, err
+	}
 
-// func (s *Store) execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
-// 	b, compressed, err := s.tryCompress(ex)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+	c := &proto.Command{
+		Type:       proto.Command_COMMAND_TYPE_EXECUTE,
+		SubCommand: b,
+		Compressed: compressed,
+	}
 
-// 	c := &proto.Command{
-// 		Type:       proto.Command_COMMAND_TYPE_EXECUTE,
-// 		SubCommand: b,
-// 		Compressed: compressed,
-// 	}
+	b, err = command.Marshal(c)
+	if err != nil {
+		return nil, err
+	}
 
-// 	b, err = command.Marshal(c)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+	applyFuture := s.raft.Apply(b, s.ApplyTimeout)
+	if applyFuture.Error() != nil {
+		if applyFuture.Error() == raft.ErrNotLeader {
+			return nil, ErrNotLeader
+		}
+		return nil, applyFuture.Error()
+	}
+	r := applyFuture.Response().(*fsmExecuteQueryResponse)
+	return r.results, r.error
+}
 
-// 	af := s.raft.Apply(b, s.ApplyTimeout)
-// 	if af.Error() != nil {
-// 		if af.Error() == raft.ErrNotLeader {
-// 			return nil, ErrNotLeader
-// 		}
-// 		return nil, af.Error()
-// 	}
-// 	r := af.Response().(*fsmExecuteQueryResponse)
-// 	return r.results, r.error
-// }
+func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
+	return nil, ErrNotImplemented
+}
+
+func (s *Store) Request(eqr *commandProto.ExecuteQueryRequest) ([]*commandProto.ExecuteQueryResponse, error) {
+	if !s.open.Is() {
+		return nil, ErrNotOpen
+	}
+
+	if s.raft.State() != raft.Leader {
+		return nil, ErrNotLeader
+	}
+
+	if !s.Ready() {
+		return nil, ErrNotReady
+	}
+
+	b, compressed, err := s.tryCompress(eqr)
+	if err != nil {
+		return nil, err
+	}
+	c := &proto.Command{
+		Type: proto.Command_COMMAND_TYPE_EXECUTE_QUERY,
+		SubCommand: b,
+		Compressed: compressed,
+	}
+
+	b, err = command.Marshal(c)
+	if err != nil {
+		return nil, err
+	}
+
+	af := s.raft.Apply(b, s.ApplyTimeout)
+	if af.Error() != nil {
+		if af.Error() == raft.ErrNotLeader {
+			return nil, ErrNotLeader
+		}
+		return nil, af.Error()
+	}
+
+	r := af.Response().(*fsmExecuteQueryResponse)
+
+	return r.results, nil
+}
 
 // tryCompress attempts to compress the given command. If the command is
 // successfully compressed, the compressed byte slice is returned, along with
@@ -1312,6 +1362,11 @@ func (s *Store) tryCompress(rq command.Requester) ([]byte, bool, error) {
 // ID returns the Raft ID of the store.
 func (s *Store) ID() string {
 	return s.raftID
+}
+
+func GetNodeAPIAddr(addr string, retries int, timeout time.Duration) (string, error) {
+// func GetAddresser(addr string, retries int, timeout time.Duration) (string, error) {
+	return "", ErrNotImplemented
 }
 
 // Bootstrap executes a cluster bootstrap on this node, using the given
@@ -1547,5 +1602,21 @@ func (s *Store) WaitForRemoval(id string, timeout time.Duration) error {
 	if err != nil {
 		return ErrWaitForRemovalTimeout
 	}
+	return nil
+}
+
+// Newer functions will move them over accordingly
+
+// store a value in the badger database
+func (s *Store) StoreInDatabase(key, value []byte) error {
+	if s.db.IsClosed() {
+		return ErrDatabaseNotOpen
+	}
+
+	s.db.Update(func(txn *badger.Txn) error {
+		err := txn.Set(key, value)
+		return err
+	})
+
 	return nil
 }

@@ -8,7 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// DBVersion is the SQLite version.
+// DBVersion is the BadgerDB version.
 var DBVersion string
 
 // stats captures stats for the DB layer.

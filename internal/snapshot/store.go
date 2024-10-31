@@ -353,15 +353,15 @@ func (s *Store) check() (retError error) {
 		return nil
 	}
 	// else if len(snapshots) == 1 {
-	// 	// We only have one snapshot. Confirm we have a valid SQLite file
+	// 	// We only have one snapshot. Confirm we have a valid BadgerDB file
 	// 	// for that snapshot.
 	// 	snap := snapshots[0]
 	// 	snapDB := filepath.Join(s.dir, snap.ID+".db")
 	// 	if !db.IsValidSQLiteFile(snapDB) {
-	// 		return fmt.Errorf("sole snapshot data is not a valid SQLite file: %s", snap.ID)
+	// 		return fmt.Errorf("sole snapshot data is not a valid BadgerDB file: %s", snap.ID)
 	// 	}
 	// } else {
-	// 	// Do we have a valid SQLite file for the most recent snapshot?
+	// 	// Do we have a valid BadgerDB file for the most recent snapshot?
 	// 	snap := snapshots[len(snapshots)-1]
 	// 	snapDB := filepath.Join(s.dir, snap.ID+".db")
 	// 	snapDir := filepath.Join(s.dir, snap.ID)
@@ -369,13 +369,13 @@ func (s *Store) check() (retError error) {
 	// 		// Replay any WAL file into it.
 	// 		return db.CheckpointRemove(snapDB)
 	// 	}
-	// 	// We better have a SQLite file for the previous snapshot.
+	// 	// We better have a BadgerDB file for the previous snapshot.
 	// 	snapPrev := snapshots[len(snapshots)-2]
 	// 	snapPrevDB := filepath.Join(s.dir, snapPrev.ID+".db")
 	// 	if !db.IsValidSQLiteFile(snapPrevDB) {
-	// 		return fmt.Errorf("previous snapshot data is not a SQLite file: %s", snapPrev.ID)
+	// 		return fmt.Errorf("previous snapshot data is not a BadgerDB file: %s", snapPrev.ID)
 	// 	}
-	// 	// Rename the previous SQLite file to the current snapshot, and then replay any WAL file into it.
+	// 	// Rename the previous BadgerDB file to the current snapshot, and then replay any WAL file into it.
 	// 	if err := os.Rename(snapPrevDB, snapDB); err != nil {
 	// 		return err
 	// 	}
