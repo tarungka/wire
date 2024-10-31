@@ -133,14 +133,13 @@ type Service struct {
 	ln   net.Listener // Incoming connections to the service
 	addr net.Addr     // Address on which this service is listening
 
-	db Database // a database system
-	mgr Manager // The cluster management system.
+	db  Database // a database system
+	mgr Manager  // a cluster management system.
 
 	mu      sync.RWMutex
 	https   bool   // Serving HTTPS?
 	apiAddr string // host:port this node serves the HTTP API.
 
-	// logger *log.Logger
 	logger zerolog.Logger
 }
 
@@ -149,7 +148,7 @@ func New(ln net.Listener, db Database, m Manager) *Service {
 	return &Service{
 		ln:   ln,
 		addr: ln.Addr(),
-		db: db,
+		db:   db,
 		mgr:  m,
 		// logger: log.New(os.Stderr, "[cluster] ", log.LstdFlags),
 		logger: logger.GetLogger("cluster"),

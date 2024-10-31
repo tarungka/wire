@@ -245,7 +245,6 @@ type isParameter_Value interface {
 	isParameter_Value()
 }
 
-
 // Not yet completely implemented, need to think of all the edge cases
 type Parameter struct {
 	state         protoimpl.MessageState

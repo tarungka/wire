@@ -29,6 +29,9 @@ import (
 	command "github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/store"
+	"github.com/tarungka/wire/pipeline"
+	"github.com/tarungka/wire/sinks"
+	"github.com/tarungka/wire/sources"
 )
 
 var (
@@ -61,6 +64,12 @@ type Database interface {
 
 	// Load loads a BadgerDB file into the system via Raft consensus.
 	Load(lr *command.LoadRequest) error
+
+	// StoreInDatabase stores a key, value pair in database
+	StoreInDatabase(key, value string) error
+
+	// GetFromDatabase gets the value for a key from database
+	GetFromDatabase(key string) (string, error)
 }
 
 // Store is the interface the Raft-based database must implement.
@@ -350,7 +359,6 @@ type Service struct {
 
 	Context context.Context // Context attached with the instance
 
-	// logger *log.Logger
 	logger zerolog.Logger
 }
 
@@ -367,8 +375,7 @@ func New(addr string, store Store, cluster Cluster, credentials CredentialStore)
 		start:               time.Now(),
 		statuses:            make(map[string]StatusReporter),
 		credentialStore:     credentials,
-		// logger:              log.New(os.Stderr, "[http] ", log.LstdFlags),
-		logger: logger.GetLogger("http"),
+		logger:              logger.GetLogger("http"),
 	}
 }
 
@@ -500,10 +507,26 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		c.Redirect(http.StatusFound, "/status")
 	})
 
-	engine.POST("/test", func (c *gin.Context) {
-		s.handleExecute(c.Writer, c.Request, params)
+	// TODO: remove this; its a test function
+	engine.POST("/key", func(c *gin.Context) {
+		// s.handleExecute(c.Writer, c.Request, params)
+		key := c.Query("key")
+		value := c.Query("value")
+		s.test(key, value)
 	})
 
+	// TODO: remove this; its a test function
+	engine.GET("/key", func(c *gin.Context) {
+		// s.handleExecute(c.Writer, c.Request, params)
+		key := c.Query("key")
+		response, err := s.getTest(key)
+		if err != nil {
+			c.Writer.Write([]byte("nil"))
+			return
+		}
+
+		c.Writer.Write([]byte(response))
+	})
 	engine.GET("/boot", func(c *gin.Context) {
 		stats.Add(numBoot, 1)
 		s.handleBoot(c.Writer, c.Request)
@@ -542,7 +565,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Handle all GET, POST, PUT, DELETE under /connector/*
 	engine.GET("/connector/*any", s.handleConnector)
-	engine.POST("/connector/*any", s.handleConnector)
+	engine.POST("/connector/*any", s.createPipeline)
 	engine.PUT("/connector/*any", s.handleConnector)
 	engine.DELETE("/connector/*any", s.handleConnector)
 
@@ -561,9 +584,6 @@ func (s *Service) handleConnector(c *gin.Context) {
 	case http.MethodGet:
 		// Handle GET logic here
 		c.JSON(http.StatusOK, gin.H{"message": "GET request to /connector"})
-
-	case http.MethodPost:
-		createPipeline(c.Writer, c.Request, s.Context)
 
 	case http.MethodPut:
 		// Handle PUT logic here
@@ -1759,4 +1779,96 @@ func makeCredentials(username, password string) *clstrPB.Credentials {
 		Username: username,
 		Password: password,
 	}
+}
+
+func (s *Service) test(k, v string) error {
+	s.logger.Printf("TEST FUNC")
+	s.store.StoreInDatabase(k, v)
+	return nil
+}
+
+func (s *Service) getTest(k string) (string, error) {
+	value, err := s.store.GetFromDatabase(k)
+	if err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+//
+
+func (s *Service) createPipeline(c *gin.Context) {
+	r := c.Request
+	w := c.Writer
+
+	// Read the request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.logger.Err(err).Msg("Error reading request body")
+		SendResponseWithHeader(w, false, nil, "error reading request body", http.StatusInternalServerError, nil)
+		return
+	}
+
+	// Check if the request body is empty
+	if len(body) == 0 {
+		SendResponseWithHeader(w, false, nil, "error: no request body", http.StatusBadRequest, nil)
+		return
+	}
+
+	var pipelineData CreatePipelineModel
+	if err := json.Unmarshal(body, &pipelineData); err != nil {
+		s.logger.Err(err).Msg("Error when creating a new pipeline!")
+		SendResponseWithHeader(w, false, nil, "invalid request payload", http.StatusBadRequest, nil)
+		return
+	}
+	fmt.Printf(":->%v\n", pipelineData.Source)
+	fmt.Printf(":->%v\n", pipelineData.Sink)
+
+	var sourceConfig sources.SourceConfig
+	var sinkConfig sinks.SinkConfig
+
+	// Marshal the map to JSON, and then unmarshal it into the struct.
+	sourceBytes, err := json.Marshal(pipelineData.Source)
+	if err != nil {
+		s.logger.Err(err).Msg("Error marshalling source data")
+		return
+	}
+	if err := json.Unmarshal(sourceBytes, &sourceConfig); err != nil {
+		s.logger.Err(err).Msg("Error un-marshalling source configuration")
+		return
+	}
+
+	// Do the same for Sink
+	sinkBytes, err := json.Marshal(pipelineData.Sink)
+	if err != nil {
+		s.logger.Err(err).Msg("Error marshalling sink data")
+		return
+	}
+	if err := json.Unmarshal(sinkBytes, &sinkConfig); err != nil {
+		s.logger.Err(err).Msg("Error un-marshalling sink configuration")
+		return
+	}
+
+	dataSourceInterface, err := pipeline.DataSourceFactory(sourceConfig)
+	if err != nil {
+		// TODO
+	}
+	dataSinkInterface, err := pipeline.DataSinkFactory(sinkConfig)
+	if err != nil {
+		// TODO
+	}
+
+	newPipeline := pipeline.NewDataPipeline(dataSourceInterface, dataSinkInterface)
+	pipelineString, err := newPipeline.Show()
+	if err != nil {
+		s.logger.Err(err).Send()
+	}
+	s.logger.Debug().Str("key", newPipeline.Key()).Msgf("Creating and running pipeline: %s", pipelineString)
+
+	// store the pipeline in persistent storage
+	s.store.StoreInDatabase("config", string(body))
+
+	go newPipeline.Run(s.Context)
+
+	SendResponse(w, true, nil, "")
 }

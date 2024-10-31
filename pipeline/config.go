@@ -24,7 +24,7 @@ type DataPipelineConfig struct {
 }
 
 type DataPipelineManager struct {
-	activePipelines uint32 // current actively running pipelines
+	activePipelines uint32              // current actively running pipelines
 	configs         *DataPipelineConfig // will probably move this over to badger
 
 }

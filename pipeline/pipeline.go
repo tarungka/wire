@@ -166,7 +166,7 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 	}
 
 	<-ctx.Done()
-	wg.Wait() // Wait till you finish reading and writing all the data
+	wg.Wait()  // Wait till you finish reading and writing all the data
 	dp.Close() // the pipeline context is cancelled in here
 }
 
@@ -182,7 +182,7 @@ func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, data
 }
 
 // Key returns the key for the pipeline
-func (dp *DataPipeline) Key() (string) {
+func (dp *DataPipeline) Key() string {
 	if dp.open.Load() {
 		return ""
 	}

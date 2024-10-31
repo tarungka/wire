@@ -458,7 +458,7 @@ func (s *Store) Open() (retError error) {
 	}
 
 	// Creating network layer
-	nt := raft.NewNetworkTransport(NewTransport((s.ly)), connectionPoolCount, connectionTimeout, nil)
+	nt := raft.NewNetworkTransport(NewTransport(s.ly), connectionPoolCount, connectionTimeout, nil)
 	s.raftTn = NewNodeTransport(nt)
 
 	s.numTrailingLogs = uint64(float64(s.SnapshotThreshold) * trailingScale)
@@ -1318,7 +1318,7 @@ func (s *Store) Request(eqr *commandProto.ExecuteQueryRequest) ([]*commandProto.
 		return nil, err
 	}
 	c := &proto.Command{
-		Type: proto.Command_COMMAND_TYPE_EXECUTE_QUERY,
+		Type:       proto.Command_COMMAND_TYPE_EXECUTE_QUERY,
 		SubCommand: b,
 		Compressed: compressed,
 	}
@@ -1365,7 +1365,7 @@ func (s *Store) ID() string {
 }
 
 func GetNodeAPIAddr(addr string, retries int, timeout time.Duration) (string, error) {
-// func GetAddresser(addr string, retries int, timeout time.Duration) (string, error) {
+	// func GetAddresser(addr string, retries int, timeout time.Duration) (string, error) {
 	return "", ErrNotImplemented
 }
 
@@ -1608,15 +1608,48 @@ func (s *Store) WaitForRemoval(id string, timeout time.Duration) error {
 // Newer functions will move them over accordingly
 
 // store a value in the badger database
-func (s *Store) StoreInDatabase(key, value []byte) error {
+func (s *Store) StoreInDatabase(key, value string) error {
 	if s.db.IsClosed() {
 		return ErrDatabaseNotOpen
 	}
 
+	s.logger.Trace().Msgf("storing key: %v and value: %v", key, value)
+	keyBytes := []byte(key)
+	valBytes := []byte(value)
 	s.db.Update(func(txn *badger.Txn) error {
-		err := txn.Set(key, value)
+		err := txn.Set(keyBytes, valBytes)
 		return err
 	})
 
 	return nil
+}
+
+// GetFromDatabase retrieves a value from the Badger database by key.
+// Returns the value as a string
+func (s *Store) GetFromDatabase(key string) (string, error) {
+	if s.db.IsClosed() {
+		return "", ErrDatabaseNotOpen
+	}
+
+	s.logger.Trace().Msgf("retrieving key: %v", key)
+	var value string
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(key))
+		if err != nil {
+			return err
+		}
+
+		// Retrieve the value and convert it to a string.
+		valBytes, err := item.ValueCopy(nil)
+		if err != nil {
+			return err
+		}
+		value = string(valBytes)
+		return nil
+	})
+
+	if err != nil {
+		return "", err
+	}
+	return value, nil
 }

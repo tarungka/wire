@@ -100,6 +100,7 @@ func (m *MongoSource) Connect(ctx context.Context) error {
 	}
 
 	log.Trace().Msg("Connecting to mongodb...")
+	// TODO: break this down to NewClient and then Connect
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(m.mongoDbUri))
 	if err != nil {
 		log.Err(err).Msg("Error when connecting to mongodb database!")
@@ -122,6 +123,7 @@ func (m *MongoSource) Connect(ctx context.Context) error {
 		return err
 	}
 
+	m.logger.Print("Setting the state of mongo store to open")
 	m.open.Store(true)
 
 	return nil
@@ -141,8 +143,8 @@ func (m *MongoSource) getCollectionInstance() error {
 // As of now this function is not optimized to handled a lot of data, do not use this
 // for huge amounts of data a it holds the initial loaded data in memory
 func (m *MongoSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (<-chan []byte, error) {
-
-	if m.open.Load() {
+	if !m.open.Load() {
+		m.logger.Printf("Cannot load initial data as there is no mongo client")
 		return nil, fmt.Errorf("no mongo client")
 	}
 
@@ -196,7 +198,7 @@ func (m *MongoSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (
 // func (m *MongoSource) Watch() (<-chan []byte, error) {
 func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan []byte, error) {
 
-	if m.open.Load() {
+	if !m.open.Load() {
 		return nil, fmt.Errorf("no mongo client")
 	}
 

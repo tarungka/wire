@@ -131,8 +131,7 @@ func (l *LockingSnapshot) Close() error {
 type Store struct {
 	dir            string
 	fullNeededPath string
-	// logger         *log.Logger
-	logger zerolog.Logger
+	logger         zerolog.Logger
 
 	mrsw *rsync.MultiRSW
 
