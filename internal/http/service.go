@@ -509,7 +509,6 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: remove this; its a test function
 	engine.POST("/key", func(c *gin.Context) {
-		// s.handleExecute(c.Writer, c.Request, params)
 		key := c.Query("key")
 		value := c.Query("value")
 		s.test(key, value)
@@ -517,7 +516,6 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: remove this; its a test function
 	engine.GET("/key", func(c *gin.Context) {
-		// s.handleExecute(c.Writer, c.Request, params)
 		key := c.Query("key")
 		response, err := s.getTest(key)
 		if err != nil {
@@ -991,7 +989,7 @@ func (s *Service) handleNodes(w http.ResponseWriter, r *http.Request, qp QueryPa
 	sNodes, err := s.store.Nodes()
 	if err != nil {
 		statusCode := http.StatusInternalServerError
-		if err == store.ErrNotOpen {
+		if err == store.ErrStoreNotOpen {
 			statusCode = http.StatusServiceUnavailable
 		}
 		http.Error(w, fmt.Sprintf("store nodes: %s", err.Error()), statusCode)

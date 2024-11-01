@@ -81,11 +81,11 @@ import (
 )
 
 var (
-	// ErrNotOpen is returned when a Store is not open.
-	ErrNotOpen = errors.New("store not open")
+	// ErrStoreNotOpen is returned when a Store is not open.
+	ErrStoreNotOpen = errors.New("store not open")
 
-	// ErrOpen is returned when a Store is already open.
-	ErrOpen = errors.New("store already open")
+	// ErrStoreOpen is returned when a Store is already open.
+	ErrStoreOpen = errors.New("store already open")
 
 	// ErrNotReady is returned when a Store is not ready to accept requests.
 	ErrNotReady = errors.New("store not ready")
@@ -671,7 +671,7 @@ func (s *Store) observe() (closeCh, doneCh chan struct{}) {
 // will be returned.
 func (s *Store) Stepdown(wait bool) error {
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 	f := s.raft.LeadershipTransfer()
 	if !wait {
@@ -734,7 +734,7 @@ func (s *Store) Close(wait bool) (retErr error) {
 // Nodes returns the slice of nodes in the cluster, sorted by ID ascending.
 func (s *Store) Nodes() ([]*Server, error) {
 	if !s.open.Is() {
-		return nil, ErrNotOpen
+		return nil, ErrStoreNotOpen
 	}
 
 	s.logger.Debug().Msg("a node exists!")
@@ -869,7 +869,7 @@ func (s *Store) HasLeaderID() bool {
 // commit index is returned directly from the Raft object.
 func (s *Store) LeaderCommitIndex() (uint64, error) {
 	if !s.open.Is() {
-		return 0, ErrNotOpen
+		return 0, ErrStoreNotOpen
 	}
 	if s.raft.State() == raft.Leader {
 		return s.raft.CommitIndex(), nil
@@ -879,14 +879,14 @@ func (s *Store) LeaderCommitIndex() (uint64, error) {
 
 func (s *Store) CommitIndex() (uint64, error) {
 	if !s.open.Is() {
-		return 0, ErrNotOpen
+		return 0, ErrStoreNotOpen
 	}
 	return s.raft.CommitIndex(), nil
 }
 
 func (s *Store) Remove(rn *commandProto.RemoveNodeRequest) error {
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 	id := rn.Id
 
@@ -909,7 +909,7 @@ func (s *Store) Remove(rn *commandProto.RemoveNodeRequest) error {
 func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
 	s.logger.Printf("notifying node %v", nr)
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 
 	s.notifyMu.Lock()
@@ -971,7 +971,7 @@ func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
 func (s *Store) Join(jr *commandProto.JoinRequest) error {
 	s.logger.Print("got a join request to the store")
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 
 	if s.raft.State() != raft.Leader {
@@ -1144,7 +1144,7 @@ func (s *Store) logSize() (int64, error) {
 // false will also be returned.
 func (s *Store) IsVoter() (bool, error) {
 	if !s.open.Is() {
-		return false, ErrNotOpen
+		return false, ErrStoreNotOpen
 	}
 
 	cfg := s.raft.GetConfiguration()
@@ -1248,16 +1248,17 @@ func (s *Store) Stats() (map[string]interface{}, error) {
 
 // Execute executes queries that return no rows, but do modify the database.
 func (s *Store) Execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
-	if !s.open.Is() {
-		return nil, ErrNotOpen
-	}
 
+	if !s.open.Is() {
+		return nil, ErrStoreNotOpen
+	}
 	if s.raft.State() != raft.Leader {
 		return nil, ErrNotLeader
 	}
 	if !s.Ready() {
 		return nil, ErrNotReady
 	}
+
 	return s.execute(ex)
 }
 
@@ -1302,7 +1303,7 @@ func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
 
 func (s *Store) Request(eqr *commandProto.ExecuteQueryRequest) ([]*commandProto.ExecuteQueryResponse, error) {
 	if !s.open.Is() {
-		return nil, ErrNotOpen
+		return nil, ErrStoreNotOpen
 	}
 
 	if s.raft.State() != raft.Leader {
@@ -1409,7 +1410,7 @@ func prettyVoter(v bool) string {
 // through the Raft log.
 func (s *Store) Load(lr *proto.LoadRequest) error {
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 
 	if !s.Ready() {
@@ -1468,6 +1469,7 @@ func (s *Store) fsmSnapshot() (fSnap raft.FSMSnapshot, retErr error) {
 	return nil, ErrNotImplemented
 }
 
+// TODO: implementation is not complete
 func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
 	return ErrNotImplemented
 }
@@ -1609,6 +1611,15 @@ func (s *Store) WaitForRemoval(id string, timeout time.Duration) error {
 
 // store a value in the badger database
 func (s *Store) StoreInDatabase(key, value string) error {
+	if !s.open.Is() {
+		return ErrStoreNotOpen
+	}
+	if s.raft.State() != raft.Leader {
+		return ErrNotLeader
+	}
+	if !s.Ready() {
+		return ErrNotReady
+	}
 	if s.db.IsClosed() {
 		return ErrDatabaseNotOpen
 	}
@@ -1627,6 +1638,15 @@ func (s *Store) StoreInDatabase(key, value string) error {
 // GetFromDatabase retrieves a value from the Badger database by key.
 // Returns the value as a string
 func (s *Store) GetFromDatabase(key string) (string, error) {
+	if !s.open.Is() {
+		return "", ErrStoreNotOpen
+	}
+	if s.raft.State() != raft.Leader {
+		return "", ErrNotLeader
+	}
+	if !s.Ready() {
+		return "", ErrNotReady
+	}
 	if s.db.IsClosed() {
 		return "", ErrDatabaseNotOpen
 	}
