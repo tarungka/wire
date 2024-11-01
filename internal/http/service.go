@@ -1229,97 +1229,97 @@ func (s *Service) execute(w http.ResponseWriter, r *http.Request, qp QueryParams
 }
 
 // handleQuery handles queries that do not modify the database.
-// func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request, qp QueryParams) {
-// 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request, qp QueryParams) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
-// 	if !s.CheckRequestPerm(r, auth.PermQuery) {
-// 		w.WriteHeader(http.StatusUnauthorized)
-// 		return
-// 	}
+	if !s.CheckRequestPerm(r, auth.PermQuery) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 
-// 	if r.Method != "GET" && r.Method != "POST" {
-// 		w.WriteHeader(http.StatusMethodNotAllowed)
-// 		return
-// 	}
+	if r.Method != "GET" && r.Method != "POST" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 
-// 	// Get the query statement(s), and do tx if necessary.
-// 	queries, err := requestQueries(r, qp)
-// 	if err != nil {
-// 		http.Error(w, err.Error(), http.StatusBadRequest)
-// 		return
-// 	}
-// 	stats.Add(numQueryStmtsRx, int64(len(queries)))
+	// Get the query statement(s), and do tx if necessary.
+	queries, err := requestQueries(r, qp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	stats.Add(numQueryStmtsRx, int64(len(queries)))
 
-// 	// No point rewriting queries if they don't go through the Raft log, since they
-// 	// will never be replayed from the log anyway.
-// 	// if qp.Level() == command.QueryRequest_QUERY_REQUEST_LEVEL_STRONG {
-// 	// 	if !qp.NoParse() {
-// 	// 		if err := sql.Process(queries, qp.NoRewriteRandom()); err != nil {
-// 	// 			http.Error(w, fmt.Sprintf("SQL rewrite: %s", err.Error()), http.StatusInternalServerError)
-// 	// 			return
-// 	// 		}
-// 	// 	}
-// 	// }
+	// No point rewriting queries if they don't go through the Raft log, since they
+	// will never be replayed from the log anyway.
+	// if qp.Level() == command.QueryRequest_QUERY_REQUEST_LEVEL_STRONG {
+	// 	if !qp.NoParse() {
+	// 		if err := sql.Process(queries, qp.NoRewriteRandom()); err != nil {
+	// 			http.Error(w, fmt.Sprintf("SQL rewrite: %s", err.Error()), http.StatusInternalServerError)
+	// 			return
+	// 		}
+	// 	}
+	// }
 
-// 	resp := NewResponse()
-// 	resp.Results.AssociativeJSON = qp.Associative()
-// 	resp.Results.BlobsAsArrays = qp.BlobArray()
+	resp := NewResponse()
+	resp.Results.AssociativeJSON = qp.Associative()
+	resp.Results.BlobsAsArrays = qp.BlobArray()
 
-// 	qr := &command.QueryRequest{
-// 		Request: &command.Request{
-// 			Transaction: qp.Tx(),
-// 			DbTimeout:   int64(qp.DBTimeout(0)),
-// 			Statements:  queries,
-// 		},
-// 		Timings:         qp.Timings(),
-// 		Level:           qp.Level(),
-// 		Freshness:       qp.Freshness().Nanoseconds(),
-// 		FreshnessStrict: qp.FreshnessStrict(),
-// 	}
+	qr := &command.QueryRequest{
+		Request: &command.Request{
+			Transaction: qp.Tx(),
+			DbTimeout:   int64(qp.DBTimeout(0)),
+			Statements:  queries,
+		},
+		Timings:         qp.Timings(),
+		Level:           qp.Level(),
+		Freshness:       qp.Freshness().Nanoseconds(),
+		FreshnessStrict: qp.FreshnessStrict(),
+	}
 
-// 	results, resultsErr := s.store.Query(qr)
-// 	if resultsErr != nil && resultsErr == store.ErrNotLeader {
-// 		if s.DoRedirect(w, r, qp) {
-// 			return
-// 		}
+	results, resultsErr := s.store.Query(qr)
+	if resultsErr != nil && resultsErr == store.ErrNotLeader {
+		if s.DoRedirect(w, r, qp) {
+			return
+		}
 
-// 		addr, err := s.store.LeaderAddr()
-// 		if err != nil {
-// 			http.Error(w, err.Error(), http.StatusInternalServerError)
-// 			return
-// 		}
-// 		if addr == "" {
-// 			stats.Add(numLeaderNotFound, 1)
-// 			http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
-// 			return
-// 		}
-// 		username, password, ok := r.BasicAuth()
-// 		if !ok {
-// 			username = ""
-// 		}
+		addr, err := s.store.LeaderAddr()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if addr == "" {
+			stats.Add(numLeaderNotFound, 1)
+			http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		username, password, ok := r.BasicAuth()
+		if !ok {
+			username = ""
+		}
 
-// 		w.Header().Add(ServedByHTTPHeader, addr)
-// 		results, resultsErr = s.cluster.Query(qr, addr, makeCredentials(username, password), qp.Timeout(defaultTimeout))
-// 		if resultsErr != nil {
-// 			stats.Add(numRemoteQueriesFailed, 1)
-// 			if resultsErr.Error() == "unauthorized" {
-// 				http.Error(w, "remote query not authorized", http.StatusUnauthorized)
-// 				return
-// 			}
-// 			resultsErr = fmt.Errorf("node failed to process Query on remote node at %s: %s",
-// 				addr, resultsErr.Error())
-// 		}
-// 		stats.Add(numRemoteQueries, 1)
-// 	}
+		w.Header().Add(ServedByHTTPHeader, addr)
+		results, resultsErr = s.cluster.Query(qr, addr, makeCredentials(username, password), qp.Timeout(defaultTimeout))
+		if resultsErr != nil {
+			stats.Add(numRemoteQueriesFailed, 1)
+			if resultsErr.Error() == "unauthorized" {
+				http.Error(w, "remote query not authorized", http.StatusUnauthorized)
+				return
+			}
+			resultsErr = fmt.Errorf("node failed to process Query on remote node at %s: %s",
+				addr, resultsErr.Error())
+		}
+		stats.Add(numRemoteQueries, 1)
+	}
 
-// 	if resultsErr != nil {
-// 		resp.Error = resultsErr.Error()
-// 	} else {
-// 		resp.Results.QueryRows = results
-// 	}
-// 	resp.end = time.Now()
-// 	s.writeResponse(w, qp, resp)
-// }
+	if resultsErr != nil {
+		resp.Error = resultsErr.Error()
+	} else {
+		resp.Results.QueryRows = results
+	}
+	resp.end = time.Now()
+	s.writeResponse(w, qp, resp)
+}
 
 // func (s *Service) handleRequest(w http.ResponseWriter, r *http.Request, qp QueryParams) {
 // 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

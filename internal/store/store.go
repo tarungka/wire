@@ -1673,3 +1673,28 @@ func (s *Store) GetFromDatabase(key string) (string, error) {
 	}
 	return value, nil
 }
+
+// isStaleRead checks if a read request is stale based on the leader's contact time,
+// FSM update time, log append time, and a freshness threshold.
+//
+// A read is considered stale if:
+// 1. `freshness` is set (non-zero) and the leader's last contact (`leaderLastContact`)
+//    exceeds the freshness threshold, or
+// 2. In strict mode (`strict == true`):
+//    - No log entries have been appended (`lastAppendedAtTime.IsZero()`),
+//    - The FSM index (`fsmIndex`) differs from the commit index (`commitIndex`),
+//    - The last FSM update (`lastFSMUpdateTime`) exceeds the freshness window.
+//
+func (s *Store) isStaleRead(freshness int64, strict bool) bool {
+	if s.raft.State() == raft.Leader {
+		return false
+	}
+	return IsStaleRead(
+		s.raft.LastContact(),
+		s.fsmUpdateTime.Load(),
+		s.appendedAtTime.Load(),
+		s.fsmIdx.Load(),
+		s.raftTn.CommandCommitIndex(),
+		freshness,
+		strict)
+}
