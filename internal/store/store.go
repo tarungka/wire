@@ -295,10 +295,10 @@ type Store struct {
 	peersPath     string
 	peersInfoPath string
 
-	raft   *raft.Raft // The consensus mechanism.
-	ly     Layer
-	raftTn *NodeTransport
-	raftID string // Node ID.
+	raftConsensus *raft.Raft // The consensus mechanism.
+	ly            Layer
+	raftTn        *NodeTransport
+	raftID        string // Node ID.
 
 	ShutdownOnRemove     bool
 	SnapshotThreshold    uint64
@@ -524,7 +524,7 @@ func (s *Store) Open() (retError error) {
 	if err != nil {
 		return fmt.Errorf("creating the raft system failed: %s", err)
 	}
-	s.raft = ra
+	s.raftConsensus = ra
 
 	// Open the observer channels.
 	s.observerChan = make(chan raft.Observation, observerChanLen)
@@ -535,7 +535,7 @@ func (s *Store) Open() (retError error) {
 	})
 
 	// Register and listen for leader changes.
-	s.raft.RegisterObserver(s.observer)
+	s.raftConsensus.RegisterObserver(s.observer)
 	s.observerClose, s.observerDone = s.observe()
 
 	return nil
@@ -673,7 +673,7 @@ func (s *Store) Stepdown(wait bool) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
-	f := s.raft.LeadershipTransfer()
+	f := s.raftConsensus.LeadershipTransfer()
 	if !wait {
 		return nil
 	}
@@ -708,7 +708,7 @@ func (s *Store) Close(wait bool) (retErr error) {
 	// <-s.snapshotWDone
 
 	s.logger.Printf("initiating raft shutdown protocol")
-	f := s.raft.Shutdown()
+	f := s.raftConsensus.Shutdown()
 	if wait {
 		if f.Error() != nil {
 			return f.Error()
@@ -739,7 +739,7 @@ func (s *Store) Nodes() ([]*Server, error) {
 
 	s.logger.Debug().Msg("a node exists!")
 
-	f := s.raft.GetConfiguration()
+	f := s.raftConsensus.GetConfiguration()
 	if f.Error() != nil {
 		return nil, f.Error()
 	}
@@ -808,7 +808,7 @@ func (s *Store) installRestore() error {
 
 // remove removes the node, with the given ID, from the cluster.
 func (s *Store) remove(id string) error {
-	f := s.raft.RemoveServer(raft.ServerID(id), 0, 0)
+	f := s.raftConsensus.RemoveServer(raft.ServerID(id), 0, 0)
 	if f.Error() != nil && f.Error() == raft.ErrNotLeader {
 		return ErrNotLeader
 	}
@@ -830,7 +830,7 @@ func (s *Store) LeaderAddr() (string, error) {
 	if s.open.Is() {
 		return "", nil
 	}
-	addr, _ := s.raft.LeaderWithID()
+	addr, _ := s.raftConsensus.LeaderWithID()
 	return string(addr), nil
 }
 
@@ -840,7 +840,7 @@ func (s *Store) LeaderID() (string, error) {
 	if !s.open.Is() {
 		return "", nil
 	}
-	_, id := s.raft.LeaderWithID()
+	_, id := s.raftConsensus.LeaderWithID()
 	return string(id), nil
 }
 
@@ -850,7 +850,7 @@ func (s *Store) LeaderWithID() (string, string) {
 	if !s.open.Is() {
 		return "", ""
 	}
-	addr, id := s.raft.LeaderWithID()
+	addr, id := s.raftConsensus.LeaderWithID()
 	return string(addr), string(id)
 }
 
@@ -871,8 +871,8 @@ func (s *Store) LeaderCommitIndex() (uint64, error) {
 	if !s.open.Is() {
 		return 0, ErrStoreNotOpen
 	}
-	if s.raft.State() == raft.Leader {
-		return s.raft.CommitIndex(), nil
+	if s.raftConsensus.State() == raft.Leader {
+		return s.raftConsensus.CommitIndex(), nil
 	}
 	return s.raftTn.LeaderCommitIndex(), nil
 }
@@ -881,7 +881,7 @@ func (s *Store) CommitIndex() (uint64, error) {
 	if !s.open.Is() {
 		return 0, ErrStoreNotOpen
 	}
-	return s.raft.CommitIndex(), nil
+	return s.raftConsensus.CommitIndex(), nil
 }
 
 func (s *Store) Remove(rn *commandProto.RemoveNodeRequest) error {
@@ -955,7 +955,7 @@ func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
 
 	s.logger.Printf("reached expected bootstrap count of %d, starting cluster bootstrap",
 		s.BootstrapExpect)
-	bf := s.raft.BootstrapCluster(raft.Configuration{
+	bf := s.raftConsensus.BootstrapCluster(raft.Configuration{
 		Servers: raftServers,
 	})
 	if bf.Error() != nil {
@@ -974,7 +974,7 @@ func (s *Store) Join(jr *commandProto.JoinRequest) error {
 		return ErrStoreNotOpen
 	}
 
-	if s.raft.State() != raft.Leader {
+	if s.raftConsensus.State() != raft.Leader {
 		s.logger.Print("join request to store; but not the leader")
 		return ErrNotLeader
 	}
@@ -992,7 +992,7 @@ func (s *Store) Join(jr *commandProto.JoinRequest) error {
 		return fmt.Errorf("failed to resolve %s: %w", addr, err)
 	}
 
-	configFuture := s.raft.GetConfiguration()
+	configFuture := s.raftConsensus.GetConfiguration()
 	if err := configFuture.Error(); err != nil {
 		s.logger.Printf("failed to get raft configuration: %v", err)
 		return err
@@ -1024,10 +1024,10 @@ func (s *Store) Join(jr *commandProto.JoinRequest) error {
 	var f raft.IndexFuture
 	if voter {
 		s.logger.Info().Msgf("adding %v:%v as a voter", id, addr)
-		f = s.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 0)
+		f = s.raftConsensus.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 0)
 	} else {
 		s.logger.Info().Msgf("adding %v:%v as a NON-voter", id, addr)
-		f = s.raft.AddNonvoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 0)
+		f = s.raftConsensus.AddNonvoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 0)
 	}
 	// TODO: understand why would this error
 	if e := f.(raft.Future); e.Error() != nil {
@@ -1057,19 +1057,19 @@ func (s *Store) Snapshot(n uint64) (retError error) {
 	}()
 
 	if n > 0 {
-		cfg := s.raft.ReloadableConfig()
+		cfg := s.raftConsensus.ReloadableConfig()
 		defer func() {
 			cfg.TrailingLogs = s.numTrailingLogs
-			if err := s.raft.ReloadConfig(cfg); err != nil {
+			if err := s.raftConsensus.ReloadConfig(cfg); err != nil {
 				s.logger.Printf("failed to reload Raft config: %s", err.Error())
 			}
 		}()
 		cfg.TrailingLogs = n
-		if err := s.raft.ReloadConfig(cfg); err != nil {
+		if err := s.raftConsensus.ReloadConfig(cfg); err != nil {
 			return fmt.Errorf("failed to reload Raft config: %s", err.Error())
 		}
 	}
-	if err := s.raft.Snapshot().Error(); err != nil {
+	if err := s.raftConsensus.Snapshot().Error(); err != nil {
 		if strings.Contains(err.Error(), ErrLoadInProgress.Error()) {
 			return ErrLoadInProgress
 		}
@@ -1098,7 +1098,7 @@ func (s *Store) HasLeader() bool {
 	if !s.open.Is() {
 		return false
 	}
-	return s.raft.Leader() != ""
+	return s.raftConsensus.Leader() != ""
 }
 
 // Committed blocks until the local commit index is greater than or
@@ -1117,7 +1117,7 @@ func (s *Store) Committed(timeout time.Duration) (uint64, error) {
 // or greater the given index, or the timeout expires.
 func (s *Store) WaitForCommitIndex(idx uint64, timeout time.Duration) error {
 	check := func() bool {
-		return s.raft.CommitIndex() >= idx
+		return s.raftConsensus.CommitIndex() >= idx
 	}
 	return rsync.NewPollTrue(check, commitEquivalenceDelay, timeout).Run("commit index")
 }
@@ -1147,7 +1147,7 @@ func (s *Store) IsVoter() (bool, error) {
 		return false, ErrStoreNotOpen
 	}
 
-	cfg := s.raft.GetConfiguration()
+	cfg := s.raftConsensus.GetConfiguration()
 	if err := cfg.Error(); err != nil {
 		return false, err
 	}
@@ -1176,7 +1176,7 @@ func (s *Store) Stats() (map[string]interface{}, error) {
 
 	// Perform type-conversion to actual numbers where possible.
 	raftStats := make(map[string]interface{})
-	for k, v := range s.raft.Stats() {
+	for k, v := range s.raftConsensus.Stats() {
 		if s, err := strconv.ParseInt(v, 10, 64); err != nil {
 			raftStats[k] = v
 		} else {
@@ -1252,7 +1252,7 @@ func (s *Store) Execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse
 	if !s.open.Is() {
 		return nil, ErrStoreNotOpen
 	}
-	if s.raft.State() != raft.Leader {
+	if s.raftConsensus.State() != raft.Leader {
 		return nil, ErrNotLeader
 	}
 	if !s.Ready() {
@@ -1286,7 +1286,7 @@ func (s *Store) execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse
 		return nil, err
 	}
 
-	applyFuture := s.raft.Apply(b, s.ApplyTimeout)
+	applyFuture := s.raftConsensus.Apply(b, s.ApplyTimeout)
 	if applyFuture.Error() != nil {
 		if applyFuture.Error() == raft.ErrNotLeader {
 			return nil, ErrNotLeader
@@ -1306,7 +1306,7 @@ func (s *Store) Request(eqr *commandProto.ExecuteQueryRequest) ([]*commandProto.
 		return nil, ErrStoreNotOpen
 	}
 
-	if s.raft.State() != raft.Leader {
+	if s.raftConsensus.State() != raft.Leader {
 		return nil, ErrNotLeader
 	}
 
@@ -1329,7 +1329,7 @@ func (s *Store) Request(eqr *commandProto.ExecuteQueryRequest) ([]*commandProto.
 		return nil, err
 	}
 
-	af := s.raft.Apply(b, s.ApplyTimeout)
+	af := s.raftConsensus.Apply(b, s.ApplyTimeout)
 	if af.Error() != nil {
 		if af.Error() == raft.ErrNotLeader {
 			return nil, ErrNotLeader
@@ -1380,7 +1380,7 @@ func (s *Store) Bootstrap(servers ...*Server) error {
 			Address: raft.ServerAddress(servers[i].Addr),
 		}
 	}
-	fut := s.raft.BootstrapCluster(raft.Configuration{
+	fut := s.raftConsensus.BootstrapCluster(raft.Configuration{
 		Servers: raftServers,
 	})
 	return fut.Error()
@@ -1448,7 +1448,7 @@ func (s *Store) load(lr *proto.LoadRequest) error {
 	// TODO: need to test if the FSM is aware of these changes to flush it
 	// to the BadgerDB
 	// TODO: the impl is incomplete
-	af := s.raft.Apply(b, s.ApplyTimeout)
+	af := s.raftConsensus.Apply(b, s.ApplyTimeout)
 	if af.Error() != nil {
 		if af.Error() == raft.ErrNotLeader {
 			return ErrNotLeader
@@ -1544,7 +1544,7 @@ func (s *Store) IsLeader() bool {
 	if !s.open.Is() {
 		return false
 	}
-	return s.raft.State() == raft.Leader
+	return s.raftConsensus.State() == raft.Leader
 }
 
 // Path returns the path to the store's storage directory.
@@ -1557,7 +1557,7 @@ func (s *Store) State() ClusterState {
 	if !s.open.Is() {
 		return Unknown
 	}
-	state := s.raft.State()
+	state := s.raftConsensus.State()
 	switch state {
 	case raft.Leader:
 		return Leader
@@ -1614,7 +1614,7 @@ func (s *Store) StoreInDatabase(key, value string) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
-	if s.raft.State() != raft.Leader {
+	if s.raftConsensus.State() != raft.Leader {
 		return ErrNotLeader
 	}
 	if !s.Ready() {
@@ -1641,7 +1641,7 @@ func (s *Store) GetFromDatabase(key string) (string, error) {
 	if !s.open.Is() {
 		return "", ErrStoreNotOpen
 	}
-	if s.raft.State() != raft.Leader {
+	if s.raftConsensus.State() != raft.Leader {
 		return "", ErrNotLeader
 	}
 	if !s.Ready() {
@@ -1678,19 +1678,18 @@ func (s *Store) GetFromDatabase(key string) (string, error) {
 // FSM update time, log append time, and a freshness threshold.
 //
 // A read is considered stale if:
-// 1. `freshness` is set (non-zero) and the leader's last contact (`leaderLastContact`)
-//    exceeds the freshness threshold, or
-// 2. In strict mode (`strict == true`):
-//    - No log entries have been appended (`lastAppendedAtTime.IsZero()`),
-//    - The FSM index (`fsmIndex`) differs from the commit index (`commitIndex`),
-//    - The last FSM update (`lastFSMUpdateTime`) exceeds the freshness window.
-//
+//  1. `freshness` is set (non-zero) and the leader's last contact (`leaderLastContact`)
+//     exceeds the freshness threshold, or
+//  2. In strict mode (`strict == true`):
+//     - No log entries have been appended (`lastAppendedAtTime.IsZero()`),
+//     - The FSM index (`fsmIndex`) differs from the commit index (`commitIndex`),
+//     - The last FSM update (`lastFSMUpdateTime`) exceeds the freshness window.
 func (s *Store) isStaleRead(freshness int64, strict bool) bool {
-	if s.raft.State() == raft.Leader {
+	if s.raftConsensus.State() == raft.Leader {
 		return false
 	}
 	return IsStaleRead(
-		s.raft.LastContact(),
+		s.raftConsensus.LastContact(),
 		s.fsmUpdateTime.Load(),
 		s.appendedAtTime.Load(),
 		s.fsmIdx.Load(),
