@@ -163,10 +163,15 @@ func (db *DB) FirstIndex() (uint64, error) {
 		opts.PrefetchValues = true
 		opts.Reverse = false
 		itr := txn.NewIterator(opts)
+		defer itr.Close()
 
 		itr.Rewind()
-		item := itr.Item()
-		resp, err = item.ValueCopy(nil)
+		if itr.Valid() {
+			item := itr.Item()
+			resp = item.KeyCopy(nil)
+		} else {
+			resp = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+		}
 		return err
 	})
 	return utils.ConvertBytesToUint64(resp), err
@@ -184,10 +189,15 @@ func (db *DB) LastIndex() (uint64, error) {
 		opts.PrefetchValues = true
 		opts.Reverse = true
 		itr := txn.NewIterator(opts)
+		defer itr.Close()
 
 		itr.Rewind() // as reverse is true, rewind will point to the latest log
-		item := itr.Item()
-		resp, err = item.ValueCopy(nil)
+		if itr.Valid() {
+			item := itr.Item()
+			resp = item.KeyCopy(nil)
+		} else {
+			resp = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+		}
 		return err
 	})
 	return utils.ConvertBytesToUint64(resp), err
@@ -240,8 +250,15 @@ func (db *DB) DeleteRange(min, max uint64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-
-	return ErrNotImplemented
+	db.db.Update(func(txn *badger.Txn) error {
+		for i := min; i <= max; i++ {
+			if err := txn.Delete(utils.ConvertUint64ToBytes(i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return nil
 }
 
 func (db *DB) Sync() error {
