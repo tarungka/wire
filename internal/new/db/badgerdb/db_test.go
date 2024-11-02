@@ -153,69 +153,69 @@ func TestDB_FirstLastIndex(t *testing.T) {
 }
 
 // FIX: This test case is breaking
-// func TestDB_GetLog(t *testing.T) {
-// 	db, cleanup := setupTestDB(t)
-// 	defer cleanup()
+func TestDB_GetLog(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
 
-// 	// Store a log
-// 	expected := &raft.Log{
-// 		Index: 1,
-// 		Term:  1,
-// 		Type:  raft.LogCommand,
-// 		Data:  []byte("test log"),
-// 	}
-// 	err := db.StoreLog(expected)
-// 	require.NoError(t, err)
+	// Store a log
+	expected := &raft.Log{
+		Index: 1,
+		Term:  1,
+		Type:  raft.LogCommand,
+		Data:  []byte("test log"),
+	}
+	err := db.StoreLog(expected)
+	require.NoError(t, err)
 
-// 	// Retrieve the log
-// 	var got raft.Log
-// 	err = db.GetLog(1, &got)
-// 	require.NoError(t, err)
+	// Retrieve the log
+	var got raft.Log
+	err = db.GetLog(1, &got)
+	require.NoError(t, err)
 
-// 	assert.Equal(t, expected.Index, got.Index)
-// 	assert.Equal(t, expected.Term, got.Term)
-// 	assert.Equal(t, expected.Type, got.Type)
-// 	assert.True(t, bytes.Equal(expected.Data, got.Data))
-// }
+	assert.Equal(t, expected.Index, got.Index)
+	assert.Equal(t, expected.Term, got.Term)
+	assert.Equal(t, expected.Type, got.Type)
+	assert.True(t, bytes.Equal(expected.Data, got.Data))
+}
 
 // FIX: This test case is breaking
-// func TestDB_DeleteRange(t *testing.T) {
-// 	db, cleanup := setupTestDB(t)
-// 	defer cleanup()
+func TestDB_DeleteRange(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
 
-// 	// Store some logs
-// 	logs := []*raft.Log{
-// 		{Index: 1, Term: 1, Type: raft.LogCommand, Data: []byte("one")},
-// 		{Index: 2, Term: 1, Type: raft.LogCommand, Data: []byte("two")},
-// 		{Index: 3, Term: 2, Type: raft.LogCommand, Data: []byte("three")},
-// 		{Index: 4, Term: 2, Type: raft.LogCommand, Data: []byte("four")},
-// 		{Index: 5, Term: 2, Type: raft.LogCommand, Data: []byte("five")},
-// 	}
+	// Store some logs
+	logs := []*raft.Log{
+		{Index: 1, Term: 1, Type: raft.LogCommand, Data: []byte("one")},
+		{Index: 2, Term: 1, Type: raft.LogCommand, Data: []byte("two")},
+		{Index: 3, Term: 2, Type: raft.LogCommand, Data: []byte("three")},
+		{Index: 4, Term: 2, Type: raft.LogCommand, Data: []byte("four")},
+		{Index: 5, Term: 2, Type: raft.LogCommand, Data: []byte("five")},
+	}
 
-// 	err := db.StoreLogs(logs)
-// 	require.NoError(t, err)
+	err := db.StoreLogs(logs)
+	require.NoError(t, err)
 
-// 	// Delete range from 2 to 4
-// 	err = db.DeleteRange(2, 4)
-// 	require.NoError(t, err)
+	// Delete range from 2 to 4
+	err = db.DeleteRange(2, 4)
+	require.NoError(t, err)
 
-// 	// Verify logs 2-4 are deleted
-// 	for i := uint64(2); i <= 4; i++ {
-// 		var log raft.Log
-// 		err = db.GetLog(i, &log)
-// 		assert.Error(t, err, "Log %d should be deleted", i)
-// 	}
+	// Verify logs 2-4 are deleted
+	for i := uint64(2); i <= 4; i++ {
+		var log raft.Log
+		err = db.GetLog(i, &log)
+		assert.Error(t, err, "Log %d should be deleted", i)
+	}
 
-// 	// Verify logs 1 and 5 still exist
-// 	var log raft.Log
-// 	err = db.GetLog(1, &log)
-// 	require.NoError(t, err)
-// 	assert.Equal(t, []byte("one"), log.Data)
+	// Verify logs 1 and 5 still exist
+	var log raft.Log
+	err = db.GetLog(1, &log)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("one"), log.Data)
 
-// 	err = db.GetLog(5, &log)
-// 	require.NoError(t, err)
-// 	assert.Equal(t, []byte("five"), log.Data)
-// }
+	err = db.GetLog(5, &log)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("five"), log.Data)
+}
 
 func TestDB_OpenInMemory(t *testing.T) {
 	db := New(&Config{})
