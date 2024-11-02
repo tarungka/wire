@@ -33,7 +33,7 @@ type DB struct {
 
 func New(c *Config) *DB {
 	newLogger := logger.GetLogger("baddb")
-	newLogger.Print("creating new store")
+	newLogger.Print("creating new badgerDB")
 	return &DB{
 		dbPath: c.Dir,
 		logger: newLogger,
@@ -264,4 +264,8 @@ func (db *DB) DeleteRange(min, max uint64) error {
 
 func (db *DB) Sync() error {
 	return db.db.Sync()
+}
+
+func (db *DB) Close() error {
+	return db.db.Close()
 }
