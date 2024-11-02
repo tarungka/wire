@@ -10,6 +10,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/rsync"
+	utils "github.com/tarungka/wire/internal/utils"
 )
 
 type Config struct {
@@ -23,6 +24,9 @@ type DB struct {
 	logger zerolog.Logger
 
 	db *badger.DB
+	// Since badgerDB uses MVCC we need to manage concurrency
+	// at the application level; as opposed to Bbolt which uses
+	// SWMR where this is not the case
 	mu sync.RWMutex
 }
 
@@ -65,19 +69,16 @@ func (db *DB) Set(key, val []byte) error {
 	if !db.open.Is() {
 		return ErrDBNotOpen
 	}
+	db.logger.Trace().Msgf("setting value of key %v to %v", key, val)
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	db.logger.Trace().Msgf("setting value of key %v to %v", key, val)
 	err := db.db.Update(func(txn *badger.Txn) error {
 		err := txn.Set(key, val)
 		return err
 	})
-	if err != nil {
-		db.logger.Err(err).Msgf("err setting value of key %v to %v", key, val)
-		return err
-	}
-	return nil
+	return err
 }
 
 // Get returns the value for key, or an empty byte slice if key was not found.
@@ -89,7 +90,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	defer db.mu.RUnlock()
 
 	var val []byte
-	err := db.db.View(func(txn *badger.Txn) error {
+	err := db.db.View(func (txn *badger.Txn) error {
 		item, err := txn.Get(key)
 		if err != nil {
 			return err
@@ -113,8 +114,9 @@ func (db *DB) SetUint64(key []byte, val uint64) error {
 
 	db.logger.Trace().Msgf("setting value of key %v to %v", key, val)
 	err := db.db.Update(func(txn *badger.Txn) error {
-		buf := make([]byte, 8)               // 8*8=64
-		binary.BigEndian.PutUint64(buf, val) // write the contents of val into buf
+		// buf := make([]byte, 8) // 8*8=64
+		// binary.BigEndian.PutUint64(buf, val) // write the contents of val into buf
+		buf := utils.ConvertUint64ToBytes(val)
 		err := txn.Set(key, buf)
 		return err
 	})
@@ -130,11 +132,12 @@ func (db *DB) GetUint64(key []byte) (uint64, error) {
 	if !db.open.Is() {
 		return 0, ErrDBNotOpen
 	}
+
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var val uint64
-	err := db.db.View(func(txn *badger.Txn) error {
+	err := db.db.View(func (txn *badger.Txn) error {
 		item, err := txn.Get(key)
 		if err != nil {
 			return err
@@ -145,11 +148,7 @@ func (db *DB) GetUint64(key []byte) (uint64, error) {
 		})
 		return err
 	})
-	if err != nil {
-		db.logger.Err(err).Msgf("err setting value of key %v to %v", key, val)
-		return 0, err
-	}
-	return val, nil
+	return val, err
 }
 
 // FirstIndex returns the first index written. 0 for no entries.
@@ -174,7 +173,20 @@ func (db *DB) StoreLog(log *raft.Log) error {
 
 // StoreLogs stores multiple log entries. By default the logs stored may not be contiguous with previous logs (i.e. may have a gap in Index since the last log written). If an implementation can't tolerate this it may optionally implement `MonotonicLogStore` to indicate that this is not allowed. This changes Raft's behaviour after restoring a user snapshot to remove all previous logs instead of relying on a "gap" to signal the discontinuity between logs before the snapshot and logs after.
 func (db *DB) StoreLogs(logs []*raft.Log) error {
-	return ErrNotImplemented
+
+	for _, l := range logs {
+		key := utils.ConvertUint64ToBytes(l.Index)
+		val, err := utils.EncodeMsgPack(l)
+		if err != nil {
+			db.logger.Err(err).Msg("error when encoding msgpack")
+			return err
+		}
+		db.mu.Lock()
+		defer db.mu.Unlock()
+		db.Set(key, val.Bytes())
+	}
+	// writeCapacity := (float32(1_000_000_000)/float32(time.Since(now).Nanoseconds()))*float32(len(logs))
+	return nil
 }
 
 // DeleteRange deletes a range of log entries. The range is inclusive.
