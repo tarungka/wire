@@ -153,12 +153,44 @@ func (db *DB) GetUint64(key []byte) (uint64, error) {
 
 // FirstIndex returns the first index written. 0 for no entries.
 func (db *DB) FirstIndex() (uint64, error) {
-	return 0, ErrNotImplemented
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var resp []byte
+	var err error
+	err = db.db.View(func(txn *badger.Txn) error {
+		opts := badger.IteratorOptions{}
+		opts.PrefetchValues = true
+		opts.Reverse = false
+		itr := txn.NewIterator(opts)
+
+		itr.Rewind()
+		item := itr.Item()
+		resp, err = item.ValueCopy(nil)
+		return err
+	})
+	return utils.ConvertBytesToUint64(resp), err
 }
 
 // LastIndex returns the last index written. 0 for no entries.
 func (db *DB) LastIndex() (uint64, error) {
-	return 0, ErrNotImplemented
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var resp []byte
+	var err error
+	err = db.db.View(func(txn *badger.Txn) error {
+		opts := badger.IteratorOptions{}
+		opts.PrefetchValues = true
+		opts.Reverse = true
+		itr := txn.NewIterator(opts)
+
+		itr.Rewind() // as reverse is true, rewind will point to the latest log
+		item := itr.Item()
+		resp, err = item.ValueCopy(nil)
+		return err
+	})
+	return utils.ConvertBytesToUint64(resp), err
 }
 
 // GetLog gets a log entry at a given index.
@@ -205,5 +237,13 @@ func (db *DB) StoreLogs(logs []*raft.Log) (retErr error) {
 
 // DeleteRange deletes a range of log entries. The range is inclusive.
 func (db *DB) DeleteRange(min, max uint64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+
 	return ErrNotImplemented
+}
+
+func (db *DB) Sync() error {
+	return db.db.Sync()
 }
