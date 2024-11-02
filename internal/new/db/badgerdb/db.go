@@ -1,6 +1,7 @@
 package badgerdb
 
 import (
+	"bytes"
 	"encoding/binary"
 	"sync"
 
@@ -170,7 +171,7 @@ func (db *DB) FirstIndex() (uint64, error) {
 			item := itr.Item()
 			resp = item.KeyCopy(nil)
 		} else {
-			resp = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+			resp = bytes.Repeat([]byte{0}, 8)
 		}
 		return err
 	})
@@ -196,7 +197,7 @@ func (db *DB) LastIndex() (uint64, error) {
 			item := itr.Item()
 			resp = item.KeyCopy(nil)
 		} else {
-			resp = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+			resp = bytes.Repeat([]byte{0}, 8)
 		}
 		return err
 	})
