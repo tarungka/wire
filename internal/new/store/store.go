@@ -134,12 +134,7 @@ func (s *StateMachine) Set(key, val []byte) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
-	err := s.dbStore.Set(key, val)
-	if err != nil {
-		s.logger.Err(err).Msg("error setting value in store")
-		return err
-	}
-	return nil
+	return s.dbStore.Set(key, val)
 }
 
 // Get returns the value for key, or an empty byte slice if key was not found.
@@ -147,24 +142,14 @@ func (s *StateMachine) Get(key []byte) ([]byte, error) {
 	if !s.open.Is() {
 		return nil, ErrStoreNotOpen
 	}
-	val, err := s.dbStore.Get(key)
-	if err != nil {
-		s.logger.Err(err).Msg("error setting value in store")
-		return nil, err
-	}
-	return val, nil
+	return s.dbStore.Get(key)
 }
 
 func (s *StateMachine) SetUint64(key []byte, val uint64) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
-	err := s.dbStore.SetUint64(key, val)
-	if err != nil {
-		s.logger.Err(err).Msg("error setting value in store")
-		return err
-	}
-	return nil
+	return s.dbStore.SetUint64(key, val)
 }
 
 // GetUint64 returns the uint64 value for key, or 0 if key was not found.
@@ -172,12 +157,7 @@ func (s *StateMachine) GetUint64(key []byte) (uint64, error) {
 	if !s.open.Is() {
 		return 0, ErrStoreNotOpen
 	}
-	val, err := s.dbStore.GetUint64(key)
-	if err != nil {
-		s.logger.Err(err).Msg("error setting value in store")
-		return 0, err
-	}
-	return val, nil
+	return s.dbStore.GetUint64(key)
 }
 
 // Impl of the raft Log Store
@@ -185,30 +165,48 @@ var _ raft.LogStore = (*StateMachine)(nil)
 
 // FirstIndex returns the first index written. 0 for no entries.
 func (s *StateMachine) FirstIndex() (uint64, error) {
-	return 0, ErrNotImplemented
+	if !s.open.Is() {
+		return 0, ErrStoreNotOpen
+	}
+	return s.dbStore.FirstIndex()
 }
 
 // LastIndex returns the last index written. 0 for no entries.
 func (s *StateMachine) LastIndex() (uint64, error) {
-	return 0, ErrNotImplemented
+	if !s.open.Is() {
+		return 0, ErrStoreNotOpen
+	}
+	return s.dbStore.LastIndex()
 }
 
 // GetLog gets a log entry at a given index.
 func (s *StateMachine) GetLog(index uint64, log *raft.Log) error {
-	return ErrNotImplemented
+	if !s.open.Is() {
+		return  ErrStoreNotOpen
+	}
+	return s.dbStore.GetLog(index, log)
 }
 
 // StoreLog stores a log entry.
 func (s *StateMachine) StoreLog(log *raft.Log) error {
-	return ErrNotImplemented
+	if !s.open.Is() {
+		return  ErrStoreNotOpen
+	}
+	return s.dbStore.StoreLog(log)
 }
 
 // StoreLogs stores multiple log entries. By default the logs stored may not be contiguous with previous logs (i.e. may have a gap in Index since the last log written). If an implementation can't tolerate this it may optionally implement `MonotonicLogStore` to indicate that this is not allowed. This changes Raft's behaviour after restoring a user snapshot to remove all previous logs instead of relying on a "gap" to signal the discontinuity between logs before the snapshot and logs after.
 func (s *StateMachine) StoreLogs(logs []*raft.Log) error {
-	return ErrNotImplemented
+	if !s.open.Is() {
+		return  ErrStoreNotOpen
+	}
+	return s.dbStore.StoreLogs(logs)
 }
 
 // DeleteRange deletes a range of log entries. The range is inclusive.
 func (s *StateMachine) DeleteRange(min, max uint64) error {
-	return ErrNotImplemented
+	if !s.open.Is() {
+		return  ErrStoreNotOpen
+	}
+	return s.dbStore.DeleteRange(min, max)
 }
