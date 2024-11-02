@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/hashicorp/raft"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -119,37 +120,37 @@ func TestDB_SetGetUint64(t *testing.T) {
 }
 
 // FIX: This test case is breaking
-// func TestDB_FirstLastIndex(t *testing.T) {
-// 	db, cleanup := setupTestDB(t)
-// 	defer cleanup()
+func TestDB_FirstLastIndex(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
 
-// 	// Test empty database
-// 	first, err := db.FirstIndex()
-// 	require.NoError(t, err)
-// 	assert.Equal(t, uint64(0), first)
+	// Test empty database
+	first, err := db.FirstIndex()
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), first)
 
-// 	last, err := db.LastIndex()
-// 	require.NoError(t, err)
-// 	assert.Equal(t, uint64(0), last)
+	last, err := db.LastIndex()
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), last)
 
-// 	// Store some logs
-// 	logs := []*raft.Log{
-// 		{Index: 1, Term: 1, Type: raft.LogCommand, Data: []byte("first")},
-// 		{Index: 2, Term: 1, Type: raft.LogCommand, Data: []byte("second")},
-// 		{Index: 3, Term: 2, Type: raft.LogCommand, Data: []byte("third")},
-// 	}
+	// Store some logs
+	logs := []*raft.Log{
+		{Index: 1, Term: 1, Type: raft.LogCommand, Data: []byte("first")},
+		{Index: 2, Term: 1, Type: raft.LogCommand, Data: []byte("second")},
+		{Index: 3, Term: 2, Type: raft.LogCommand, Data: []byte("third")},
+	}
 
-// 	err = db.StoreLogs(logs)
-// 	require.NoError(t, err)
+	err = db.StoreLogs(logs)
+	require.NoError(t, err)
 
-// 	first, err = db.FirstIndex()
-// 	require.NoError(t, err)
-// 	assert.Equal(t, uint64(1), first)
+	first, err = db.FirstIndex()
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), first)
 
-// 	last, err = db.LastIndex()
-// 	require.NoError(t, err)
-// 	assert.Equal(t, uint64(3), last)
-// }
+	last, err = db.LastIndex()
+	require.NoError(t, err)
+	assert.Equal(t, uint64(3), last)
+}
 
 // FIX: This test case is breaking
 // func TestDB_GetLog(t *testing.T) {

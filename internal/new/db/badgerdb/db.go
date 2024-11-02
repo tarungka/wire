@@ -41,6 +41,9 @@ func New(c *Config) *DB {
 }
 
 func (db *DB) Open(path string) (*badger.DB, error) {
+	if db.open.Is() {
+		return nil, ErrDBOpen
+	}
 	if path == "" {
 		path = "/tmp/badger"
 	}
@@ -57,6 +60,9 @@ func (db *DB) Open(path string) (*badger.DB, error) {
 
 // Opens an in memory database
 func (db *DB) OpenInMemory() (*badger.DB, error) {
+	if db.open.Is() {
+		return nil, ErrDBOpen
+	}
 	badgerInMemory, err := badger.Open(badger.DefaultOptions("").WithInMemory(true))
 	if err != nil {
 		return nil, err
@@ -67,6 +73,9 @@ func (db *DB) OpenInMemory() (*badger.DB, error) {
 }
 
 func (db *DB) Set(key, val []byte) error {
+	defer func() {
+		db.logger.Printf("Set done!")
+	}()
 	if !db.open.Is() {
 		return ErrDBNotOpen
 	}
@@ -76,8 +85,8 @@ func (db *DB) Set(key, val []byte) error {
 	defer db.mu.Unlock()
 
 	err := db.db.Update(func(txn *badger.Txn) error {
-		err := txn.Set(key, val)
-		return err
+		return txn.Set(key, val)
+
 	})
 	return err
 }
@@ -236,10 +245,17 @@ func (db *DB) StoreLogs(logs []*raft.Log) (retErr error) {
 	for _, l := range logs {
 		key := utils.ConvertUint64ToBytes(l.Index)
 		val, err := utils.EncodeMsgPack(l)
+		valBytes := val.Bytes()
+		db.logger.Printf("k: %v | v: %v", string(key), string(valBytes))
 		if err != nil {
 			return err
 		}
-		db.Set(key, val.Bytes())
+		err = db.db.Update(func(txn *badger.Txn) error {
+			return txn.Set(key, valBytes)
+		})
+		if err != nil {
+			return err
+		}
 	}
 	// TODO: add this to metrics
 	// writeCapacity := (float32(1_000_000_000)/float32(time.Since(now).Nanoseconds()))*float32(len(logs))
@@ -251,7 +267,7 @@ func (db *DB) DeleteRange(min, max uint64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	db.db.Update(func(txn *badger.Txn) error {
+	return db.db.Update(func(txn *badger.Txn) error {
 		for i := min; i <= max; i++ {
 			if err := txn.Delete(utils.ConvertUint64ToBytes(i)); err != nil {
 				return err
@@ -259,13 +275,23 @@ func (db *DB) DeleteRange(min, max uint64) error {
 		}
 		return nil
 	})
-	return nil
 }
 
 func (db *DB) Sync() error {
+	if !db.open.Is() {
+		return ErrDBNotOpen
+	}
 	return db.db.Sync()
 }
 
-func (db *DB) Close() error {
-	return db.db.Close()
+func (db *DB) Close() (retErr error) {
+	if !db.open.Is() {
+		return ErrDBNotOpen
+	}
+	err := db.db.Close()
+	if err != nil {
+		db.open.Unset()
+		return err
+	}
+	return nil
 }
