@@ -7,9 +7,9 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/hashicorp/raft"
-	raftboltdb "github.com/rqlite/raft-boltdb/v2"
 	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/internal/new/db"
 	"github.com/tarungka/wire/internal/rsync"
 )
 
@@ -70,6 +70,8 @@ var (
 type Config struct {
 	Dir string // The working directory for raft.
 	ID  string // Node ID.
+
+	DatabaseType string // can be one of: badgerdb, rocksdb
 }
 
 type StateMachine struct {
@@ -88,19 +90,26 @@ type StateMachine struct {
 	raftLog raft.LogStore // Persistent log store.
 
 	// physical store containing info about the the stable and the log store
-	boltStore *raftboltdb.BoltStore
+	dbStore db.DbStore // currently supported are badgerDB, rocksDB and boltDB
 
 	logger zerolog.Logger
 }
 
-func New(c *Config) *StateMachine {
+func New(c *Config) (*StateMachine, error) {
 	newLogger := logger.GetLogger("store")
 	newLogger.Print("creating new store")
-	return &StateMachine{
-		open:      rsync.NewAtomicBool(),
-		logger:    newLogger,
-		boltStore: &raftboltdb.BoltStore{},
+	dbConfig := db.Config{
+		Dir: c.Dir,
 	}
+	newDbStore, err := db.New(c.DatabaseType, &dbConfig)
+	if err != nil {
+		return nil, err
+	}
+	return &StateMachine{
+		open:    rsync.NewAtomicBool(),
+		logger:  newLogger,
+		dbStore: newDbStore,
+	}, nil
 }
 
 // Impl of the raft FSM
@@ -121,25 +130,54 @@ func (s *StateMachine) Restore(snapshot io.ReadCloser) error {
 // Impl of the raft Stable Store
 var _ raft.StableStore = (*StateMachine)(nil)
 
-func (s *StateMachine) Set(key []byte, val []byte) error {
+func (s *StateMachine) Set(key, val []byte) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
-	return ErrNotImplemented
+	err := s.dbStore.Set(key, val)
+	if err != nil {
+		s.logger.Err(err).Msg("error setting value in store")
+		return err
+	}
+	return nil
 }
 
 // Get returns the value for key, or an empty byte slice if key was not found.
 func (s *StateMachine) Get(key []byte) ([]byte, error) {
-	return nil, ErrNotImplemented
+	if !s.open.Is() {
+		return nil, ErrStoreNotOpen
+	}
+	val, err := s.dbStore.Get(key)
+	if err != nil {
+		s.logger.Err(err).Msg("error setting value in store")
+		return nil, err
+	}
+	return val, nil
 }
 
 func (s *StateMachine) SetUint64(key []byte, val uint64) error {
-	return ErrNotImplemented
+	if !s.open.Is() {
+		return ErrStoreNotOpen
+	}
+	err := s.dbStore.SetUint64(key, val)
+	if err != nil {
+		s.logger.Err(err).Msg("error setting value in store")
+		return err
+	}
+	return nil
 }
 
 // GetUint64 returns the uint64 value for key, or 0 if key was not found.
 func (s *StateMachine) GetUint64(key []byte) (uint64, error) {
-	return 0, ErrNotImplemented
+	if !s.open.Is() {
+		return 0, ErrStoreNotOpen
+	}
+	val, err := s.dbStore.GetUint64(key)
+	if err != nil {
+		s.logger.Err(err).Msg("error setting value in store")
+		return 0, err
+	}
+	return val, nil
 }
 
 // Impl of the raft Log Store
