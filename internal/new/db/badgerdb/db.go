@@ -90,7 +90,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	defer db.mu.RUnlock()
 
 	var val []byte
-	err := db.db.View(func (txn *badger.Txn) error {
+	err := db.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get(key)
 		if err != nil {
 			return err
@@ -137,7 +137,7 @@ func (db *DB) GetUint64(key []byte) (uint64, error) {
 	defer db.mu.RUnlock()
 
 	var val uint64
-	err := db.db.View(func (txn *badger.Txn) error {
+	err := db.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get(key)
 		if err != nil {
 			return err
@@ -163,28 +163,42 @@ func (db *DB) LastIndex() (uint64, error) {
 
 // GetLog gets a log entry at a given index.
 func (db *DB) GetLog(index uint64, log *raft.Log) error {
-	return ErrNotImplemented
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	resp, err := db.Get(utils.ConvertUint64ToBytes(index))
+	if err != nil {
+		return err
+	}
+	return utils.DecodeMsgPack(resp, log)
 }
 
 // StoreLog stores a log entry.
 func (db *DB) StoreLog(log *raft.Log) error {
-	return ErrNotImplemented
+	return db.StoreLogs([]*raft.Log{log})
 }
 
 // StoreLogs stores multiple log entries. By default the logs stored may not be contiguous with previous logs (i.e. may have a gap in Index since the last log written). If an implementation can't tolerate this it may optionally implement `MonotonicLogStore` to indicate that this is not allowed. This changes Raft's behaviour after restoring a user snapshot to remove all previous logs instead of relying on a "gap" to signal the discontinuity between logs before the snapshot and logs after.
-func (db *DB) StoreLogs(logs []*raft.Log) error {
+func (db *DB) StoreLogs(logs []*raft.Log) (retErr error) {
+	// Writing this defer function here to free the lock before the costly
+	// logging operation
+	defer func() {
+		if retErr != nil {
+			db.logger.Err(retErr).Msg("error when encoding msgpack")
+		}
+	}()
 
+	db.mu.Lock()
+	defer db.mu.Unlock()
 	for _, l := range logs {
 		key := utils.ConvertUint64ToBytes(l.Index)
 		val, err := utils.EncodeMsgPack(l)
 		if err != nil {
-			db.logger.Err(err).Msg("error when encoding msgpack")
 			return err
 		}
-		db.mu.Lock()
-		defer db.mu.Unlock()
 		db.Set(key, val.Bytes())
 	}
+	// TODO: add this to metrics
 	// writeCapacity := (float32(1_000_000_000)/float32(time.Since(now).Nanoseconds()))*float32(len(logs))
 	return nil
 }
