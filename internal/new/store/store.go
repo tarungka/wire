@@ -360,3 +360,17 @@ func (s *StateMachine) DeleteRange(min, max uint64) error {
 	}
 	return s.dbStore.DeleteRange(min, max)
 }
+
+func (s *StateMachine) Bootstrap(servers ...*Server) error {
+	raftServers := make([]raft.Server, len(servers))
+
+	for i := range servers {
+		raftServers[i] = raft.Server{
+			ID:      raft.ServerID(servers[i].ID),
+			Address: raft.ServerAddress(servers[i].Addr),
+		}
+	}
+
+	fut := s.raft.BootstrapCluster(raft.Configuration{Servers: raftServers})
+	return fut.Error()
+}
