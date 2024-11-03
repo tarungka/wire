@@ -3,6 +3,7 @@ package utils
 import (
 	"bytes"
 	"encoding/binary"
+	"net"
 	"os"
 	"path/filepath"
 
@@ -62,4 +63,22 @@ func EncodeMsgPack(in interface{}) (*bytes.Buffer, error) {
 // Converts bytes to an integer
 func ConvertBytesToUint64(b []byte) uint64 {
 	return binary.BigEndian.Uint64(b)
+}
+
+// PathExists returns true if the given path exists.
+func PathExists(p string) bool {
+	if _, err := os.Lstat(p); err != nil && os.IsNotExist(err) {
+		return false
+	}
+	return true
+}
+
+func ResolvableAddress(addr string) (string, error) {
+	h, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Just try the given address directly.
+		h = addr
+	}
+	_, err = net.LookupHost(h)
+	return h, err
 }

@@ -34,6 +34,8 @@ type DbStore interface {
 	StoreLogs(logs []*raft.Log) error
 
 	DeleteRange(min, max uint64) error
+
+	Close() error
 }
 
 func New(dbType string, config *Config) (DbStore, error) {

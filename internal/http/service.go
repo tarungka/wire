@@ -28,7 +28,7 @@ import (
 	"github.com/tarungka/wire/internal/command/encoding"
 	command "github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/logger"
-	"github.com/tarungka/wire/internal/store"
+	"github.com/tarungka/wire/internal/new/store"
 	"github.com/tarungka/wire/pipeline"
 	"github.com/tarungka/wire/sinks"
 	"github.com/tarungka/wire/sources"

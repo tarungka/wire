@@ -988,7 +988,7 @@ func (s *Store) Join(jr *commandProto.JoinRequest) error {
 	// then don't consider this join attempt successful -- so the joining node
 	// will presumably try again.
 	if addr, err := resolvableAddress(addr); err != nil {
-		s.logger.Info().Msgf("failed to resolve %s: %w", addr, err)
+		s.logger.Info().Msgf("failed to resolve %s: %v", addr, err)
 		return fmt.Errorf("failed to resolve %s: %w", addr, err)
 	}
 

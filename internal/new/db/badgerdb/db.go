@@ -302,6 +302,13 @@ func (db *DB) Persist(sink raft.SnapshotSink) error {
 	return nil
 }
 
+func (db *DB) GetDbPath() (string, error) {
+	if !db.open.Is() {
+		return "", ErrDBNotOpen
+	}
+	return db.dbPath, nil
+}
+
 func (db *DB) Close() (retErr error) {
 	if !db.open.Is() {
 		return ErrDBNotOpen

@@ -80,3 +80,7 @@ func (s *DB) StoreLogs(logs []*raft.Log) error {
 func (s *DB) DeleteRange(min, max uint64) error {
 	return ErrNotImplemented
 }
+
+func (s *DB) Close() error {
+	return nil
+}

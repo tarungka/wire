@@ -18,7 +18,7 @@ import (
 	"github.com/tarungka/wire/internal/cmd"
 	httpd "github.com/tarungka/wire/internal/http"
 	"github.com/tarungka/wire/internal/logger"
-	"github.com/tarungka/wire/internal/store"
+	"github.com/tarungka/wire/internal/new/store"
 	"github.com/tarungka/wire/internal/tcp"
 )
 
@@ -273,26 +273,29 @@ func createClusterClient(cfg *Config, clstr *cluster.Service) (*cluster.Client, 
 	return clstrClient, nil
 }
 
-func createStore(cfg *Config, ly *tcp.Layer) (*store.Store, error) {
-	str := store.New(ly, &store.Config{
+func createStore(cfg *Config, ly *tcp.Layer) (*store.NodeStore, error) {
+	str, err := store.New(ly, &store.Config{
 		Dir: cfg.DataPath,
 		ID:  cfg.NodeID,
 	})
+	if err != nil {
+		return nil, err
+	}
 
 	// Set optional parameters on store.
-	str.RaftLogLevel = cfg.RaftLogLevel
-	str.ShutdownOnRemove = cfg.RaftShutdownOnRemove
-	str.SnapshotThreshold = cfg.RaftSnapThreshold
-	str.SnapshotInterval = cfg.RaftSnapInterval
-	str.LeaderLeaseTimeout = cfg.RaftLeaderLeaseTimeout
-	str.HeartbeatTimeout = cfg.RaftHeartbeatTimeout
-	str.ElectionTimeout = cfg.RaftElectionTimeout
-	str.ApplyTimeout = cfg.RaftApplyTimeout
-	str.BootstrapExpect = cfg.BootstrapExpect
-	str.ReapTimeout = cfg.RaftReapNodeTimeout
-	str.ReapReadOnlyTimeout = cfg.RaftReapReadOnlyNodeTimeout
-	str.AutoVacInterval = cfg.AutoVacInterval
-	str.AutoOptimizeInterval = cfg.AutoOptimizeInterval
+	// str.RaftLogLevel = cfg.RaftLogLevel
+	// str.ShutdownOnRemove = cfg.RaftShutdownOnRemove
+	// str.SnapshotThreshold = cfg.RaftSnapThreshold
+	// str.SnapshotInterval = cfg.RaftSnapInterval
+	// str.LeaderLeaseTimeout = cfg.RaftLeaderLeaseTimeout
+	// str.HeartbeatTimeout = cfg.RaftHeartbeatTimeout
+	// str.ElectionTimeout = cfg.RaftElectionTimeout
+	// str.ApplyTimeout = cfg.RaftApplyTimeout
+	// str.BootstrapExpect = cfg.BootstrapExpect
+	// str.ReapTimeout = cfg.RaftReapNodeTimeout
+	// str.ReapReadOnlyTimeout = cfg.RaftReapReadOnlyNodeTimeout
+	// str.AutoVacInterval = cfg.AutoVacInterval
+	// str.AutoOptimizeInterval = cfg.AutoOptimizeInterval
 
 	if store.IsNewNode(cfg.DataPath) {
 		log.Printf("no preexisting node state detected in %s, node may be bootstrapping", cfg.DataPath)
@@ -303,7 +306,7 @@ func createStore(cfg *Config, ly *tcp.Layer) (*store.Store, error) {
 	return str, nil
 }
 
-func startHTTPService(cfg *Config, str *store.Store, ctx context.Context, cltr *cluster.Client) (*httpd.Service, error) {
+func startHTTPService(cfg *Config, str *store.NodeStore, ctx context.Context, cltr *cluster.Client) (*httpd.Service, error) {
 	// Create HTTP server and load authentication information.
 	s := httpd.New(cfg.HTTPAddr, str, cltr, nil)
 
@@ -342,7 +345,7 @@ func startHTTPService(cfg *Config, str *store.Store, ctx context.Context, cltr *
 // waiting until a leader is elected before proceeding. If no discovery
 // or join options are available, it defaults to using any existing Raft
 // state on the node for cluster continuity without further clustering actions.
-func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *cluster.Client, str *store.Store,
+func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *cluster.Client, str *store.NodeStore,
 	httpServ *httpd.Service, credStr *auth.CredentialsStore) error {
 	joins := cfg.JoinAddresses()
 	if err := networkCheckJoinAddrs(joins); err != nil {

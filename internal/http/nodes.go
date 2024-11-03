@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tarungka/wire/internal/store"
+	"github.com/tarungka/wire/internal/new/store"
 )
 
 // Node represents a single node in the cluster and can include

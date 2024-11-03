@@ -13,6 +13,7 @@ import (
 
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
+	"github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/new/db"
 	"github.com/tarungka/wire/internal/new/db/badgerdb"
@@ -97,7 +98,7 @@ type Config struct {
 	DatabaseType string // can be one of: badgerdb, rocksdb
 }
 
-type StateMachine struct {
+type NodeStore struct {
 	open      *rsync.AtomicBool
 	raftDir   string
 	peersPath string
@@ -136,7 +137,7 @@ type StateMachine struct {
 	logger zerolog.Logger
 }
 
-func New(ly Layer, c *Config) (*StateMachine, error) {
+func New(ly Layer, c *Config) (*NodeStore, error) {
 	newLogger := logger.GetLogger("store")
 	newLogger.Print("creating new store")
 	dbConfig := db.Config{
@@ -146,7 +147,7 @@ func New(ly Layer, c *Config) (*StateMachine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &StateMachine{
+	return &NodeStore{
 		open:         rsync.NewAtomicBool(),
 		ly:           ly,
 		raftDir:      c.Dir,
@@ -160,7 +161,7 @@ func New(ly Layer, c *Config) (*StateMachine, error) {
 	}, nil
 }
 
-func (s *StateMachine) Open() (retErr error) {
+func (s *NodeStore) Open() (retErr error) {
 	defer func() {
 		if retErr != nil {
 			s.open.Set()
@@ -197,7 +198,8 @@ func (s *StateMachine) Open() (retErr error) {
 		return err
 	}
 
-	badgerCfg := &badgerdb.Config{Dir: ""}
+	// when sending the path for badger, IsNewNode also needs to be updated
+	badgerCfg := &badgerdb.Config{Dir: ""} // this defaults to /tmp/badger
 	s.db = badgerdb.New(badgerCfg)
 	s.db.Open()
 
@@ -230,9 +232,9 @@ func (s *StateMachine) Open() (retErr error) {
 }
 
 // Impl of the raft FSM
-var _ raft.FSM = (*StateMachine)(nil)
+var _ raft.FSM = (*NodeStore)(nil)
 
-func (s *StateMachine) Apply(l *raft.Log) interface{} {
+func (s *NodeStore) Apply(l *raft.Log) interface{} {
 	defer func() {
 		s.fsmIndex.Store(l.Index)
 		s.fsmTerm.Store(l.Term)
@@ -252,7 +254,7 @@ func (s *StateMachine) Apply(l *raft.Log) interface{} {
 	return nil
 }
 
-func (s *StateMachine) Snapshot() (raft.FSMSnapshot, error) {
+func (s *NodeStore) Snapshot() (raft.FSMSnapshot, error) {
 
 	s.fsmMu.RLock()
 	defer s.fsmMu.RUnlock()
@@ -273,14 +275,14 @@ func (s *StateMachine) Snapshot() (raft.FSMSnapshot, error) {
 	return &fs, ErrNotImplemented
 }
 
-func (s *StateMachine) Restore(snapshot io.ReadCloser) error {
+func (s *NodeStore) Restore(snapshot io.ReadCloser) error {
 	return ErrNotImplemented
 }
 
 // Impl of the raft Stable Store
-var _ raft.StableStore = (*StateMachine)(nil)
+var _ raft.StableStore = (*NodeStore)(nil)
 
-func (s *StateMachine) Set(key, val []byte) error {
+func (s *NodeStore) Set(key, val []byte) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
@@ -288,14 +290,14 @@ func (s *StateMachine) Set(key, val []byte) error {
 }
 
 // Get returns the value for key, or an empty byte slice if key was not found.
-func (s *StateMachine) Get(key []byte) ([]byte, error) {
+func (s *NodeStore) Get(key []byte) ([]byte, error) {
 	if !s.open.Is() {
 		return nil, ErrStoreNotOpen
 	}
 	return s.dbStore.Get(key)
 }
 
-func (s *StateMachine) SetUint64(key []byte, val uint64) error {
+func (s *NodeStore) SetUint64(key []byte, val uint64) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
@@ -303,7 +305,7 @@ func (s *StateMachine) SetUint64(key []byte, val uint64) error {
 }
 
 // GetUint64 returns the uint64 value for key, or 0 if key was not found.
-func (s *StateMachine) GetUint64(key []byte) (uint64, error) {
+func (s *NodeStore) GetUint64(key []byte) (uint64, error) {
 	if !s.open.Is() {
 		return 0, ErrStoreNotOpen
 	}
@@ -311,10 +313,10 @@ func (s *StateMachine) GetUint64(key []byte) (uint64, error) {
 }
 
 // Impl of the raft Log Store
-var _ raft.LogStore = (*StateMachine)(nil)
+var _ raft.LogStore = (*NodeStore)(nil)
 
 // FirstIndex returns the first index written. 0 for no entries.
-func (s *StateMachine) FirstIndex() (uint64, error) {
+func (s *NodeStore) FirstIndex() (uint64, error) {
 	if !s.open.Is() {
 		return 0, ErrStoreNotOpen
 	}
@@ -322,7 +324,7 @@ func (s *StateMachine) FirstIndex() (uint64, error) {
 }
 
 // LastIndex returns the last index written. 0 for no entries.
-func (s *StateMachine) LastIndex() (uint64, error) {
+func (s *NodeStore) LastIndex() (uint64, error) {
 	if !s.open.Is() {
 		return 0, ErrStoreNotOpen
 	}
@@ -330,7 +332,7 @@ func (s *StateMachine) LastIndex() (uint64, error) {
 }
 
 // GetLog gets a log entry at a given index.
-func (s *StateMachine) GetLog(index uint64, log *raft.Log) error {
+func (s *NodeStore) GetLog(index uint64, log *raft.Log) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
@@ -338,7 +340,7 @@ func (s *StateMachine) GetLog(index uint64, log *raft.Log) error {
 }
 
 // StoreLog stores a log entry.
-func (s *StateMachine) StoreLog(log *raft.Log) error {
+func (s *NodeStore) StoreLog(log *raft.Log) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
@@ -346,7 +348,7 @@ func (s *StateMachine) StoreLog(log *raft.Log) error {
 }
 
 // StoreLogs stores multiple log entries. By default the logs stored may not be contiguous with previous logs (i.e. may have a gap in Index since the last log written). If an implementation can't tolerate this it may optionally implement `MonotonicLogStore` to indicate that this is not allowed. This changes Raft's behaviour after restoring a user snapshot to remove all previous logs instead of relying on a "gap" to signal the discontinuity between logs before the snapshot and logs after.
-func (s *StateMachine) StoreLogs(logs []*raft.Log) error {
+func (s *NodeStore) StoreLogs(logs []*raft.Log) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
@@ -354,14 +356,14 @@ func (s *StateMachine) StoreLogs(logs []*raft.Log) error {
 }
 
 // DeleteRange deletes a range of log entries. The range is inclusive.
-func (s *StateMachine) DeleteRange(min, max uint64) error {
+func (s *NodeStore) DeleteRange(min, max uint64) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
 	return s.dbStore.DeleteRange(min, max)
 }
 
-func (s *StateMachine) Bootstrap(servers ...*Server) error {
+func (s *NodeStore) Bootstrap(servers ...*Server) error {
 	raftServers := make([]raft.Server, len(servers))
 
 	for i := range servers {
@@ -374,3 +376,158 @@ func (s *StateMachine) Bootstrap(servers ...*Server) error {
 	fut := s.raft.BootstrapCluster(raft.Configuration{Servers: raftServers})
 	return fut.Error()
 }
+
+func (s *NodeStore) Nodes() ([]raft.Server, error) {
+	if !s.open.Is() {
+		return nil, ErrStoreNotOpen
+	}
+
+	raftConfig := s.raft.GetConfiguration()
+	return raftConfig.Configuration().Servers, nil
+}
+
+func (s *NodeStore) IsLeader() bool {
+	if !s.open.Is() {
+		return false
+	}
+	leaderAddr, leaderId := s.raft.LeaderWithID()
+	s.logger.Printf("The leader addr is: %v and leader id is: %v", leaderAddr, leaderId)
+
+	return s.raft.State() == raft.Leader
+}
+
+// Stepdown forces this node to relinquish leadership to another node in
+// the cluster. If this node is not the leader, and 'wait' is true, an error
+// will be returned.
+func (s *NodeStore) Stepdown(wait bool) error {
+	if !s.open.Is() {
+		return ErrStoreNotOpen
+	}
+	f := s.raft.LeadershipTransfer()
+	if !wait {
+		return nil
+	}
+	return f.Error()
+}
+
+// Close closes the store. If wait is true, waits for a graceful shutdown.
+func (s *NodeStore) Close(wait bool) (retErr error) {
+	defer func() {
+		if retErr == nil {
+			s.logger.Printf("store closed with node ID %s, listening on %s", s.raftID, s.ly.Addr().String())
+			s.open.Unset()
+		}
+	}()
+	if !s.open.Is() {
+		return nil
+	}
+
+	f := s.raft.Shutdown()
+	if wait {
+		if f.Error() != nil {
+			return f.Error()
+		}
+	}
+	if err := s.raftTn.Close(); err != nil {
+		return err
+	}
+
+	if err := s.db.Close(); err != nil {
+		return err
+	}
+	if err := s.dbStore.Close(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *NodeStore) ID() string {
+	return s.raftID
+}
+
+func (s *NodeStore) LeaderID() (string, error) {
+	if !s.open.Is() {
+		return "", ErrStoreNotOpen
+	}
+	_, id := s.raft.LeaderWithID()
+	return string(id), nil
+}
+
+func (s *NodeStore) LeaderAddr() (string, error) {
+	if !s.open.Is() {
+		return "", ErrStoreNotOpen
+	}
+	addr, _ := s.raft.LeaderWithID()
+	return string(addr), nil
+}
+
+// IsNewNode returns whether a node using raftDir would be a brand-new node.
+// It also means that the window for this node joining a different cluster has passed.
+func IsNewNode(raftDir string) bool {
+	// If there is any preexisting Raft state, then this node
+	// has already been created.
+	return !utils.PathExists("/tmp/badger")
+}
+
+// Database
+
+// Cluster
+func (s *NodeStore) Join(jr *proto.JoinRequest) error {
+	if !s.open.Is() {
+		return ErrStoreNotOpen
+	}
+
+	if s.raft.State() != raft.Leader {
+		return ErrNotLeader
+	}
+
+	id := jr.Id
+	addr := jr.Address
+	voter := jr.Voter
+
+	s.logger.Printf("got a join request from (id:%v|addr:%v|voter:%v)", id, addr, voter)
+
+	if addr, err := utils.ResolvableAddress(addr); err != nil {
+		s.logger.Printf("failed to resolve %s: %v", addr, err)
+		return fmt.Errorf("failed to resolve %s: %w", addr, err)
+	}
+
+	configFuture := s.raft.GetConfiguration()
+	if err := configFuture.Error(); err != nil {
+		s.logger.Printf("failed to get raft configuration: %v", err)
+		return err
+	}
+
+	for _, srv := range configFuture.Configuration().Servers {
+		// If a node already exists with either the joining node's ID or address,
+		// that node may need to be removed from the config first.
+		if srv.ID == raft.ServerID(id) || srv.Address == raft.ServerAddress(addr) {
+			if srv.Address == raft.ServerAddress(addr) && srv.ID == raft.ServerID(id) {
+				s.logger.Printf("node %s at %s already member of cluster, ignoring join request", id, addr)
+				return nil
+			}
+
+			// TODO: need to write code to remove the node
+			return ErrNotImplemented
+		}
+	}
+
+	var f raft.IndexFuture
+	if voter {
+		f = s.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 10 *time.Second)
+	} else {
+		f = s.raft.AddNonvoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 10 *time.Second)
+	}
+	err := f.Error()
+	if err != nil {
+		s.logger.Err(err).Msgf("error when joining")
+		if err == raft.ErrNotLeader {
+			return ErrNotLeader
+		}
+		return err
+	}
+
+	return ErrNotImplemented
+}
+
+// Control

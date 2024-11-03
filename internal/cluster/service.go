@@ -88,19 +88,19 @@ type Dialer interface {
 // Database is the interface any queryable system must implement
 type Database interface {
 	// Execute executes a slice of SQL statements.
-	Execute(er *commandProto.ExecuteRequest) ([]*commandProto.ExecuteQueryResponse, error)
+	// Execute(er *commandProto.ExecuteRequest) ([]*commandProto.ExecuteQueryResponse, error)
 
 	// Query executes a slice of queries, each of which returns rows.
-	Query(qr *commandProto.QueryRequest) ([]*commandProto.QueryRows, error)
+	// Query(qr *commandProto.QueryRequest) ([]*commandProto.QueryRows, error)
 
 	// Request processes a request that can both executes and queries.
-	Request(rr *commandProto.ExecuteQueryRequest) ([]*commandProto.ExecuteQueryResponse, error)
+	// Request(rr *commandProto.ExecuteQueryRequest) ([]*commandProto.ExecuteQueryResponse, error)
 
 	// Backup writes a backup of the database to the writer.
-	Backup(br *commandProto.BackupRequest, dst io.Writer) error
+	// Backup(br *commandProto.BackupRequest, dst io.Writer) error
 
 	// Loads an entire BadgerDB file into the database
-	Load(lr *commandProto.LoadRequest) error
+	// Load(lr *commandProto.LoadRequest) error
 }
 
 // Manager is the interface node-management systems must implement
