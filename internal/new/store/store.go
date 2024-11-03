@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/hashicorp/raft"
@@ -67,6 +68,22 @@ var (
 	ErrDatabaseNotOpen = errors.New("database is not open")
 )
 
+const (
+	applyTimeout           = 10 * time.Second
+	peersInfoPath          = "raft/peers.info"
+	peersPath              = "raft/peers.json"
+	connectionPoolCount    = 5
+	connectionTimeout      = 10 * time.Second
+	trailingScale          = 1.25
+	raftDBPath             = "raft.db"
+	raftLogCacheSize       = 128
+	observerChanLen        = 50
+	appliedWaitDelay       = 100 * time.Millisecond
+	commitEquivalenceDelay = 50 * time.Millisecond
+	leaderWaitDelay        = 100 * time.Millisecond
+	snapshotsDirName       = "wsnapshots"
+)
+
 type Config struct {
 	Dir string // The working directory for raft.
 	ID  string // Node ID.
@@ -110,6 +127,37 @@ func New(c *Config) (*StateMachine, error) {
 		logger:  newLogger,
 		dbStore: newDbStore,
 	}, nil
+}
+
+func (s *StateMachine) Open() (retErr error) {
+	defer func(){
+		if retErr != nil {
+			s.open.Set()
+		}
+	}()
+
+	var err error
+
+	// raft.NewTCPTransport()
+	// nt = raft.NewNetworkTransport()
+
+	cfg := &db.Config{
+		Dir: "/tmp/new-wire-store",
+	}
+	s.dbStore, err = db.New("badgerdb", cfg)
+	if err != nil {
+		s.logger.Printf("error when creating a new store")
+		return err
+	}
+	s.raftStable = s.dbStore
+	s.raftLog, err = raft.NewLogCache(raftLogCacheSize, s.dbStore)
+	if err != nil {
+		s.logger.Err(err).Msgf("error when creating a new cached log store")
+		return err
+	}
+
+
+	return ErrNotImplemented
 }
 
 // Impl of the raft FSM
