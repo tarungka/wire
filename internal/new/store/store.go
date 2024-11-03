@@ -1,12 +1,14 @@
 package store
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/raft"
@@ -15,6 +17,7 @@ import (
 	"github.com/tarungka/wire/internal/new/db"
 	"github.com/tarungka/wire/internal/new/db/badgerdb"
 	"github.com/tarungka/wire/internal/rsync"
+	"github.com/tarungka/wire/internal/utils"
 )
 
 var (
@@ -105,9 +108,11 @@ type StateMachine struct {
 	raftID string
 
 	// FSM
-	// db    *badger.DB
-	db    *badgerdb.DB
-	fsmMu sync.Mutex
+	db           *badgerdb.DB
+	fsmMu        sync.RWMutex
+	fsmIndex     *atomic.Uint64
+	fsmTerm      *atomic.Uint64
+	fsmUpdatedAt *rsync.AtomicTime
 
 	// Snapshot Store
 	snapshotStore raft.SnapshotStore
@@ -142,13 +147,16 @@ func New(ly Layer, c *Config) (*StateMachine, error) {
 		return nil, err
 	}
 	return &StateMachine{
-		open:        rsync.NewAtomicBool(),
-		ly:          ly,
-		raftDir:     c.Dir,
-		raftID:      c.ID,
-		logger:      newLogger,
-		dbStore:     newDbStore,
-		snapshotDir: filepath.Join(c.Dir, snapshotsDirName),
+		open:         rsync.NewAtomicBool(),
+		ly:           ly,
+		raftDir:      c.Dir,
+		raftID:       c.ID,
+		logger:       newLogger,
+		dbStore:      newDbStore,
+		fsmIndex:     &atomic.Uint64{},
+		fsmTerm:      &atomic.Uint64{},
+		fsmUpdatedAt: rsync.NewAtomicTime(),
+		snapshotDir:  filepath.Join(c.Dir, snapshotsDirName),
 	}, nil
 }
 
@@ -160,6 +168,10 @@ func (s *StateMachine) Open() (retErr error) {
 	}()
 
 	var err error
+
+	s.fsmIndex.Store(0)
+	s.fsmTerm.Store(0)
+	s.fsmUpdatedAt.Store(time.Time{}) // empty
 
 	nt := raft.NewNetworkTransport(NewTransport(s.ly), connectionPoolCount, connectionTimeout, nil)
 	s.raftTn = NewNodeTransport(nt)
@@ -220,12 +232,45 @@ func (s *StateMachine) Open() (retErr error) {
 // Impl of the raft FSM
 var _ raft.FSM = (*StateMachine)(nil)
 
-func (s *StateMachine) Apply(*raft.Log) interface{} {
-	return ErrNotImplemented
+func (s *StateMachine) Apply(l *raft.Log) interface{} {
+	defer func() {
+		s.fsmIndex.Store(l.Index)
+		s.fsmTerm.Store(l.Term)
+		s.fsmUpdatedAt.Store(time.Now())
+	}()
+
+	// The index is can never decrease, ie it is always unique and in order
+	// key will always be unique
+	key := utils.ConvertUint64ToBytes(l.Index)
+	val, err := utils.EncodeMsgPack(l)
+	if err != nil {
+		return err
+	}
+	s.fsmMu.Lock()
+	defer s.fsmMu.Unlock()
+	s.db.Set(key, val.Bytes())
+	return nil
 }
 
 func (s *StateMachine) Snapshot() (raft.FSMSnapshot, error) {
-	return nil, ErrNotImplemented
+
+	s.fsmMu.RLock()
+	defer s.fsmMu.RUnlock()
+
+	name := ""
+	fsmSnapshot := NewSnapshot(io.NopCloser(bytes.NewBufferString(name)))
+	fs := FSMSnapshot{
+		FSMSnapshot: fsmSnapshot,
+		OnFailure: func() {
+			s.logger.Printf("Persisting snapshot did not succeed, full snapshot needed")
+			// if err := s.snapshotStore.SetFullNeeded(); err != nil {
+			// 	// If this happens, only recourse is to shut down the node.
+			// 	s.logger.Fatalf("failed to set full snapshot needed: %s", err)
+			// }
+		},
+	}
+
+	return &fs, ErrNotImplemented
 }
 
 func (s *StateMachine) Restore(snapshot io.ReadCloser) error {

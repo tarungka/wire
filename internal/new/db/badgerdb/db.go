@@ -284,6 +284,24 @@ func (db *DB) Sync() error {
 	return db.db.Sync()
 }
 
+// Persist should be renamed to Backup?
+// backs up the database
+func (db *DB) Persist(sink raft.SnapshotSink) error {
+	defer func() {
+		if err := recover(); err != nil {
+			sink.Cancel()
+		}
+	}()
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.db.Backup(sink, 0)
+	if err != nil {
+		sink.Cancel()
+		return err
+	}
+	return nil
+}
+
 func (db *DB) Close() (retErr error) {
 	if !db.open.Is() {
 		return ErrDBNotOpen
