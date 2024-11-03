@@ -2,15 +2,18 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/dgraph-io/badger/v4"
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/new/db"
+	"github.com/tarungka/wire/internal/new/db/badgerdb"
 	"github.com/tarungka/wire/internal/rsync"
 )
 
@@ -96,9 +99,18 @@ type StateMachine struct {
 	raftDir   string
 	peersPath string
 
+	raft   *raft.Raft
+	ly     Layer
+	raftTn *NodeTransport
+	raftID string
+
 	// FSM
-	db    *badger.DB
+	// db    *badger.DB
+	db    *badgerdb.DB
 	fsmMu sync.Mutex
+
+	// Snapshot Store
+	snapshotStore raft.SnapshotStore
 
 	// Stable Store
 	raftStable raft.StableStore // Persistent k-v store.
@@ -109,10 +121,17 @@ type StateMachine struct {
 	// physical store containing info about the the stable and the log store
 	dbStore db.DbStore // currently supported are badgerDB, rocksDB and boltDB
 
+	// observer
+	observerChan chan raft.Observation
+	observer     *raft.Observer
+
+	// Other configs
+	snapshotDir string
+
 	logger zerolog.Logger
 }
 
-func New(c *Config) (*StateMachine, error) {
+func New(ly Layer, c *Config) (*StateMachine, error) {
 	newLogger := logger.GetLogger("store")
 	newLogger.Print("creating new store")
 	dbConfig := db.Config{
@@ -123,14 +142,18 @@ func New(c *Config) (*StateMachine, error) {
 		return nil, err
 	}
 	return &StateMachine{
-		open:    rsync.NewAtomicBool(),
-		logger:  newLogger,
-		dbStore: newDbStore,
+		open:        rsync.NewAtomicBool(),
+		ly:          ly,
+		raftDir:     c.Dir,
+		raftID:      c.ID,
+		logger:      newLogger,
+		dbStore:     newDbStore,
+		snapshotDir: filepath.Join(c.Dir, snapshotsDirName),
 	}, nil
 }
 
 func (s *StateMachine) Open() (retErr error) {
-	defer func(){
+	defer func() {
 		if retErr != nil {
 			s.open.Set()
 		}
@@ -138,8 +161,14 @@ func (s *StateMachine) Open() (retErr error) {
 
 	var err error
 
-	// raft.NewTCPTransport()
-	// nt = raft.NewNetworkTransport()
+	nt := raft.NewNetworkTransport(NewTransport(s.ly), connectionPoolCount, connectionTimeout, nil)
+	s.raftTn = NewNodeTransport(nt)
+
+	snapshotStore, err := raft.NewFileSnapshotStore(s.snapshotDir, 2, os.Stderr)
+	if err != nil {
+		return err
+	}
+	s.snapshotStore = snapshotStore
 
 	cfg := &db.Config{
 		Dir: "/tmp/new-wire-store",
@@ -156,6 +185,34 @@ func (s *StateMachine) Open() (retErr error) {
 		return err
 	}
 
+	badgerCfg := &badgerdb.Config{Dir: ""}
+	s.db = badgerdb.New(badgerCfg)
+	s.db.Open()
+
+	if s.raftLog == nil || s.raftStable == nil || s.raftTn == nil {
+		s.logger.Error().Msgf("something went horribly wrong")
+		return fmt.Errorf("error something went horribly wrong")
+	}
+
+	config := raft.DefaultConfig()
+	config.LocalID = raft.ServerID(s.raftID)
+	s.raft, err = raft.NewRaft(config, s, s.raftLog, s.raftStable, snapshotStore, s.raftTn)
+	if err != nil {
+		s.logger.Err(err).Msg("error when creating a new raft node")
+		return fmt.Errorf("creating the raft system failed: %s", err)
+	}
+
+	// watch for changes
+	s.observerChan = make(chan raft.Observation, observerChanLen)
+	s.observer = raft.NewObserver(s.observerChan, false, func(o *raft.Observation) bool {
+		_, isLeaderChange := o.Data.(raft.LeaderObservation)
+		_, isFailedHeartBeat := o.Data.(raft.FailedHeartbeatObservation)
+		return isLeaderChange || isFailedHeartBeat
+	})
+
+	// Register and listen for leader changes.
+	s.raft.RegisterObserver(s.observer)
+	// TODO: write the observer channels
 
 	return ErrNotImplemented
 }
@@ -230,7 +287,7 @@ func (s *StateMachine) LastIndex() (uint64, error) {
 // GetLog gets a log entry at a given index.
 func (s *StateMachine) GetLog(index uint64, log *raft.Log) error {
 	if !s.open.Is() {
-		return  ErrStoreNotOpen
+		return ErrStoreNotOpen
 	}
 	return s.dbStore.GetLog(index, log)
 }
@@ -238,7 +295,7 @@ func (s *StateMachine) GetLog(index uint64, log *raft.Log) error {
 // StoreLog stores a log entry.
 func (s *StateMachine) StoreLog(log *raft.Log) error {
 	if !s.open.Is() {
-		return  ErrStoreNotOpen
+		return ErrStoreNotOpen
 	}
 	return s.dbStore.StoreLog(log)
 }
@@ -246,7 +303,7 @@ func (s *StateMachine) StoreLog(log *raft.Log) error {
 // StoreLogs stores multiple log entries. By default the logs stored may not be contiguous with previous logs (i.e. may have a gap in Index since the last log written). If an implementation can't tolerate this it may optionally implement `MonotonicLogStore` to indicate that this is not allowed. This changes Raft's behaviour after restoring a user snapshot to remove all previous logs instead of relying on a "gap" to signal the discontinuity between logs before the snapshot and logs after.
 func (s *StateMachine) StoreLogs(logs []*raft.Log) error {
 	if !s.open.Is() {
-		return  ErrStoreNotOpen
+		return ErrStoreNotOpen
 	}
 	return s.dbStore.StoreLogs(logs)
 }
@@ -254,7 +311,7 @@ func (s *StateMachine) StoreLogs(logs []*raft.Log) error {
 // DeleteRange deletes a range of log entries. The range is inclusive.
 func (s *StateMachine) DeleteRange(min, max uint64) error {
 	if !s.open.Is() {
-		return  ErrStoreNotOpen
+		return ErrStoreNotOpen
 	}
 	return s.dbStore.DeleteRange(min, max)
 }

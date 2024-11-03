@@ -22,7 +22,7 @@ func setupTestDB(t *testing.T) (*DB, func()) {
 	})
 
 	// Open the database
-	badgerDB, err := db.Open(tempDir)
+	badgerDB, err := db.Open()
 	require.NoError(t, err)
 	db.db = badgerDB
 

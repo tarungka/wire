@@ -40,20 +40,20 @@ func New(c *Config) *DB {
 	}
 }
 
-func (db *DB) Open(path string) (*badger.DB, error) {
+func (db *DB) Open() (*badger.DB, error) {
 	if db.open.Is() {
 		return nil, ErrDBOpen
 	}
-	if path == "" {
-		path = "/tmp/badger"
+	if db.dbPath == "" {
+		db.dbPath = "/tmp/badger"
 	}
 
-	badgerDB, err := badger.Open(badger.DefaultOptions(path))
+	badgerDB, err := badger.Open(badger.DefaultOptions(db.dbPath))
 	if err != nil {
 		return nil, err
 	}
 	db.open.Set()
-	log.Debug().Msgf("opened a file-based database at %s", path)
+	log.Debug().Msgf("opened a file-based database at %s", db.dbPath)
 
 	return badgerDB, nil
 }
