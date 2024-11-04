@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -32,7 +31,7 @@ var (
 // There is a new line at the start of this logo
 
 const logo = `
- __      __ ________________________
+ __      ___________________________
 /  \    /  \   \______   \_   _____/
 \   \/\/   /   ||       _/|    __)_    Seamless Streaming for
  \        /|   ||    |   \|        \   Dynamic Workloads.
@@ -129,16 +128,17 @@ func main() {
 	if err != nil {
 		log.Fatal().Msgf("failed to create cluster client: %s", err.Error())
 	}
+	fmt.Sprintf("%v", clstrClient)
 
 	// Create the HTTP service.
 	//
 	// We want to start the HTTP server as soon as possible, so the node is responsive and external
 	// systems can see that it's running. We still have to open the Store though, so the node won't
 	// be able to do much until that happens however.
-	httpServ, err := startHTTPService(cfg, str, mainCtx, clstrClient)
-	if err != nil {
-		log.Fatal().Msgf("failed to start HTTP server: %s", err.Error())
-	}
+	// httpServ, err := startHTTPService(cfg, str, mainCtx, clstrClient)
+	// if err != nil {
+	// 	log.Fatal().Msgf("failed to start HTTP server: %s", err.Error())
+	// }
 
 	// Now, open the store
 	if err := str.Open(); err != nil {
@@ -146,16 +146,17 @@ func main() {
 	}
 
 	// Register remaining status providers.
-	if err := httpServ.RegisterStatus("cluster", clstrServ); err != nil {
-		log.Fatal().Msgf("failed to register cluster status provider: %s", err.Error())
-	}
-	if err := httpServ.RegisterStatus("network", tcp.NetworkReporter{}); err != nil {
-		log.Fatal().Msgf("failed to register network status provider: %s", err.Error())
-	}
-	if err := httpServ.RegisterStatus("mux", mux); err != nil {
-		log.Fatal().Msgf("failed to register mux status provider: %s", err.Error())
-	}
+	// if err := httpServ.RegisterStatus("cluster", clstrServ); err != nil {
+	// 	log.Fatal().Msgf("failed to register cluster status provider: %s", err.Error())
+	// }
+	// if err := httpServ.RegisterStatus("network", tcp.NetworkReporter{}); err != nil {
+	// 	log.Fatal().Msgf("failed to register network status provider: %s", err.Error())
+	// }
+	// if err := httpServ.RegisterStatus("mux", mux); err != nil {
+	// 	log.Fatal().Msgf("failed to register mux status provider: %s", err.Error())
+	// }
 
+	log.Trace().Msg("~~~~1~~~~")
 	// Create the cluster!
 	nodes, err := str.Nodes()
 	if err != nil {
@@ -166,9 +167,9 @@ func main() {
 		log.Debug().Msgf("%d. Node information is: %v", idx, eachNode)
 	}
 
-	if err := createCluster(mainCtx, cfg, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
-		log.Fatal().Msgf("clustering failure: %s", err.Error())
-	}
+	// if err := createCluster(mainCtx, cfg, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
+	// 	log.Fatal().Msgf("clustering failure: %s", err.Error())
+	// }
 
 	<-mainCtx.Done()
 
@@ -176,18 +177,18 @@ func main() {
 
 	// Stop the HTTP server and other network access first so clients get notification as soon as
 	// possible that the node is going away.
-	httpServ.Close()
+	// httpServ.Close()
 	clstrServ.Close()
 
 	if cfg.RaftClusterRemoveOnShutdown {
-		remover := cluster.NewRemover(clstrClient, 5*time.Second, str)
+		// remover := cluster.NewRemover(clstrClient, 5*time.Second, str)
 		// TODO: not support TLS for now, will work on it later
 		// remover.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
-		log.Info().Msgf("initiating removal of this node from cluster before shutdown")
-		if err := remover.Do(cfg.NodeID, true); err != nil {
-			log.Error().Msgf("failed to remove this node from cluster before shutdown: %s", err.Error())
-		}
-		log.Info().Msgf("removed this node successfully from cluster before shutdown")
+		// log.Info().Msgf("initiating removal of this node from cluster before shutdown")
+		// if err := remover.Do(cfg.NodeID, true); err != nil {
+		// 	log.Error().Msgf("failed to remove this node from cluster before shutdown: %s", err.Error())
+		// }
+		// log.Info().Msgf("removed this node successfully from cluster before shutdown")
 	}
 
 	if cfg.RaftStepdownOnShutdown {
@@ -306,30 +307,30 @@ func createStore(cfg *Config, ly *tcp.Layer) (*store.NodeStore, error) {
 	return str, nil
 }
 
-func startHTTPService(cfg *Config, str *store.NodeStore, ctx context.Context, cltr *cluster.Client) (*httpd.Service, error) {
-	// Create HTTP server and load authentication information.
-	s := httpd.New(cfg.HTTPAddr, str, cltr, nil)
+// func startHTTPService(cfg *Config, str *store.NodeStore, ctx context.Context, cltr *cluster.Client) (*httpd.Service, error) {
+// 	// Create HTTP server and load authentication information.
+// 	s := httpd.New(cfg.HTTPAddr, str, cltr, nil)
 
-	// TODO: Need to support HTTPS
-	s.CACertFile = cfg.HTTPx509CACert
-	s.CertFile = cfg.HTTPx509Cert
-	s.KeyFile = cfg.HTTPx509Key
-	s.ClientVerify = cfg.HTTPVerifyClient
-	s.DefaultQueueCap = cfg.WriteQueueCap
-	s.DefaultQueueBatchSz = cfg.WriteQueueBatchSz
-	s.DefaultQueueTimeout = cfg.WriteQueueTimeout
-	s.DefaultQueueTx = cfg.WriteQueueTx
-	s.BuildInfo = map[string]interface{}{
-		"commit":             cmd.Commit,
-		"branch":             cmd.Branch,
-		"version":            cmd.Version,
-		"compiler_toolchain": runtime.Compiler,
-		"compiler_command":   cmd.CompilerCommand,
-		"build_time":         cmd.Buildtime,
-	}
-	s.SetAllowOrigin(cfg.HTTPAllowOrigin)
-	return s, s.Start(ctx)
-}
+// 	// TODO: Need to support HTTPS
+// 	s.CACertFile = cfg.HTTPx509CACert
+// 	s.CertFile = cfg.HTTPx509Cert
+// 	s.KeyFile = cfg.HTTPx509Key
+// 	s.ClientVerify = cfg.HTTPVerifyClient
+// 	s.DefaultQueueCap = cfg.WriteQueueCap
+// 	s.DefaultQueueBatchSz = cfg.WriteQueueBatchSz
+// 	s.DefaultQueueTimeout = cfg.WriteQueueTimeout
+// 	s.DefaultQueueTx = cfg.WriteQueueTx
+// 	s.BuildInfo = map[string]interface{}{
+// 		"commit":             cmd.Commit,
+// 		"branch":             cmd.Branch,
+// 		"version":            cmd.Version,
+// 		"compiler_toolchain": runtime.Compiler,
+// 		"compiler_command":   cmd.CompilerCommand,
+// 		"build_time":         cmd.Buildtime,
+// 	}
+// 	s.SetAllowOrigin(cfg.HTTPAllowOrigin)
+// 	return s, s.Start(ctx)
+// }
 
 // createCluster function initializes or joins a Raft cluster based on the
 // node’s configuration and the presence of existing cluster peers.

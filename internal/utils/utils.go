@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 
 	// Using this as it is better maintained
-	"github.com/hashicorp/go-msgpack/codec"
+	"github.com/hashicorp/go-msgpack/v2/codec"
 )
 
 // FriendlyBytes produces a human readable representation of an SI size

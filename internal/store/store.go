@@ -522,7 +522,7 @@ func (s *Store) Open() (retError error) {
 	// Instantiate the Raft system.
 	ra, err := raft.NewRaft(config, NewFSM(s), s.raftLog, s.raftStable, s.snapshotStore, s.raftTn)
 	if err != nil {
-		return fmt.Errorf("creating the raft system failed: %s", err)
+		return fmt.Errorf("OLD creating the raft system failed: %s", err)
 	}
 	s.raftConsensus = ra
 

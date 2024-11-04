@@ -41,7 +41,9 @@ type DbStore interface {
 func New(dbType string, config *Config) (DbStore, error) {
 	switch dbType {
 	case "badgerdb":
-		return badgerdb.New((*badgerdb.Config)(config)), nil
+		db := badgerdb.New((*badgerdb.Config)(config))
+		db.Open()
+		return db, nil
 	case "rocksdb":
 		return rocksdb.New((*rocksdb.Config)(config)), nil
 	default:

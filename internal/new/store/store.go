@@ -143,7 +143,8 @@ func New(ly Layer, c *Config) (*NodeStore, error) {
 	dbConfig := db.Config{
 		Dir: c.Dir,
 	}
-	newDbStore, err := db.New(c.DatabaseType, &dbConfig)
+	// newDbStore, err := db.New(c.DatabaseType, &dbConfig)
+	newDbStore, err := db.New("badgerdb", &dbConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -191,30 +192,34 @@ func (s *NodeStore) Open() (retErr error) {
 		s.logger.Printf("error when creating a new store")
 		return err
 	}
+	s.logger.Print("ADDING SOME DEBUG LOGS")
 	s.raftStable = s.dbStore
 	s.raftLog, err = raft.NewLogCache(raftLogCacheSize, s.dbStore)
 	if err != nil {
 		s.logger.Err(err).Msgf("error when creating a new cached log store")
 		return err
 	}
-
 	// when sending the path for badger, IsNewNode also needs to be updated
 	badgerCfg := &badgerdb.Config{Dir: ""} // this defaults to /tmp/badger
 	s.db = badgerdb.New(badgerCfg)
 	s.db.Open()
 
+	s.logger.Print("1. ADDING SOME DEBUG LOGS")
 	if s.raftLog == nil || s.raftStable == nil || s.raftTn == nil {
 		s.logger.Error().Msgf("something went horribly wrong")
 		return fmt.Errorf("error something went horribly wrong")
 	}
 
+	s.logger.Print("2. ADDING SOME DEBUG LOGS")
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(s.raftID)
+	s.logger.Print("3. ADDING SOME DEBUG LOGS")
 	s.raft, err = raft.NewRaft(config, s, s.raftLog, s.raftStable, snapshotStore, s.raftTn)
 	if err != nil {
 		s.logger.Err(err).Msg("error when creating a new raft node")
 		return fmt.Errorf("creating the raft system failed: %s", err)
 	}
+	s.logger.Print("4. ADDING SOME DEBUG LOGS")
 
 	// watch for changes
 	s.observerChan = make(chan raft.Observation, observerChanLen)
@@ -241,6 +246,8 @@ func (s *NodeStore) Apply(l *raft.Log) interface{} {
 		s.fsmUpdatedAt.Store(time.Now())
 	}()
 
+	s.logger.Print("Applying log to the FSM")
+
 	// The index is can never decrease, ie it is always unique and in order
 	// key will always be unique
 	key := utils.ConvertUint64ToBytes(l.Index)
@@ -256,6 +263,7 @@ func (s *NodeStore) Apply(l *raft.Log) interface{} {
 
 func (s *NodeStore) Snapshot() (raft.FSMSnapshot, error) {
 
+	s.logger.Print("snapshoting FSM")
 	s.fsmMu.RLock()
 	defer s.fsmMu.RUnlock()
 
@@ -276,6 +284,7 @@ func (s *NodeStore) Snapshot() (raft.FSMSnapshot, error) {
 }
 
 func (s *NodeStore) Restore(snapshot io.ReadCloser) error {
+	s.logger.Print("restoing FSM")
 	return ErrNotImplemented
 }
 
@@ -286,6 +295,7 @@ func (s *NodeStore) Set(key, val []byte) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
+	s.logger.Print("setting key and val in stable store")
 	return s.dbStore.Set(key, val)
 }
 
@@ -294,6 +304,7 @@ func (s *NodeStore) Get(key []byte) ([]byte, error) {
 	if !s.open.Is() {
 		return nil, ErrStoreNotOpen
 	}
+	s.logger.Print("getting key and val in stable store")
 	return s.dbStore.Get(key)
 }
 
@@ -301,6 +312,7 @@ func (s *NodeStore) SetUint64(key []byte, val uint64) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
+	s.logger.Print("setting uint64 key and val in stable store")
 	return s.dbStore.SetUint64(key, val)
 }
 
@@ -309,6 +321,7 @@ func (s *NodeStore) GetUint64(key []byte) (uint64, error) {
 	if !s.open.Is() {
 		return 0, ErrStoreNotOpen
 	}
+	s.logger.Print("getting uint64 key and val in stable store")
 	return s.dbStore.GetUint64(key)
 }
 
@@ -320,6 +333,7 @@ func (s *NodeStore) FirstIndex() (uint64, error) {
 	if !s.open.Is() {
 		return 0, ErrStoreNotOpen
 	}
+	s.logger.Print("firstIndex in log store")
 	return s.dbStore.FirstIndex()
 }
 
@@ -453,14 +467,6 @@ func (s *NodeStore) LeaderID() (string, error) {
 	return string(id), nil
 }
 
-func (s *NodeStore) LeaderAddr() (string, error) {
-	if !s.open.Is() {
-		return "", ErrStoreNotOpen
-	}
-	addr, _ := s.raft.LeaderWithID()
-	return string(addr), nil
-}
-
 // IsNewNode returns whether a node using raftDir would be a brand-new node.
 // It also means that the window for this node joining a different cluster has passed.
 func IsNewNode(raftDir string) bool {
@@ -527,6 +533,30 @@ func (s *NodeStore) Join(jr *proto.JoinRequest) error {
 		return err
 	}
 
+	// TODO: need to test this
+	return ErrNotImplemented
+}
+
+func (s *NodeStore) LeaderAddr() (string, error) {
+	if !s.open.Is() {
+		return "", ErrStoreNotOpen
+	}
+	addr, _ := s.raft.LeaderWithID()
+	return string(addr), nil
+}
+
+func (s *NodeStore) CommitIndex() (uint64, error) {
+	if !s.open.Is() {
+		return 0, ErrStoreNotOpen
+	}
+	return s.raft.CommitIndex(), nil
+}
+
+func (s *NodeStore) Notify(nr *proto.NotifyRequest) (error) {
+	return ErrNotImplemented
+}
+
+func (s *NodeStore) Remove(rn *proto.RemoveNodeRequest) (error) {
 	return ErrNotImplemented
 }
 

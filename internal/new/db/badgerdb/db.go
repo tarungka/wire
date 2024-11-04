@@ -49,6 +49,7 @@ func (db *DB) Open() (*badger.DB, error) {
 	}
 
 	badgerDB, err := badger.Open(badger.DefaultOptions(db.dbPath))
+	db.db = badgerDB
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +143,6 @@ func (db *DB) GetUint64(key []byte) (uint64, error) {
 	if !db.open.Is() {
 		return 0, ErrDBNotOpen
 	}
-
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
