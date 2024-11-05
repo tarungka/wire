@@ -232,6 +232,15 @@ type Config struct {
 
 	// DebugMode enables additional logs and other metadata to be printed
 	DebugMode bool
+
+	// StoreDatabase is the supporting backend database: badgerdb, bbolt, rocksdb
+	StoreDatabase string
+
+	// StableDbPath is the path to the stable store database
+	StableDbPath string
+
+	// StableDbPath is the path to the log store database
+	LogDbPath string
 }
 
 // Validate checks the configuration for internal consistency, and activates
@@ -283,6 +292,11 @@ func (c *Config) Validate() error {
 	// Node ID policy
 	if c.NodeID == "" {
 		c.NodeID = c.RaftAdv
+	}
+
+	// StoreDatabase defaults to bbolt
+	if c.StoreDatabase == "" {
+		c.StoreDatabase = "bbolt"
 	}
 
 	// Perform some address validity checks.
@@ -374,6 +388,7 @@ func (c *Config) Validate() error {
 
 // Check if all the required fields are set
 func (c *Config) checkRequired() error {
+	// TODO: pending impl
 	return nil
 }
 
@@ -519,6 +534,9 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, error) {
 	// New configs
 	f.StringSliceVar(&config.ConfigPath, "config", []string{".config/config.json"}, "path to one or more config files (will be merged in order)")
 	f.StringVar(&config.NodeID, "node-id", "", "Unique ID for node. If not set, set to advertised Raft address")
+	// New store related configs
+	f.StringVar(&config.StoreDatabase, "store-db", "bbolt", "The backend database for the stable and the log store")
+
 	// Raft configs
 	f.StringVar(&config.DataPath, "raft-dir", "", "Raft directory")
 	f.StringVar(&config.RaftAddr, RaftAddrFlag, "localhost:4002", "Raft communication bind address")

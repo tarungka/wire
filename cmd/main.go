@@ -156,7 +156,6 @@ func main() {
 	// 	log.Fatal().Msgf("failed to register mux status provider: %s", err.Error())
 	// }
 
-	log.Trace().Msg("~~~~1~~~~")
 	// Create the cluster!
 	nodes, err := str.Nodes()
 	if err != nil {
@@ -276,8 +275,9 @@ func createClusterClient(cfg *Config, clstr *cluster.Service) (*cluster.Client, 
 
 func createStore(cfg *Config, ly *tcp.Layer) (*store.NodeStore, error) {
 	str, err := store.New(ly, &store.Config{
-		Dir: cfg.DataPath,
-		ID:  cfg.NodeID,
+		Dir:           cfg.DataPath,
+		ID:            cfg.NodeID,
+		StoreDatabase: cfg.StoreDatabase,
 	})
 	if err != nil {
 		return nil, err

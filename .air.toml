@@ -9,6 +9,7 @@ tmp_dir = "tmp"
         "--raft-dir", "./raft_db1",
         "--node-id", "node0",
         "--http-addr", "localhost:8082",
+        "--store-db", "bbolt",
         "--debug"]
   bin = "./tmp/main"
   cmd = "go build -o ./tmp/main ./cmd"
@@ -55,12 +56,3 @@ tmp_dir = "tmp"
 [screen]
   clear_on_rebuild = false
   keep_scroll = true
-
-[run]
-  args = ["--config", "./tests/mongodb-kafka/config.json",
-        "--port", "8081",
-        "--raft-addr", "localhost:10092",
-        "--raft-dir", "./raft_db1",
-        "--node-id", "node0",
-        "--http-addr", "localhost:8082",
-        "--debug"]

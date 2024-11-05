@@ -95,7 +95,7 @@ type Config struct {
 	Dir string // The working directory for raft.
 	ID  string // Node ID.
 
-	DatabaseType string // can be one of: badgerdb, rocksdb
+	StoreDatabase string // can be one of: badgerdb, rocksdb
 }
 
 type NodeStore struct {
@@ -124,6 +124,8 @@ type NodeStore struct {
 	// Log Store
 	raftLog raft.LogStore // Persistent log store.
 
+	// storeDb is the name of the backend database for the stable and log store
+	storeDb string
 	// physical store containing info about the the stable and the log store
 	dbStore db.DbStore // currently supported are badgerDB, rocksDB and boltDB
 
@@ -140,25 +142,26 @@ type NodeStore struct {
 func New(ly Layer, c *Config) (*NodeStore, error) {
 	newLogger := logger.GetLogger("store")
 	newLogger.Print("creating new store")
-	dbConfig := db.Config{
-		Dir: c.Dir,
-	}
+	// dbConfig := db.Config{
+	// 	Dir: c.Dir,
+	// }
 	// newDbStore, err := db.New(c.DatabaseType, &dbConfig)
-	newDbStore, err := db.New("badgerdb", &dbConfig)
-	if err != nil {
-		return nil, err
-	}
+	// newDbStore, err := db.New("badgerdb", &dbConfig)
+	// if err != nil {
+	// 	return nil, err
+	// }
 	return &NodeStore{
-		open:         rsync.NewAtomicBool(),
-		ly:           ly,
-		raftDir:      c.Dir,
-		raftID:       c.ID,
-		logger:       newLogger,
-		dbStore:      newDbStore,
+		open:    rsync.NewAtomicBool(),
+		ly:      ly,
+		raftDir: c.Dir,
+		raftID:  c.ID,
+		logger:  newLogger,
+		// dbStore:      newDbStore,
 		fsmIndex:     &atomic.Uint64{},
 		fsmTerm:      &atomic.Uint64{},
 		fsmUpdatedAt: rsync.NewAtomicTime(),
 		snapshotDir:  filepath.Join(c.Dir, snapshotsDirName),
+		storeDb:      c.StoreDatabase,
 	}, nil
 }
 
@@ -190,7 +193,8 @@ func (s *NodeStore) Open() (retErr error) {
 	cfg := &db.Config{
 		Dir: "/tmp/new-wire-store",
 	}
-	s.dbStore, err = db.New("bbolt", cfg)
+	s.logger.Printf("the backend database for the store is: %v", s.storeDb)
+	s.dbStore, err = db.New(s.storeDb, cfg)
 	if err != nil {
 		s.logger.Printf("error when creating a new store")
 		return err
@@ -522,9 +526,9 @@ func (s *NodeStore) Join(jr *proto.JoinRequest) error {
 
 	var f raft.IndexFuture
 	if voter {
-		f = s.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 10 *time.Second)
+		f = s.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 10*time.Second)
 	} else {
-		f = s.raft.AddNonvoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 10 *time.Second)
+		f = s.raft.AddNonvoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 10*time.Second)
 	}
 	err := f.Error()
 	if err != nil {
@@ -554,11 +558,11 @@ func (s *NodeStore) CommitIndex() (uint64, error) {
 	return s.raft.CommitIndex(), nil
 }
 
-func (s *NodeStore) Notify(nr *proto.NotifyRequest) (error) {
+func (s *NodeStore) Notify(nr *proto.NotifyRequest) error {
 	return ErrNotImplemented
 }
 
-func (s *NodeStore) Remove(rn *proto.RemoveNodeRequest) (error) {
+func (s *NodeStore) Remove(rn *proto.RemoveNodeRequest) error {
 	return ErrNotImplemented
 }
 
