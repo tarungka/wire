@@ -4,8 +4,10 @@ import (
 	"errors"
 
 	"github.com/hashicorp/raft"
+	raftboltdb "github.com/rqlite/raft-boltdb/v2"
 	"github.com/tarungka/wire/internal/new/db/badgerdb"
 	"github.com/tarungka/wire/internal/new/db/rocksdb"
+	"go.etcd.io/bbolt"
 )
 
 type Config struct {
@@ -46,6 +48,17 @@ func New(dbType string, config *Config) (DbStore, error) {
 		return db, nil
 	case "rocksdb":
 		return rocksdb.New((*rocksdb.Config)(config)), nil
+	case "bbolt":
+		bs, err := raftboltdb.New(raftboltdb.Options{
+			BoltOptions: &bbolt.Options{
+				NoFreelistSync: false,
+			},
+			Path: "/tmp/bbolt-store",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return bs, nil
 	default:
 		return nil, errors.New("error unsupported database type")
 	}

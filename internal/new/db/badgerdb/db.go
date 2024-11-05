@@ -110,7 +110,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 		return err
 	})
 	if err != nil {
-		db.logger.Err(err).Msgf("err setting value of key %v to %v", key, val)
+		db.logger.Err(err).Msgf("err getting value of key %s to %v", key, val)
 		return nil, err
 	}
 	return val, nil

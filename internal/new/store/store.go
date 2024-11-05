@@ -164,9 +164,12 @@ func New(ly Layer, c *Config) (*NodeStore, error) {
 
 func (s *NodeStore) Open() (retErr error) {
 	defer func() {
-		if retErr != nil {
+		if retErr == nil {
+			s.logger.Print("successfully opened the store, setting state to open")
 			s.open.Set()
+			return
 		}
+		s.logger.Panic().Msgf("error when opening store: %v", retErr)
 	}()
 
 	var err error
@@ -187,12 +190,11 @@ func (s *NodeStore) Open() (retErr error) {
 	cfg := &db.Config{
 		Dir: "/tmp/new-wire-store",
 	}
-	s.dbStore, err = db.New("badgerdb", cfg)
+	s.dbStore, err = db.New("bbolt", cfg)
 	if err != nil {
 		s.logger.Printf("error when creating a new store")
 		return err
 	}
-	s.logger.Print("ADDING SOME DEBUG LOGS")
 	s.raftStable = s.dbStore
 	s.raftLog, err = raft.NewLogCache(raftLogCacheSize, s.dbStore)
 	if err != nil {
@@ -204,22 +206,22 @@ func (s *NodeStore) Open() (retErr error) {
 	s.db = badgerdb.New(badgerCfg)
 	s.db.Open()
 
-	s.logger.Print("1. ADDING SOME DEBUG LOGS")
 	if s.raftLog == nil || s.raftStable == nil || s.raftTn == nil {
 		s.logger.Error().Msgf("something went horribly wrong")
 		return fmt.Errorf("error something went horribly wrong")
 	}
 
-	s.logger.Print("2. ADDING SOME DEBUG LOGS")
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(s.raftID)
-	s.logger.Print("3. ADDING SOME DEBUG LOGS")
+	// TODO: find a better and more apt fix for this; does not happen in bbolt
+	// s.raftStable.SetUint64([]byte("CurrentTerm"), uint64(0))
+	// s.raftLog.StoreLog(&raft.Log{})
+	// s.raftStable.SetUint64([]byte("CurrentTerm"), uint64(0))
 	s.raft, err = raft.NewRaft(config, s, s.raftLog, s.raftStable, snapshotStore, s.raftTn)
 	if err != nil {
 		s.logger.Err(err).Msg("error when creating a new raft node")
 		return fmt.Errorf("creating the raft system failed: %s", err)
 	}
-	s.logger.Print("4. ADDING SOME DEBUG LOGS")
 
 	// watch for changes
 	s.observerChan = make(chan raft.Observation, observerChanLen)
@@ -233,7 +235,7 @@ func (s *NodeStore) Open() (retErr error) {
 	s.raft.RegisterObserver(s.observer)
 	// TODO: write the observer channels
 
-	return ErrNotImplemented
+	return nil
 }
 
 // Impl of the raft FSM
