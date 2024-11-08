@@ -21,7 +21,7 @@ type Job struct {
 
 	// adding a mutex to this just in case somewhere I write concurrent code
 	// that causes a data race
-	mu *sync.RWMutex
+	mu sync.RWMutex
 }
 
 func (j *Job) SetData(d interface{}) error {

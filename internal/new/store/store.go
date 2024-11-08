@@ -669,6 +669,7 @@ func (s *NodeStore) Stats() (map[string]interface{}, error) {
 			raftStats[k] = s
 		}
 	}
+	// TODO: impl this later
 	// raftStats["log_size"], err = s.logSize()
 	// if err != nil {
 	// 	return nil, err
