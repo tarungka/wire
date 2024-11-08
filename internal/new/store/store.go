@@ -109,6 +109,11 @@ type NodeStore struct {
 	raftTn *NodeTransport
 	raftID string
 
+	notifyMu        sync.Mutex
+	bootstrapped    bool
+	BootstrapExpect int
+	notifyingNodes  map[string]*Server // list of nodes to notify
+
 	// FSM
 	db           *badgerdb.DB // the badger database
 	fsmMu        sync.RWMutex
@@ -158,11 +163,12 @@ func New(ly Layer, c *Config) (*NodeStore, error) {
 		raftID:  c.ID,
 		logger:  newLogger,
 		// dbStore:      newDbStore,
-		fsmIndex:     &atomic.Uint64{},
-		fsmTerm:      &atomic.Uint64{},
-		fsmUpdatedAt: rsync.NewAtomicTime(),
-		snapshotDir:  filepath.Join(c.Dir, snapshotsDirName),
-		storeDb:      c.StoreDatabase,
+		fsmIndex:       &atomic.Uint64{},
+		fsmTerm:        &atomic.Uint64{},
+		fsmUpdatedAt:   rsync.NewAtomicTime(),
+		snapshotDir:    filepath.Join(c.Dir, snapshotsDirName),
+		storeDb:        c.StoreDatabase,
+		notifyingNodes: make(map[string]*Server),
 	}, nil
 }
 
@@ -499,6 +505,9 @@ func (s *NodeStore) HasLeader() bool {
 // Database
 
 // Cluster
+
+// Join joins a node, identified by id and located at addr, to this store.
+// The node must be ready to respond to Raft communications at that address.
 func (s *NodeStore) Join(jr *proto.JoinRequest) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
@@ -549,7 +558,7 @@ func (s *NodeStore) Join(jr *proto.JoinRequest) error {
 	if err != nil {
 		s.logger.Err(err).Msgf("error when joining")
 		if err == raft.ErrNotLeader {
-			return ErrNotLeader
+			return ErrNotLeader // making the error uniform
 		}
 		return err
 	}
@@ -573,8 +582,72 @@ func (s *NodeStore) CommitIndex() (uint64, error) {
 	return s.raft.CommitIndex(), nil
 }
 
+// Notify notifies this Store that a node is ready for bootstrapping at the
+// given address. Once the number of known nodes reaches the expected level
+// bootstrapping will be attempted using this Store. "Expected level" includes
+// this node, so this node must self-notify to ensure the cluster bootstraps
+// with the *advertised Raft address* which the Store doesn't know about.
+// IMPLEMENTATION IS INCOMPLETE; DOES NOT YET SUPPORT BOOTSTRAP EXPECT
+// Notifying is idempotent. A node may repeatedly notify the Store without issue.
 func (s *NodeStore) Notify(nr *proto.NotifyRequest) error {
-	return ErrNotImplemented
+	if !s.open.Is() {
+		return ErrStoreNotOpen
+	}
+
+	// lock needs to be here as all the vars in this section cannot change
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+
+	// if already bootstrapped do not do anything
+	// if the cluster already has a leader then also do nothing
+	// if min quorum is 0 then we dont care about the notifying nodes
+	if s.BootstrapExpect == 0 || s.bootstrapped || s.HasLeader() {
+		return nil
+	}
+
+	// if node already exists, do nothing
+	if _, ok := s.notifyingNodes[nr.Id]; ok {
+		return nil
+	}
+	if len(s.notifyingNodes) < s.BootstrapExpect {
+		// we have not yet reached min quorum, wait until we reach min
+		// quorum
+		return nil
+	}
+
+	// TODO: impl min quorum logic here; is that necessary for this?
+	// maybe yes if there is to be no downtime and no loss of data
+
+	// Confirm that this node can resolve the remote address. This can happen due
+	// to incomplete DNS records across the underlying infrastructure. If it can't
+	// then don't consider this Notify attempt successful -- so the notifying node
+	// will presumably try again.
+	if addr, err := utils.ResolvableAddress(nr.Address); err != nil {
+		return fmt.Errorf("failed to resolve %s: %w", addr, err)
+	}
+
+	s.notifyingNodes[nr.Id] = &Server{nr.Id, nr.Address, "voter"}
+
+	raftServers := make([]raft.Server, 0, len(s.notifyingNodes))
+	for _, n := range s.notifyingNodes {
+		raftServers = append(raftServers, raft.Server{
+			ID:      raft.ServerID(n.ID),
+			Address: raft.ServerAddress(n.Addr),
+		})
+	}
+
+	// bootstrap cluster with the raft servers
+	bf := s.raft.BootstrapCluster(raft.Configuration{
+		Servers: raftServers,
+	})
+	if bf.Error() != nil {
+		s.logger.Printf("cluster bootstrap failed: %s", bf.Error())
+	} else {
+		s.logger.Printf("cluster bootstrap successful, servers: %s", raftServers)
+	}
+	s.bootstrapped = true
+
+	return nil
 }
 
 func (s *NodeStore) Remove(rn *proto.RemoveNodeRequest) error {

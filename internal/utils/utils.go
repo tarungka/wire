@@ -73,6 +73,8 @@ func PathExists(p string) bool {
 	return true
 }
 
+// ResolvableAddress checks if the host in the given address is DNS-resolvable.
+// Returns the host if resolvable, an error if not.
 func ResolvableAddress(addr string) (string, error) {
 	h, _, err := net.SplitHostPort(addr)
 	if err != nil {
