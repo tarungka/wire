@@ -186,7 +186,10 @@ func (m *MongoSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (
 				continue
 			}
 
-			jobData,err:=models.New(jsonData)
+			jobData, err := models.New(jsonData)
+			if err != nil {
+				m.logger.Err(err).Msg("error when creating a new job")
+			}
 
 			initialDataStreamChan <- jobData
 		}
@@ -199,7 +202,7 @@ func (m *MongoSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (
 }
 
 // func (m *MongoSource) Watch() (<-chan []byte, error) {
-func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan []byte, error) {
+func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan *models.Job, error) {
 
 	if !m.open.Load() {
 		return nil, fmt.Errorf("no mongo client")
@@ -214,7 +217,7 @@ func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan []by
 	}
 
 	// Create a channel to send the data to
-	changeStreamChan := make(chan []byte, 5)
+	changeStreamChan := make(chan *models.Job, 5)
 
 	// TODO: Misleading change the message
 	// defer func() {
@@ -223,7 +226,7 @@ func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan []by
 
 	wg.Add(1)
 	// TODO: review this later, do i need a go function like this?
-	go func(mongoStream *mongo.ChangeStream, opStream chan<- []byte) {
+	go func(mongoStream *mongo.ChangeStream, opStream chan<- *models.Job) {
 		defer func() {
 			log.Trace().Msg("Done Reading from the mongodb source")
 			wg.Done()
@@ -277,13 +280,18 @@ func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan []by
 
 			log.Trace().Str("jsonData", string(jsonData)).Msgf("The json data being sent over the channel is: %s", jsonData)
 
+			jobData, err := models.New(jsonData)
+			if err != nil {
+				m.logger.Err(err).Msg("error when creating a new job")
+			}
+
 			select {
 			case <-ctx.Done():
 				log.Trace().Msg("upstream context closed; closing read from mongodb")
 				close(changeStreamChan)
 				return
 			// case data, a<-jsonData:
-			case opStream <- jsonData: // Send the change to the channel
+			case opStream <- jobData: // Send the change to the channel
 			default: // Do not block as I want to read for changes, right?
 			}
 

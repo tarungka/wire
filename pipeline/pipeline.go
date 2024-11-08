@@ -27,7 +27,7 @@ type DataSource interface {
 
 	// Read is responsible to create a write only channel that is accessible to
 	// downstream stages and is the owner of the channel
-	Read(context.Context, *sync.WaitGroup) (<-chan []byte, error)
+	Read(context.Context, *sync.WaitGroup) (<-chan *models.Job, error)
 
 	// Get the key
 	Key() (string, error)
@@ -52,7 +52,8 @@ type DataSink interface {
 
 	// Write is responsible to read data from the upstream input channel and
 	// write data to the sink
-	Write(context.Context, *sync.WaitGroup, <-chan []byte, <-chan []byte) error
+	Write(context.Context, *sync.WaitGroup, <-chan *models.Job, <-chan *models.Job) error
+	// Write(context.Context, *sync.WaitGroup, interface{}, <-chan *models.Job) error
 
 	// Get the key
 	Key() (string, error)
@@ -150,7 +151,7 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 	// Partition the data into multiple jobs (channel)
 	jobCount := 5 // Number of concurrent jobs
 
-	jobPartitioner := partitioner.NewPartitoner(jobCount, hashFn) // data type is []byte or uint8
+	jobPartitioner := partitioner.NewPartitoner[*models.Job](jobCount, hashFn) // data type is []byte or uint8
 
 	partitionedInitialDataChannels := jobPartitioner.PartitionData(initialDataChannel)
 	partitionedDataChannels := jobPartitioner.PartitionData(dataChannel)
@@ -174,8 +175,10 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 
 // Process job as of now only writes the data to the sink in a non deterministic manner
 // i.e the writes can be in a different order to the reads
-func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, dataChannel <-chan []byte, initialDataChannel <-chan []byte) {
+func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, dataChannel <-chan *models.Job, initialDataChannel <-chan *models.Job) {
 	// defer wg.Done()
+
+	// TODO: need to add code to transform the input to the expected output
 
 	// TODO: wg.Done is called in Write, not very readable code, need to refactor this
 	if err := dp.Sink.Write(ctx, wg, dataChannel, initialDataChannel); err != nil {

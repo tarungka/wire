@@ -1,6 +1,8 @@
 package models
 
 import (
+	"fmt"
+	"sync"
 	"time"
 
 	uuid "github.com/google/uuid"
@@ -16,6 +18,42 @@ type Job struct {
 	nodeUpdatedAt time.Time
 	eventTime     time.Time
 	priority      int
+
+	// adding a mutex to this just in case somewhere I write concurrent code
+	// that causes a data race
+	mu *sync.RWMutex
+}
+
+func (j *Job) SetData(d interface{}) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.data = d
+	return nil
+}
+
+func (j *Job) GetData() (interface{}, error) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if j.data == nil {
+		return nil, fmt.Errorf("error data is nil")
+	}
+	return j.data, nil
+}
+
+func (j *Job) SetUpdatedAt(t time.Time) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.nodeUpdatedAt = t
+	return nil
+}
+
+func (j *Job) GetUpdatedAt() (time.Time, error) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if j.nodeUpdatedAt.IsZero() {
+		return j.nodeUpdatedAt, fmt.Errorf("error no time set")
+	}
+	return j.nodeUpdatedAt, nil
 }
 
 func New(data interface{}) (*Job, error) {
