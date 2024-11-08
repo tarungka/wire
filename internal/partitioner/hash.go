@@ -7,7 +7,6 @@ import (
 	"github.com/tarungka/wire/internal/models"
 )
 
-// The current implementation is really slow
 func hashFnv(data []byte) (uint64, error) {
 	h := fnv.New64a()
 	_, err := h.Write([]byte(fmt.Sprintf("%v", data)))
@@ -17,9 +16,14 @@ func hashFnv(data []byte) (uint64, error) {
 	return h.Sum64(), nil
 }
 
+// The current implementation is really slow
 func HashFnv(data *models.Job) (uint64, error) {
 	h := fnv.New64a()
-	_, err := h.Write([]byte(fmt.Sprintf("%v", data)))
+	jobData, err := data.GetData() // hashing based on the data in the job to maintain consistency
+	if err != nil {
+		return 0, err
+	}
+	_, err = h.Write([]byte(fmt.Sprintf("%v", jobData)))
 	if err != nil {
 		return 0, err
 	}
