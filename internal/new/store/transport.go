@@ -115,6 +115,7 @@ func (n *NodeTransport) Consumer() <-chan raft.RPC {
 		for {
 			select {
 			case <-n.done:
+				// if done return from the go routine
 				return
 			case rpc := <-srcCh:
 				switch cmd := rpc.Command.(type) {

@@ -167,8 +167,9 @@ func main() {
 	}
 
 	// if err := createCluster(mainCtx, cfg, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
-	// 	log.Fatal().Msgf("clustering failure: %s", err.Error())
-	// }
+	if err := createCluster(mainCtx, cfg, len(nodes) > 0, clstrClient, str, nil, nil); err != nil {
+		log.Fatal().Msgf("clustering failure: %s", err.Error())
+	}
 
 	<-mainCtx.Done()
 

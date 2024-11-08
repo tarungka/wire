@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -142,13 +143,13 @@ func (m *MongoSource) getCollectionInstance() error {
 
 // As of now this function is not optimized to handled a lot of data, do not use this
 // for huge amounts of data a it holds the initial loaded data in memory
-func (m *MongoSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (<-chan []byte, error) {
+func (m *MongoSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (<-chan *models.Job, error) {
 	if !m.open.Load() {
 		m.logger.Printf("Cannot load initial data as there is no mongo client")
 		return nil, fmt.Errorf("no mongo client")
 	}
 
-	initialDataStreamChan := make(chan []byte, 5)
+	initialDataStreamChan := make(chan *models.Job, 5)
 
 	wg.Add(1)
 
@@ -185,7 +186,9 @@ func (m *MongoSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (
 				continue
 			}
 
-			initialDataStreamChan <- jsonData
+			jobData,err:=models.New(jsonData)
+
+			initialDataStreamChan <- jobData
 		}
 
 		<-ctx.Done()

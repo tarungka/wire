@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/rs/zerolog/log"
+	"github.com/tarungka/wire/internal/models"
 	"github.com/tarungka/wire/internal/partitioner"
 	"github.com/tarungka/wire/sinks"
 	"github.com/tarungka/wire/sources"
@@ -21,7 +22,8 @@ type DataSource interface {
 
 	// Load all initial data from the source
 	// There are exceptions to this, i.e kafka
-	LoadInitialData(context.Context, *sync.WaitGroup) (<-chan []byte, error)
+	// LoadInitialData(context.Context, *sync.WaitGroup) (<-chan []byte, error)
+	LoadInitialData(context.Context, *sync.WaitGroup) (<-chan *models.Job, error)
 
 	// Read is responsible to create a write only channel that is accessible to
 	// downstream stages and is the owner of the channel
