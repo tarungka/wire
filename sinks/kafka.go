@@ -17,8 +17,8 @@ type KafkaSink struct {
 	pipelineName           string
 	pipelineConnectionType string
 	// Kafka Producer details
-	bootstrapServers    string
-	topic               string
+	bootstrapServers string
+	topic            string
 	// logger              *zerolog.Logger // will add this once I add a factory function for this
 
 	kafkaProducerClient *kgo.Client

@@ -12,7 +12,7 @@ type Config struct {
 }
 
 type DB struct {
-	open rsync.AtomicBool
+	open   rsync.AtomicBool
 	dbPath string
 	logger zerolog.Logger
 }

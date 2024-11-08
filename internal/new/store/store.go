@@ -639,7 +639,6 @@ func (s *NodeStore) LeaderWithID() (string, string) {
 	return string(addr), string(id)
 }
 
-
 // Stats returns stats for the store.
 func (s *NodeStore) Stats() (map[string]interface{}, error) {
 	if !s.open.Is() {
@@ -687,11 +686,11 @@ func (s *NodeStore) Stats() (map[string]interface{}, error) {
 	}
 
 	status := map[string]interface{}{
-		"open":             s.open,
-		"node_id":          s.raftID,
-		"raft":             raftStats,
+		"open":    s.open,
+		"node_id": s.raftID,
+		"raft":    raftStats,
 		// "fsm_index":        s.fsmIdx.Load(),
-		"fsm_term":         s.fsmTerm.Load(),
+		"fsm_term": s.fsmTerm.Load(),
 		// "fsm_update_time":  s.fsmUpdateTime.Load(),
 		// "db_applied_index": s.dbAppliedIdx.Load(),
 		// "addr":             s.Addr(),
@@ -700,7 +699,7 @@ func (s *NodeStore) Stats() (map[string]interface{}, error) {
 			"addr":    leaderAddr,
 		},
 		// "leader_appended_at_time": s.appendedAtTime.Load(),
-		"ready":                   s.Ready(),
+		"ready": s.Ready(),
 		"observer": map[string]uint64{
 			"observed": s.observer.GetNumObserved(),
 			"dropped":  s.observer.GetNumDropped(),
@@ -716,15 +715,13 @@ func (s *NodeStore) Stats() (map[string]interface{}, error) {
 		// "no_freelist_sync":       s.NoFreeListSync,
 		// "trailing_logs":          s.numTrailingLogs,
 		// "request_marshaler":      s.reqMarshaller.Stats(),
-		"nodes":                  nodes,
-		"dir":                    s.raftDir,
-		"dir_size":               dirSz,
-		"dir_size_friendly":      utils.FriendlyBytes(uint64(dirSz)),
-		"sqlite3":                dbStatus,
+		"nodes":             nodes,
+		"dir":               s.raftDir,
+		"dir_size":          dirSz,
+		"dir_size_friendly": utils.FriendlyBytes(uint64(dirSz)),
+		"sqlite3":           dbStatus,
 		// "db_conf":                s.dbConf,
 	}
-
-
 
 	// // Snapshot stats may be in flux if a snapshot is in progress. Only
 	// // report them if they are available.

@@ -17,7 +17,6 @@ func hashFnv(data []byte) (uint64, error) {
 	return h.Sum64(), nil
 }
 
-
 func HashFnv(data *models.Job) (uint64, error) {
 	h := fnv.New64a()
 	_, err := h.Write([]byte(fmt.Sprintf("%v", data)))
