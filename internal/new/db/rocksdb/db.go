@@ -4,6 +4,7 @@ import (
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/internal/rsync"
 )
 
 type Config struct {
@@ -11,6 +12,7 @@ type Config struct {
 }
 
 type DB struct {
+	open rsync.AtomicBool
 	dbPath string
 	logger zerolog.Logger
 }
@@ -83,4 +85,12 @@ func (s *DB) DeleteRange(min, max uint64) error {
 
 func (s *DB) Close() error {
 	return nil
+}
+
+func (db *DB) Stats() (map[string]interface{}, error) {
+	if !db.open.Is() {
+		return nil, ErrDBNotOpen
+	}
+
+	return nil, ErrNotImplemented
 }

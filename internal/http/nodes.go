@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tarungka/wire/internal/new/store"
+	"github.com/hashicorp/raft"
 )
 
 // Node represents a single node in the cluster and can include
@@ -30,11 +30,11 @@ type Node struct {
 }
 
 // NewNodeFromServer creates a Node from a Server.
-func NewNodeFromServer(s *store.Server) *Node {
+func NewNodeFromServer(s raft.Server) *Node {
 	return &Node{
-		ID:    s.ID,
-		Addr:  s.Addr,
-		Voter: s.Suffrage == "Voter",
+		ID:    string(s.ID),
+		Addr:  string(s.Address),
+		Voter: s.Suffrage == raft.Voter,
 	}
 }
 
@@ -95,7 +95,8 @@ func (n Nodes) Swap(i, j int)      { n[i], n[j] = n[j], n[i] }
 func (n Nodes) Less(i, j int) bool { return n[i].ID < n[j].ID }
 
 // NewNodesFromServers creates a slice of Nodes from a slice of Servers.
-func NewNodesFromServers(servers []*store.Server) Nodes {
+// func NewNodesFromServers(servers []*store.Server) Nodes {
+func NewNodesFromServers(servers []raft.Server) Nodes {
 	nodes := make([]*Node, len(servers))
 	for i, s := range servers {
 		nodes[i] = NewNodeFromServer(s)

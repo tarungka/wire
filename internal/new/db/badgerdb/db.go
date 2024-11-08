@@ -320,3 +320,35 @@ func (db *DB) Close() (retErr error) {
 	}
 	return nil
 }
+
+func (db *DB) Stats() (map[string]interface{}, error) {
+
+	if !db.open.Is() {
+		return nil, ErrDBNotOpen
+	}
+	stats := make(map[string]interface{})
+
+	// Get database size details
+	lsm, vlog := db.db.Size()
+	stats["LSMSize"] = lsm   // Approximate size of the LSM tree in bytes
+	stats["VlogSize"] = vlog // Approximate size of the value log in bytes
+
+	// Count number of keys by iterating over the database
+	numKeys := 0
+	err := db.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			numKeys++
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	stats["NumberOfKeys"] = numKeys
+
+	return stats, nil
+}

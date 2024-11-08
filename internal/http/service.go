@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/hashicorp/raft"
 	"github.com/rqlite/rqlite/v8/auth"
 	"github.com/rqlite/rqlite/v8/queue"
 	"github.com/rqlite/rqlite/v8/rtls"
@@ -50,20 +51,20 @@ type Database interface {
 	// to return rows. If timings is true, then timing information will
 	// be return. If tx is true, then either all queries will be executed
 	// successfully or it will as though none executed.
-	Execute(er *command.ExecuteRequest) ([]*command.ExecuteQueryResponse, error)
+	// Execute(er *command.ExecuteRequest) ([]*command.ExecuteQueryResponse, error)
 
 	// Query executes a slice of queries, each of which returns rows. If
 	// timings is true, then timing information will be returned. If tx
 	// is true, then all queries will take place while a read transaction
 	// is held on the database.
-	Query(qr *command.QueryRequest) ([]*command.QueryRows, error)
+	// Query(qr *command.QueryRequest) ([]*command.QueryRows, error)
 
 	// Request processes a slice of requests, each of which can be either
 	// an Execute or Query request.
-	Request(eqr *command.ExecuteQueryRequest) ([]*command.ExecuteQueryResponse, error)
+	// Request(eqr *command.ExecuteQueryRequest) ([]*command.ExecuteQueryResponse, error)
 
 	// Load loads a BadgerDB file into the system via Raft consensus.
-	Load(lr *command.LoadRequest) error
+	// Load(lr *command.LoadRequest) error
 
 	// StoreInDatabase stores a key, value pair in database
 	StoreInDatabase(key, value string) error
@@ -94,13 +95,14 @@ type Store interface {
 
 	// Error why is Server not correctly being discoverd in this package?
 	// Nodes returns the slice of store.Servers in the cluster
-	Nodes() ([]*store.Server, error)
+	// Nodes() ([]*store.Server, error)
+	Nodes() ([]raft.Server, error)
 
 	// Backup writes backup of the node state to dst
-	Backup(br *command.BackupRequest, dst io.Writer) error
+	// Backup(br *command.BackupRequest, dst io.Writer) error
 
 	// Snapshot triggers a Raft Snapshot and Log Truncation.
-	Snapshot(n uint64) error
+	// Snapshot(n uint64) error
 
 	// ReadFrom reads and loads a BadgerDB database into the node, initially bypassing
 	// the Raft system. It then triggers a Raft snapshot, which will then make
@@ -122,7 +124,7 @@ type Cluster interface {
 	Execute(er *command.ExecuteRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) ([]*command.ExecuteQueryResponse, error)
 
 	// Query performs an Query Request on a remote node.
-	Query(qr *command.QueryRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration) ([]*command.QueryRows, error)
+	// Query(qr *command.QueryRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration) ([]*command.QueryRows, error)
 
 	// Request performs an ExecuteQuery Request on a remote node.
 	Request(eqr *command.ExecuteQueryRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) ([]*command.ExecuteQueryResponse, error)
@@ -530,10 +532,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleBoot(c.Writer, c.Request)
 	})
 
-	engine.GET("/snapshot", func(c *gin.Context) {
-		stats.Add(numSnapshots, 1)
-		s.handleSnapshot(c.Writer, c.Request, params)
-	})
+	// TODO: add this later
+	// engine.GET("/snapshot", func(c *gin.Context) {
+	// 	stats.Add(numSnapshots, 1)
+	// 	s.handleSnapshot(c.Writer, c.Request, params)
+	// })
 
 	engine.GET("/remove", func(c *gin.Context) {
 		s.handleRemove(c.Writer, c.Request, params)
@@ -816,23 +819,23 @@ func (s *Service) handleBoot(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSnapshot handles a snapshot request.
-func (s *Service) handleSnapshot(w http.ResponseWriter, r *http.Request, qp QueryParams) {
-	if !s.CheckRequestPerm(r, auth.PermSnapshot) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
+// func (s *Service) handleSnapshot(w http.ResponseWriter, r *http.Request, qp QueryParams) {
+// 	if !s.CheckRequestPerm(r, auth.PermSnapshot) {
+// 		w.WriteHeader(http.StatusUnauthorized)
+// 		return
+// 	}
 
-	if r.Method != "POST" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+// 	if r.Method != "POST" {
+// 		w.WriteHeader(http.StatusMethodNotAllowed)
+// 		return
+// 	}
 
-	err := s.store.Snapshot(uint64(qp.TrailingLogs(0)))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-}
+// 	err := s.store.Snapshot(uint64(qp.TrailingLogs(0)))
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusInternalServerError)
+// 		return
+// 	}
+// }
 
 // handleStatus returns status on the system.
 func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request, qp QueryParams) {
@@ -1078,26 +1081,26 @@ func (s *Service) handleReadyz(w http.ResponseWriter, r *http.Request, qp QueryP
 	w.Write([]byte(okMsg))
 }
 
-func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request, qp QueryParams) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+// func (s *Service) handleExecute(w http.ResponseWriter, r *http.Request, qp QueryParams) {
+// 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
-	if !s.CheckRequestPerm(r, auth.PermExecute) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
+// 	if !s.CheckRequestPerm(r, auth.PermExecute) {
+// 		w.WriteHeader(http.StatusUnauthorized)
+// 		return
+// 	}
 
-	if r.Method != "POST" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+// 	if r.Method != "POST" {
+// 		w.WriteHeader(http.StatusMethodNotAllowed)
+// 		return
+// 	}
 
-	if qp.Queue() {
-		stats.Add(numQueuedExecutions, 1)
-		s.queuedExecute(w, r, qp)
-	} else {
-		s.execute(w, r, qp)
-	}
-}
+// 	if qp.Queue() {
+// 		stats.Add(numQueuedExecutions, 1)
+// 		s.queuedExecute(w, r, qp)
+// 	} else {
+// 		s.execute(w, r, qp)
+// 	}
+// }
 
 // queuedExecute handles queued queries that modify the database.
 func (s *Service) queuedExecute(w http.ResponseWriter, r *http.Request, qp QueryParams) {
@@ -1156,170 +1159,170 @@ func (s *Service) queuedExecute(w http.ResponseWriter, r *http.Request, qp Query
 }
 
 // execute handles queries that modify the database.
-func (s *Service) execute(w http.ResponseWriter, r *http.Request, qp QueryParams) {
-	resp := NewResponse()
-	stmts, err := ParseRequest(r.Body)
-	s.logger.Printf("The statements are: %v", stmts)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	stats.Add(numExecuteStmtsRx, int64(len(stmts)))
-	// if !qp.NoParse() {
-	// 	if err := sql.Process(stmts, !qp.NoRewriteRandom()); err != nil {
-	// 		http.Error(w, fmt.Sprintf("SQL rewrite: %s", err.Error()), http.StatusInternalServerError)
-	// 		return
-	// 	}
-	// }
+// func (s *Service) execute(w http.ResponseWriter, r *http.Request, qp QueryParams) {
+// 	resp := NewResponse()
+// 	stmts, err := ParseRequest(r.Body)
+// 	s.logger.Printf("The statements are: %v", stmts)
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusBadRequest)
+// 		return
+// 	}
+// 	stats.Add(numExecuteStmtsRx, int64(len(stmts)))
+// 	// if !qp.NoParse() {
+// 	// 	if err := sql.Process(stmts, !qp.NoRewriteRandom()); err != nil {
+// 	// 		http.Error(w, fmt.Sprintf("SQL rewrite: %s", err.Error()), http.StatusInternalServerError)
+// 	// 		return
+// 	// 	}
+// 	// }
 
-	er := &command.ExecuteRequest{
-		Request: &command.Request{
-			Transaction: qp.Tx(),
-			DbTimeout:   int64(qp.DBTimeout(0)),
-			Statements:  stmts,
-		},
-		Timings: qp.Timings(),
-	}
+// 	er := &command.ExecuteRequest{
+// 		Request: &command.Request{
+// 			Transaction: qp.Tx(),
+// 			DbTimeout:   int64(qp.DBTimeout(0)),
+// 			Statements:  stmts,
+// 		},
+// 		Timings: qp.Timings(),
+// 	}
 
-	results, resultsErr := s.store.Execute(er)
-	if resultsErr != nil && resultsErr == store.ErrNotLeader {
-		if s.DoRedirect(w, r, qp) {
-			return
-		}
+// 	results, resultsErr := s.store.Execute(er)
+// 	if resultsErr != nil && resultsErr == store.ErrNotLeader {
+// 		if s.DoRedirect(w, r, qp) {
+// 			return
+// 		}
 
-		addr, err := s.store.LeaderAddr()
-		if err != nil {
-			http.Error(w, fmt.Sprintf("leader address: %s", err.Error()),
-				http.StatusInternalServerError)
-			return
-		}
-		if addr == "" {
-			stats.Add(numLeaderNotFound, 1)
-			http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
-			return
-		}
+// 		addr, err := s.store.LeaderAddr()
+// 		if err != nil {
+// 			http.Error(w, fmt.Sprintf("leader address: %s", err.Error()),
+// 				http.StatusInternalServerError)
+// 			return
+// 		}
+// 		if addr == "" {
+// 			stats.Add(numLeaderNotFound, 1)
+// 			http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
+// 			return
+// 		}
 
-		username, password, ok := r.BasicAuth()
-		if !ok {
-			username = ""
-		}
+// 		username, password, ok := r.BasicAuth()
+// 		if !ok {
+// 			username = ""
+// 		}
 
-		w.Header().Add(ServedByHTTPHeader, addr)
-		results, resultsErr = s.cluster.Execute(er, addr, makeCredentials(username, password),
-			qp.Timeout(defaultTimeout), qp.Retries(0))
-		if resultsErr != nil {
-			stats.Add(numRemoteExecutionsFailed, 1)
-			if resultsErr.Error() == "unauthorized" {
-				http.Error(w, "remote Execute not authorized", http.StatusUnauthorized)
-				return
-			}
-			resultsErr = fmt.Errorf("node failed to process Execute on remote node at %s: %s",
-				addr, resultsErr.Error())
-		}
-		stats.Add(numRemoteExecutions, 1)
-	}
+// 		w.Header().Add(ServedByHTTPHeader, addr)
+// 		results, resultsErr = s.cluster.Execute(er, addr, makeCredentials(username, password),
+// 			qp.Timeout(defaultTimeout), qp.Retries(0))
+// 		if resultsErr != nil {
+// 			stats.Add(numRemoteExecutionsFailed, 1)
+// 			if resultsErr.Error() == "unauthorized" {
+// 				http.Error(w, "remote Execute not authorized", http.StatusUnauthorized)
+// 				return
+// 			}
+// 			resultsErr = fmt.Errorf("node failed to process Execute on remote node at %s: %s",
+// 				addr, resultsErr.Error())
+// 		}
+// 		stats.Add(numRemoteExecutions, 1)
+// 	}
 
-	if resultsErr != nil {
-		resp.Error = resultsErr.Error()
-	} else {
-		resp.Results.ExecuteQueryResponse = results
-	}
-	resp.end = time.Now()
-	s.writeResponse(w, qp, resp)
-}
+// 	if resultsErr != nil {
+// 		resp.Error = resultsErr.Error()
+// 	} else {
+// 		resp.Results.ExecuteQueryResponse = results
+// 	}
+// 	resp.end = time.Now()
+// 	s.writeResponse(w, qp, resp)
+// }
 
 // handleQuery handles queries that do not modify the database.
-func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request, qp QueryParams) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+// func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request, qp QueryParams) {
+// 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
-	if !s.CheckRequestPerm(r, auth.PermQuery) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
+// 	if !s.CheckRequestPerm(r, auth.PermQuery) {
+// 		w.WriteHeader(http.StatusUnauthorized)
+// 		return
+// 	}
 
-	if r.Method != "GET" && r.Method != "POST" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+// 	if r.Method != "GET" && r.Method != "POST" {
+// 		w.WriteHeader(http.StatusMethodNotAllowed)
+// 		return
+// 	}
 
-	// Get the query statement(s), and do tx if necessary.
-	queries, err := requestQueries(r, qp)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	stats.Add(numQueryStmtsRx, int64(len(queries)))
+// 	// Get the query statement(s), and do tx if necessary.
+// 	queries, err := requestQueries(r, qp)
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusBadRequest)
+// 		return
+// 	}
+// 	stats.Add(numQueryStmtsRx, int64(len(queries)))
 
-	// No point rewriting queries if they don't go through the Raft log, since they
-	// will never be replayed from the log anyway.
-	// if qp.Level() == command.QueryRequest_QUERY_REQUEST_LEVEL_STRONG {
-	// 	if !qp.NoParse() {
-	// 		if err := sql.Process(queries, qp.NoRewriteRandom()); err != nil {
-	// 			http.Error(w, fmt.Sprintf("SQL rewrite: %s", err.Error()), http.StatusInternalServerError)
-	// 			return
-	// 		}
-	// 	}
-	// }
+// 	// No point rewriting queries if they don't go through the Raft log, since they
+// 	// will never be replayed from the log anyway.
+// 	// if qp.Level() == command.QueryRequest_QUERY_REQUEST_LEVEL_STRONG {
+// 	// 	if !qp.NoParse() {
+// 	// 		if err := sql.Process(queries, qp.NoRewriteRandom()); err != nil {
+// 	// 			http.Error(w, fmt.Sprintf("SQL rewrite: %s", err.Error()), http.StatusInternalServerError)
+// 	// 			return
+// 	// 		}
+// 	// 	}
+// 	// }
 
-	resp := NewResponse()
-	resp.Results.AssociativeJSON = qp.Associative()
-	resp.Results.BlobsAsArrays = qp.BlobArray()
+// 	resp := NewResponse()
+// 	resp.Results.AssociativeJSON = qp.Associative()
+// 	resp.Results.BlobsAsArrays = qp.BlobArray()
 
-	qr := &command.QueryRequest{
-		Request: &command.Request{
-			Transaction: qp.Tx(),
-			DbTimeout:   int64(qp.DBTimeout(0)),
-			Statements:  queries,
-		},
-		Timings:         qp.Timings(),
-		Level:           qp.Level(),
-		Freshness:       qp.Freshness().Nanoseconds(),
-		FreshnessStrict: qp.FreshnessStrict(),
-	}
+// 	qr := &command.QueryRequest{
+// 		Request: &command.Request{
+// 			Transaction: qp.Tx(),
+// 			DbTimeout:   int64(qp.DBTimeout(0)),
+// 			Statements:  queries,
+// 		},
+// 		Timings:         qp.Timings(),
+// 		Level:           qp.Level(),
+// 		Freshness:       qp.Freshness().Nanoseconds(),
+// 		FreshnessStrict: qp.FreshnessStrict(),
+// 	}
 
-	results, resultsErr := s.store.Query(qr)
-	if resultsErr != nil && resultsErr == store.ErrNotLeader {
-		if s.DoRedirect(w, r, qp) {
-			return
-		}
+// 	results, resultsErr := s.store.Query(qr)
+// 	if resultsErr != nil && resultsErr == store.ErrNotLeader {
+// 		if s.DoRedirect(w, r, qp) {
+// 			return
+// 		}
 
-		addr, err := s.store.LeaderAddr()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if addr == "" {
-			stats.Add(numLeaderNotFound, 1)
-			http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		username, password, ok := r.BasicAuth()
-		if !ok {
-			username = ""
-		}
+// 		addr, err := s.store.LeaderAddr()
+// 		if err != nil {
+// 			http.Error(w, err.Error(), http.StatusInternalServerError)
+// 			return
+// 		}
+// 		if addr == "" {
+// 			stats.Add(numLeaderNotFound, 1)
+// 			http.Error(w, ErrLeaderNotFound.Error(), http.StatusServiceUnavailable)
+// 			return
+// 		}
+// 		username, password, ok := r.BasicAuth()
+// 		if !ok {
+// 			username = ""
+// 		}
 
-		w.Header().Add(ServedByHTTPHeader, addr)
-		results, resultsErr = s.cluster.Query(qr, addr, makeCredentials(username, password), qp.Timeout(defaultTimeout))
-		if resultsErr != nil {
-			stats.Add(numRemoteQueriesFailed, 1)
-			if resultsErr.Error() == "unauthorized" {
-				http.Error(w, "remote query not authorized", http.StatusUnauthorized)
-				return
-			}
-			resultsErr = fmt.Errorf("node failed to process Query on remote node at %s: %s",
-				addr, resultsErr.Error())
-		}
-		stats.Add(numRemoteQueries, 1)
-	}
+// 		w.Header().Add(ServedByHTTPHeader, addr)
+// 		results, resultsErr = s.cluster.Query(qr, addr, makeCredentials(username, password), qp.Timeout(defaultTimeout))
+// 		if resultsErr != nil {
+// 			stats.Add(numRemoteQueriesFailed, 1)
+// 			if resultsErr.Error() == "unauthorized" {
+// 				http.Error(w, "remote query not authorized", http.StatusUnauthorized)
+// 				return
+// 			}
+// 			resultsErr = fmt.Errorf("node failed to process Query on remote node at %s: %s",
+// 				addr, resultsErr.Error())
+// 		}
+// 		stats.Add(numRemoteQueries, 1)
+// 	}
 
-	if resultsErr != nil {
-		resp.Error = resultsErr.Error()
-	} else {
-		resp.Results.QueryRows = results
-	}
-	resp.end = time.Now()
-	s.writeResponse(w, qp, resp)
-}
+// 	if resultsErr != nil {
+// 		resp.Error = resultsErr.Error()
+// 	} else {
+// 		resp.Results.QueryRows = results
+// 	}
+// 	resp.end = time.Now()
+// 	s.writeResponse(w, qp, resp)
+// }
 
 // func (s *Service) handleRequest(w http.ResponseWriter, r *http.Request, qp QueryParams) {
 // 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

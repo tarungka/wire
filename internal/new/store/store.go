@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -109,7 +110,7 @@ type NodeStore struct {
 	raftID string
 
 	// FSM
-	db           *badgerdb.DB
+	db           *badgerdb.DB // the badger database
 	fsmMu        sync.RWMutex
 	fsmIndex     *atomic.Uint64
 	fsmTerm      *atomic.Uint64
@@ -481,6 +482,20 @@ func IsNewNode(raftDir string) bool {
 	return !utils.PathExists("/tmp/badger")
 }
 
+func (s *NodeStore) Ready() bool {
+	// if store is open and all readyChans are closed and has a leader
+	// return s.open.Is() && s.readyChans.Ready() && s.HasLeader()
+	return s.open.Is() && s.HasLeader()
+}
+
+// HasLeader returns true if the cluster has a leader, false otherwise.
+func (s *NodeStore) HasLeader() bool {
+	if !s.open.Is() {
+		return false
+	}
+	return s.raft.Leader() != ""
+}
+
 // Database
 
 // Cluster
@@ -567,3 +582,154 @@ func (s *NodeStore) Remove(rn *proto.RemoveNodeRequest) error {
 }
 
 // Control
+
+// Http
+func (s *NodeStore) Committed(timeout time.Duration) (uint64, error) {
+	return 0, nil
+}
+
+// store a value in the badger database
+func (s *NodeStore) StoreInDatabase(key, value string) error {
+	if !s.open.Is() {
+		return ErrStoreNotOpen
+	}
+	if s.raft.State() != raft.Leader {
+		return ErrNotLeader
+	}
+	if !s.Ready() {
+		return ErrNotReady
+	}
+
+	s.logger.Trace().Msgf("storing key: %v and value: %v", key, value)
+	keyBytes := []byte(key)
+	valBytes := []byte(value)
+	s.db.Set(keyBytes, valBytes)
+
+	return nil
+}
+
+// GetFromDatabase retrieves a value from the Badger database by key.
+// Returns the value as a string
+func (s *NodeStore) GetFromDatabase(key string) (string, error) {
+	if !s.open.Is() {
+		return "", ErrStoreNotOpen
+	}
+	if s.raft.State() != raft.Leader {
+		return "", ErrNotLeader
+	}
+	if !s.Ready() {
+		return "", ErrNotReady
+	}
+
+	s.logger.Trace().Msgf("retrieving key: %v", key)
+	valBytes, err := s.db.Get([]byte(key))
+	if err != nil {
+		return "", err
+	}
+	return string(valBytes), nil
+}
+
+// LeaderWithID is used to return the current leader address and ID of the cluster.
+// It may return empty strings if there is no current leader or the leader is unknown.
+func (s *NodeStore) LeaderWithID() (string, string) {
+	if !s.open.Is() {
+		return "", ""
+	}
+	addr, id := s.raft.LeaderWithID()
+	return string(addr), string(id)
+}
+
+
+// Stats returns stats for the store.
+func (s *NodeStore) Stats() (map[string]interface{}, error) {
+	if !s.open.Is() {
+		return map[string]interface{}{
+			"open": false,
+		}, nil
+	}
+
+	dbStatus, err := s.db.Stats()
+	if err != nil {
+		// stats.Add(numDBStatsErrors, 1)
+		s.logger.Printf("failed to get database stats: %s", err.Error())
+	}
+
+	nodes, err := s.Nodes()
+	if err != nil {
+		return nil, err
+	}
+	leaderAddr, leaderID := s.LeaderWithID()
+
+	// Perform type-conversion to actual numbers where possible.
+	raftStats := make(map[string]interface{})
+	for k, v := range s.raft.Stats() {
+		if s, err := strconv.ParseInt(v, 10, 64); err != nil {
+			raftStats[k] = v
+		} else {
+			raftStats[k] = s
+		}
+	}
+	// raftStats["log_size"], err = s.logSize()
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// raftStats["voter"], err = s.IsVoter()
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// raftStats["bolt"] = s.boltStore.Stats()
+	raftStats["transport"] = s.raftTn.Stats() // might need to find a different impl for this
+
+	dirSz, err := utils.DirSize(s.raftDir)
+	if err != nil {
+		return nil, err
+	}
+
+	status := map[string]interface{}{
+		"open":             s.open,
+		"node_id":          s.raftID,
+		"raft":             raftStats,
+		// "fsm_index":        s.fsmIdx.Load(),
+		"fsm_term":         s.fsmTerm.Load(),
+		// "fsm_update_time":  s.fsmUpdateTime.Load(),
+		// "db_applied_index": s.dbAppliedIdx.Load(),
+		// "addr":             s.Addr(),
+		"leader": map[string]string{
+			"node_id": leaderID,
+			"addr":    leaderAddr,
+		},
+		// "leader_appended_at_time": s.appendedAtTime.Load(),
+		"ready":                   s.Ready(),
+		"observer": map[string]uint64{
+			"observed": s.observer.GetNumObserved(),
+			"dropped":  s.observer.GetNumDropped(),
+		},
+		// "apply_timeout":          s.ApplyTimeout.String(),
+		// "heartbeat_timeout":      s.HeartbeatTimeout.String(),
+		// "election_timeout":       s.ElectionTimeout.String(),
+		// "snapshot_threshold":     s.SnapshotThreshold,
+		// "snapshot_interval":      s.SnapshotInterval.String(),
+		// "snapshot_cas":           s.snapshotCAS.Stats(),
+		// "reap_timeout":           s.ReapTimeout.String(),
+		// "reap_read_only_timeout": s.ReapReadOnlyTimeout.String(),
+		// "no_freelist_sync":       s.NoFreeListSync,
+		// "trailing_logs":          s.numTrailingLogs,
+		// "request_marshaler":      s.reqMarshaller.Stats(),
+		"nodes":                  nodes,
+		"dir":                    s.raftDir,
+		"dir_size":               dirSz,
+		"dir_size_friendly":      utils.FriendlyBytes(uint64(dirSz)),
+		"sqlite3":                dbStatus,
+		// "db_conf":                s.dbConf,
+	}
+
+
+
+	// // Snapshot stats may be in flux if a snapshot is in progress. Only
+	// // report them if they are available.
+	// snapsStats, err := s.snapshotStore.Stats()
+	// if err == nil {
+	// 	status["snapshot_store"] = snapsStats
+	// }
+	return status, nil
+}

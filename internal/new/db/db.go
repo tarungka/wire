@@ -31,6 +31,8 @@ type DbStore interface {
 
 	GetLog(index uint64, log *raft.Log) error
 
+	// Stats() (map[string]interface{}, error) // cannot force this as bbolt does not support the return type
+
 	StoreLog(log *raft.Log) error
 
 	StoreLogs(logs []*raft.Log) error
