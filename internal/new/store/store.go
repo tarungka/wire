@@ -587,7 +587,7 @@ func (s *NodeStore) CommitIndex() (uint64, error) {
 // bootstrapping will be attempted using this Store. "Expected level" includes
 // this node, so this node must self-notify to ensure the cluster bootstraps
 // with the *advertised Raft address* which the Store doesn't know about.
-// IMPLEMENTATION IS INCOMPLETE; DOES NOT YET SUPPORT BOOTSTRAP EXPECT
+// Only holds nodes that need to be notified i.e voting nodes
 // Notifying is idempotent. A node may repeatedly notify the Store without issue.
 func (s *NodeStore) Notify(nr *proto.NotifyRequest) error {
 	if !s.open.Is() {
