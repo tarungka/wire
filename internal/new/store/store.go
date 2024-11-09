@@ -792,7 +792,7 @@ func (s *NodeStore) Stats() (map[string]interface{}, error) {
 		"dir":               s.raftDir,
 		"dir_size":          dirSz,
 		"dir_size_friendly": utils.FriendlyBytes(uint64(dirSz)),
-		"database_status":           dbStatus,
+		"database_status":   dbStatus,
 		// "db_conf":                s.dbConf,
 	}
 
