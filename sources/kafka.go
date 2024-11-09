@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"github.com/tarungka/wire/internal/models"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -65,16 +66,16 @@ func (k *KafkaSource) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (k *KafkaSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan []byte, error) {
+func (k *KafkaSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan *models.Job, error) {
 	// This is to get the entire document along with the changes in the payload
 
-	changeStreamChan := make(chan []byte, 5)
+	changeStreamChan := make(chan *models.Job, 5)
 	defer func() {
 		log.Trace().Msg("The Kafka Source Read is done!")
 	}()
 
 	wg.Add(1)
-	go func(ctx context.Context, opStream chan<- []byte) {
+	go func(ctx context.Context, opStream chan<- *models.Job) {
 
 		defer func() {
 			log.Trace().Msg("Done Reading from the kafka source")
@@ -138,10 +139,15 @@ func (k *KafkaSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan []by
 					log.Warn().Msg("The json data is NIL!")
 				}
 
+				jobData, err := models.New(jsonByteData)
+				if err != nil {
+					log.Err(err).Msg("error when creating a new job")
+				}
+
 				select {
 				case <-ctx.Done():
 					return
-				case opStream <- jsonByteData:
+				case opStream <- jobData:
 					// Don't ever add default here, this needs to be a blocking operation
 					// If I put default here there are chances of loosing data when the channel
 					// is full and data is read but not pushed to the output stream, right?
@@ -176,11 +182,12 @@ func (m *KafkaSource) Info() string {
 	return fmt.Sprintf("Key:%s|Name:%s|Type:%s", m.pipelineKey, m.pipelineName, m.pipelineConnectionType)
 }
 
-func (m *KafkaSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (<-chan []byte, error) {
+func (m *KafkaSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (<-chan *models.Job, error) {
 	// Will implement this at a later point, for now just change the consumer groupe name
 	// to get all the data in the topic
-	dataChan := make(chan []byte)
+	dataChan := make(chan *models.Job)
 	defer close(dataChan)
 
+	// return dataChan, fmt.Errorf("not implemented")
 	return dataChan, nil
 }

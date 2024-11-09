@@ -255,10 +255,10 @@ func DataSourceFactory(config sources.SourceConfig) (DataSource, error) {
 		x := sources.NewMongoSource()
 		x.Init(config)
 		return x, nil
-	// case "kafka":
-	// 	x := &sources.KafkaSource{}
-	// 	x.Init(config)
-	// 	return x, nil
+	case "kafka":
+		x := &sources.KafkaSource{}
+		x.Init(config)
+		return x, nil
 	// case "mysql":
 	//     return &MySQLSource{}, nil
 	// Add other sources
