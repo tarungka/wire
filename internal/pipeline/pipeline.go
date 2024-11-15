@@ -151,7 +151,7 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 	// Partition the data into multiple jobs (channel)
 	jobCount := 5 // Number of concurrent jobs
 
-	jobPartitioner := partitioner.NewPartitoner[*models.Job](jobCount, hashFn) // data type is []byte or uint8
+	jobPartitioner := partitioner.NewPartitoner[*models.Job](jobCount, hashFn)
 
 	partitionedInitialDataChannels := jobPartitioner.PartitionData(initialDataChannel)
 	partitionedDataChannels := jobPartitioner.PartitionData(dataChannel)

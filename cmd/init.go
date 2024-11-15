@@ -235,12 +235,6 @@ type Config struct {
 
 	// StoreDatabase is the supporting backend database: badgerdb, bbolt, rocksdb
 	StoreDatabase string
-
-	// StableDbPath is the path to the stable store database
-	StableDbPath string
-
-	// StableDbPath is the path to the log store database
-	LogDbPath string
 }
 
 // Validate checks the configuration for internal consistency, and activates
