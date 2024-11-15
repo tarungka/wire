@@ -272,10 +272,10 @@ func DataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
 	sinkType := config.ConnectionType
 	log.Debug().Msgf("Creating and allocating object for sink: %s", sinkType)
 	switch sinkType {
-	case "elasticsearch":
-		x := &sinks.ElasticSink{}
-		x.Init(config)
-		return x, nil
+	// case "elasticsearch":
+	// 	x := &sinks.ElasticSink{}
+	// 	x.Init(config)
+	// 	return x, nil
 	case "kafka":
 		x := &sinks.KafkaSink{}
 		x.Init(config)

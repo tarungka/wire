@@ -18,7 +18,7 @@ import (
 	"github.com/tarungka/wire/internal/cmd"
 	httpd "github.com/tarungka/wire/internal/http"
 	"github.com/tarungka/wire/internal/logger"
-	"github.com/tarungka/wire/internal/store"
+	"github.com/tarungka/wire/internal/new/store"
 	"github.com/tarungka/wire/internal/tcp"
 )
 
@@ -32,7 +32,7 @@ var (
 // There is a new line at the start of this logo
 
 const logo = `
- __      __ ________________________
+ __      ___________________________
 /  \    /  \   \______   \_   _____/
 \   \/\/   /   ||       _/|    __)_    Seamless Streaming for
  \        /|   ||    |   \|        \   Dynamic Workloads.
@@ -146,15 +146,15 @@ func main() {
 	}
 
 	// Register remaining status providers.
-	if err := httpServ.RegisterStatus("cluster", clstrServ); err != nil {
-		log.Fatal().Msgf("failed to register cluster status provider: %s", err.Error())
-	}
-	if err := httpServ.RegisterStatus("network", tcp.NetworkReporter{}); err != nil {
-		log.Fatal().Msgf("failed to register network status provider: %s", err.Error())
-	}
-	if err := httpServ.RegisterStatus("mux", mux); err != nil {
-		log.Fatal().Msgf("failed to register mux status provider: %s", err.Error())
-	}
+	// if err := httpServ.RegisterStatus("cluster", clstrServ); err != nil {
+	// 	log.Fatal().Msgf("failed to register cluster status provider: %s", err.Error())
+	// }
+	// if err := httpServ.RegisterStatus("network", tcp.NetworkReporter{}); err != nil {
+	// 	log.Fatal().Msgf("failed to register network status provider: %s", err.Error())
+	// }
+	// if err := httpServ.RegisterStatus("mux", mux); err != nil {
+	// 	log.Fatal().Msgf("failed to register mux status provider: %s", err.Error())
+	// }
 
 	// Create the cluster!
 	nodes, err := str.Nodes()
@@ -166,7 +166,8 @@ func main() {
 		log.Debug().Msgf("%d. Node information is: %v", idx, eachNode)
 	}
 
-	if err := createCluster(mainCtx, cfg, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
+	// if err := createCluster(mainCtx, cfg, len(nodes) > 0, clstrClient, str, httpServ, nil); err != nil {
+	if err := createCluster(mainCtx, cfg, len(nodes) > 0, clstrClient, str, nil, nil); err != nil {
 		log.Fatal().Msgf("clustering failure: %s", err.Error())
 	}
 
@@ -180,14 +181,14 @@ func main() {
 	clstrServ.Close()
 
 	if cfg.RaftClusterRemoveOnShutdown {
-		remover := cluster.NewRemover(clstrClient, 5*time.Second, str)
+		// remover := cluster.NewRemover(clstrClient, 5*time.Second, str)
 		// TODO: not support TLS for now, will work on it later
 		// remover.SetCredentials(cluster.CredentialsFor(credStr, cfg.JoinAs))
-		log.Info().Msgf("initiating removal of this node from cluster before shutdown")
-		if err := remover.Do(cfg.NodeID, true); err != nil {
-			log.Error().Msgf("failed to remove this node from cluster before shutdown: %s", err.Error())
-		}
-		log.Info().Msgf("removed this node successfully from cluster before shutdown")
+		// log.Info().Msgf("initiating removal of this node from cluster before shutdown")
+		// if err := remover.Do(cfg.NodeID, true); err != nil {
+		// 	log.Error().Msgf("failed to remove this node from cluster before shutdown: %s", err.Error())
+		// }
+		// log.Info().Msgf("removed this node successfully from cluster before shutdown")
 	}
 
 	if cfg.RaftStepdownOnShutdown {
@@ -273,26 +274,30 @@ func createClusterClient(cfg *Config, clstr *cluster.Service) (*cluster.Client, 
 	return clstrClient, nil
 }
 
-func createStore(cfg *Config, ly *tcp.Layer) (*store.Store, error) {
-	str := store.New(ly, &store.Config{
-		Dir: cfg.DataPath,
-		ID:  cfg.NodeID,
+func createStore(cfg *Config, ly *tcp.Layer) (*store.NodeStore, error) {
+	str, err := store.New(ly, &store.Config{
+		Dir:           cfg.DataPath,
+		ID:            cfg.NodeID,
+		StoreDatabase: cfg.StoreDatabase,
 	})
+	if err != nil {
+		return nil, err
+	}
 
 	// Set optional parameters on store.
-	str.RaftLogLevel = cfg.RaftLogLevel
-	str.ShutdownOnRemove = cfg.RaftShutdownOnRemove
-	str.SnapshotThreshold = cfg.RaftSnapThreshold
-	str.SnapshotInterval = cfg.RaftSnapInterval
-	str.LeaderLeaseTimeout = cfg.RaftLeaderLeaseTimeout
-	str.HeartbeatTimeout = cfg.RaftHeartbeatTimeout
-	str.ElectionTimeout = cfg.RaftElectionTimeout
-	str.ApplyTimeout = cfg.RaftApplyTimeout
-	str.BootstrapExpect = cfg.BootstrapExpect
-	str.ReapTimeout = cfg.RaftReapNodeTimeout
-	str.ReapReadOnlyTimeout = cfg.RaftReapReadOnlyNodeTimeout
-	str.AutoVacInterval = cfg.AutoVacInterval
-	str.AutoOptimizeInterval = cfg.AutoOptimizeInterval
+	// str.RaftLogLevel = cfg.RaftLogLevel
+	// str.ShutdownOnRemove = cfg.RaftShutdownOnRemove
+	// str.SnapshotThreshold = cfg.RaftSnapThreshold
+	// str.SnapshotInterval = cfg.RaftSnapInterval
+	// str.LeaderLeaseTimeout = cfg.RaftLeaderLeaseTimeout
+	// str.HeartbeatTimeout = cfg.RaftHeartbeatTimeout
+	// str.ElectionTimeout = cfg.RaftElectionTimeout
+	// str.ApplyTimeout = cfg.RaftApplyTimeout
+	// str.BootstrapExpect = cfg.BootstrapExpect
+	// str.ReapTimeout = cfg.RaftReapNodeTimeout
+	// str.ReapReadOnlyTimeout = cfg.RaftReapReadOnlyNodeTimeout
+	// str.AutoVacInterval = cfg.AutoVacInterval
+	// str.AutoOptimizeInterval = cfg.AutoOptimizeInterval
 
 	if store.IsNewNode(cfg.DataPath) {
 		log.Printf("no preexisting node state detected in %s, node may be bootstrapping", cfg.DataPath)
@@ -303,7 +308,7 @@ func createStore(cfg *Config, ly *tcp.Layer) (*store.Store, error) {
 	return str, nil
 }
 
-func startHTTPService(cfg *Config, str *store.Store, ctx context.Context, cltr *cluster.Client) (*httpd.Service, error) {
+func startHTTPService(cfg *Config, str *store.NodeStore, ctx context.Context, cltr *cluster.Client) (*httpd.Service, error) {
 	// Create HTTP server and load authentication information.
 	s := httpd.New(cfg.HTTPAddr, str, cltr, nil)
 
@@ -342,7 +347,7 @@ func startHTTPService(cfg *Config, str *store.Store, ctx context.Context, cltr *
 // waiting until a leader is elected before proceeding. If no discovery
 // or join options are available, it defaults to using any existing Raft
 // state on the node for cluster continuity without further clustering actions.
-func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *cluster.Client, str *store.Store,
+func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *cluster.Client, str *store.NodeStore,
 	httpServ *httpd.Service, credStr *auth.CredentialsStore) error {
 	joins := cfg.JoinAddresses()
 	if err := networkCheckJoinAddrs(joins); err != nil {

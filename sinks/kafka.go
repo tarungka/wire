@@ -6,8 +6,11 @@ import (
 	"sync"
 
 	"github.com/rs/zerolog/log"
+	"github.com/tarungka/wire/internal/models"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
+
+// TODO: add stats to catch how many messages are dropped, errored, sent, etc
 
 type KafkaSink struct {
 	pipelineKey            string
@@ -16,6 +19,7 @@ type KafkaSink struct {
 	// Kafka Producer details
 	bootstrapServers string
 	topic            string
+	// logger              *zerolog.Logger // will add this once I add a factory function for this
 
 	kafkaProducerClient *kgo.Client
 }
@@ -72,7 +76,7 @@ func (k *KafkaSink) sendMessageToKafka(ctx context.Context, docBytes []byte) {
 }
 
 // BUG: There is an error when trying to clean up/ close this channel/ function; unsure what the error is
-func (k *KafkaSink) Write(ctx context.Context, wg *sync.WaitGroup, dataChan <-chan []byte, initialDataChan <-chan []byte) error {
+func (k *KafkaSink) Write(ctx context.Context, wg *sync.WaitGroup, dataChan <-chan *models.Job, initialDataChan <-chan *models.Job) error {
 
 	defer func() {
 		log.Trace().Msg("Created a new write instance, exiting the parent thread!")
@@ -96,7 +100,17 @@ func (k *KafkaSink) Write(ctx context.Context, wg *sync.WaitGroup, dataChan <-ch
 				}
 
 				log.Debug().Msg("New data on the channel")
-				k.sendMessageToKafka(ctx, docBytes)
+				data, err := docBytes.GetData()
+				if err != nil {
+					log.Err(err).Msg("error no data in the job object")
+					return
+				}
+				dataBytes, ok := data.([]byte)
+				if !ok {
+					log.Err(err).Msg("error converting the job data to bytes")
+					return
+				}
+				k.sendMessageToKafka(ctx, dataBytes)
 				log.Trace().Msg("After wait")
 			case docBytes, ok := <-initialDataChan:
 				if !ok {
@@ -104,7 +118,17 @@ func (k *KafkaSink) Write(ctx context.Context, wg *sync.WaitGroup, dataChan <-ch
 					continue
 				}
 				log.Debug().Msg("New initial data on the channel")
-				k.sendMessageToKafka(ctx, docBytes)
+				data, err := docBytes.GetData()
+				if err != nil {
+					log.Err(err).Msg("error no data in the job object")
+					return
+				}
+				dataBytes, ok := data.([]byte)
+				if !ok {
+					log.Err(err).Msg("error converting the job data to bytes")
+					return
+				}
+				k.sendMessageToKafka(ctx, dataBytes)
 				log.Trace().Msg("After wait")
 				// default:
 				// case <-done:

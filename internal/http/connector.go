@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
-	"github.com/tarungka/wire/pipeline"
+	"github.com/tarungka/wire/internal/pipeline"
 )
 
 func deletePipeline(w http.ResponseWriter, r *http.Request) {
