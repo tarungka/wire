@@ -1,15 +1,15 @@
-package rocksdb
+package db
 
 import "errors"
 
 var (
-	// ErrStoreNotOpen is returned when a Store is not open.
+	// ErrStoreNotOpen is returned when a database is not open.
 	ErrDBNotOpen = errors.New("db not open")
 
-	// ErrStoreOpen is returned when a Store is already open.
+	// ErrStoreOpen is returned when a database is already open.
 	ErrDBOpen = errors.New("db already open")
 
-	// ErrNotReady is returned when a Store is not ready to accept requests.
+	// ErrNotReady is returned when a database is not ready to accept requests.
 	ErrNotReady = errors.New("db not ready")
 
 	// ErrNotLeader is returned when a node attempts to execute a leader-only
@@ -20,7 +20,7 @@ var (
 	// requested freshness.
 	ErrStaleRead = errors.New("db stale read")
 
-	// ErrWaitForLeaderTimeout is returned when the Store cannot determine the leader
+	// ErrWaitForLeaderTimeout is returned when the database cannot determine the leader
 	// within the specified time.
 	ErrWaitForLeaderTimeout = errors.New("db timeout waiting for leader")
 
