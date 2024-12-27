@@ -81,11 +81,11 @@ import (
 )
 
 var (
-	// ErrNotOpen is returned when a Store is not open.
-	ErrNotOpen = errors.New("store not open")
+	// ErrStoreNotOpen is returned when a Store is not open.
+	ErrStoreNotOpen = errors.New("store not open")
 
-	// ErrOpen is returned when a Store is already open.
-	ErrOpen = errors.New("store already open")
+	// ErrStoreOpen is returned when a Store is already open.
+	ErrStoreOpen = errors.New("store already open")
 
 	// ErrNotReady is returned when a Store is not ready to accept requests.
 	ErrNotReady = errors.New("store not ready")
@@ -128,7 +128,10 @@ var (
 
 	// ErrNotImplemented when there is no implementation of the function
 	// will only exits until this application in under development
-	ErrNotImplemented = errors.New("Not implemented")
+	ErrNotImplemented = errors.New("not implemented")
+
+	// ErrDatabaseNotOpen when the database is closed
+	ErrDatabaseNotOpen = errors.New("database is not open")
 )
 
 type PragmaCheckRequest proto.Request
@@ -364,7 +367,7 @@ type Store struct {
 
 	// Database
 	dbDir string
-	db    *badger.DB
+	db    *badger.DB // pointer to the badgerDB
 
 	mu sync.Mutex
 
@@ -377,13 +380,18 @@ type Store struct {
 	numSnapshots     *atomic.Uint64
 }
 
+// Compile time checks if all the necessary interfaces are implemented
+// kind of hacky - causes circular imports; find a better way
+// var _ http.Database = (*Store)(nil)
+// var _ http.Store = (*Store)(nil)
+// var _ http.Cluster = (*Store)(nil)
+
 type Config struct {
 	Dir string    // The working directory for raft.
 	Tn  Transport // The underlying Transport for raft.
 	ID  string    // Node ID.
 }
 
-// func New(ly Layer, ko *koanf.Koanf) *Store {
 // allocate a new store in memory and initialize
 func New(ly Layer, c *Config) *Store {
 	newLogger := logger.GetLogger("store")
@@ -450,7 +458,7 @@ func (s *Store) Open() (retError error) {
 	}
 
 	// Creating network layer
-	nt := raft.NewNetworkTransport(NewTransport((s.ly)), connectionPoolCount, connectionTimeout, nil)
+	nt := raft.NewNetworkTransport(NewTransport(s.ly), connectionPoolCount, connectionTimeout, nil)
 	s.raftTn = NewNodeTransport(nt)
 
 	s.numTrailingLogs = uint64(float64(s.SnapshotThreshold) * trailingScale)
@@ -663,7 +671,7 @@ func (s *Store) observe() (closeCh, doneCh chan struct{}) {
 // will be returned.
 func (s *Store) Stepdown(wait bool) error {
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 	f := s.raft.LeadershipTransfer()
 	if !wait {
@@ -683,6 +691,7 @@ func (s *Store) Close(wait bool) (retErr error) {
 	}()
 	if !s.open.Is() {
 		// Protect against closing already-closed resource, such as channels.
+		s.logger.Debug().Msg("closing already closed store")
 		return nil
 	}
 	// if err := s.snapshotCAS.BeginWithRetry("close", 10*time.Millisecond, 10*time.Second); err != nil {
@@ -698,20 +707,24 @@ func (s *Store) Close(wait bool) (retErr error) {
 	// close(s.snapshotWClose)
 	// <-s.snapshotWDone
 
+	s.logger.Printf("initiating raft shutdown protocol")
 	f := s.raft.Shutdown()
 	if wait {
 		if f.Error() != nil {
 			return f.Error()
 		}
 	}
+	s.logger.Printf("closing raft connections")
 	if err := s.raftTn.Close(); err != nil {
 		return err
 	}
 
-	// Only shutdown Bolt and SQLite when Raft is done.
+	s.logger.Printf("closing the badger database")
+	// Only shutdown Bolt and badger when Raft is done.
 	if err := s.db.Close(); err != nil {
 		return err
 	}
+	s.logger.Printf("closing the bolt store")
 	if err := s.boltStore.Close(); err != nil {
 		return err
 	}
@@ -721,7 +734,7 @@ func (s *Store) Close(wait bool) (retErr error) {
 // Nodes returns the slice of nodes in the cluster, sorted by ID ascending.
 func (s *Store) Nodes() ([]*Server, error) {
 	if !s.open.Is() {
-		return nil, ErrNotOpen
+		return nil, ErrStoreNotOpen
 	}
 
 	s.logger.Debug().Msg("a node exists!")
@@ -856,7 +869,7 @@ func (s *Store) HasLeaderID() bool {
 // commit index is returned directly from the Raft object.
 func (s *Store) LeaderCommitIndex() (uint64, error) {
 	if !s.open.Is() {
-		return 0, ErrNotOpen
+		return 0, ErrStoreNotOpen
 	}
 	if s.raft.State() == raft.Leader {
 		return s.raft.CommitIndex(), nil
@@ -866,14 +879,14 @@ func (s *Store) LeaderCommitIndex() (uint64, error) {
 
 func (s *Store) CommitIndex() (uint64, error) {
 	if !s.open.Is() {
-		return 0, ErrNotOpen
+		return 0, ErrStoreNotOpen
 	}
 	return s.raft.CommitIndex(), nil
 }
 
 func (s *Store) Remove(rn *commandProto.RemoveNodeRequest) error {
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 	id := rn.Id
 
@@ -896,7 +909,7 @@ func (s *Store) Remove(rn *commandProto.RemoveNodeRequest) error {
 func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
 	s.logger.Printf("notifying node %v", nr)
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 
 	s.notifyMu.Lock()
@@ -958,7 +971,7 @@ func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
 func (s *Store) Join(jr *commandProto.JoinRequest) error {
 	s.logger.Print("got a join request to the store")
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 
 	if s.raft.State() != raft.Leader {
@@ -1131,7 +1144,7 @@ func (s *Store) logSize() (int64, error) {
 // false will also be returned.
 func (s *Store) IsVoter() (bool, error) {
 	if !s.open.Is() {
-		return false, ErrNotOpen
+		return false, ErrStoreNotOpen
 	}
 
 	cfg := s.raft.GetConfiguration()
@@ -1234,57 +1247,100 @@ func (s *Store) Stats() (map[string]interface{}, error) {
 // Cluster interface implementation
 
 // Execute executes queries that return no rows, but do modify the database.
-// func (s *Store) Execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
-// 	p := (*PragmaCheckRequest)(ex.Request)
-// 	if err := p.Check(); err != nil {
-// 		return nil, err
-// 	}
+func (s *Store) Execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
 
-// 	if !s.open.Is() {
-// 		return nil, ErrNotOpen
-// 	}
+	if !s.open.Is() {
+		return nil, ErrStoreNotOpen
+	}
+	if s.raft.State() != raft.Leader {
+		return nil, ErrNotLeader
+	}
+	if !s.Ready() {
+		return nil, ErrNotReady
+	}
 
-// 	if s.raft.State() != raft.Leader {
-// 		return nil, ErrNotLeader
-// 	}
-// 	if !s.Ready() {
-// 		return nil, ErrNotReady
-// 	}
-// 	return s.execute(ex)
-// }
+	return s.execute(ex)
+}
 
-// type fsmExecuteQueryResponse struct {
-// 	results []*proto.ExecuteQueryResponse
-// 	error   error
-// }
+type fsmExecuteQueryResponse struct {
+	results []*proto.ExecuteQueryResponse
+	error   error
+}
 
-// func (s *Store) execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
-// 	b, compressed, err := s.tryCompress(ex)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+// executes the command, IMP this can ONLY be run on the leader as
+// we call raft.Apply
+func (s *Store) execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
+	b, compressed, err := s.tryCompress(ex)
+	if err != nil {
+		return nil, err
+	}
 
-// 	c := &proto.Command{
-// 		Type:       proto.Command_COMMAND_TYPE_EXECUTE,
-// 		SubCommand: b,
-// 		Compressed: compressed,
-// 	}
+	c := &proto.Command{
+		Type:       proto.Command_COMMAND_TYPE_EXECUTE,
+		SubCommand: b,
+		Compressed: compressed,
+	}
 
-// 	b, err = command.Marshal(c)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+	b, err = command.Marshal(c)
+	if err != nil {
+		return nil, err
+	}
 
-// 	af := s.raft.Apply(b, s.ApplyTimeout)
-// 	if af.Error() != nil {
-// 		if af.Error() == raft.ErrNotLeader {
-// 			return nil, ErrNotLeader
-// 		}
-// 		return nil, af.Error()
-// 	}
-// 	r := af.Response().(*fsmExecuteQueryResponse)
-// 	return r.results, r.error
-// }
+	applyFuture := s.raft.Apply(b, s.ApplyTimeout)
+	if applyFuture.Error() != nil {
+		if applyFuture.Error() == raft.ErrNotLeader {
+			return nil, ErrNotLeader
+		}
+		return nil, applyFuture.Error()
+	}
+	r := applyFuture.Response().(*fsmExecuteQueryResponse)
+	return r.results, r.error
+}
+
+func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
+	return nil, ErrNotImplemented
+}
+
+func (s *Store) Request(eqr *commandProto.ExecuteQueryRequest) ([]*commandProto.ExecuteQueryResponse, error) {
+	if !s.open.Is() {
+		return nil, ErrStoreNotOpen
+	}
+
+	if s.raft.State() != raft.Leader {
+		return nil, ErrNotLeader
+	}
+
+	if !s.Ready() {
+		return nil, ErrNotReady
+	}
+
+	b, compressed, err := s.tryCompress(eqr)
+	if err != nil {
+		return nil, err
+	}
+	c := &proto.Command{
+		Type:       proto.Command_COMMAND_TYPE_EXECUTE_QUERY,
+		SubCommand: b,
+		Compressed: compressed,
+	}
+
+	b, err = command.Marshal(c)
+	if err != nil {
+		return nil, err
+	}
+
+	af := s.raft.Apply(b, s.ApplyTimeout)
+	if af.Error() != nil {
+		if af.Error() == raft.ErrNotLeader {
+			return nil, ErrNotLeader
+		}
+		return nil, af.Error()
+	}
+
+	r := af.Response().(*fsmExecuteQueryResponse)
+
+	return r.results, nil
+}
 
 // tryCompress attempts to compress the given command. If the command is
 // successfully compressed, the compressed byte slice is returned, along with
@@ -1307,6 +1363,11 @@ func (s *Store) tryCompress(rq command.Requester) ([]byte, bool, error) {
 // ID returns the Raft ID of the store.
 func (s *Store) ID() string {
 	return s.raftID
+}
+
+func GetNodeAPIAddr(addr string, retries int, timeout time.Duration) (string, error) {
+	// func GetAddresser(addr string, retries int, timeout time.Duration) (string, error) {
+	return "", ErrNotImplemented
 }
 
 // Bootstrap executes a cluster bootstrap on this node, using the given
@@ -1349,7 +1410,7 @@ func prettyVoter(v bool) string {
 // through the Raft log.
 func (s *Store) Load(lr *proto.LoadRequest) error {
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 
 	if !s.Ready() {
@@ -1408,6 +1469,7 @@ func (s *Store) fsmSnapshot() (fSnap raft.FSMSnapshot, retErr error) {
 	return nil, ErrNotImplemented
 }
 
+// TODO: implementation is not complete
 func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
 	return ErrNotImplemented
 }
@@ -1543,4 +1605,96 @@ func (s *Store) WaitForRemoval(id string, timeout time.Duration) error {
 		return ErrWaitForRemovalTimeout
 	}
 	return nil
+}
+
+// Newer functions will move them over accordingly
+
+// store a value in the badger database
+func (s *Store) StoreInDatabase(key, value string) error {
+	if !s.open.Is() {
+		return ErrStoreNotOpen
+	}
+	if s.raft.State() != raft.Leader {
+		return ErrNotLeader
+	}
+	if !s.Ready() {
+		return ErrNotReady
+	}
+	if s.db.IsClosed() {
+		return ErrDatabaseNotOpen
+	}
+
+	s.logger.Trace().Msgf("storing key: %v and value: %v", key, value)
+	keyBytes := []byte(key)
+	valBytes := []byte(value)
+	s.db.Update(func(txn *badger.Txn) error {
+		err := txn.Set(keyBytes, valBytes)
+		return err
+	})
+
+	return nil
+}
+
+// GetFromDatabase retrieves a value from the Badger database by key.
+// Returns the value as a string
+func (s *Store) GetFromDatabase(key string) (string, error) {
+	if !s.open.Is() {
+		return "", ErrStoreNotOpen
+	}
+	if s.raft.State() != raft.Leader {
+		return "", ErrNotLeader
+	}
+	if !s.Ready() {
+		return "", ErrNotReady
+	}
+	if s.db.IsClosed() {
+		return "", ErrDatabaseNotOpen
+	}
+
+	s.logger.Trace().Msgf("retrieving key: %v", key)
+	var value string
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(key))
+		if err != nil {
+			return err
+		}
+
+		// Retrieve the value and convert it to a string.
+		valBytes, err := item.ValueCopy(nil)
+		if err != nil {
+			return err
+		}
+		value = string(valBytes)
+		return nil
+	})
+
+	if err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+// isStaleRead checks if a read request is stale based on the leader's contact time,
+// FSM update time, log append time, and a freshness threshold.
+//
+// A read is considered stale if:
+// 1. `freshness` is set (non-zero) and the leader's last contact (`leaderLastContact`)
+//    exceeds the freshness threshold, or
+// 2. In strict mode (`strict == true`):
+//    - No log entries have been appended (`lastAppendedAtTime.IsZero()`),
+//    - The FSM index (`fsmIndex`) differs from the commit index (`commitIndex`),
+//    - The last FSM update (`lastFSMUpdateTime`) exceeds the freshness window.
+//
+func (s *Store) isStaleRead(freshness int64, strict bool) bool {
+	if s.raft.State() == raft.Leader {
+		return false
+	}
+	return IsStaleRead(
+		s.raft.LastContact(),
+		s.fsmUpdateTime.Load(),
+		s.appendedAtTime.Load(),
+		s.fsmIdx.Load(),
+		s.raftTn.CommandCommitIndex(),
+		freshness,
+		strict)
 }

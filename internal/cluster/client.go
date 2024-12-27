@@ -289,7 +289,7 @@ func (c *Client) Backup(br *command.BackupRequest, nodeAddr string, creds *proto
 	return err
 }
 
-// Load loads a SQLite file into the database.
+// Load loads a BadgerDB file into the database.
 func (c *Client) Load(lr *command.LoadRequest, nodeAddr string, creds *proto.Credentials, timeout time.Duration, retries int) error {
 	command := &proto.Command{
 		Type: proto.Command_COMMAND_TYPE_LOAD,
@@ -553,6 +553,7 @@ func (c *Client) retry(command *proto.Command, nodeAddr string, timeout time.Dur
 	return p, nRetries, nil
 }
 
+// writeCommand writes command to the connection.
 func writeCommand(conn net.Conn, c *proto.Command, timeout time.Duration) error {
 	p, err := pb.Marshal(c)
 	if err != nil {
@@ -565,6 +566,7 @@ func writeCommand(conn net.Conn, c *proto.Command, timeout time.Duration) error 
 	}
 	b := make([]byte, protoBufferLengthSize)
 	binary.LittleEndian.PutUint64(b[0:], uint64(len(p)))
+	logger.AdHocLogger.Trace().Msgf("writeCommand: %v", b)
 	_, err = conn.Write(b)
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
@@ -576,6 +578,7 @@ func writeCommand(conn net.Conn, c *proto.Command, timeout time.Duration) error 
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return err
 	}
+	logger.AdHocLogger.Trace().Msgf("writeCommand: %v", p)
 	_, err = conn.Write(p)
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {

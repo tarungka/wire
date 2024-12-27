@@ -98,11 +98,11 @@ func Upgrade7To8(old, new string, logger *log.Logger) (retErr error) {
 
 	// Ensure all file handles are closed before any directory is renamed or removed.
 	if err := func() error {
-		// Write SQLite database file into new snapshot dir.
+		// Write BadgerDB database file into new snapshot dir.
 		newSqlitePath := filepath.Join(newTmpDir, oldMeta.ID+".db")
 		newSqliteFd, err := os.Create(newSqlitePath)
 		if err != nil {
-			return fmt.Errorf("failed to create new SQLite file %s: %s", newSqlitePath, err)
+			return fmt.Errorf("failed to create new BadgerDB file %s: %s", newSqlitePath, err)
 		}
 		defer newSqliteFd.Close()
 
@@ -127,25 +127,25 @@ func Upgrade7To8(old, new string, logger *log.Logger) (retErr error) {
 		} else {
 			// Skip past the header and length of the old state file.
 			if _, err := stateFd.Seek(headerLength, 0); err != nil {
-				return fmt.Errorf("failed to seek to beginning of old SQLite data %s: %s", oldStatePath, err)
+				return fmt.Errorf("failed to seek to beginning of old BadgerDB data %s: %s", oldStatePath, err)
 			}
 			gzipReader, err := gzip.NewReader(stateFd)
 			if err != nil {
-				return fmt.Errorf("failed to create gzip reader from old SQLite data at %s: %s", oldStatePath, err)
+				return fmt.Errorf("failed to create gzip reader from old BadgerDB data at %s: %s", oldStatePath, err)
 			}
 			defer gzipReader.Close()
 			if _, err := io.Copy(newSqliteFd, gzipReader); err != nil {
-				return fmt.Errorf("failed to copy old SQLite file %s to new SQLite file %s: %s", oldStatePath,
+				return fmt.Errorf("failed to copy old BadgerDB file %s to new BadgerDB file %s: %s", oldStatePath,
 					newSqlitePath, err)
 			}
 			// if !db.IsValidSQLiteFile(newSqlitePath) {
-			// 	return fmt.Errorf("migrated SQLite file %s is not valid", newSqlitePath)
+			// 	return fmt.Errorf("migrated BadgerDB file %s is not valid", newSqlitePath)
 			// }
 		}
 
 		// Ensure database file exists and convert to WAL mode.
 		// if err := db.EnsureWALMode(newSqlitePath); err != nil {
-		// 	return fmt.Errorf("failed to convert migrated SQLite file %s to WAL mode: %s", newSqlitePath, err)
+		// 	return fmt.Errorf("failed to convert migrated BadgerDB file %s to WAL mode: %s", newSqlitePath, err)
 		// }
 		return nil
 	}(); err != nil {

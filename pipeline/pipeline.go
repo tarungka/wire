@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/partitioner"
@@ -20,11 +21,11 @@ type DataSource interface {
 
 	// Load all initial data from the source
 	// There are exceptions to this, i.e kafka
-	LoadInitialData(context.Context, <-chan interface{}, *sync.WaitGroup) (<-chan []byte, error)
+	LoadInitialData(context.Context, *sync.WaitGroup) (<-chan []byte, error)
 
 	// Read is responsible to create a write only channel that is accessible to
 	// downstream stages and is the owner of the channel
-	Read(context.Context, <-chan interface{}, *sync.WaitGroup) (<-chan []byte, error)
+	Read(context.Context, *sync.WaitGroup) (<-chan []byte, error)
 
 	// Get the key
 	Key() (string, error)
@@ -49,7 +50,7 @@ type DataSink interface {
 
 	// Write is responsible to read data from the upstream input channel and
 	// write data to the sink
-	Write(<-chan interface{}, *sync.WaitGroup, <-chan []byte, <-chan []byte) error
+	Write(context.Context, *sync.WaitGroup, <-chan []byte, <-chan []byte) error
 
 	// Get the key
 	Key() (string, error)
@@ -65,7 +66,8 @@ type DataSink interface {
 }
 
 type DataPipeline struct {
-
+	// pipeline is running
+	open atomic.Bool
 	// A data source object
 	Source DataSource
 	// A data sink object
@@ -103,15 +105,17 @@ func (d *DataPipeline) SetSink(sink DataSink) {
 
 // Run the data pipeline, connects to the source and sink. Reads data from the source
 // then writes the data to the sink.
-func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
+func (dp *DataPipeline) Run(pctx context.Context) {
 
 	defer func() {
 		log.Trace().Msgf("The RUN function is done/returning.[%v]", dp.Sink.Info())
-		wg.Done()
 	}()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	ctx, cancel := context.WithCancel(pctx) // create a new context with the parent context
 	dp.cancel = cancel
+
+	dp.open.Store(true) // pipeline is running
 
 	// Connect to source
 	if sourceConnectError := dp.Source.Connect(ctx); sourceConnectError != nil {
@@ -123,14 +127,14 @@ func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
 		log.Err(sinkConnectError).Msg("Error when connecting to sink")
 	}
 
-	initialDataChannel, err := dp.Source.LoadInitialData(ctx, done, wg)
+	initialDataChannel, err := dp.Source.LoadInitialData(ctx, &wg)
 	if err != nil {
 		log.Err(err).Msg("Error when loading initial data")
 	}
 
 	// TODO: This code IMO will only hold good for low throughput scenarios
 	// and does not scale when there are multiple pipelines running.
-	dataChannel, err := dp.Source.Read(ctx, done, wg)
+	dataChannel, err := dp.Source.Read(ctx, &wg)
 	if err != nil {
 		log.Err(err).Msg("Error when reading from the data source")
 		return
@@ -158,22 +162,31 @@ func (dp *DataPipeline) Run(done <-chan interface{}, wg *sync.WaitGroup) {
 
 	for i := 0; i < jobCount; i++ {
 		wg.Add(1)
-		go dp.processJob(done, wg, partitionedDataChannels[i], partitionedInitialDataChannels[i])
+		go dp.processJob(ctx, &wg, partitionedDataChannels[i], partitionedInitialDataChannels[i])
 	}
 
-	<-done
-	dp.Close() // the context is cancelled in here
+	<-ctx.Done()
+	wg.Wait()  // Wait till you finish reading and writing all the data
+	dp.Close() // the pipeline context is cancelled in here
 }
 
 // Process job as of now only writes the data to the sink in a non deterministic manner
 // i.e the writes can be in a different order to the reads
-func (dp *DataPipeline) processJob(done <-chan interface{}, wg *sync.WaitGroup, dataChannel <-chan []byte, initialDataChannel <-chan []byte) {
+func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, dataChannel <-chan []byte, initialDataChannel <-chan []byte) {
 	// defer wg.Done()
 
 	// TODO: wg.Done is called in Write, not very readable code, need to refactor this
-	if err := dp.Sink.Write(done, wg, dataChannel, initialDataChannel); err != nil {
+	if err := dp.Sink.Write(ctx, wg, dataChannel, initialDataChannel); err != nil {
 		log.Err(err).Msg("Error when writing to the data sink")
 	}
+}
+
+// Key returns the key for the pipeline
+func (dp *DataPipeline) Key() string {
+	if dp.open.Load() {
+		return ""
+	}
+	return dp.key
 }
 
 // Shows the `source name` -> `sink name`
@@ -187,6 +200,8 @@ func (dp *DataPipeline) Close() bool {
 	log.Info().Msgf("Closing data pipeline: %s", dpInfo)
 	// close(dp.pipelineDone)
 
+	dp.open.Store(false)
+
 	// Cancel the context
 	dp.cancel()
 
@@ -198,10 +213,15 @@ func (dp *DataPipeline) Close() bool {
 // Create a new DataPipeline and initialize it
 func NewDataPipeline(source DataSource, sink DataSink) *DataPipeline {
 	dataPipeline := &DataPipeline{
-		Source: source,
-		Sink:   sink,
+		Source:   source,
+		Sink:     sink,
+		open:     atomic.Bool{},
+		cancel:   nil,
+		key:      "",
+		jobCount: 4,
+		mu:       sync.Mutex{},
 	}
-	dataPipeline.Init()
+	// dataPipeline.Init() // does nothing as of now
 
 	// TODO: Remove this, code is only for testing
 	// go func() {

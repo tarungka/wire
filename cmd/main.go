@@ -119,7 +119,7 @@ func main() {
 
 	// Create cluster service now, so nodes will be able to learn information about each other.
 	clstrLn := mux.Listen(cluster.MuxClusterHeader)
-	clstrServ, err := clusterService(cfg, clstrLn, str)
+	clstrServ, err := clusterService(cfg, clstrLn, str, str)
 	if err != nil {
 		log.Fatal().Msgf("failed to create cluster service: %s", err.Error())
 	}
@@ -135,7 +135,7 @@ func main() {
 	// We want to start the HTTP server as soon as possible, so the node is responsive and external
 	// systems can see that it's running. We still have to open the Store though, so the node won't
 	// be able to do much until that happens however.
-	httpServ, err := startHTTPService(cfg, str, clstrClient)
+	httpServ, err := startHTTPService(cfg, str, mainCtx, clstrClient)
 	if err != nil {
 		log.Fatal().Msgf("failed to start HTTP server: %s", err.Error())
 	}
@@ -198,6 +198,7 @@ func main() {
 		// Perform a stepdown, ignore any errors.
 		str.Stepdown(true)
 	}
+	log.Debug().Msgf("closing mux listener listening on %s", muxListener.Addr().String())
 	muxListener.Close()
 
 	if err := str.Close(true); err != nil {
@@ -241,8 +242,8 @@ func startNodeMux(cfg *Config, ln net.Listener) (*tcp.Mux, error) {
 	return mux, nil
 }
 
-func clusterService(cfg *Config, ln net.Listener, mgr cluster.Manager) (*cluster.Service, error) {
-	c := cluster.New(ln, mgr)
+func clusterService(cfg *Config, ln net.Listener, db cluster.Database, mgr cluster.Manager) (*cluster.Service, error) {
+	c := cluster.New(ln, db, mgr)
 	c.SetAPIAddr(cfg.HTTPAddr)
 	// TODO: support HTTP over SSL
 	c.EnableHTTPS(cfg.HTTPx509Cert != "" && cfg.HTTPx509Key != "") // Conditions met for an HTTPS API
@@ -272,8 +273,8 @@ func createClusterClient(cfg *Config, clstr *cluster.Service) (*cluster.Client, 
 	return clstrClient, nil
 }
 
-func createStore(cfg *Config, ln *tcp.Layer) (*store.Store, error) {
-	str := store.New(ln, &store.Config{
+func createStore(cfg *Config, ly *tcp.Layer) (*store.Store, error) {
+	str := store.New(ly, &store.Config{
 		Dir: cfg.DataPath,
 		ID:  cfg.NodeID,
 	})
@@ -302,7 +303,7 @@ func createStore(cfg *Config, ln *tcp.Layer) (*store.Store, error) {
 	return str, nil
 }
 
-func startHTTPService(cfg *Config, str *store.Store, cltr *cluster.Client) (*httpd.Service, error) {
+func startHTTPService(cfg *Config, str *store.Store, ctx context.Context, cltr *cluster.Client) (*httpd.Service, error) {
 	// Create HTTP server and load authentication information.
 	s := httpd.New(cfg.HTTPAddr, str, cltr, nil)
 
@@ -324,9 +325,23 @@ func startHTTPService(cfg *Config, str *store.Store, cltr *cluster.Client) (*htt
 		"build_time":         cmd.Buildtime,
 	}
 	s.SetAllowOrigin(cfg.HTTPAllowOrigin)
-	return s, s.Start()
+	return s, s.Start(ctx)
 }
 
+// createCluster function initializes or joins a Raft cluster based on the
+// node’s configuration and the presence of existing cluster peers.
+// If this is a single-node setup with no discovery mode or join addresses
+// specified, the function checks if the node is eligible to bootstrap itself.
+// For an eligible node, it creates a new server instance and bootstraps it
+// as the cluster's initial node.
+// When join addresses are present, the function handles cluster joining
+// based on the expected minimum quorum (BootstrapExpect). If no quorum
+// is required, it attempts to join the cluster directly through the join
+// addresses. For cases requiring a quorum, the function uses a bootstrapper
+// to coordinate cluster creation, using the specified join addresses and
+// waiting until a leader is elected before proceeding. If no discovery
+// or join options are available, it defaults to using any existing Raft
+// state on the node for cluster continuity without further clustering actions.
 func createCluster(ctx context.Context, cfg *Config, hasPeers bool, client *cluster.Client, str *store.Store,
 	httpServ *httpd.Service, credStr *auth.CredentialsStore) error {
 	joins := cfg.JoinAddresses()

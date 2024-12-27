@@ -11,6 +11,9 @@ import (
 	"github.com/tarungka/wire/sources"
 )
 
+// currently working on adding metadata to the running pipelines
+// and their statuses for diagnosis
+
 type DataPipelineConfig struct {
 	allSourceInterfaces []DataSource            // All the data sources in an array
 	allSinkInterfaces   []DataSink              // All the data sinks in an array
@@ -18,6 +21,12 @@ type DataPipelineConfig struct {
 	snkIndexMap         map[string][]int        // key : [indices of where the sink is in the allSinkInterfaces]
 	keys                map[string]bool         // Keys: ifExists; value can be false only when key is deleted after creation
 	mappedDataPipelines map[string]DataPipeline // Mapping of {key: DataPipeline}
+}
+
+type DataPipelineManager struct {
+	activePipelines uint32              // current actively running pipelines
+	configs         *DataPipelineConfig // will probably move this over to badger
+
 }
 
 var (
@@ -243,7 +252,7 @@ func DataSourceFactory(config sources.SourceConfig) (DataSource, error) {
 	log.Debug().Msgf("Creating and allocating object for source: %s", sourceType)
 	switch sourceType {
 	case "mongodb":
-		x := &sources.MongoSource{}
+		x := sources.NewMongoSource()
 		x.Init(config)
 		return x, nil
 	case "kafka":
@@ -276,7 +285,7 @@ func DataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
 	}
 }
 
-// This is a singleton implementation of the Data pipeline config
+// This is a singleton implementation of the Data pipeline config.
 // This will change a lot when made into a distributed architecture
 func GetPipelineInstance() *DataPipelineConfig {
 	once.Do(func() {

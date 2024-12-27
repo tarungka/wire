@@ -321,7 +321,7 @@ type Statement struct {
 
 	Sql        string       `protobuf:"bytes,1,opt,name=sql,proto3" json:"sql,omitempty"`
 	Parameters []*Parameter `protobuf:"bytes,2,rep,name=parameters,proto3" json:"parameters,omitempty"`
-	ForceQuery bool         `protobuf:"varint,3,opt,name=forceQuery,proto3" json:"forceQuery,omitempty"`
+	ForceQuery bool         `protobuf:"varint,3,opt,name=forceQuery,proto3" json:"forceQuery,omitempty"` // not really used as of now
 }
 
 func (x *Statement) Reset() {
@@ -380,9 +380,9 @@ type Request struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Transaction bool         `protobuf:"varint,1,opt,name=transaction,proto3" json:"transaction,omitempty"`
-	Statements  []*Statement `protobuf:"bytes,2,rep,name=statements,proto3" json:"statements,omitempty"`
-	DbTimeout   int64        `protobuf:"varint,3,opt,name=dbTimeout,proto3" json:"dbTimeout,omitempty"`
+	Transaction bool         `protobuf:"varint,1,opt,name=transaction,proto3" json:"transaction,omitempty"` // if a transaction
+	Statements  []*Statement `protobuf:"bytes,2,rep,name=statements,proto3" json:"statements,omitempty"`    // the statement/command
+	DbTimeout   int64        `protobuf:"varint,3,opt,name=dbTimeout,proto3" json:"dbTimeout,omitempty"`     // timeout
 }
 
 func (x *Request) Reset() {
