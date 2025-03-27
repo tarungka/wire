@@ -12,8 +12,8 @@ import (
 // Job is a struct that holds all the data about the job
 // and other metadata necessary
 type Job struct {
-	ID            uuid.UUID   // a UUID v7 to identify the job
-	data          interface{} // can be anything; but is usually a JSON
+	ID            uuid.UUID // a UUID v7 to identify the job
+	data          any       // can be anything; but is usually a JSON
 	nodeCreatedAt time.Time
 	nodeUpdatedAt time.Time
 	eventTime     time.Time
@@ -24,14 +24,14 @@ type Job struct {
 	mu sync.RWMutex
 }
 
-func (j *Job) SetData(d interface{}) error {
+func (j *Job) SetData(d any) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.data = d
 	return nil
 }
 
-func (j *Job) GetData() (interface{}, error) {
+func (j *Job) GetData() (any, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	if j.data == nil {
@@ -56,7 +56,7 @@ func (j *Job) GetUpdatedAt() (time.Time, error) {
 	return j.nodeUpdatedAt, nil
 }
 
-func New(data interface{}) (*Job, error) {
+func New(data any) (*Job, error) {
 	jId, err := uuid.NewV7()
 	if err != nil {
 		logger.AdHocLogger.Err(err).Msg("error when creating a new job")
@@ -67,7 +67,7 @@ func New(data interface{}) (*Job, error) {
 	var ok bool
 	var eventTime time.Time
 	switch t := data.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		stringEventTime, ok = t["eventTime"].(string)
 		if !ok {
 			break // should break out of the case

@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/models"
 	"github.com/tarungka/wire/internal/partitioner"
+	"github.com/tarungka/wire/internal/transform"
 	"github.com/tarungka/wire/sinks"
 	"github.com/tarungka/wire/sources"
 )
@@ -82,7 +83,7 @@ type DataPipeline struct {
 	// Num jobs
 	jobCount uint
 	// To shutdown only the pipeline
-	pipelineDone chan interface{}
+	pipelineDone chan any
 	// Mutex
 	mu sync.Mutex
 }
@@ -156,14 +157,15 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 	partitionedInitialDataChannels := jobPartitioner.PartitionData(initialDataChannel)
 	partitionedDataChannels := jobPartitioner.PartitionData(dataChannel)
 
-	// jobPartitioner.Examine()
+	jobPartitioner.Examine()
 
 	// for i := 0; i < jobCount; i++ {
-	// 	fmt.Printf("Channel [%v] = %v\n", i, partitionedInitialDataChannels[i])
+	// 	log.Debug().Printf("Channel [%v] = %v\n", i, partitionedInitialDataChannels[i])
 	// 	fmt.Printf("|Channel [%v] = %v\n", i, partitionedDataChannels[i])
 	// }
 
-	for i := 0; i < jobCount; i++ {
+	log.Debug().Msgf("Creating %d jobs", jobCount)
+	for i := range jobCount {
 		wg.Add(1)
 		go dp.processJob(ctx, &wg, partitionedDataChannels[i], partitionedInitialDataChannels[i])
 	}
@@ -177,13 +179,18 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 // i.e the writes can be in a different order to the reads
 func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, dataChannel <-chan *models.Job, initialDataChannel <-chan *models.Job) {
 	// defer wg.Done()
+	log.Debug().Msg("In a process job")
+	log.Debug().Msgf("The wg and dataChannel are: %v | %v", wg, len(dataChannel))
 
 	// TODO: need to add code to transform the input to the expected output
+	// transform.ApplyTransformation()
+	t := &transform.Transformer{}
+	t.ApplyTransformationJob(ctx, initialDataChannel)
 
 	// TODO: wg.Done is called in Write, not very readable code, need to refactor this
-	if err := dp.Sink.Write(ctx, wg, dataChannel, initialDataChannel); err != nil {
-		log.Err(err).Msg("Error when writing to the data sink")
-	}
+	// 	if err := dp.Sink.Write(ctx, wg, dataChannel, initialDataChannel); err != nil {
+	// 		log.Err(err).Msg("Error when writing to the data sink")
+	// 	}
 }
 
 // Key returns the key for the pipeline
