@@ -181,7 +181,7 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 
 // Process job as of now only writes the data to the sink in a non deterministic manner
 // i.e the writes can be in a different order to the reads
-func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, t transform.Transformer, dataChannel <-chan *models.Job, initialDataChannel <-chan *models.Job) {
+func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, t *transform.Transformer, dataChannel <-chan *models.Job, initialDataChannel <-chan *models.Job) {
 	// defer wg.Done()
 	log.Debug().Msg("In a process job")
 	log.Debug().Msgf("The wg and dataChannel are: %v | %v", wg, len(dataChannel))
@@ -189,10 +189,10 @@ func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, t tr
 	// TODO: need to add code to transform the input to the expected output
 	// transform.ApplyTransformation()
 	initialTransformedChannel := t.ApplyTransformationJob(ctx, initialDataChannel)
-	transformedChannel := t.ApplyTransformationJob(ctx, initialDataChannel)
+	transformedChannel := t.ApplyTransformationJob(ctx, dataChannel)
 
 	// TODO: wg.Done is called in Write, not very readable code, need to refactor this
-	if err := dp.Sink.Write(ctx, wg, transformedChannel, initialDataChannel); err != nil {
+	if err := dp.Sink.Write(ctx, wg, transformedChannel, initialTransformedChannel); err != nil {
 		log.Err(err).Msg("Error when writing to the data sink")
 	}
 }
