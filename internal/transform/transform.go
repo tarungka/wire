@@ -3,8 +3,11 @@ package transform
 import (
 	"context"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"time"
+
+	"encoding/json"
+	"strings"
 
 	"github.com/tarungka/wire/internal/models"
 
@@ -12,8 +15,8 @@ import (
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/io/textio"
 	// "github.com/apache/beam/sdks/v2/go/pkg/beam/options/jobopts"
 	// "github.com/apache/beam/sdks/v2/go/pkg/beam/options/pipelineopts"
-	"github.com/apache/beam/sdks/v2/go/pkg/beam/runners/prism"
 	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/io/filesystem/local"
+	"github.com/apache/beam/sdks/v2/go/pkg/beam/runners/prism"
 )
 
 // Transformer represents the processing pipeline
@@ -42,12 +45,12 @@ func (tf *Transformer) ApplyTransformation(inputData []string) error {
 	// Run the pipeline
 	a, err := prism.Execute(context.Background(), p)
 	if err != nil {
-		log.Fatalf("Pipeline failed: %v", err)
+		log.Fatal().Msgf("Pipeline failed: %v", err)
 		return err
 	}
 	fmt.Sprintf("Executed: %s", a)
 
-	log.Println("Transformation applied successfully.")
+	log.Info().Msg("Transformation applied successfully.")
 	return nil
 }
 
@@ -62,7 +65,7 @@ func (tf *Transformer) ApplyTransformationJob(ctx context.Context, jobChannel <-
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Shutting down transformation pipeline...")
+			log.Info().Msg("Shutting down transformation pipeline...")
 			return nil
 
 		case <-ticker.C:
@@ -77,7 +80,9 @@ func (tf *Transformer) ApplyTransformationJob(ctx context.Context, jobChannel <-
 					if err != nil {
 						return err
 					}
-					inputData = append(inputData, fmt.Sprintf("JobID: %s, Data: %v", job.ID, jobData))
+					// This is not right to type assert to this  to a string, find a better
+					// solution for this
+					inputData = append(inputData, string(jobData.([]uint8)))
 				default:
 					break
 				}
@@ -99,9 +104,10 @@ func (tf *Transformer) runBeamPipeline(inputData []string) error {
 	s := p.Root()
 	input := beam.CreateList(s, inputData)
 
-	transformed := beam.ParDo(s, func(line string) string {
-		return fmt.Sprintf("Processed: %s", line)
-	}, input)
+	// transformed := beam.ParDo(s, func(line string) string {
+	// 	return fmt.Sprintf("Processed: %s", line)
+	// }, input)
+	transformed := beam.ParDo(s, toUppercaseJSON, input)
 
 	outputPath := "output.txt"
 	textio.Write(s, outputPath, transformed)
@@ -110,8 +116,53 @@ func (tf *Transformer) runBeamPipeline(inputData []string) error {
 		return fmt.Errorf("pipeline execution failed: %w", err)
 	}
 
-	log.Println("Batch processed successfully.")
+	log.Debug().Msg("Batch processed successfully.")
 	return nil
+}
+
+// toUppercaseJSON parses JSON and converts all string values to uppercase
+func toUppercaseJSON(jsonStr string) (string, error) {
+	var data map[string]any
+
+	log.Debug().Msgf("Processing data: %s", jsonStr)
+
+	// Parse JSON
+	err := json.Unmarshal([]byte(jsonStr), &data)
+	if err != nil {
+		log.Printf("Failed to parse JSON: %v", err)
+		return "", err
+	}
+
+	// Convert all string values to uppercase
+	uppercaseJSON(data)
+
+	// Convert back to JSON string
+	updatedJSON, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Failed to serialize JSON: %v", err)
+		return "", err
+	}
+
+	return string(updatedJSON), nil
+}
+
+// uppercaseJSON recursively converts all string values in JSON to uppercase
+func uppercaseJSON(data any) {
+	switch v := data.(type) {
+	case map[string]any:
+		for key, val := range v {
+			switch valTyped := val.(type) {
+			case string:
+				v[key] = strings.ToUpper(valTyped)
+			case map[string]any, []any:
+				uppercaseJSON(valTyped)
+			}
+		}
+	case []any:
+		for _, val := range v {
+			uppercaseJSON(val)
+		}
+	}
 }
 
 // func main() {

@@ -150,7 +150,7 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 
 	// TODO: Implement code make the channel to a job and process the job
 	// Partition the data into multiple jobs (channel)
-	jobCount := 5 // Number of concurrent jobs
+	jobCount := 1 // Number of concurrent jobs
 
 	jobPartitioner := partitioner.NewPartitoner[*models.Job](jobCount, hashFn)
 
