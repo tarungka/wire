@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/rs/zerolog/log"
-	"time"
 
 	"encoding/json"
 	"strings"
@@ -20,7 +19,16 @@ import (
 )
 
 // Transformer represents the processing pipeline
-type Transformer struct{}
+type Transformer struct {
+	initalized bool
+}
+
+func (tf *Transformer) Init() {
+	if !tf.initalized {
+		beam.Init()
+		tf.initalized = true
+	}
+}
 
 // applyTransformation applies Beam transformations
 func (tf *Transformer) ApplyTransformation(inputData []string) error {
@@ -54,52 +62,100 @@ func (tf *Transformer) ApplyTransformation(inputData []string) error {
 	return nil
 }
 
-func (tf *Transformer) ApplyTransformationJob(ctx context.Context, jobChannel <-chan *models.Job) error {
+// func (tf *Transformer) ApplyTransformationJobBatch(ctx context.Context, jobChannel <-chan *models.Job) <-chan any {
+//
+// 	beam.Init()
+//
+// 	batchSize := 10                           // Process jobs in batches
+// 	ticker := time.NewTicker(2 * time.Second) // Periodic processing
+// 	defer ticker.Stop()
+//
+// 	for {
+// 		select {
+// 		case <-ctx.Done():
+// 			log.Info().Msg("Shutting down transformation pipeline...")
+// 			return nil
+//
+// 		case <-ticker.C:
+// 			var inputData []string
+//
+// 			// Collect jobs from the channel
+// 			for i := 0; i < batchSize; i++ {
+// 				select {
+// 				case job := <-jobChannel:
+//
+// 					jobData, err := job.GetData()
+// 					if err != nil {
+// 						log.Err().Msg("Error when getting the data from the channel")
+// 					}
+// 					// This is not right to type assert to this  to a string, find a better
+// 					// solution for this
+// 					inputData = append(inputData, string(jobData.([]byte)))
+// 				default:
+// 					break
+// 				}
+// 			}
+//
+// 			if len(inputData) > 0 {
+// 				log.Printf("Processing %d jobs...", len(inputData))
+// 				data, err := tf.runBeamPipeline(inputData)
+// 				if err != nil {
+// 					log.Printf("Error processing jobs: %v", err)
+// 				}
+// 				<-data
+// 			}
+// 		}
+// 	}
+// }
 
-	beam.Init()
+func (tf *Transformer) ApplyTransformationJob(ctx context.Context, jobChannel <-chan *models.Job) <-chan *models.Job {
+	if !tf.initalized {
+		tf.Init()
+	}
 
-	batchSize := 10                           // Process jobs in batches
-	ticker := time.NewTicker(2 * time.Second) // Periodic processing
-	defer ticker.Stop()
+	outChannel := make(chan *models.Job, 5)
 
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info().Msg("Shutting down transformation pipeline...")
-			return nil
+	go func() {
+		defer close(outChannel)
 
-		case <-ticker.C:
-			var inputData []string
+		for {
+			select {
+			case <-ctx.Done():
+				log.Info().Msg("Shutting down transformation pipeline...")
+				return
 
-			// Collect jobs from the channel
-			for i := 0; i < batchSize; i++ {
-				select {
-				case job := <-jobChannel:
-
-					jobData, err := job.GetData()
-					if err != nil {
-						return err
-					}
-					// This is not right to type assert to this  to a string, find a better
-					// solution for this
-					inputData = append(inputData, string(jobData.([]uint8)))
-				default:
-					break
+			case job := <-jobChannel: // Process job as soon as it arrives
+				jobData, err := job.GetData()
+				if err != nil {
+					log.Printf("Error retrieving job data: %v", err)
+					continue
 				}
-			}
 
-			if len(inputData) > 0 {
-				log.Printf("Processing %d jobs...", len(inputData))
-				if err := tf.runBeamPipeline(inputData); err != nil {
-					log.Printf("Error processing jobs: %v", err)
+				// Ensure correct type conversion
+				dataStr, ok := jobData.([]byte)
+				if !ok {
+					log.Printf("Unexpected job data type: %T", jobData)
+					continue
 				}
+
+				// Process the job immediately
+				log.Printf("Processing job: %s", string(dataStr))
+				data, err := tf.runBeamPipeline([]string{string(dataStr)})
+				if err != nil {
+					log.Printf("Error processing job: %v", err)
+				}
+				// Update the data and add it to the channel
+				job.SetData(data)
+				outChannel <- job
 			}
 		}
-	}
+	}()
+
+	return outChannel
 }
 
 // runBeamPipeline runs the Apache Beam pipeline for processing jobs.
-func (tf *Transformer) runBeamPipeline(inputData []string) error {
+func (tf *Transformer) runBeamPipeline(inputData []string) (any, error) {
 	p := beam.NewPipeline()
 	s := p.Root()
 	input := beam.CreateList(s, inputData)
@@ -109,15 +165,16 @@ func (tf *Transformer) runBeamPipeline(inputData []string) error {
 	// }, input)
 	transformed := beam.ParDo(s, toUppercaseJSON, input)
 
-	outputPath := "output.txt"
-	textio.Write(s, outputPath, transformed)
+	// This is for debugging
+	// outputPath := "output.txt"
+	// textio.Write(s, outputPath, transformed)
 
 	if _, err := prism.Execute(context.Background(), p); err != nil {
-		return fmt.Errorf("pipeline execution failed: %w", err)
+		return nil, fmt.Errorf("pipeline execution failed: %w", err)
 	}
 
 	log.Debug().Msg("Batch processed successfully.")
-	return nil
+	return transformed, nil
 }
 
 // toUppercaseJSON parses JSON and converts all string values to uppercase

@@ -150,6 +150,7 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 
 	// TODO: Implement code make the channel to a job and process the job
 	// Partition the data into multiple jobs (channel)
+	// FIX: there is a race condition when there are more than 1 jobs running
 	jobCount := 1 // Number of concurrent jobs
 
 	jobPartitioner := partitioner.NewPartitoner[*models.Job](jobCount, hashFn)
@@ -164,10 +165,13 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 	// 	fmt.Printf("|Channel [%v] = %v\n", i, partitionedDataChannels[i])
 	// }
 
+	t := &transform.Transformer{}
+	t.Init()
+
 	log.Debug().Msgf("Creating %d jobs", jobCount)
 	for i := range jobCount {
 		wg.Add(1)
-		go dp.processJob(ctx, &wg, partitionedDataChannels[i], partitionedInitialDataChannels[i])
+		go dp.processJob(ctx, &wg, t, partitionedDataChannels[i], partitionedInitialDataChannels[i])
 	}
 
 	<-ctx.Done()
@@ -177,20 +181,20 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 
 // Process job as of now only writes the data to the sink in a non deterministic manner
 // i.e the writes can be in a different order to the reads
-func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, dataChannel <-chan *models.Job, initialDataChannel <-chan *models.Job) {
+func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, t transform.Transformer, dataChannel <-chan *models.Job, initialDataChannel <-chan *models.Job) {
 	// defer wg.Done()
 	log.Debug().Msg("In a process job")
 	log.Debug().Msgf("The wg and dataChannel are: %v | %v", wg, len(dataChannel))
 
 	// TODO: need to add code to transform the input to the expected output
 	// transform.ApplyTransformation()
-	t := &transform.Transformer{}
-	t.ApplyTransformationJob(ctx, initialDataChannel)
+	initialTransformedChannel := t.ApplyTransformationJob(ctx, initialDataChannel)
+	transformedChannel := t.ApplyTransformationJob(ctx, initialDataChannel)
 
 	// TODO: wg.Done is called in Write, not very readable code, need to refactor this
-	// 	if err := dp.Sink.Write(ctx, wg, dataChannel, initialDataChannel); err != nil {
-	// 		log.Err(err).Msg("Error when writing to the data sink")
-	// 	}
+	if err := dp.Sink.Write(ctx, wg, transformedChannel, initialDataChannel); err != nil {
+		log.Err(err).Msg("Error when writing to the data sink")
+	}
 }
 
 // Key returns the key for the pipeline

@@ -12,7 +12,7 @@ tmp_dir = "tmp"
         "--store-db", "bbolt",
         "--debug"]
   bin = "./tmp/main"
-  cmd = "go build -o ./tmp/main ./cmd"
+  cmd = "go build -race -o ./tmp/main ./cmd"
   delay = 1000
   exclude_dir = ["assets", "tmp", "vendor", "tests", "raft", "raft_db1", ".vscode", "wsnapshots"]
   exclude_file = []
