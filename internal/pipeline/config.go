@@ -280,6 +280,10 @@ func DataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
 		x := &sinks.KafkaSink{}
 		x.Init(config)
 		return x, nil
+	case "file":
+		x := &sinks.FileSink{}
+		x.Init(config)
+		return x, nil
 	default:
 		return nil, fmt.Errorf("unknown sink type: %s", sinkType)
 	}

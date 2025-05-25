@@ -166,6 +166,7 @@ func (m *MongoSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (
 		log.Info().Msg("Loading initial data from the source...")
 
 		log.Debug().Msg("Loading initial data from mongodb")
+		// TODO: batch upload the data
 		cursor, err := m.collection.Find(ctx, bson.D{})
 		if err != nil {
 			log.Err(err).Msg("Error when loading initial data from mongodb")
@@ -194,6 +195,7 @@ func (m *MongoSource) LoadInitialData(ctx context.Context, wg *sync.WaitGroup) (
 			initialDataStreamChan <- jobData
 		}
 
+		log.Debug().Msgf("LoadInitialData IS DONE")
 		<-ctx.Done()
 
 	}()
@@ -237,10 +239,8 @@ func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan *mod
 
 		defer func() {
 			log.Trace().Msg("Closing the mongo change stream")
-			// mongoStream.Close(ctx) // Close here?
-			// close(opStream) // I cannot close the read only change stream
-			// and expect the downstream channels to close, i need to close
-			// the original channel
+			// Close here? Probably not as this stream is being used to watch for changes
+			// mongoStream.Close(ctx) 
 			close(changeStreamChan)
 		}()
 
@@ -248,12 +248,11 @@ func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan *mod
 
 			log.Debug().Msg("Got a new event")
 
-			streamError := mongoStream.Err()
-			if streamError != nil {
-				log.Err(streamError).Msg("Error in change streams")
-			}
-
-			// ctx.
+			// BUG: This is causing a DATA RACE, I cant access stream.Err and stream.Next concurrently
+			// streamError := mongoStream.Err()
+			// if streamError != nil {
+			// 	log.Err(streamError).Msg("Error in change streams")
+			// }
 
 			// var changeDoc bson.M
 			var changeDoc ChangeStreamOperation
@@ -292,7 +291,7 @@ func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan *mod
 				return
 			// case data, a<-jsonData:
 			case opStream <- jobData: // Send the change to the channel
-			default: // Do not block as I want to read for changes, right?
+			default: // Do not block as I want to read for changes
 			}
 
 		}
@@ -300,10 +299,11 @@ func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan *mod
 		// This should technically never happen, unless its a SYS INT
 	}(stream, changeStreamChan)
 
-	if err := stream.Err(); err != nil {
-		log.Err(err).Msg("Error in the change stream")
-		return nil, err
-	}
+	// BUG: This is causing a DATA RACE, I cant access stream.Err and stream.Next concurrently
+	// if err := stream.Err(); err != nil {
+	// 	log.Err(err).Msg("Error in the change stream")
+	// 	return nil, err
+	// }
 
 	return changeStreamChan, nil
 }
