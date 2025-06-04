@@ -10,7 +10,7 @@ import (
 
 type Partitoner[T any] struct {
 	// Number of partitions
-	partitions int
+	partitions uint
 	// Hashing function
 	hashFn func(T) (uint64, error)
 	// Buffer size
@@ -28,7 +28,7 @@ type PartitonerOption[T any] func(*Partitoner[T])
 func (p *Partitoner[T]) PartitionData(dataChannel <-chan T) []chan T {
 	partitionedChannels := make([]chan T, p.partitions)
 
-	for i := 0; i < p.partitions; i++ {
+	for i := uint(0); i < p.partitions; i++ {
 		partitionedChannels[i] = make(chan T)
 	}
 
@@ -82,7 +82,7 @@ func WithContext[T any](ctx context.Context) PartitonerOption[T] {
 }
 
 // Partitoner factory function
-func NewPartitoner[T any](partitions int, hashFn func(T) (uint64, error), opts ...PartitonerOption[T]) *Partitoner[T] {
+func NewPartitoner[T any](partitions uint, hashFn func(T) (uint64, error), opts ...PartitonerOption[T]) *Partitoner[T] {
 
 	if hashFn == nil {
 		// TODO: write code to default to round robin
