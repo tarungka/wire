@@ -88,19 +88,19 @@ type Dialer interface {
 // Database is the interface any queryable system must implement
 type Database interface {
 	// Execute executes a slice of SQL statements.
-	Execute(er *commandProto.ExecuteRequest) ([]*commandProto.ExecuteQueryResponse, error)
+	// Execute(er *commandProto.ExecuteRequest) ([]*commandProto.ExecuteQueryResponse, error)
 
 	// Query executes a slice of queries, each of which returns rows.
-	Query(qr *commandProto.QueryRequest) ([]*commandProto.QueryRows, error)
+	// Query(qr *commandProto.QueryRequest) ([]*commandProto.QueryRows, error)
 
 	// Request processes a request that can both executes and queries.
-	Request(rr *commandProto.ExecuteQueryRequest) ([]*commandProto.ExecuteQueryResponse, error)
+	// Request(rr *commandProto.ExecuteQueryRequest) ([]*commandProto.ExecuteQueryResponse, error)
 
 	// Backup writes a backup of the database to the writer.
-	Backup(br *commandProto.BackupRequest, dst io.Writer) error
+	// Backup(br *commandProto.BackupRequest, dst io.Writer) error
 
-	// Loads an entire SQLite file into the database
-	Load(lr *commandProto.LoadRequest) error
+	// Loads an entire BadgerDB file into the database
+	// Load(lr *commandProto.LoadRequest) error
 }
 
 // Manager is the interface node-management systems must implement
@@ -133,21 +133,22 @@ type Service struct {
 	ln   net.Listener // Incoming connections to the service
 	addr net.Addr     // Address on which this service is listening
 
-	mgr Manager // The cluster management system.
+	db  Database // a database system
+	mgr Manager  // a cluster management system.
 
 	mu      sync.RWMutex
 	https   bool   // Serving HTTPS?
 	apiAddr string // host:port this node serves the HTTP API.
 
-	// logger *log.Logger
 	logger zerolog.Logger
 }
 
 // New returns a new instance of the cluster service
-func New(ln net.Listener, m Manager) *Service {
+func New(ln net.Listener, db Database, m Manager) *Service {
 	return &Service{
 		ln:   ln,
 		addr: ln.Addr(),
+		db:   db,
 		mgr:  m,
 		// logger: log.New(os.Stderr, "[cluster] ", log.LstdFlags),
 		logger: logger.GetLogger("cluster"),
@@ -163,6 +164,7 @@ func (s *Service) Open() error {
 
 // Close closes the service.
 func (s *Service) Close() error {
+	s.logger.Printf("closing the listener")
 	s.ln.Close()
 	return nil
 }
@@ -370,6 +372,7 @@ func writeBytesWithLength(conn net.Conn, p []byte) error {
 	if err != nil {
 		return err
 	}
+	logger.AdHocLogger.Debug().Msgf("writeBytesWithLength: %v", p)
 	_, err = conn.Write(p)
 	return err
 }

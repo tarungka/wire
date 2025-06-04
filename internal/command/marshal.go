@@ -9,6 +9,23 @@ import (
 
 	"github.com/tarungka/wire/internal/command/proto"
 	pb "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/runtime/protoimpl"
+)
+
+const (
+	// Verify that this generated code is sufficiently up-to-date.
+	_ = protoimpl.EnforceVersion(20 - protoimpl.MinVersion)
+	// Verify that runtime/protoimpl is sufficiently up-to-date.
+	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
+)
+
+type QueryRequest_Level int32
+
+const (
+	QueryRequest_QUERY_REQUEST_LEVEL_NONE   QueryRequest_Level = 0
+	QueryRequest_QUERY_REQUEST_LEVEL_WEAK   QueryRequest_Level = 1
+	QueryRequest_QUERY_REQUEST_LEVEL_STRONG QueryRequest_Level = 2
+	QueryRequest_QUERY_REQUEST_LEVEL_AUTO   QueryRequest_Level = 3
 )
 
 const (
@@ -222,4 +239,138 @@ func gzUncompress(b []byte) ([]byte, error) {
 		return nil, fmt.Errorf("unmarshal gzip Close: %s", err)
 	}
 	return ub, nil
+}
+
+type isParameter_Value interface {
+	isParameter_Value()
+}
+
+// Not yet completely implemented, need to think of all the edge cases
+type Parameter struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	// Types that are assignable to Value:
+	//
+	//	*Parameter_I
+	//	*Parameter_D
+	//	*Parameter_B
+	//	*Parameter_Y
+	//	*Parameter_S
+	Value isParameter_Value `protobuf_oneof:"value"`
+	Name  string            `protobuf:"bytes,6,opt,name=name,proto3" json:"name,omitempty"`
+}
+
+// func (x *Parameter) Reset() {
+// 	*x = Parameter{}
+// 	if protoimpl.UnsafeEnabled {
+// 		mi := &file_command_proto_msgTypes[0]
+// 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+// 		ms.StoreMessageInfo(mi)
+// 	}
+// }
+
+// func (x *Parameter) String() string {
+// 	return protoimpl.X.MessageStringOf(x)
+// }
+
+// func (*Parameter) ProtoMessage() {}
+
+// func (x *Parameter) ProtoReflect() protoreflect.Message {
+// 	mi := &file_command_proto_msgTypes[0]
+// 	if protoimpl.UnsafeEnabled && x != nil {
+// 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+// 		if ms.LoadMessageInfo() == nil {
+// 			ms.StoreMessageInfo(mi)
+// 		}
+// 		return ms
+// 	}
+// 	return mi.MessageOf(x)
+// }
+
+// // Deprecated: Use Parameter.ProtoReflect.Descriptor instead.
+// func (*Parameter) Descriptor() ([]byte, []int) {
+// 	return file_command_proto_rawDescGZIP(), []int{0}
+// }
+
+// func (m *Parameter) GetValue() isParameter_Value {
+// 	if m != nil {
+// 		return m.Value
+// 	}
+// 	return nil
+// }
+
+// func (x *Parameter) GetI() int64 {
+// 	if x, ok := x.GetValue().(*Parameter_I); ok {
+// 		return x.I
+// 	}
+// 	return 0
+// }
+
+// func (x *Parameter) GetD() float64 {
+// 	if x, ok := x.GetValue().(*Parameter_D); ok {
+// 		return x.D
+// 	}
+// 	return 0
+// }
+
+// func (x *Parameter) GetB() bool {
+// 	if x, ok := x.GetValue().(*Parameter_B); ok {
+// 		return x.B
+// 	}
+// 	return false
+// }
+
+// func (x *Parameter) GetY() []byte {
+// 	if x, ok := x.GetValue().(*Parameter_Y); ok {
+// 		return x.Y
+// 	}
+// 	return nil
+// }
+
+// func (x *Parameter) GetS() string {
+// 	if x, ok := x.GetValue().(*Parameter_S); ok {
+// 		return x.S
+// 	}
+// 	return ""
+// }
+
+// func (x *Parameter) GetName() string {
+// 	if x != nil {
+// 		return x.Name
+// 	}
+// 	return ""
+// }
+
+type Statement struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Sql        string       `protobuf:"bytes,1,opt,name=sql,proto3" json:"sql,omitempty"`
+	Parameters []*Parameter `protobuf:"bytes,2,rep,name=parameters,proto3" json:"parameters,omitempty"`
+	ForceQuery bool         `protobuf:"varint,3,opt,name=forceQuery,proto3" json:"forceQuery,omitempty"`
+}
+
+type Request struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Transaction bool         `protobuf:"varint,1,opt,name=transaction,proto3" json:"transaction,omitempty"`
+	Statements  []*Statement `protobuf:"bytes,2,rep,name=statements,proto3" json:"statements,omitempty"`
+	DbTimeout   int64        `protobuf:"varint,3,opt,name=dbTimeout,proto3" json:"dbTimeout,omitempty"`
+}
+
+type ExecuteQueryRequest struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Request         *Request           `protobuf:"bytes,1,opt,name=request,proto3" json:"request,omitempty"`
+	Timings         bool               `protobuf:"varint,2,opt,name=timings,proto3" json:"timings,omitempty"`
+	Level           QueryRequest_Level `protobuf:"varint,3,opt,name=level,proto3,enum=command.QueryRequest_Level" json:"level,omitempty"`
+	Freshness       int64              `protobuf:"varint,4,opt,name=freshness,proto3" json:"freshness,omitempty"`
+	FreshnessStrict bool               `protobuf:"varint,5,opt,name=freshness_strict,json=freshnessStrict,proto3" json:"freshness_strict,omitempty"`
 }

@@ -81,11 +81,11 @@ import (
 )
 
 var (
-	// ErrNotOpen is returned when a Store is not open.
-	ErrNotOpen = errors.New("store not open")
+	// ErrStoreNotOpen is returned when a Store is not open.
+	ErrStoreNotOpen = errors.New("store not open")
 
-	// ErrOpen is returned when a Store is already open.
-	ErrOpen = errors.New("store already open")
+	// ErrStoreOpen is returned when a Store is already open.
+	ErrStoreOpen = errors.New("store already open")
 
 	// ErrNotReady is returned when a Store is not ready to accept requests.
 	ErrNotReady = errors.New("store not ready")
@@ -128,7 +128,10 @@ var (
 
 	// ErrNotImplemented when there is no implementation of the function
 	// will only exits until this application in under development
-	ErrNotImplemented = errors.New("Not implemented")
+	ErrNotImplemented = errors.New("not implemented")
+
+	// ErrDatabaseNotOpen when the database is closed
+	ErrDatabaseNotOpen = errors.New("database is not open")
 )
 
 type PragmaCheckRequest proto.Request
@@ -292,10 +295,10 @@ type Store struct {
 	peersPath     string
 	peersInfoPath string
 
-	raft   *raft.Raft // The consensus mechanism.
-	ly     Layer
-	raftTn *NodeTransport
-	raftID string // Node ID.
+	raftConsensus *raft.Raft // The consensus mechanism.
+	ly            Layer
+	raftTn        *NodeTransport
+	raftID        string // Node ID.
 
 	ShutdownOnRemove     bool
 	SnapshotThreshold    uint64
@@ -364,7 +367,7 @@ type Store struct {
 
 	// Database
 	dbDir string
-	db    *badger.DB
+	db    *badger.DB // pointer to the badgerDB
 
 	mu sync.Mutex
 
@@ -377,13 +380,18 @@ type Store struct {
 	numSnapshots     *atomic.Uint64
 }
 
+// Compile time checks if all the necessary interfaces are implemented
+// kind of hacky - causes circular imports; find a better way
+// var _ http.Database = (*Store)(nil)
+// var _ http.Store = (*Store)(nil)
+// var _ http.Cluster = (*Store)(nil)
+
 type Config struct {
 	Dir string    // The working directory for raft.
 	Tn  Transport // The underlying Transport for raft.
 	ID  string    // Node ID.
 }
 
-// func New(ly Layer, ko *koanf.Koanf) *Store {
 // allocate a new store in memory and initialize
 func New(ly Layer, c *Config) *Store {
 	newLogger := logger.GetLogger("store")
@@ -450,7 +458,7 @@ func (s *Store) Open() (retError error) {
 	}
 
 	// Creating network layer
-	nt := raft.NewNetworkTransport(NewTransport((s.ly)), connectionPoolCount, connectionTimeout, nil)
+	nt := raft.NewNetworkTransport(NewTransport(s.ly), connectionPoolCount, connectionTimeout, nil)
 	s.raftTn = NewNodeTransport(nt)
 
 	s.numTrailingLogs = uint64(float64(s.SnapshotThreshold) * trailingScale)
@@ -514,9 +522,9 @@ func (s *Store) Open() (retError error) {
 	// Instantiate the Raft system.
 	ra, err := raft.NewRaft(config, NewFSM(s), s.raftLog, s.raftStable, s.snapshotStore, s.raftTn)
 	if err != nil {
-		return fmt.Errorf("creating the raft system failed: %s", err)
+		return fmt.Errorf("OLD creating the raft system failed: %s", err)
 	}
-	s.raft = ra
+	s.raftConsensus = ra
 
 	// Open the observer channels.
 	s.observerChan = make(chan raft.Observation, observerChanLen)
@@ -527,7 +535,7 @@ func (s *Store) Open() (retError error) {
 	})
 
 	// Register and listen for leader changes.
-	s.raft.RegisterObserver(s.observer)
+	s.raftConsensus.RegisterObserver(s.observer)
 	s.observerClose, s.observerDone = s.observe()
 
 	return nil
@@ -663,9 +671,9 @@ func (s *Store) observe() (closeCh, doneCh chan struct{}) {
 // will be returned.
 func (s *Store) Stepdown(wait bool) error {
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
-	f := s.raft.LeadershipTransfer()
+	f := s.raftConsensus.LeadershipTransfer()
 	if !wait {
 		return nil
 	}
@@ -683,6 +691,7 @@ func (s *Store) Close(wait bool) (retErr error) {
 	}()
 	if !s.open.Is() {
 		// Protect against closing already-closed resource, such as channels.
+		s.logger.Debug().Msg("closing already closed store")
 		return nil
 	}
 	// if err := s.snapshotCAS.BeginWithRetry("close", 10*time.Millisecond, 10*time.Second); err != nil {
@@ -698,20 +707,24 @@ func (s *Store) Close(wait bool) (retErr error) {
 	// close(s.snapshotWClose)
 	// <-s.snapshotWDone
 
-	f := s.raft.Shutdown()
+	s.logger.Printf("initiating raft shutdown protocol")
+	f := s.raftConsensus.Shutdown()
 	if wait {
 		if f.Error() != nil {
 			return f.Error()
 		}
 	}
+	s.logger.Printf("closing raft connections")
 	if err := s.raftTn.Close(); err != nil {
 		return err
 	}
 
-	// Only shutdown Bolt and SQLite when Raft is done.
+	s.logger.Printf("closing the badger database")
+	// Only shutdown Bolt and badger when Raft is done.
 	if err := s.db.Close(); err != nil {
 		return err
 	}
+	s.logger.Printf("closing the bolt store")
 	if err := s.boltStore.Close(); err != nil {
 		return err
 	}
@@ -721,12 +734,12 @@ func (s *Store) Close(wait bool) (retErr error) {
 // Nodes returns the slice of nodes in the cluster, sorted by ID ascending.
 func (s *Store) Nodes() ([]*Server, error) {
 	if !s.open.Is() {
-		return nil, ErrNotOpen
+		return nil, ErrStoreNotOpen
 	}
 
 	s.logger.Debug().Msg("a node exists!")
 
-	f := s.raft.GetConfiguration()
+	f := s.raftConsensus.GetConfiguration()
 	if f.Error() != nil {
 		return nil, f.Error()
 	}
@@ -795,7 +808,7 @@ func (s *Store) installRestore() error {
 
 // remove removes the node, with the given ID, from the cluster.
 func (s *Store) remove(id string) error {
-	f := s.raft.RemoveServer(raft.ServerID(id), 0, 0)
+	f := s.raftConsensus.RemoveServer(raft.ServerID(id), 0, 0)
 	if f.Error() != nil && f.Error() == raft.ErrNotLeader {
 		return ErrNotLeader
 	}
@@ -817,7 +830,7 @@ func (s *Store) LeaderAddr() (string, error) {
 	if s.open.Is() {
 		return "", nil
 	}
-	addr, _ := s.raft.LeaderWithID()
+	addr, _ := s.raftConsensus.LeaderWithID()
 	return string(addr), nil
 }
 
@@ -827,7 +840,7 @@ func (s *Store) LeaderID() (string, error) {
 	if !s.open.Is() {
 		return "", nil
 	}
-	_, id := s.raft.LeaderWithID()
+	_, id := s.raftConsensus.LeaderWithID()
 	return string(id), nil
 }
 
@@ -837,7 +850,7 @@ func (s *Store) LeaderWithID() (string, string) {
 	if !s.open.Is() {
 		return "", ""
 	}
-	addr, id := s.raft.LeaderWithID()
+	addr, id := s.raftConsensus.LeaderWithID()
 	return string(addr), string(id)
 }
 
@@ -856,24 +869,24 @@ func (s *Store) HasLeaderID() bool {
 // commit index is returned directly from the Raft object.
 func (s *Store) LeaderCommitIndex() (uint64, error) {
 	if !s.open.Is() {
-		return 0, ErrNotOpen
+		return 0, ErrStoreNotOpen
 	}
-	if s.raft.State() == raft.Leader {
-		return s.raft.CommitIndex(), nil
+	if s.raftConsensus.State() == raft.Leader {
+		return s.raftConsensus.CommitIndex(), nil
 	}
 	return s.raftTn.LeaderCommitIndex(), nil
 }
 
 func (s *Store) CommitIndex() (uint64, error) {
 	if !s.open.Is() {
-		return 0, ErrNotOpen
+		return 0, ErrStoreNotOpen
 	}
-	return s.raft.CommitIndex(), nil
+	return s.raftConsensus.CommitIndex(), nil
 }
 
 func (s *Store) Remove(rn *commandProto.RemoveNodeRequest) error {
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 	id := rn.Id
 
@@ -896,7 +909,7 @@ func (s *Store) Remove(rn *commandProto.RemoveNodeRequest) error {
 func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
 	s.logger.Printf("notifying node %v", nr)
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 
 	s.notifyMu.Lock()
@@ -942,7 +955,7 @@ func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
 
 	s.logger.Printf("reached expected bootstrap count of %d, starting cluster bootstrap",
 		s.BootstrapExpect)
-	bf := s.raft.BootstrapCluster(raft.Configuration{
+	bf := s.raftConsensus.BootstrapCluster(raft.Configuration{
 		Servers: raftServers,
 	})
 	if bf.Error() != nil {
@@ -958,10 +971,10 @@ func (s *Store) Notify(nr *commandProto.NotifyRequest) error {
 func (s *Store) Join(jr *commandProto.JoinRequest) error {
 	s.logger.Print("got a join request to the store")
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 
-	if s.raft.State() != raft.Leader {
+	if s.raftConsensus.State() != raft.Leader {
 		s.logger.Print("join request to store; but not the leader")
 		return ErrNotLeader
 	}
@@ -975,11 +988,11 @@ func (s *Store) Join(jr *commandProto.JoinRequest) error {
 	// then don't consider this join attempt successful -- so the joining node
 	// will presumably try again.
 	if addr, err := resolvableAddress(addr); err != nil {
-		s.logger.Info().Msgf("failed to resolve %s: %w", addr, err)
+		s.logger.Info().Msgf("failed to resolve %s: %v", addr, err)
 		return fmt.Errorf("failed to resolve %s: %w", addr, err)
 	}
 
-	configFuture := s.raft.GetConfiguration()
+	configFuture := s.raftConsensus.GetConfiguration()
 	if err := configFuture.Error(); err != nil {
 		s.logger.Printf("failed to get raft configuration: %v", err)
 		return err
@@ -1011,10 +1024,10 @@ func (s *Store) Join(jr *commandProto.JoinRequest) error {
 	var f raft.IndexFuture
 	if voter {
 		s.logger.Info().Msgf("adding %v:%v as a voter", id, addr)
-		f = s.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 0)
+		f = s.raftConsensus.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 0)
 	} else {
 		s.logger.Info().Msgf("adding %v:%v as a NON-voter", id, addr)
-		f = s.raft.AddNonvoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 0)
+		f = s.raftConsensus.AddNonvoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 0)
 	}
 	// TODO: understand why would this error
 	if e := f.(raft.Future); e.Error() != nil {
@@ -1044,19 +1057,19 @@ func (s *Store) Snapshot(n uint64) (retError error) {
 	}()
 
 	if n > 0 {
-		cfg := s.raft.ReloadableConfig()
+		cfg := s.raftConsensus.ReloadableConfig()
 		defer func() {
 			cfg.TrailingLogs = s.numTrailingLogs
-			if err := s.raft.ReloadConfig(cfg); err != nil {
+			if err := s.raftConsensus.ReloadConfig(cfg); err != nil {
 				s.logger.Printf("failed to reload Raft config: %s", err.Error())
 			}
 		}()
 		cfg.TrailingLogs = n
-		if err := s.raft.ReloadConfig(cfg); err != nil {
+		if err := s.raftConsensus.ReloadConfig(cfg); err != nil {
 			return fmt.Errorf("failed to reload Raft config: %s", err.Error())
 		}
 	}
-	if err := s.raft.Snapshot().Error(); err != nil {
+	if err := s.raftConsensus.Snapshot().Error(); err != nil {
 		if strings.Contains(err.Error(), ErrLoadInProgress.Error()) {
 			return ErrLoadInProgress
 		}
@@ -1085,7 +1098,7 @@ func (s *Store) HasLeader() bool {
 	if !s.open.Is() {
 		return false
 	}
-	return s.raft.Leader() != ""
+	return s.raftConsensus.Leader() != ""
 }
 
 // Committed blocks until the local commit index is greater than or
@@ -1104,7 +1117,7 @@ func (s *Store) Committed(timeout time.Duration) (uint64, error) {
 // or greater the given index, or the timeout expires.
 func (s *Store) WaitForCommitIndex(idx uint64, timeout time.Duration) error {
 	check := func() bool {
-		return s.raft.CommitIndex() >= idx
+		return s.raftConsensus.CommitIndex() >= idx
 	}
 	return rsync.NewPollTrue(check, commitEquivalenceDelay, timeout).Run("commit index")
 }
@@ -1131,10 +1144,10 @@ func (s *Store) logSize() (int64, error) {
 // false will also be returned.
 func (s *Store) IsVoter() (bool, error) {
 	if !s.open.Is() {
-		return false, ErrNotOpen
+		return false, ErrStoreNotOpen
 	}
 
-	cfg := s.raft.GetConfiguration()
+	cfg := s.raftConsensus.GetConfiguration()
 	if err := cfg.Error(); err != nil {
 		return false, err
 	}
@@ -1163,7 +1176,7 @@ func (s *Store) Stats() (map[string]interface{}, error) {
 
 	// Perform type-conversion to actual numbers where possible.
 	raftStats := make(map[string]interface{})
-	for k, v := range s.raft.Stats() {
+	for k, v := range s.raftConsensus.Stats() {
 		if s, err := strconv.ParseInt(v, 10, 64); err != nil {
 			raftStats[k] = v
 		} else {
@@ -1234,57 +1247,193 @@ func (s *Store) Stats() (map[string]interface{}, error) {
 // Cluster interface implementation
 
 // Execute executes queries that return no rows, but do modify the database.
-// func (s *Store) Execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
-// 	p := (*PragmaCheckRequest)(ex.Request)
-// 	if err := p.Check(); err != nil {
-// 		return nil, err
-// 	}
+func (s *Store) Execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
 
-// 	if !s.open.Is() {
-// 		return nil, ErrNotOpen
-// 	}
+	if !s.open.Is() {
+		return nil, ErrStoreNotOpen
+	}
+	if s.raftConsensus.State() != raft.Leader {
+		return nil, ErrNotLeader
+	}
+	if !s.Ready() {
+		return nil, ErrNotReady
+	}
 
-// 	if s.raft.State() != raft.Leader {
-// 		return nil, ErrNotLeader
-// 	}
-// 	if !s.Ready() {
-// 		return nil, ErrNotReady
-// 	}
-// 	return s.execute(ex)
-// }
+	return s.execute(ex)
+}
 
-// type fsmExecuteQueryResponse struct {
-// 	results []*proto.ExecuteQueryResponse
-// 	error   error
-// }
+type fsmExecuteQueryResponse struct {
+	results []*proto.ExecuteQueryResponse
+	error   error
+}
 
-// func (s *Store) execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
-// 	b, compressed, err := s.tryCompress(ex)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+// executes the command, IMP this can ONLY be run on the leader as
+// we call raft.Apply
+func (s *Store) execute(ex *proto.ExecuteRequest) ([]*proto.ExecuteQueryResponse, error) {
+	b, compressed, err := s.tryCompress(ex)
+	if err != nil {
+		return nil, err
+	}
 
-// 	c := &proto.Command{
-// 		Type:       proto.Command_COMMAND_TYPE_EXECUTE,
-// 		SubCommand: b,
-// 		Compressed: compressed,
-// 	}
+	c := &proto.Command{
+		Type:       proto.Command_COMMAND_TYPE_EXECUTE,
+		SubCommand: b,
+		Compressed: compressed,
+	}
 
-// 	b, err = command.Marshal(c)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+	b, err = command.Marshal(c)
+	if err != nil {
+		return nil, err
+	}
 
-// 	af := s.raft.Apply(b, s.ApplyTimeout)
-// 	if af.Error() != nil {
-// 		if af.Error() == raft.ErrNotLeader {
-// 			return nil, ErrNotLeader
-// 		}
-// 		return nil, af.Error()
-// 	}
-// 	r := af.Response().(*fsmExecuteQueryResponse)
-// 	return r.results, r.error
-// }
+	applyFuture := s.raftConsensus.Apply(b, s.ApplyTimeout)
+	if applyFuture.Error() != nil {
+		if applyFuture.Error() == raft.ErrNotLeader {
+			return nil, ErrNotLeader
+		}
+		return nil, applyFuture.Error()
+	}
+	r := applyFuture.Response().(*fsmExecuteQueryResponse)
+	return r.results, r.error
+}
+
+func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
+	if !s.open.Is() {
+		return nil, ErrStoreNotOpen
+	}
+	// Check if db is nil or closed. BadgerDB sets db to nil on Close().
+	// db.IsClosed() is another option if s.db itself is not reassigned to nil on close.
+	// Based on current fsmRestore, s.db can be nil after a close.
+	if s.db == nil {
+		s.logger.Error().Msg("database is not open or available for query")
+		return nil, ErrDatabaseNotOpen
+	}
+
+	s.logger.Debug().Interface("query_request", qr).Msg("received query request")
+
+	// For this basic implementation, we'll ignore qr.Timings, qr.Transaction, qr.Freshness, qr.Strict
+	// A full implementation would check s.isStaleRead(qr.Freshness, qr.Strict) here.
+
+	if len(qr.Statements) == 0 || qr.Statements[0] == nil || qr.Statements[0].Sql == "" {
+		s.logger.Error().Msg("empty query statement received")
+		return nil, errors.New("empty query statement")
+	}
+
+	// Assuming one statement for basic GET query
+	stmtStr := qr.Statements[0].Sql
+	parts := strings.Fields(stmtStr)
+
+	if len(parts) != 2 || strings.ToUpper(parts[0]) != "GET" {
+		err := fmt.Errorf("unsupported query statement, expected 'GET <key>', got: %s", stmtStr)
+		s.logger.Error().Err(err).Str("statement", stmtStr).Msg("parsing query statement")
+		return nil, err
+	}
+	queryKey := parts[1]
+
+	var resultRows []*proto.QueryRows
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(queryKey))
+		if err != nil {
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				s.logger.Info().Str("key", queryKey).Msg("key not found during query")
+				// Return empty result set, not an error
+				resultRows = []*proto.QueryRows{
+					{
+						Columns: []string{"key", "value"},
+						Types:   []string{"text", "text"},
+						Values:  make([]*proto.RowValue, 0), // Empty values
+					},
+				}
+				return nil // Key not found is not a failure for the View operation itself for this query type
+			}
+			s.logger.Error().Err(err).Str("key", queryKey).Msg("failed to get key from database")
+			return fmt.Errorf("database access error for key %s: %w", queryKey, err)
+		}
+
+		// Key found, retrieve its value
+		var valueBytes []byte
+		err = item.Value(func(val []byte) error {
+			valueBytes = append([]byte{}, val...)
+			return nil
+		})
+		if err != nil {
+			s.logger.Error().Err(err).Str("key", queryKey).Msg("failed to retrieve value for key")
+			return fmt.Errorf("retrieve value for key %s: %w", queryKey, err)
+		}
+
+		s.logger.Debug().Str("key", queryKey).Bytes("value", valueBytes).Msg("key found with value")
+
+		// Construct the result
+		// Key Datum
+		keyDatum := &proto.Datum{Value: &proto.Datum_S{S: queryKey}}
+		// Value Datum - store as bytes (blob)
+		valueDatum := &proto.Datum{Value: &proto.Datum_B{B: valueBytes}}
+
+		row := &proto.RowValue{
+			Values: []*proto.Datum{keyDatum, valueDatum},
+		}
+
+		resultRows = []*proto.QueryRows{
+			{
+				Columns: []string{"key", "value"},
+				Types:   []string{"text", "blob"}, // Value is effectively a blob
+				Values:  []*proto.RowValue{row},
+			},
+		}
+		return nil
+	})
+
+	if err != nil {
+		// This error is from the s.db.View transaction itself (e.g., failed to start txn)
+		// or an error returned from within the txn func that wasn't badger.ErrKeyNotFound.
+		s.logger.Error().Err(err).Msg("query execution failed")
+		return nil, err
+	}
+
+	s.logger.Info().Str("key", queryKey).Int("num_results", len(resultRows)).Msg("query executed successfully")
+	return resultRows, nil
+}
+
+func (s *Store) Request(eqr *commandProto.ExecuteQueryRequest) ([]*commandProto.ExecuteQueryResponse, error) {
+	if !s.open.Is() {
+		return nil, ErrStoreNotOpen
+	}
+
+	if s.raftConsensus.State() != raft.Leader {
+		return nil, ErrNotLeader
+	}
+
+	if !s.Ready() {
+		return nil, ErrNotReady
+	}
+
+	b, compressed, err := s.tryCompress(eqr)
+	if err != nil {
+		return nil, err
+	}
+	c := &proto.Command{
+		Type:       proto.Command_COMMAND_TYPE_EXECUTE_QUERY,
+		SubCommand: b,
+		Compressed: compressed,
+	}
+
+	b, err = command.Marshal(c)
+	if err != nil {
+		return nil, err
+	}
+
+	af := s.raftConsensus.Apply(b, s.ApplyTimeout)
+	if af.Error() != nil {
+		if af.Error() == raft.ErrNotLeader {
+			return nil, ErrNotLeader
+		}
+		return nil, af.Error()
+	}
+
+	r := af.Response().(*fsmExecuteQueryResponse)
+
+	return r.results, nil
+}
 
 // tryCompress attempts to compress the given command. If the command is
 // successfully compressed, the compressed byte slice is returned, along with
@@ -1309,6 +1458,11 @@ func (s *Store) ID() string {
 	return s.raftID
 }
 
+func GetNodeAPIAddr(addr string, retries int, timeout time.Duration) (string, error) {
+	// func GetAddresser(addr string, retries int, timeout time.Duration) (string, error) {
+	return "", ErrNotImplemented
+}
+
 // Bootstrap executes a cluster bootstrap on this node, using the given
 // Servers as the configuration.
 func (s *Store) Bootstrap(servers ...*Server) error {
@@ -1319,7 +1473,7 @@ func (s *Store) Bootstrap(servers ...*Server) error {
 			Address: raft.ServerAddress(servers[i].Addr),
 		}
 	}
-	fut := s.raft.BootstrapCluster(raft.Configuration{
+	fut := s.raftConsensus.BootstrapCluster(raft.Configuration{
 		Servers: raftServers,
 	})
 	return fut.Error()
@@ -1349,7 +1503,7 @@ func prettyVoter(v bool) string {
 // through the Raft log.
 func (s *Store) Load(lr *proto.LoadRequest) error {
 	if !s.open.Is() {
-		return ErrNotOpen
+		return ErrStoreNotOpen
 	}
 
 	if !s.Ready() {
@@ -1387,7 +1541,7 @@ func (s *Store) load(lr *proto.LoadRequest) error {
 	// TODO: need to test if the FSM is aware of these changes to flush it
 	// to the BadgerDB
 	// TODO: the impl is incomplete
-	af := s.raft.Apply(b, s.ApplyTimeout)
+	af := s.raftConsensus.Apply(b, s.ApplyTimeout)
 	if af.Error() != nil {
 		if af.Error() == raft.ErrNotLeader {
 			return ErrNotLeader
@@ -1405,11 +1559,210 @@ func (s *Store) load(lr *proto.LoadRequest) error {
 // with Apply, as it states Apply() and Snapshot() are always called from the same
 // thread.
 func (s *Store) fsmSnapshot() (fSnap raft.FSMSnapshot, retErr error) {
-	return nil, ErrNotImplemented
+	fsmIndex := s.fsmIdx.Load()
+	fsmTerm := s.fsmTerm.Load()
+
+	s.logger.Info().Uint64("index", fsmIndex).Uint64("term", fsmTerm).Msg("starting FSM snapshot")
+	stats.Add(numSnapshots, 1) // Increment snapshot count
+
+	pipeReader, pipeWriter := io.Pipe()
+
+	go func() {
+		// Ensure pipeWriter is closed. If an error occurs, CloseWithError will be called.
+		// If successful, this Close will signal EOF to the reader.
+		defer pipeWriter.Close()
+
+		// bufio.Writer for potentially more efficient writes, especially for small metadata writes.
+		// For s.db.Backup, it might manage its own buffering, but using it here is consistent.
+		bufioWriter := bufio.NewWriter(pipeWriter)
+
+		// Write FSM index (8 bytes)
+		indexBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(indexBytes, fsmIndex)
+		if _, err := bufioWriter.Write(indexBytes); err != nil {
+			s.logger.Error().Err(err).Msg("failed to write FSM index to snapshot pipe")
+			pipeWriter.CloseWithError(fmt.Errorf("write fsm index: %w", err))
+			stats.Add(numSnapshotsFailed, 1)
+			return
+		}
+
+		// Write FSM term (8 bytes)
+		termBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(termBytes, fsmTerm)
+		if _, err := bufioWriter.Write(termBytes); err != nil {
+			s.logger.Error().Err(err).Msg("failed to write FSM term to snapshot pipe")
+			pipeWriter.CloseWithError(fmt.Errorf("write fsm term: %w", err))
+			stats.Add(numSnapshotsFailed, 1)
+			return
+		}
+
+		// Flush metadata to ensure it's written before the backup starts
+		if err := bufioWriter.Flush(); err != nil {
+			s.logger.Error().Err(err).Msg("failed to flush metadata to snapshot pipe")
+			pipeWriter.CloseWithError(fmt.Errorf("flush metadata: %w", err))
+			stats.Add(numSnapshotsFailed, 1)
+			return
+		}
+
+		// Stream the BadgerDB backup. since=0 means a full backup.
+		// s.db.Backup itself writes to the provided writer.
+		startTime := time.Now()
+		if err := s.db.Backup(bufioWriter, 0); err != nil {
+			s.logger.Error().Err(err).Msg("failed to backup database to snapshot pipe")
+			pipeWriter.CloseWithError(fmt.Errorf("backup database: %w", err))
+			stats.Add(numSnapshotsFailed, 1)
+			return
+		}
+
+		// Final flush to ensure all data from bufioWriter is written to pipeWriter.
+		// s.db.Backup should ideally flush its own data, but an extra flush here doesn't hurt.
+		if err := bufioWriter.Flush(); err != nil {
+			s.logger.Error().Err(err).Msg("failed to flush database backup to snapshot pipe")
+			pipeWriter.CloseWithError(fmt.Errorf("flush database backup: %w", err))
+			stats.Add(numSnapshotsFailed, 1)
+			return
+		}
+
+		s.logger.Info().Uint64("index", fsmIndex).Uint64("term", fsmTerm).Dur("duration_ms", time.Since(startTime)).Msg("successfully wrote FSM snapshot to pipe")
+	}()
+
+	return snapshot.NewSnapshot(pipeReader), nil
 }
 
+// TODO: implementation is not complete
 func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
-	return ErrNotImplemented
+	s.fsmIdx.Store(l.Index)
+	s.fsmTerm.Store(l.Term)
+	s.fsmUpdateTime.Store(time.Now()) // Record FSM update time.
+
+	var cmd commandProto.Command
+	if err := command.Unmarshal(l.Data, &cmd); err != nil {
+		s.logger.Error().Err(err).Msg("failed to unmarshal command")
+		return &fsmExecuteQueryResponse{error: fmt.Errorf("unmarshal command: %w", err)}
+	}
+
+	// Note: Decompression of cmd.SubCommand is handled by functions like
+	// command.UnmarshalExecuteRequest if cmd.Compressed is true.
+	// If a command type is processed here that doesn't use such a helper,
+	// and cmd.Compressed is true, manual decompression would be needed.
+
+	switch cmd.Type {
+	case commandProto.Command_COMMAND_TYPE_EXECUTE:
+		var ex commandProto.ExecuteRequest
+		// command.UnmarshalExecuteRequest is assumed to handle decompression if cmd.Compressed is true.
+		if err := command.UnmarshalExecuteRequest(&ex, cmd.SubCommand, cmd.Compressed); err != nil {
+			s.logger.Error().Err(err).Msg("failed to unmarshal execute request")
+			return &fsmExecuteQueryResponse{error: fmt.Errorf("unmarshal execute request: %w", err)}
+		}
+
+		if len(ex.Statements) == 0 {
+			s.logger.Error().Msg("no statements found in ExecuteRequest")
+			return &fsmExecuteQueryResponse{error: errors.New("no statements found in ExecuteRequest")}
+		}
+		// As per requirement, assume one statement for SET/DELETE FSM.
+		// For other operations, multiple statements might be valid but not for this FSM's scope.
+		if len(ex.Statements) > 1 {
+			s.logger.Warn().Int("statements_count", len(ex.Statements)).Msg("multiple statements received, but FSM handles one for SET/DELETE")
+			// Continue with the first statement for SET/DELETE, or return error if strict one-statement policy is desired.
+			// For this implementation, we'll process only the first one if it's SET/DELETE.
+		}
+		stmtStr := ex.Statements[0].Sql
+
+		parts := strings.Fields(stmtStr)
+		if len(parts) == 0 {
+			s.logger.Error().Msg("empty statement string")
+			return &fsmExecuteQueryResponse{error: errors.New("empty statement string")}
+		}
+
+		resp := &fsmExecuteQueryResponse{results: make([]*commandProto.ExecuteQueryResponse, 1)}
+		resp.results[0] = &commandProto.ExecuteQueryResponse{}
+
+		op := strings.ToUpper(parts[0])
+		switch op {
+		case "SET":
+			if len(parts) < 2 { // Must have SET <key> at least
+				err := errors.New("invalid SET format. Expected SET <key> [<value>]")
+				s.logger.Error().Err(err).Str("statement", stmtStr).Msg("parsing SET statement")
+				resp.error = err
+				return resp
+			}
+			key := parts[1]
+			value := ""
+			if len(parts) > 2 {
+				value = strings.Join(parts[2:], " ")
+			}
+
+			err := s.db.Update(func(txn *badger.Txn) error {
+				s.logger.Debug().Str("key", key).Str("value", value).Msg("executing SET")
+				return txn.Set([]byte(key), []byte(value))
+			})
+			if err != nil {
+				s.logger.Error().Err(err).Str("key", key).Msg("failed to SET key")
+				resp.error = err
+				return resp
+			}
+			resp.results[0].LastInsertId = 0 // Not applicable for SET
+			resp.results[0].RowsAffected = 1
+		case "DELETE":
+			if len(parts) != 2 { // Must be DELETE <key> exactly
+				err := errors.New("invalid DELETE format. Expected DELETE <key>")
+				s.logger.Error().Err(err).Str("statement", stmtStr).Msg("parsing DELETE statement")
+				resp.error = err
+				return resp
+			}
+			key := parts[1]
+			err := s.db.Update(func(txn *badger.Txn) error {
+				s.logger.Debug().Str("key", key).Msg("executing DELETE")
+				// BadgerDB's Delete is idempotent. It doesn't error if key not found.
+				// To accurately report RowsAffected, one might check existence first,
+				// but that's usually not done for performance reasons unless required.
+				return txn.Delete([]byte(key))
+			})
+			if err != nil {
+				s.logger.Error().Err(err).Str("key", key).Msg("failed to DELETE key")
+				resp.error = err
+				return resp
+			}
+			// BadgerDB doesn't directly return "rows affected" for delete in a way SQL does.
+			// We assume success means 1 row affected if it existed, or 0 if it didn't.
+			// For simplicity, and common KV behavior, we can claim 1 if no error.
+			// A more accurate RowsAffected would require a pre-check or different DB API.
+			resp.results[0].RowsAffected = 1
+		default:
+			err := fmt.Errorf("unrecognized statement type in EXECUTE: %s", op)
+			s.logger.Error().Err(err).Str("statement", stmtStr).Msg("parsing EXECUTE statement")
+			resp.error = err
+			return resp
+		}
+		return resp
+
+	case commandProto.Command_COMMAND_TYPE_LOAD:
+		s.logger.Info().Msg("fsmApply: LOAD command received. This type should typically be handled by fsmRestore.")
+		// LOAD implies a full database state replacement. If it reaches fsmApply,
+		// it suggests a misunderstanding of its role or a very specific incremental load protocol.
+		// For a general FSM, fsmRestore is the place for snapshot loading.
+		return &fsmExecuteQueryResponse{error: ErrNotImplemented}
+
+	case commandProto.Command_COMMAND_TYPE_NOOP:
+		s.logger.Debug().Msg("fsmApply: NOOP command")
+		return &fsmExecuteQueryResponse{} // Success, no error, no results
+
+	case commandProto.Command_COMMAND_TYPE_QUERY:
+		s.logger.Warn().Msg("fsmApply: QUERY command received. Read-only commands should not typically pass through fsmApply.")
+		// Queries are read-only and don't change FSM state.
+		// If it's here, it's likely an error in routing or command design for Raft.
+		return &fsmExecuteQueryResponse{error: fmt.Errorf("QUERY command type should not be applied to FSM state")}
+	
+	case commandProto.Command_COMMAND_TYPE_EXECUTE_QUERY:
+		s.logger.Warn().Msg("fsmApply: EXECUTE_QUERY command received. Complex queries with potential state changes not supported by this simple FSM.")
+		// EXECUTE_QUERY might modify state and return results.
+		// This FSM only handles simple SET/DELETE via EXECUTE.
+		return &fsmExecuteQueryResponse{error: ErrNotImplemented}
+
+	default:
+		s.logger.Error().Str("command_type", cmd.Type.String()).Msg("unhandled command type in fsmApply")
+		return &fsmExecuteQueryResponse{error: fmt.Errorf("unhandled command type: %s", cmd.Type.String())}
+	}
 }
 
 // TODO: implementation is not complete
@@ -1417,14 +1770,142 @@ func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
 // will not be called concurrently with Apply(), so synchronization with Execute()
 // is not necessary.
 func (s *Store) fsmRestore(rc io.ReadCloser) (retErr error) {
+	startTime := time.Now()
+	s.logger.Info().Str("node_id", s.raftID).Msg("initiating FSM restore from snapshot")
+
 	defer func() {
+		if errClose := rc.Close(); errClose != nil {
+			s.logger.Error().Err(errClose).Msg("failed to close snapshot reader during fsmRestore cleanup")
+			if retErr == nil {
+				// Only assign if no primary error occurred during restore itself.
+				retErr = fmt.Errorf("close snapshot reader: %w", errClose)
+			}
+		}
 		if retErr != nil {
-			// stats.Add(numRestoresFailed, 1)
+			stats.Add(numRestoresFailed, 1)
+			s.logger.Error().Err(retErr).Str("node_id", s.raftID).Dur("duration_ms", time.Since(startTime)).Msg("FSM restore failed")
+		} else {
+			stats.Add(numRestores, 1)
+			s.logger.Info().Str("node_id", s.raftID).Dur("duration_ms", time.Since(startTime)).Msg("FSM restore completed successfully")
+		}
+	}()
+
+	bufReader := bufio.NewReader(rc)
+
+	// Read FSM index (8 bytes)
+	indexBytes := make([]byte, 8)
+	if _, err := io.ReadFull(bufReader, indexBytes); err != nil {
+		retErr = fmt.Errorf("read fsm index from snapshot: %w", err)
+		return // Defer will log and update stats
+	}
+	restoredIndex := binary.BigEndian.Uint64(indexBytes)
+
+	// Read FSM term (8 bytes)
+	termBytes := make([]byte, 8)
+	if _, err := io.ReadFull(bufReader, termBytes); err != nil {
+		retErr = fmt.Errorf("read fsm term from snapshot: %w", err)
+		return // Defer will log and update stats
+	}
+	restoredTerm := binary.BigEndian.Uint64(termBytes)
+	s.logger.Info().Uint64("index", restoredIndex).Uint64("term", restoredTerm).Msg("FSM metadata read from snapshot")
+
+	// Define the database path
+	dbPath := filepath.Join(s.raftDir, "badgerdb")
+	if s.dbDir != "" { // Prefer s.dbDir if it was explicitly set (e.g. from config)
+		dbPath = s.dbDir
+	} else {
+		s.logger.Warn().Str("default_db_path", dbPath).Msg("s.dbDir is not set, using default path derived from raftDir for BadgerDB. Ensure this is intended.")
+	}
+
+
+	// Close the current database instance, if open.
+	if s.db != nil {
+		s.logger.Info().Str("db_path", s.db.Opts().Dir).Msg("closing current database instance for restore")
+		if err := s.db.Close(); err != nil {
+			// Log error, but proceed with removal as the directory needs to be replaced.
+			s.logger.Error().Err(err).Str("db_path", s.db.Opts().Dir).Msg("failed to close current database instance; proceeding with removal")
+		}
+		s.db = nil // Ensure s.db is nil so Open creates a new one
+	}
+
+	// Remove the existing database directory.
+	s.logger.Info().Str("db_path", dbPath).Msg("removing existing database directory for restore")
+	if err := os.RemoveAll(dbPath); err != nil {
+		retErr = fmt.Errorf("remove existing database directory %s: %w", dbPath, err)
+		return // Defer will log and update stats
+	}
+
+	// Ensure the database directory exists before opening.
+	if err := os.MkdirAll(dbPath, 0755); err != nil {
+		retErr = fmt.Errorf("create database directory %s: %w", dbPath, err)
+		return // Defer will log and update stats
+	}
+
+	// Re-open the database.
+	s.logger.Info().Str("db_path", dbPath).Msg("re-opening database for restore")
+	var errOpen error
+	s.db, errOpen = db.Open(dbPath) // db.Open is from "github.com/tarungka/wire/internal/db"
+	if errOpen != nil {
+		retErr = fmt.Errorf("re-open database at %s: %w", dbPath, errOpen)
+		return // Defer will log and update stats
+	}
+	s.logger.Info().Str("db_path", dbPath).Msg("database re-opened successfully")
+
+	// Load the snapshot data into the database.
+	// The bufReader now points to the beginning of the BadgerDB backup stream.
+	// Using MaxPendingWrites = 100 as a typical value for badger.Load.
+	// badger.DefaultDBLoadingMode might not be a constant, so use an explicit value or check BadgerDB docs.
+	// Let's assume a reasonable value for MaxPendingWrites, e.g., 100 or 256.
+	s.logger.Info().Msg("loading database from snapshot stream")
+	if err := s.db.Load(bufReader, 256); err != nil {
+		retErr = fmt.Errorf("load database from snapshot: %w", err)
+		return // Defer will log and update stats
+	}
+
+	// Update FSM state.
+	s.fsmIdx.Store(restoredIndex)
+	s.fsmTerm.Store(restoredTerm)
+	s.fsmUpdateTime.Store(time.Now())
+
+	// Success, retErr remains nil. Defer will log success and update stats.
+	return
+}
+
+// TODO: implementation is not complete
+// fsmRestore restores the node to a previous state. The Hashicorp docs state this
+// will not be called concurrently with Apply(), so synchronization with Execute()
+// is not necessary.
+func (s *Store) fsmRestore_backup(rc io.ReadCloser) (retErr error) {
+	s.fsmUpdateTime.Store(time.Now()) // Record FSM update time on restore as well.
+	defer func() {
+		if errClose := rc.Close(); errClose != nil {
+			s.logger.Error().Err(errClose).Msg("failed to close reader in fsmRestore")
+			if retErr == nil {
+				retErr = errClose
+			}
+		}
+		if retErr != nil {
+			stats.Add(numRestoresFailed, 1)
+		} else {
+			stats.Add(numRestores, 1)
 		}
 	}()
 	s.logger.Printf("initiating node restore on node ID %s", s.raftID)
 
-	return nil
+	// The actual restore logic is complex and involves replacing the database.
+	// For this task, we are primarily focused on fsmApply.
+	// A full fsmRestore implementation would involve:
+	// 1. Reading the snapshot data from 'rc'.
+	// 2. Potentially deserializing it (e.g., if it's a BadgerDB backup stream).
+	// 3. Replacing the contents of s.db with this snapshot.
+	//    - This might involve closing the current s.db, loading data into a new DB instance,
+	//      and then replacing s.db with the new instance, or using DB-specific load/restore functions.
+	// 4. After successfully restoring, Raft core updates FSM index/term from snapshot metadata.
+	s.logger.Info().Msg("fsmRestore: Actual database restoration from snapshot stream is not implemented in this scope.")
+	
+	// For now, returning ErrNotImplemented to signify that the DB restore part is missing.
+	retErr = ErrNotImplemented 
+	return retErr
 
 	// startT := time.Now()
 	// // Create a scatch file to write the restore data to.
@@ -1482,7 +1963,7 @@ func (s *Store) IsLeader() bool {
 	if !s.open.Is() {
 		return false
 	}
-	return s.raft.State() == raft.Leader
+	return s.raftConsensus.State() == raft.Leader
 }
 
 // Path returns the path to the store's storage directory.
@@ -1495,7 +1976,7 @@ func (s *Store) State() ClusterState {
 	if !s.open.Is() {
 		return Unknown
 	}
-	state := s.raft.State()
+	state := s.raftConsensus.State()
 	switch state {
 	case raft.Leader:
 		return Leader
@@ -1543,4 +2024,95 @@ func (s *Store) WaitForRemoval(id string, timeout time.Duration) error {
 		return ErrWaitForRemovalTimeout
 	}
 	return nil
+}
+
+// Newer functions will move them over accordingly
+
+// store a value in the badger database
+func (s *Store) StoreInDatabase(key, value string) error {
+	if !s.open.Is() {
+		return ErrStoreNotOpen
+	}
+	if s.raftConsensus.State() != raft.Leader {
+		return ErrNotLeader
+	}
+	if !s.Ready() {
+		return ErrNotReady
+	}
+	if s.db.IsClosed() {
+		return ErrDatabaseNotOpen
+	}
+
+	s.logger.Trace().Msgf("storing key: %v and value: %v", key, value)
+	keyBytes := []byte(key)
+	valBytes := []byte(value)
+	s.db.Update(func(txn *badger.Txn) error {
+		err := txn.Set(keyBytes, valBytes)
+		return err
+	})
+
+	return nil
+}
+
+// GetFromDatabase retrieves a value from the Badger database by key.
+// Returns the value as a string
+func (s *Store) GetFromDatabase(key string) (string, error) {
+	if !s.open.Is() {
+		return "", ErrStoreNotOpen
+	}
+	if s.raftConsensus.State() != raft.Leader {
+		return "", ErrNotLeader
+	}
+	if !s.Ready() {
+		return "", ErrNotReady
+	}
+	if s.db.IsClosed() {
+		return "", ErrDatabaseNotOpen
+	}
+
+	s.logger.Trace().Msgf("retrieving key: %v", key)
+	var value string
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(key))
+		if err != nil {
+			return err
+		}
+
+		// Retrieve the value and convert it to a string.
+		valBytes, err := item.ValueCopy(nil)
+		if err != nil {
+			return err
+		}
+		value = string(valBytes)
+		return nil
+	})
+
+	if err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+// isStaleRead checks if a read request is stale based on the leader's contact time,
+// FSM update time, log append time, and a freshness threshold.
+//
+// A read is considered stale if:
+//  1. `freshness` is set (non-zero) and the leader's last contact (`leaderLastContact`)
+//     exceeds the freshness threshold, or
+//  2. In strict mode (`strict == true`):
+//     - No log entries have been appended (`lastAppendedAtTime.IsZero()`),
+//     - The FSM index (`fsmIndex`) differs from the commit index (`commitIndex`),
+//     - The last FSM update (`lastFSMUpdateTime`) exceeds the freshness window.
+func (s *Store) isStaleRead(freshness int64, strict bool) bool {
+	if s.raftConsensus.State() == raft.Leader {
+		return false
+	}
+	return IsStaleRead(
+		s.raftConsensus.LastContact(),
+		s.fsmUpdateTime.Load(),
+		s.appendedAtTime.Load(),
+		s.fsmIdx.Load(),
+		s.raftTn.CommandCommitIndex(),
+		freshness,
+		strict)
 }

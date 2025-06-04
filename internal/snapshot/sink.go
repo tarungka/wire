@@ -102,7 +102,7 @@ func (s *Sink) Close() error {
 		return err
 	}
 
-	// Get size of SQLite file and set in meta.
+	// Get size of BadgerDB file and set in meta.
 	dbPath, err := s.str.getDBPath()
 	if err != nil {
 		return err
@@ -142,8 +142,8 @@ func (s *Sink) processSnapshotData() (retErr error) {
 
 	if len(snapshots) == 0 {
 		// if !db.IsValidSQLiteFile(s.dataFD.Name()) {
-		// 	// We have no snapshots yet, so the incoming data must be a valid SQLite file.
-		// 	return fmt.Errorf("data for first snapshot must be a valid SQLite file")
+		// 	// We have no snapshots yet, so the incoming data must be a valid BadgerDB file.
+		// 	return fmt.Errorf("data for first snapshot must be a valid BadgerDB file")
 		// }
 	} else if len(snapshots) > 0 {
 		// Confirm that existing snapshot is "less" than the incoming snapshot -- in other
@@ -164,7 +164,7 @@ func (s *Sink) processSnapshotData() (retErr error) {
 	// Writing zero data for a snapshot is acceptable, and indicates the snapshot
 	// is empty. This could happen if lots of entries were written to the Raft log,
 	// which would trigger a Raft snapshot, but those entries didn't actually change
-	// the database. Otherwise, the data must be a valid SQLite file or WAL file.
+	// the database. Otherwise, the data must be a valid BadgerDB file or WAL file.
 	if dataSz != 0 {
 		fdName := s.dataFD.Name()
 		if dataSz <= maxFilenameLen {
@@ -184,11 +184,11 @@ func (s *Sink) processSnapshotData() (retErr error) {
 		// 		return err
 		// 	}
 		// } else if db.IsValidSQLiteWALFile(fdName) {
-		// 	// With WAL data incoming, then we must have a valid SQLite file from the previous snapshot.
+		// 	// With WAL data incoming, then we must have a valid BadgerDB file from the previous snapshot.
 		// 	snapPrev := snapshots[len(snapshots)-1]
 		// 	snapPrevDB := filepath.Join(s.str.Dir(), snapPrev.ID+".db")
 		// 	if !db.IsValidSQLiteFile(snapPrevDB) {
-		// 		return fmt.Errorf("previous snapshot data is not a SQLite file: %s", snapPrevDB)
+		// 		return fmt.Errorf("previous snapshot data is not a BadgerDB file: %s", snapPrevDB)
 		// 	}
 		// 	if err := os.Rename(fdName, filepath.Join(s.str.Dir(), s.meta.ID+".db-wal")); err != nil {
 		// 		return err
@@ -207,7 +207,7 @@ func (s *Sink) processSnapshotData() (retErr error) {
 		return err
 	}
 
-	// Now check if we need to replay any WAL file into the previous SQLite file. This is
+	// Now check if we need to replay any WAL file into the previous BadgerDB file. This is
 	// the final step of any snapshot process.
 	snapshots, err = s.str.getSnapshots()
 	if err != nil {
@@ -222,9 +222,9 @@ func (s *Sink) processSnapshotData() (retErr error) {
 
 		// if db.IsValidSQLiteWALFile(snapNewWAL) || dataSz == 0 {
 		// 	// One of two things have happened. Either the snapshot data is empty, in which
-		// 	// case we can just make the existing SQLite file the new snapshot, or the snapshot
+		// 	// case we can just make the existing BadgerDB file the new snapshot, or the snapshot
 		// 	// data is a valid WAL file, in which case we need to replay it into the existing
-		// 	// SQLite file.
+		// 	// BadgerDB file.
 		// 	if err := os.Rename(snapPrevDB, snapNewDB); err != nil {
 		// 		return err
 		// 	}

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/hashicorp/raft"
 	"github.com/rqlite/rqlite/v8/auth"
 	"github.com/rqlite/rqlite/v8/queue"
 	"github.com/rqlite/rqlite/v8/rtls"
@@ -28,7 +29,10 @@ import (
 	"github.com/tarungka/wire/internal/command/encoding"
 	command "github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/logger"
-	"github.com/tarungka/wire/internal/store"
+	"github.com/tarungka/wire/internal/new/store"
+	"github.com/tarungka/wire/internal/pipeline"
+	"github.com/tarungka/wire/sinks"
+	"github.com/tarungka/wire/sources"
 )
 
 var (
@@ -47,25 +51,31 @@ type Database interface {
 	// to return rows. If timings is true, then timing information will
 	// be return. If tx is true, then either all queries will be executed
 	// successfully or it will as though none executed.
-	Execute(er *command.ExecuteRequest) ([]*command.ExecuteQueryResponse, error)
+	// Execute(er *command.ExecuteRequest) ([]*command.ExecuteQueryResponse, error)
 
 	// Query executes a slice of queries, each of which returns rows. If
 	// timings is true, then timing information will be returned. If tx
 	// is true, then all queries will take place while a read transaction
 	// is held on the database.
-	Query(qr *command.QueryRequest) ([]*command.QueryRows, error)
+	// Query(qr *command.QueryRequest) ([]*command.QueryRows, error)
 
 	// Request processes a slice of requests, each of which can be either
 	// an Execute or Query request.
-	Request(eqr *command.ExecuteQueryRequest) ([]*command.ExecuteQueryResponse, error)
+	// Request(eqr *command.ExecuteQueryRequest) ([]*command.ExecuteQueryResponse, error)
 
-	// Load loads a SQLite file into the system via Raft consensus.
-	Load(lr *command.LoadRequest) error
+	// Load loads a BadgerDB file into the system via Raft consensus.
+	// Load(lr *command.LoadRequest) error
+
+	// StoreInDatabase stores a key, value pair in database
+	StoreInDatabase(key, value string) error
+
+	// GetFromDatabase gets the value for a key from database
+	GetFromDatabase(key string) (string, error)
 }
 
 // Store is the interface the Raft-based database must implement.
 type Store interface {
-	// Database
+	Database
 
 	// Remove removes the node from the cluster.
 	Remove(rn *command.RemoveNodeRequest) error
@@ -83,16 +93,18 @@ type Store interface {
 	// Stats returns stats on the Store.
 	Stats() (map[string]interface{}, error)
 
+	// Error why is Server not correctly being discoverd in this package?
 	// Nodes returns the slice of store.Servers in the cluster
-	Nodes() ([]*store.Server, error)
+	// Nodes() ([]*store.Server, error)
+	Nodes() ([]raft.Server, error)
 
 	// Backup writes backup of the node state to dst
-	Backup(br *command.BackupRequest, dst io.Writer) error
+	// Backup(br *command.BackupRequest, dst io.Writer) error
 
 	// Snapshot triggers a Raft Snapshot and Log Truncation.
-	Snapshot(n uint64) error
+	// Snapshot(n uint64) error
 
-	// ReadFrom reads and loads a SQLite database into the node, initially bypassing
+	// ReadFrom reads and loads a BadgerDB database into the node, initially bypassing
 	// the Raft system. It then triggers a Raft snapshot, which will then make
 	// Raft aware of the new data.
 	// ReadFrom(r io.Reader) (int64, error)
@@ -109,18 +121,18 @@ type Cluster interface {
 	GetAddresser
 
 	// Execute performs an Execute Request on a remote node.
-	// Execute(er *command.ExecuteRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) ([]*command.ExecuteQueryResponse, error)
+	Execute(er *command.ExecuteRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) ([]*command.ExecuteQueryResponse, error)
 
-	// // Query performs an Query Request on a remote node.
+	// Query performs an Query Request on a remote node.
 	// Query(qr *command.QueryRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration) ([]*command.QueryRows, error)
 
-	// // Request performs an ExecuteQuery Request on a remote node.
-	// Request(eqr *command.ExecuteQueryRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) ([]*command.ExecuteQueryResponse, error)
+	// Request performs an ExecuteQuery Request on a remote node.
+	Request(eqr *command.ExecuteQueryRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) ([]*command.ExecuteQueryResponse, error)
 
 	// // Backup retrieves a backup from a remote node and writes to the io.Writer.
 	// Backup(br *command.BackupRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, w io.Writer) error
 
-	// // Load loads a SQLite database into the node.
+	// // Load loads a BadgerDB database into the node.
 	// Load(lr *command.LoadRequest, nodeAddr string, creds *clstrPB.Credentials, timeout time.Duration, retries int) error
 
 	// RemoveNode removes a node from the cluster.
@@ -241,12 +253,12 @@ const (
 	defaultTimeout = 30 * time.Second
 
 	// VersionHTTPHeader is the HTTP header key for the version.
-	VersionHTTPHeader = "X-RQLITE-VERSION"
+	VersionHTTPHeader = "X-WIRE-VERSION"
 
 	// ServedByHTTPHeader is the HTTP header used to report which
 	// node (by node Raft address) actually served the request if
 	// it wasn't served by this node.
-	ServedByHTTPHeader = "X-RQLITE-SERVED-BY"
+	ServedByHTTPHeader = "X-WIRE-SERVED-BY"
 
 	// AllowOriginHeader is the HTTP header for allowing CORS compliant access from certain origins
 	AllowOriginHeader = "Access-Control-Allow-Origin"
@@ -347,7 +359,8 @@ type Service struct {
 
 	BuildInfo map[string]interface{}
 
-	// logger *log.Logger
+	Context context.Context // Context attached with the instance
+
 	logger zerolog.Logger
 }
 
@@ -364,17 +377,17 @@ func New(addr string, store Store, cluster Cluster, credentials CredentialStore)
 		start:               time.Now(),
 		statuses:            make(map[string]StatusReporter),
 		credentialStore:     credentials,
-		// logger:              log.New(os.Stderr, "[http] ", log.LstdFlags),
-		logger: logger.GetLogger("http"),
+		logger:              logger.GetLogger("http"),
 	}
 }
 
 // Start starts the service.
-func (s *Service) Start() error {
+func (s *Service) Start(ctx context.Context) error {
 	s.httpServer = http.Server{
 		Handler: s,
 	}
 
+	s.Context = ctx
 	var ln net.Listener
 	var err error
 	if s.CertFile == "" || s.KeyFile == "" {
@@ -414,11 +427,14 @@ func (s *Service) Start() error {
 	s.queueDone = make(chan struct{})
 
 	s.stmtQueue = queue.New[*command.Statement](s.DefaultQueueCap, s.DefaultQueueBatchSz, s.DefaultQueueTimeout)
-	// go s.runQueue()
+	go s.runQueue()
 	s.logger.Printf("execute queue processing started with capacity %d, batch size %d, timeout %s",
 		s.DefaultQueueCap, s.DefaultQueueBatchSz, s.DefaultQueueTimeout.String())
 
 	go func() {
+		// Serve always returns a non-nil error and closes l. After
+		// [Server.Shutdown] or [Server.Close], the returned error
+		// is [ErrServerClosed].
 		err := s.httpServer.Serve(s.ln)
 		if err != nil {
 			s.logger.Printf("HTTP service on %s stopped: %s", s.ln.Addr().String(), err.Error())
@@ -431,14 +447,14 @@ func (s *Service) Start() error {
 
 // Close closes the service.
 func (s *Service) Close() {
-	s.logger.Print("closing HTTP service on", s.ln.Addr().String())
+	s.logger.Printf("closing HTTP service on %v", s.ln.Addr().String())
 	if err := s.httpServer.Shutdown(context.Background()); err != nil {
 		s.logger.Print("HTTP service shutdown error:", err.Error())
 	}
 
 	s.stmtQueue.Close()
 	select {
-	case <-s.queueDone:
+	case <-s.queueDone: // wait for queueDone
 	default:
 		close(s.closeCh)
 	}
@@ -493,15 +509,34 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		c.Redirect(http.StatusFound, "/status")
 	})
 
+	// TODO: remove this; its a test function
+	engine.POST("/key", func(c *gin.Context) {
+		key := c.Query("key")
+		value := c.Query("value")
+		s.test(key, value)
+	})
+
+	// TODO: remove this; its a test function
+	engine.GET("/key", func(c *gin.Context) {
+		key := c.Query("key")
+		response, err := s.getTest(key)
+		if err != nil {
+			c.Writer.Write([]byte("nil"))
+			return
+		}
+
+		c.Writer.Write([]byte(response))
+	})
 	engine.GET("/boot", func(c *gin.Context) {
 		stats.Add(numBoot, 1)
 		s.handleBoot(c.Writer, c.Request)
 	})
 
-	engine.GET("/snapshot", func(c *gin.Context) {
-		stats.Add(numSnapshots, 1)
-		s.handleSnapshot(c.Writer, c.Request, params)
-	})
+	// TODO: add this later
+	// engine.GET("/snapshot", func(c *gin.Context) {
+	// 	stats.Add(numSnapshots, 1)
+	// 	s.handleSnapshot(c.Writer, c.Request, params)
+	// })
 
 	engine.GET("/remove", func(c *gin.Context) {
 		s.handleRemove(c.Writer, c.Request, params)
@@ -530,10 +565,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Handle all GET, POST, PUT, DELETE under /connector/*
-	engine.GET("/connector/*any", handleConnector)
-	engine.POST("/connector/*any", handleConnector)
-	engine.PUT("/connector/*any", handleConnector)
-	engine.DELETE("/connector/*any", handleConnector)
+	engine.GET("/connector/*any", s.handleConnector)
+	engine.POST("/connector/*any", s.createPipeline)
+	engine.PUT("/connector/*any", s.handleConnector)
+	engine.DELETE("/connector/*any", s.handleConnector)
 
 	// Set up fallback for unknown routes
 	engine.NoRoute(func(c *gin.Context) {
@@ -545,14 +580,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Function to handle all requests under /connector/*
-func handleConnector(c *gin.Context) {
+func (s *Service) handleConnector(c *gin.Context) {
 	switch c.Request.Method {
 	case http.MethodGet:
 		// Handle GET logic here
 		c.JSON(http.StatusOK, gin.H{"message": "GET request to /connector"})
-
-	case http.MethodPost:
-		createPipeline(c.Writer, c.Request)
 
 	case http.MethodPut:
 		// Handle PUT logic here
@@ -727,7 +759,7 @@ func (s *Service) handleRemove(w http.ResponseWriter, r *http.Request, qp QueryP
 // 	s.lastBackup = time.Now()
 // }
 
-// handleLoad loads the database from the given SQLite database file or SQLite dump.
+// handleLoad loads the database from the given BadgerDB database file or BadgerDB dump.
 // func (s *Service) handleLoad(w http.ResponseWriter, r *http.Request, qp QueryParams) {
 // 	if !s.CheckRequestPerm(r, auth.PermLoad) {
 // 		w.WriteHeader(http.StatusUnauthorized)
@@ -766,7 +798,7 @@ func (s *Service) handleRemove(w http.ResponseWriter, r *http.Request, qp QueryP
 // 	s.writeResponse(w, qp, resp)
 // }
 
-// handleBoot handles booting this node using a SQLite file.
+// handleBoot handles booting this node using a BadgerDB file.
 func (s *Service) handleBoot(w http.ResponseWriter, r *http.Request) {
 	if !s.CheckRequestPerm(r, auth.PermLoad) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -787,23 +819,23 @@ func (s *Service) handleBoot(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSnapshot handles a snapshot request.
-func (s *Service) handleSnapshot(w http.ResponseWriter, r *http.Request, qp QueryParams) {
-	if !s.CheckRequestPerm(r, auth.PermSnapshot) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
+// func (s *Service) handleSnapshot(w http.ResponseWriter, r *http.Request, qp QueryParams) {
+// 	if !s.CheckRequestPerm(r, auth.PermSnapshot) {
+// 		w.WriteHeader(http.StatusUnauthorized)
+// 		return
+// 	}
 
-	if r.Method != "POST" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+// 	if r.Method != "POST" {
+// 		w.WriteHeader(http.StatusMethodNotAllowed)
+// 		return
+// 	}
 
-	err := s.store.Snapshot(uint64(qp.TrailingLogs(0)))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-}
+// 	err := s.store.Snapshot(uint64(qp.TrailingLogs(0)))
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusInternalServerError)
+// 		return
+// 	}
+// }
 
 // handleStatus returns status on the system.
 func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request, qp QueryParams) {
@@ -960,7 +992,7 @@ func (s *Service) handleNodes(w http.ResponseWriter, r *http.Request, qp QueryPa
 	sNodes, err := s.store.Nodes()
 	if err != nil {
 		statusCode := http.StatusInternalServerError
-		if err == store.ErrNotOpen {
+		if err == store.ErrStoreNotOpen {
 			statusCode = http.StatusServiceUnavailable
 		}
 		http.Error(w, fmt.Sprintf("store nodes: %s", err.Error()), statusCode)
@@ -1130,6 +1162,7 @@ func (s *Service) queuedExecute(w http.ResponseWriter, r *http.Request, qp Query
 // func (s *Service) execute(w http.ResponseWriter, r *http.Request, qp QueryParams) {
 // 	resp := NewResponse()
 // 	stmts, err := ParseRequest(r.Body)
+// 	s.logger.Printf("The statements are: %v", stmts)
 // 	if err != nil {
 // 		http.Error(w, err.Error(), http.StatusBadRequest)
 // 		return
@@ -1525,73 +1558,74 @@ func (s *Service) LeaderAPIAddr() string {
 	return apiAddr
 }
 
-// func (s *Service) runQueue() {
-// 	defer close(s.queueDone)
-// 	retryDelay := time.Second
+func (s *Service) runQueue() {
+	defer close(s.queueDone)
+	// retryDelay := time.Second
 
-// 	var err error
-// 	for {
-// 		select {
-// 		case <-s.closeCh:
-// 			return
-// 		case req := <-s.stmtQueue.C:
-// 			er := &command.ExecuteRequest{
-// 				Request: &command.Request{
-// 					Statements:  req.Objects,
-// 					Transaction: s.DefaultQueueTx,
-// 				},
-// 			}
-// 			stats.Add(numQueuedExecutionsStmtsRx, int64(len(req.Objects)))
+	// var err error
+	for {
+		select {
+		case <-s.closeCh:
+			return
+		case req := <-s.stmtQueue.C:
+			// er := &command.ExecuteRequest{
+			// 	Request: &command.Request{
+			// 		Statements:  req.Objects,
+			// 		Transaction: s.DefaultQueueTx,
+			// 	},
+			// }
+			stats.Add(numQueuedExecutionsStmtsRx, int64(len(req.Objects)))
 
-// 			// Nil statements are valid, as clients may want to just send
-// 			// a "checkpoint" through the queue.
-// 			if er.Request.Statements != nil {
-// 				for {
-// 					_, err = s.store.Execute(er)
-// 					if err == nil {
-// 						// Success!
-// 						break
-// 					}
+			// Nil statements are valid, as clients may want to just send
+			// a "checkpoint" through the queue.
+			// TODO: need to review this and fix this code
+			// if er.Request.Statements != nil {
+			// 	for {
+			// 		_, err = s.store.Execute(er)
+			// 		if err == nil {
+			// 			// Success!
+			// 			break
+			// 		}
 
-// 					if err == store.ErrNotLeader {
-// 						addr, err := s.store.LeaderAddr()
-// 						if err != nil || addr == "" {
-// 							s.logger.Printf("execute queue can't find leader for sequence number %d on node %s",
-// 								req.SequenceNumber, s.Addr().String())
-// 							stats.Add(numQueuedExecutionsNoLeader, 1)
-// 						} else {
-// 							_, err = s.cluster.Execute(er, addr, nil, defaultTimeout, 0)
-// 							if err != nil {
-// 								s.logger.Printf("execute queue write failed for sequence number %d on node %s: %s",
-// 									req.SequenceNumber, s.Addr().String(), err.Error())
-// 								if err.Error() == "leadership lost while committing log" {
-// 									stats.Add(numQueuedExecutionsLeadershipLost, 1)
-// 								} else if err.Error() == "not leader" {
-// 									stats.Add(numQueuedExecutionsNotLeader, 1)
-// 								} else {
-// 									stats.Add(numQueuedExecutionsUnknownError, 1)
-// 								}
-// 							} else {
-// 								// Success!
-// 								stats.Add(numRemoteExecutions, 1)
-// 								break
-// 							}
-// 						}
-// 					}
+			// 		if err == store.ErrNotLeader {
+			// 			addr, err := s.store.LeaderAddr()
+			// 			if err != nil || addr == "" {
+			// 				s.logger.Printf("execute queue can't find leader for sequence number %d on node %s",
+			// 					req.SequenceNumber, s.Addr().String())
+			// 				stats.Add(numQueuedExecutionsNoLeader, 1)
+			// 			} else {
+			// 				_, err = s.cluster.Execute(er, addr, nil, defaultTimeout, 0)
+			// 				if err != nil {
+			// 					s.logger.Printf("execute queue write failed for sequence number %d on node %s: %s",
+			// 						req.SequenceNumber, s.Addr().String(), err.Error())
+			// 					if err.Error() == "leadership lost while committing log" {
+			// 						stats.Add(numQueuedExecutionsLeadershipLost, 1)
+			// 					} else if err.Error() == "not leader" {
+			// 						stats.Add(numQueuedExecutionsNotLeader, 1)
+			// 					} else {
+			// 						stats.Add(numQueuedExecutionsUnknownError, 1)
+			// 					}
+			// 				} else {
+			// 					// Success!
+			// 					stats.Add(numRemoteExecutions, 1)
+			// 					break
+			// 				}
+			// 			}
+			// 		}
 
-// 					stats.Add(numQueuedExecutionsFailed, 1)
-// 					time.Sleep(retryDelay)
-// 				}
-// 			}
+			// 		stats.Add(numQueuedExecutionsFailed, 1)
+			// 		time.Sleep(retryDelay)
+			// 	}
+			// }
 
-// 			// Perform post-write processing.
-// 			atomic.StoreInt64(&s.seqNum, req.SequenceNumber)
-// 			req.Close()
-// 			stats.Add(numQueuedExecutionsStmtsTx, int64(len(req.Objects)))
-// 			stats.Add(numQueuedExecutionsOK, 1)
-// 		}
-// 	}
-// }
+			// Perform post-write processing.
+			atomic.StoreInt64(&s.seqNum, req.SequenceNumber)
+			req.Close()
+			stats.Add(numQueuedExecutionsStmtsTx, int64(len(req.Objects)))
+			stats.Add(numQueuedExecutionsOK, 1)
+		}
+	}
+}
 
 // addBuildVersion adds the build version to the HTTP response.
 func (s *Service) addBuildVersion(w http.ResponseWriter) {
@@ -1746,4 +1780,96 @@ func makeCredentials(username, password string) *clstrPB.Credentials {
 		Username: username,
 		Password: password,
 	}
+}
+
+func (s *Service) test(k, v string) error {
+	s.logger.Printf("TEST FUNC")
+	s.store.StoreInDatabase(k, v)
+	return nil
+}
+
+func (s *Service) getTest(k string) (string, error) {
+	value, err := s.store.GetFromDatabase(k)
+	if err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+//
+
+func (s *Service) createPipeline(c *gin.Context) {
+	r := c.Request
+	w := c.Writer
+
+	// Read the request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.logger.Err(err).Msg("Error reading request body")
+		SendResponseWithHeader(w, false, nil, "error reading request body", http.StatusInternalServerError, nil)
+		return
+	}
+
+	// Check if the request body is empty
+	if len(body) == 0 {
+		SendResponseWithHeader(w, false, nil, "error: no request body", http.StatusBadRequest, nil)
+		return
+	}
+
+	var pipelineData CreatePipelineModel
+	if err := json.Unmarshal(body, &pipelineData); err != nil {
+		s.logger.Err(err).Msg("Error when creating a new pipeline!")
+		SendResponseWithHeader(w, false, nil, "invalid request payload", http.StatusBadRequest, nil)
+		return
+	}
+	fmt.Printf(":->%v\n", pipelineData.Source)
+	fmt.Printf(":->%v\n", pipelineData.Sink)
+
+	var sourceConfig sources.SourceConfig
+	var sinkConfig sinks.SinkConfig
+
+	// Marshal the map to JSON, and then unmarshal it into the struct.
+	sourceBytes, err := json.Marshal(pipelineData.Source)
+	if err != nil {
+		s.logger.Err(err).Msg("Error marshalling source data")
+		return
+	}
+	if err := json.Unmarshal(sourceBytes, &sourceConfig); err != nil {
+		s.logger.Err(err).Msg("Error un-marshalling source configuration")
+		return
+	}
+
+	// Do the same for Sink
+	sinkBytes, err := json.Marshal(pipelineData.Sink)
+	if err != nil {
+		s.logger.Err(err).Msg("Error marshalling sink data")
+		return
+	}
+	if err := json.Unmarshal(sinkBytes, &sinkConfig); err != nil {
+		s.logger.Err(err).Msg("Error un-marshalling sink configuration")
+		return
+	}
+
+	dataSourceInterface, err := pipeline.DataSourceFactory(sourceConfig)
+	if err != nil {
+		// TODO
+	}
+	dataSinkInterface, err := pipeline.DataSinkFactory(sinkConfig)
+	if err != nil {
+		// TODO
+	}
+
+	newPipeline := pipeline.NewDataPipeline(dataSourceInterface, dataSinkInterface)
+	pipelineString, err := newPipeline.Show()
+	if err != nil {
+		s.logger.Err(err).Send()
+	}
+	s.logger.Debug().Str("key", newPipeline.Key()).Msgf("Creating and running pipeline: %s", pipelineString)
+
+	// store the pipeline in persistent storage
+	s.store.StoreInDatabase("config", string(body))
+
+	go newPipeline.Run(s.Context)
+
+	SendResponse(w, true, nil, "")
 }

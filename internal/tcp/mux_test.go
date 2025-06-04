@@ -114,7 +114,7 @@ package tcp
 
 // 	addr := &mockAddr{
 // 		Nwk:  "tcp",
-// 		Addr: "rqlite.com:8081",
+// 		Addr: "wire.com:8081",
 // 	}
 
 // 	mux, err := NewMux(tcpListener, addr)
