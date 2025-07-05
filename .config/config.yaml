@@ -13,6 +13,24 @@ sources:
     config:
       bootstrap_servers: 'localhost:9092'
       topic: foo
+
+pipelines:
+  - name: "mongo_user_pipeline" # This name should match a key used by a source/sink pair
+    parallelism: 16          # Example: 16 worker threads
+    buffer_size: 10000       # Example: Large buffer for burst handling
+    # batch_size: 100          # Example: Batch writes to sink (if sink supports it)
+    # flush_interval: "100ms"  # Example: Max time before flush (if sink supports it)
+    # rate_limit_per_sec: 50000 # Example: Rate limiting for the pipeline
+
+  - name: "another_pipeline_key" # Example for a different pipeline
+    parallelism: 0           # Auto-detect CPU cores (runtime.NumCPU())
+    buffer_size: 0           # Auto-set based on parallelism (parallelism * 100)
+    adaptive:
+      enabled: true
+      min_workers: 2
+      max_workers: 16
+      target_latency_ms: 20 # Target average processing latency in milliseconds
+      adjust_interval: "45s" # How often to check and adjust parallelism
       group: test-group
 sinks:
   - name: ElasticSearch User Data

@@ -23,6 +23,13 @@ type DataPipelineConfig struct {
 	mappedDataPipelines map[string]DataPipeline // Mapping of {key: DataPipeline}
 }
 
+// PipelineConfig struct as defined in the issue
+type PipelineConfig struct {
+	Name        string `yaml:"name" json:"name"`
+	Parallelism int    `yaml:"parallelism" json:"parallelism" validate:"min=1,max=1000"`
+	BufferSize  int    `yaml:"buffer_size" json:"buffer_size" validate:"min=1,max=10000"`
+}
+
 type DataPipelineManager struct {
 	activePipelines uint32              // current actively running pipelines
 	configs         *DataPipelineConfig // will probably move this over to badger
@@ -64,6 +71,17 @@ func (p *DataPipelineConfig) ParseConfig(ko *koanf.Koanf) ([]sources.SourceConfi
 
 // Parse the config and read the sources and sinks into the pipeline config
 func (p *DataPipelineConfig) Config(ko *koanf.Koanf) (bool, error) {
+	var pipelineConfigs []PipelineConfig
+	if err := ko.Unmarshal("pipelines", &pipelineConfigs); err != nil {
+		log.Err(err).Msg("Error when un-marshaling pipeline configs")
+		// We can decide to return error or proceed without pipeline-specific configs
+	}
+
+	// Create a map for quick lookup of pipeline configurations by name
+	pipelineConfigMap := make(map[string]PipelineConfig)
+	for _, pc := range pipelineConfigs {
+		pipelineConfigMap[pc.Name] = pc
+	}
 
 	var allSourcesConfig []sources.SourceConfig
 	var allSinksConfig []sinks.SinkConfig
@@ -78,16 +96,60 @@ func (p *DataPipelineConfig) Config(ko *koanf.Koanf) (bool, error) {
 	}
 
 	for _, sourceConfig := range allSourcesConfig {
-		p.AddSource(sourceConfig)
+		// Here we assume that sourceConfig.Name can be used to find a matching PipelineConfig
+		// This might need adjustment based on how pipeline names are associated with sources/sinks
+		pipelineName := sourceConfig.Name // Or some other field that links source to pipeline config
+		parallelism := 1                   // Default parallelism
+		if pc, ok := pipelineConfigMap[pipelineName]; ok {
+			parallelism = pc.Parallelism
+		}
+		p.AddSource(sourceConfig, parallelism)
 	}
 	for _, sinkConfig := range allSinksConfig {
+		// Sinks might not directly determine parallelism, it's more a pipeline-level attribute.
+		// The current AddSink doesn't take parallelism. This logic assumes that the DataPipeline
+		// object is primarily configured via AddSource or a separate pipeline construction step.
+		// If a sink needs to be associated with a pipeline's parallelism, this needs more thought.
 		p.AddSink(sinkConfig)
+	}
+
+	// This part of the logic might need to be more sophisticated.
+	// Currently, mappedDataPipelines are created/updated in AddSource/AddSink.
+	// We need to ensure the parallelism setting from PipelineConfig is applied to the correct DataPipeline.
+	// One way is to pass parallelism to NewDataPipeline, which is called within mapSource/mapSink indirectly or directly.
+
+	// Let's adjust mapSource and potentially mapSink to handle parallelism.
+	// The issue is that DataPipeline objects are created inside mapSource/mapSink.
+	// We need to ensure the parallelism value reaches NewDataPipeline.
+
+	// For simplicity, let's assume that a pipeline is uniquely identified by a key (often derived from source/sink name)
+	// and that PipelineConfig's Name field matches this key.
+	for key, dp := range p.mappedDataPipelines {
+		if pc, ok := pipelineConfigMap[key]; ok {
+			// If NewDataPipeline was already called (e.g. in mapSource/mapSink),
+			// we might need to update the existing DataPipeline object's parallelism.
+			// Or, ensure NewDataPipeline is called with the correct parallelism.
+			// The current structure creates DataPipeline in mapSource/mapSink without parallelism.
+			// This needs careful refactoring.
+
+			// A temporary approach: if dp.parallelism is still default (1), update it.
+			// This assumes NewDataPipeline sets a default that we can check.
+			// And that this Config method is called after initial mapping.
+			if dp.parallelism == 1 && pc.Parallelism > 0 { // Check if default and new value is valid
+				// This direct modification is tricky because DataPipeline is a value in the map.
+				// Need to update the map value itself.
+				updatedDp := dp
+				updatedDp.parallelism = pc.Parallelism
+				p.mappedDataPipelines[key] = updatedDp
+				log.Debug().Msgf("Updated parallelism for pipeline %s to %d", key, pc.Parallelism)
+			}
+		}
 	}
 
 	return true, nil
 }
 
-func (p *DataPipelineConfig) mapSource(source DataSource) {
+func (p *DataPipelineConfig) mapSource(source DataSource, parallelism int) {
 
 	log.Trace().Msg("Mapping source")
 
@@ -100,18 +162,22 @@ func (p *DataPipelineConfig) mapSource(source DataSource) {
 
 	if value, exists := p.mappedDataPipelines[key]; exists {
 		log.Debug().Msgf("Mapped source key(%s) exists, updating it", key)
-		value.SetSource(source)            // Updated the local copy
+		value.SetSource(source) // Updated the local copy
+		// If parallelism is provided and different from existing, update it.
+		// This assumes DataPipeline struct has a parallelism field.
+		if parallelism > 0 && value.parallelism != parallelism {
+			log.Debug().Msgf("Updating parallelism for existing pipeline %s from %d to %d", key, value.parallelism, parallelism)
+			value.parallelism = parallelism
+		}
 		p.mappedDataPipelines[key] = value // Updating the main object
 		return
 	}
 
 	log.Debug().Msgf("Mapped source key(%s) does NOT exists, creating it", key)
-	data := DataPipeline{
-		key:    key,
-		Source: source,
-		Sink:   nil,
-	}
-	p.mappedDataPipelines[key] = data
+	// Create DataPipeline with provided parallelism
+	data := NewDataPipeline(source, nil, parallelism) // Assuming NewDataPipeline signature is NewDataPipeline(source, sink, parallelism)
+	data.key = key                                     // Set key if not set by NewDataPipeline or if specific keying is needed
+	p.mappedDataPipelines[key] = *data                 // Store the actual DataPipeline object
 }
 
 func (p *DataPipelineConfig) mapSink(sink DataSink) {
@@ -149,7 +215,7 @@ func (p *DataPipelineConfig) mapSink(sink DataSink) {
 }
 
 // Add a source to the pipeline config
-func (p *DataPipelineConfig) AddSource(src sources.SourceConfig) error {
+func (p *DataPipelineConfig) AddSource(src sources.SourceConfig, parallelism int) error {
 
 	log.Trace().Msg("Creating a source")
 
@@ -166,7 +232,7 @@ func (p *DataPipelineConfig) AddSource(src sources.SourceConfig) error {
 	p.srcIndexMap[key] = append(p.srcIndexMap[key], len(p.allSourceInterfaces))
 	p.allSourceInterfaces = append(p.allSourceInterfaces, source)
 	p.addKey(key)
-	p.mapSource(source)
+	p.mapSource(source, parallelism) // Pass parallelism to mapSource
 	return nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"runtime"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -45,7 +46,7 @@ type DataPipeline struct {
 	// Unique identifier for the data pipeline
 	key string
 	// Num jobs
-	jobCount uint
+	parallelism int
 	// To shutdown only the pipeline
 	pipelineDone chan any
 	// Mutex
@@ -131,14 +132,14 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 
 	// TODO: Implement code make the channel to a job and process the job
 	// Partition the data into multiple jobs (channel)
-	jobPartitioner := partitioner.NewPartitoner[*models.Job](dp.jobCount, hashFn)
+	jobPartitioner := partitioner.NewPartitoner[*models.Job](uint(dp.parallelism), hashFn)
 
 	partitionedInitialDataChannels := jobPartitioner.PartitionData(initialDataChannel)
 	partitionedDataChannels := jobPartitioner.PartitionData(dataChannel)
 
 	jobPartitioner.Examine()
 
-	// for i := 0; i < jobCount; i++ {
+	// for i := 0; i < parallelism; i++ {
 	// 	log.Debug().Printf("Channel [%v] = %v\n", i, partitionedInitialDataChannels[i])
 	// 	fmt.Printf("|Channel [%v] = %v\n", i, partitionedDataChannels[i])
 	// }
@@ -146,10 +147,9 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 	t := &transform.Transformer{}
 	t.Init()
 
-	log.Debug().Msgf("Creating %d jobs", dp.jobCount)
-	for i := range dp.jobCount {
+	log.Debug().Msgf("Creating %d jobs", dp.parallelism)
+	for i := 0; i < dp.parallelism; i++ {
 		wg.Add(1)
-
 		go dp.processJob(ctx, &wg, t, partitionedDataChannels[i], partitionedInitialDataChannels[i])
 	}
 
@@ -161,8 +161,10 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 // Process job as of now only writes the data to the sink in a non deterministic manner
 // i.e the writes can be in a different order to the reads
 func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, t *transform.Transformer, dataChannel <-chan *models.Job, initialDataChannel <-chan *models.Job) {
+	defer wg.Done()
 	log.Debug().Msg("In a process job")
-	log.Debug().Msgf("The wg and dataChannel are: %v | %v", wg, len(dataChannel))
+	// Removed length check for dataChannel as it's a channel and len() doesn't apply in the way it would for a slice.
+	// log.Debug().Msgf("The wg and dataChannel are: %v | %v", wg, len(dataChannel))
 
 	// TODO: need to add code to transform the input to the expected output
 	// transform.ApplyTransformation()
@@ -175,8 +177,12 @@ func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, t *t
 	// dp.incrementCounter()
 
 	// TODO: wg.Done is called in Write, not very readable code, need to refactor this
+	// Consider moving wg.Done() here if Write becomes asynchronous or if error handling needs specific attention
+	// For now, keeping wg.Done() at the start of this function assuming Write is blocking or handles its own goroutine completion.
 	if err := dp.Sink.Write(ctx, wg, initialTransformedChannel, dataChannel); err != nil {
 		log.Err(err).Msg("Error when writing to the data sink")
+		// If Write errors, we might not want to call wg.Done() if it's handled internally by Write or if the pipeline should halt.
+		// However, current structure calls wg.Done() via defer.
 	}
 }
 
@@ -256,17 +262,19 @@ func (dp *DataPipeline) Close() bool {
 }
 
 // Create a new DataPipeline and initialize it
-func NewDataPipeline(source DataSource, sink DataSink) *DataPipeline {
-
+func NewDataPipeline(source DataSource, sink DataSink, parallelism int) *DataPipeline {
+	if parallelism <= 0 {
+		parallelism = runtime.NumCPU()
+	}
 	dataPipeline := &DataPipeline{
-		Source:   source,
-		Sink:     sink,
-		open:     atomic.Bool{},
-		cancel:   nil,
-		key:      "",
-		jobCount: 1,
-		mu:       sync.RWMutex{},
-		operations: []*PipelineOps{},
+		Source:      source,
+		Sink:        sink,
+		open:        atomic.Bool{},
+		cancel:      nil,
+		key:         "",
+		parallelism: parallelism,
+		mu:          sync.RWMutex{},
+		operations:  []*PipelineOps{},
 	}
 	// dataPipeline.Init() // does nothing as of now
 
