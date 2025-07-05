@@ -1,0 +1,236 @@
+@startuml
+title Application Startup Sequence
+
+actor User as User
+participant "main()" as Main
+participant "cmd/init.go" as Init
+participant "cmd/signals.go" as Signals
+participant "internal/logger" as Logger
+participant "net" as Net
+participant "internal/tcp.Mux" as Mux
+participant "internal/cluster" as Cluster
+participant "internal/tcp.Layer" as TCPLayer
+participant "internal/new/store.NodeStore" as Store
+participant "internal/http.Service" as HTTPService
+participant "hashicorp/raft" as RaftLib
+participant "internal/db" as DB
+
+User -> Main : Executes application
+
+Main -> Signals : HandleSignals()
+activate Signals
+Signals --> Main : sigCh
+deactivate Signals
+
+Main -> Signals : CreateContext(sigCh)
+activate Signals
+Signals --> Main : mainCtx, cancelFunc
+deactivate Signals
+
+Main -> Init : initFlags(name, desc, buildInfo)
+activate Init
+Init --> Main : *Config
+deactivate Init
+
+Main -> Logger : SetDevelopment(cfg.DebugMode)
+Main -> Logger : SetLogFile(logFile)
+Main -> Logger : GetLogger("main")
+activate Logger
+Logger --> Main : log.Logger
+deactivate Logger
+
+Main -> Main : log.Info("Starting...")
+
+Main -> Net : Listen("tcp", cfg.RaftAddr)
+activate Net
+Net --> Main : muxListener
+deactivate Net
+
+Main -> Main : startNodeMux(cfg, muxListener)
+activate Main
+Main -> Mux : NewMux() or NewTLSMux()
+activate Mux
+Mux --> Main : mux
+deactivate Mux
+Main -> Mux : go Serve()
+Mux -> Mux : (goroutine serves connections)
+deactivate Main
+
+Main -> Mux : Listen(cluster.MuxRaftHeader)
+activate Mux
+Mux --> Main : raftLn (net.Listener)
+deactivate Mux
+
+Main -> Cluster : CreateRaftDialer(...)
+activate Cluster
+Cluster --> Main : raftDialer
+deactivate Cluster
+
+Main -> TCPLayer : NewLayer(raftLn, raftDialer)
+activate TCPLayer
+TCPLayer --> Main : raftTn
+deactivate TCPLayer
+
+Main -> Main : createStore(cfg, raftTn)
+activate Main
+Main -> Store : New(ly, config)
+activate Store
+Store --> Main : str (*NodeStore)
+deactivate Store
+deactivate Main
+
+Main -> Mux : Listen(cluster.MuxClusterHeader)
+activate Mux
+Mux --> Main : clstrLn (net.Listener)
+deactivate Mux
+
+Main -> Main : clusterService(cfg, clstrLn, str, str)
+activate Main
+Main -> Cluster : New(ln, db, mgr)
+activate Cluster
+Cluster --> Main : clstrServ (*cluster.Service)
+deactivate Cluster
+Main -> Cluster : clstrServ.Open()
+activate Cluster
+Cluster --> Main : error
+deactivate Cluster
+deactivate Main
+
+Main -> Main : createClusterClient(cfg, clstrServ)
+activate Main
+Main -> TCPLayer : NewDialer(cluster.MuxClusterHeader, tlsConfig)
+activate TCPLayer
+TCPLayer --> Main : clstrDialer
+deactivate TCPLayer
+Main -> Cluster : NewClient(clstrDialer, timeout)
+activate Cluster
+Cluster --> Main : clstrClient (*cluster.Client)
+deactivate Cluster
+Main -> Cluster : clstrClient.SetLocal(cfg.RaftAdv, clstr)
+activate Cluster
+Cluster --> Main : error
+deactivate Cluster
+deactivate Main
+
+Main -> Main : startHTTPService(cfg, str, mainCtx, cltrClient)
+activate Main
+Main -> HTTPService : New(httpAddr, store, clusterClient, auth)
+activate HTTPService
+HTTPService --> Main : httpServ (*httpd.Service)
+deactivate HTTPService
+Main -> HTTPService : httpServ.Start(ctx)
+activate HTTPService
+HTTPService --> Main : error
+deactivate HTTPService
+deactivate Main
+
+Main -> Store : str.Open()
+activate Store
+  Store -> Store : Initialize Raft components
+  Store -> DB : New (BadgerDB instance)
+  activate DB
+  DB --> Store
+  deactivate DB
+  Store -> DB : Open()
+  activate DB
+  DB --> Store
+  deactivate DB
+  Store -> RaftLib : raft.NewRaft(config, s, s.raftLog, ...)
+  activate RaftLib
+  RaftLib --> Store : raftInstance
+  deactivate RaftLib
+  Store -> RaftLib : raft.RegisterObserver()
+  activate RaftLib
+  deactivate RaftLib
+Store --> Main : error
+deactivate Store
+
+Main -> Store : str.Nodes()
+activate Store
+Store --> Main : nodes, error
+deactivate Store
+
+Main -> Main : createCluster(mainCtx, cfg, hasPeers, clstrClient, str, httpServ, nil)
+activate Main
+alt hasPeers == false and no joins and no disco
+    Main -> Store : str.Bootstrap(server)
+    activate Store
+    Store --> Main : error
+    deactivate Store
+else joins != nil and bootstrapExpect == 0
+    Main -> Cluster : joiner.Do(ctx, joins, ...)
+    activate Cluster
+    Cluster --> Main : joinAddress, error
+    deactivate Cluster
+else joins != nil and bootstrapExpect > 0
+    Main -> Cluster : bootstrapper.Boot(ctx, ...)
+    activate Cluster
+    Cluster --> Main : error
+    deactivate Cluster
+else discoMode != ""
+    Main -> Main : "Discovery logic (TODO)"
+end
+deactivate Main
+
+Main -> Main : <-mainCtx.Done() (waits for signal)
+
+User -> Main : (Sends SIGINT/SIGTERM)
+Main -> Signals : (Signal received on sigCh)
+Main -> Main : mainCtx is canceled
+Main -> Main : log.Info("Process interrupted...")
+
+Main -> HTTPService : httpServ.Close()
+activate HTTPService
+HTTPService --> Main
+deactivate HTTPService
+
+Main -> Cluster : clstrServ.Close()
+activate Cluster
+Cluster --> Main
+deactivate Cluster
+
+alt cfg.RaftClusterRemoveOnShutdown
+    Main -> Cluster : remover.Do(...)
+    activate Cluster
+    Cluster --> Main
+    deactivate Cluster
+end
+
+alt cfg.RaftStepdownOnShutdown
+    Main -> Store : str.IsLeader()
+    activate Store
+    Store --> Main : isLeader
+    deactivate Store
+    alt isLeader
+        Main -> Store : str.Stepdown(true)
+        activate Store
+        Store --> Main
+        deactivate Store
+    end
+end
+
+Main -> Mux : muxListener.Close()
+activate Mux
+Mux --> Main
+deactivate Mux
+
+Main -> Store : str.Close(true)
+activate Store
+Store -> RaftLib : raft.Shutdown()
+activate RaftLib
+RaftLib --> Store
+deactivate RaftLib
+Store -> Store : raftTn.Close()
+Store -> DB : Close()
+activate DB
+DB --> Store
+deactivate DB
+Store -> DB : dbStore.Close()
+activate DB
+DB --> Store
+deactivate DB
+Store --> Main : error
+deactivate Store
+
+Main -> User : Exits
+@enduml
