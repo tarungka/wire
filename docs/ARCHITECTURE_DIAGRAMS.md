@@ -210,73 +210,73 @@ sequenceDiagram
 ```mermaid
 classDiagram
     class NodeStore {
-        -raft: *raft.Raft
-        -db: *badgerdb.DB
-        -dbStore: db.DbStore
-        -storeDb: string
-        -fsmIndex: *atomic.Uint64
-        -fsmTerm: *atomic.Uint64
-        +Bootstrap(servers)
-        +Join(nodeID, httpAddr, addr)
-        +StoreInDatabase(key, value)
-        +GetFromDatabase(key)
-        +Apply(log) interface{}
+        -raft *raft.Raft
+        -db *badgerdb.DB
+        -dbStore db.DbStore
+        -storeDb string
+        -fsmIndex *atomic.Uint64
+        -fsmTerm *atomic.Uint64
+        +Bootstrap(servers) error
+        +Join(nodeID, httpAddr, addr) error
+        +StoreInDatabase(key, value) error
+        +GetFromDatabase(key) string
+        +Apply(log) any
         +Snapshot() FSMSnapshot
-        +Restore(io.ReadCloser)
+        +Restore(reader) error
     }
 
     class FSM {
         <<interface>>
-        +Apply(log) interface{}
+        +Apply(log) any
         +Snapshot() FSMSnapshot
-        +Restore(io.ReadCloser)
+        +Restore(reader) error
     }
 
     class StableStore {
         <<interface>>
-        +Set(key, val []byte)
-        +Get(key []byte) []byte
-        +SetUint64(key []byte, val uint64)
-        +GetUint64(key []byte) uint64
+        +Set(key, val) error
+        +Get(key) bytes
+        +SetUint64(key, val) error
+        +GetUint64(key) uint64
     }
 
     class LogStore {
         <<interface>>
         +FirstIndex() uint64
         +LastIndex() uint64
-        +GetLog(index, log)
-        +StoreLog(log)
-        +StoreLogs(logs)
-        +DeleteRange(min, max)
+        +GetLog(index, log) error
+        +StoreLog(log) error
+        +StoreLogs(logs) error
+        +DeleteRange(min, max) error
     }
 
     class DbStore {
         <<interface>>
-        +Get(key []byte) []byte
-        +Set(key, val []byte)
-        +Delete(key []byte)
+        +Get(key) bytes
+        +Set(key, val) error
+        +Delete(key) error
         +FirstIndex() uint64
         +LastIndex() uint64
-        +Close()
+        +Close() error
     }
 
     class BadgerDB {
-        +Update(fn)
-        +View(fn)
-        +NewTransaction(update)
-        +Backup(w io.Writer)
+        +Update(fn) error
+        +View(fn) error
+        +NewTransaction(update) Transaction
+        +Backup(writer) error
     }
 
     class BoltDB {
-        +Update(fn)
-        +View(fn)
-        +Begin(writable)
+        +Update(fn) error
+        +View(fn) error
+        +Begin(writable) Transaction
     }
 
     class RocksDB {
-        +Put(key, val)
-        +Get(key)
-        +Delete(key)
+        +Put(key, val) error
+        +Get(key) bytes
+        +Delete(key) error
     }
 
     NodeStore ..|> FSM : implements
