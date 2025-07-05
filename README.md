@@ -255,12 +255,3 @@ Wire is licensed under the MIT License. See [LICENSE](LICENSE) for details.
 
 - **GitHub Issues**: [Bug reports and feature requests](https://github.com/wire/wire/issues)
 - **Discussions**: [Community forum](https://github.com/wire/wire/discussions)
-- **Twitter**: [@WireStream](https://twitter.com/wirestream)
-
-## Acknowledgments
-
-Wire is built on top of excellent open-source projects including:
-- [Go](https://golang.org/)
-- [Kafka Go Client](https://github.com/segmentio/kafka-go)
-- [Elasticsearch Go Client](https://github.com/elastic/go-elasticsearch)
-- And many more...
