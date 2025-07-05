@@ -297,8 +297,8 @@ flowchart TD
     
     Router --> Status[/status]
     Router --> Join[/join]
-    Router --> Key[/key/*]
-    Router --> Connector[/connector/*]
+    Router --> Key["/key/*"]
+    Router --> Connector["/connector/*"]
     Router --> Ready[/readyz]
     
     Status --> CheckLeader1{Is Leader?}
@@ -309,7 +309,7 @@ flowchart TD
     CheckLeader2 -->|Yes| ExecuteJoin[Execute Join]
     CheckLeader2 -->|No| ForwardToLeader1[Forward to Leader]
     
-    Key --> ParseOp{GET/POST/DELETE?}
+    Key --> ParseOp{GET or POST or DELETE}
     ParseOp -->|GET| ReadDB[Read from DB]
     ParseOp -->|POST| CheckLeader3{Is Leader?}
     ParseOp -->|DELETE| CheckLeader3
@@ -332,10 +332,10 @@ flowchart TD
 graph TB
     subgraph "Job Model"
         Job[Job Structure]
-        JobID[ID: UUID v7]
-        JobData[Data: any]
-        JobTime[EventTime: time.Time]
-        JobMutex[mu: sync.RWMutex]
+        JobID[ID - UUID v7]
+        JobData[Data - any type]
+        JobTime[EventTime - timestamp]
+        JobMutex[mu - RWMutex]
         
         Job --> JobID
         Job --> JobData
@@ -344,7 +344,7 @@ graph TB
     end
     
     subgraph "Pipeline Processing"
-        Source[DataSource] -->|Read()| JobChannel[chan *models.Job]
+        Source[DataSource] -->|Read method| JobChannel[Job Channel]
         
         JobChannel --> Pipeline[DataPipeline]
         
@@ -368,8 +368,8 @@ graph TB
     end
     
     subgraph "Concurrency Control"
-        WaitGroup[sync.WaitGroup]
-        Context[context.Context]
+        WaitGroup[WaitGroup]
+        Context[Context]
         
         Pipeline -.-> WaitGroup
         Pipeline -.-> Context
