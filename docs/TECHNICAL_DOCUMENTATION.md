@@ -10,10 +10,11 @@
 - Distributed consensus via HashiCorp Raft for fault tolerance
 - Pipeline-based stream processing with partitioning support
 - Pluggable source/sink architecture (MongoDB, Kafka, Elasticsearch, File)
-- HTTP API for cluster management and data operations
-- Built-in support for data transformations
+- HTTP API for cluster management and data operations (Gin framework)
+- Built-in support for data transformations and operation chaining
 - Automatic leader election and cluster membership management
-- Persistent state storage with BadgerDB
+- Multi-database backend support (BadgerDB, BoltDB, RocksDB)
+- Job-based processing with UUID v7 identification
 
 ---
 
@@ -22,11 +23,12 @@
 **Architectural Pattern:** The codebase follows a **Microservices Architecture** with **Pipeline Pattern** for data processing and **Distributed Consensus Pattern** for state management. The structure supports horizontal scaling through Raft clustering.
 
 **Main Components:**
-- **Raft Store (FSM):** Distributed state machine providing consensus and persistence
-- **Pipeline Engine:** Orchestrates data flow from sources through transformations to sinks
-- **HTTP Service:** RESTful API for cluster management and operations
+- **NodeStore (FSM):** Complete Raft FSM implementation with multi-database backend support
+- **Pipeline Engine:** Orchestrates data flow with operation chaining and transformations
+- **HTTP Service:** Gin-based RESTful API for cluster management and pipeline operations
 - **Transport Layer:** TCP multiplexing for efficient inter-node communication
-- **Job Processor:** Partitioned, parallel processing of data streams
+- **Job Processor:** Partitioned, parallel processing with UUID v7 job identification
+- **Database Abstraction:** Pluggable storage backends (BadgerDB, BoltDB, RocksDB)
 
 **Data Flow Architecture:**
 ```
@@ -39,6 +41,37 @@ Source (Kafka/MongoDB) → Pipeline → Transform → Job Processor → Sink (ES
 
 ## 3️⃣ Detailed Package/File Breakdown
 
+### File: `/internal/new/db/db.go`
+
+**Purpose:** Database abstraction layer for multiple backend support
+
+**Key Types (Structs & Interfaces):**
+
+| Name | Description | Key Fields / Methods |
+|------|-------------|---------------------|
+| `DbStore` | Database interface | `Get()`, `Set()`: KV operations<br>`FirstIndex()`, `LastIndex()`: Log operations<br>`Close()`: Cleanup |
+
+**Supported Backends:**
+- **BadgerDB**: Default for FSM storage, LSM-tree based
+- **BoltDB**: Via raft-boltdb, B+tree based
+- **RocksDB**: High-performance LSM-tree (requires CGO)
+
+### File: `/sinks/file.go`
+
+**Purpose:** File-based sink for pipeline output
+
+**Key Types (Structs & Interfaces):**
+
+| Name | Description | Key Fields / Methods |
+|------|-------------|---------------------|
+| `FileSink` | File writer | `file *os.File`: Output file<br>`encoder *json.Encoder`: JSON writer<br>`Write()`: Concurrent write |
+
+**Key Features:**
+- Buffered writing with OS-level buffering
+- JSON encoding for structured data
+- Context-aware cancellation
+- Thread-safe concurrent writes
+
 ### File: `/cmd/main.go`
 
 **Purpose:** Application entry point orchestrating service initialization and lifecycle
@@ -47,7 +80,7 @@ Source (Kafka/MongoDB) → Pipeline → Transform → Job Processor → Sink (ES
 
 | Name | Description | Key Fields / Methods |
 |------|-------------|---------------------|
-| `Config` | Main configuration | `HTTPAddr string`: HTTP bind address<br>`RaftAddr string`: Raft bind address<br>`JoinAddr []string`: Cluster join addresses |
+| `Config` | Main configuration | `HTTPAddr string`: HTTP bind address<br>`RaftAddr string`: Raft bind address<br>`JoinAddr []string`: Cluster join addresses<br>`StoreDatabase string`: Backend DB type |
 
 **Key Functions/Methods:**
 
@@ -55,13 +88,13 @@ Source (Kafka/MongoDB) → Pipeline → Transform → Job Processor → Sink (ES
 |-----------------|-------------|---------------------|----------------|
 | `main()` | Application bootstrap | None<br>No return | `log.Fatal()` on critical errors |
 | `startNodeMux()` | TCP multiplexer setup | `tcp *tcp.Mux`<br>Returns `net.Listener` | Returns error if binding fails |
-| `createStore()` | Initialize Raft store | `cfg *Config`, listeners<br>Returns `*store.NodeStore, error` | Propagates store creation errors |
-| `createCluster()` | Bootstrap/join cluster | `cfg *Config`, `str *store.NodeStore`<br>Returns `error` | Handles bootstrap conflicts |
-| `startHTTPService()` | Start HTTP API | Multiple params<br>Returns `*http.Service, error` | Returns service start errors |
+| `createStore()` | Initialize Raft store | `cfg *Config`, `ly *tcp.Layer`<br>Returns `*store.NodeStore, error` | Propagates store creation errors |
+| `createCluster()` | Bootstrap/join cluster | Extended params with context<br>Returns `error` | Handles bootstrap conflicts |
+| `startHTTPService()` | Start HTTP API | Includes `context.Context`<br>Returns `*http.Service, error` | Returns service start errors |
 
 **Global Variables & Constants:**
-- `version`: Build version string
-- `metadata`: Platform/arch metadata
+- `ko`: Koanf configuration manager
+- `logo`: ASCII art branding
 - Signal channels for graceful shutdown
 
 ### File: `/cmd/init.go`
@@ -90,109 +123,112 @@ Source (Kafka/MongoDB) → Pipeline → Transform → Job Processor → Sink (ES
 
 ### File: `/internal/new/store/store.go`
 
-**Purpose:** Core distributed store implementing Raft FSM and storage interfaces
+**Purpose:** Core distributed store implementing complete Raft FSM with multi-database backend support
 
 **Key Types (Structs & Interfaces):**
 
 | Name | Description | Key Fields / Methods |
 |------|-------------|---------------------|
-| `NodeStore` | Main store struct | `raft *raft.Raft`: Consensus engine<br>`db *badger.DB`: Data storage<br>`raftConfig *raft.Config`: Raft configuration |
-| `Config` | Store configuration | `DBPath string`: Database directory<br>`RaftLogEngine string`: Log storage type<br>`ReplicationFactor int`: Cluster size |
+| `NodeStore` | Main store struct | `raft *raft.Raft`: Consensus engine<br>`db *badgerdb.DB`: FSM storage<br>`dbStore db.DbStore`: Backend storage<br>`storeDb string`: Backend type |
+| `Config` | Store configuration | `Dir string`: Working directory<br>`ID string`: Node identifier<br>`StoreDatabase string`: Backend DB type |
 
 **Key Functions/Methods:**
 
 | Function/Method | Description | Parameters & Returns | Error Handling |
 |-----------------|-------------|---------------------|----------------|
-| `Apply()` | FSM log apply | `*raft.Log`<br>Returns `interface{}` | Returns command errors |
-| `Snapshot()` | Create FSM snapshot | None<br>Returns `raft.FSMSnapshot, error` | Currently returns `ErrNotImplemented` |
-| `Bootstrap()` | Initialize cluster | `servers []Server`<br>Returns `error` | Validates single-node bootstrap |
-| `Join()` | Add node to cluster | `raftID, httpAddr, tcpAddr string`<br>Returns `error` | Leader-only operation |
-| `StoreInDatabase()` | Write key-value | `key, value string`<br>Returns `error` | BadgerDB transaction errors |
-| `GetFromDatabase()` | Read key-value | `key string`<br>Returns `string, error` | Returns empty if not found |
+| `Apply()` | FSM log apply | `*raft.Log`<br>Returns `interface{}` | Handles SET/DELETE/NOOP |
+| `Snapshot()` | Create FSM snapshot | None<br>Returns `raft.FSMSnapshot, error` | Full implementation with metadata |
+| `Bootstrap()` | Initialize cluster | `servers []raft.Server`<br>Returns `error` | Validates configuration |
+| `Join()` | Add node to cluster | `raftID, httpAddr, addr string`<br>Returns `error` | Leader-only operation |
+| `StoreInDatabase()` | Write key-value | `key, value string`<br>Returns `error` | Raft consensus errors |
+| `GetFromDatabase()` | Read key-value | `key string`<br>Returns `string, error` | Direct BadgerDB read |
 
 **Global Variables & Constants:**
-- `ErrNotImplemented`: Placeholder for unimplemented features
-- `WaitDequeue`: 5-second timeout
-- Default Raft timeouts and thresholds
+- `ErrStoreNotOpen`: Store not initialized error
+- `ErrNotLeader`: Non-leader write attempt
+- FSM operation types: SET, DELETE, NOOP
 
-### File: `/internal/new/store/fsm.go`
+### File: `/internal/new/store/snapshot.go`
 
-**Purpose:** Finite State Machine implementation for Raft consensus
+**Purpose:** Complete snapshot implementation for FSM state persistence
 
 **Key Types (Structs & Interfaces):**
 
 | Name | Description | Key Fields / Methods |
 |------|-------------|---------------------|
-| FSM interface methods | Raft FSM contract | `Apply()`: Process log entries<br>`Snapshot()`: Create state snapshot<br>`Restore()`: Restore from snapshot |
+| `fsmSnapshot` | Snapshot implementation | `store *NodeStore`: Parent store<br>`Persist()`: Write snapshot<br>`Release()`: Cleanup |
 
 **Key Functions/Methods:**
 
 | Function/Method | Description | Parameters & Returns | Error Handling |
 |-----------------|-------------|---------------------|----------------|
-| `Apply()` | Apply log entry | `log *raft.Log`<br>Returns `interface{}` | Handles BadgerDB errors |
-| `Snapshot()` | Create snapshot | None<br>Returns `raft.FSMSnapshot, error` | Returns `ErrNotImplemented` |
-| `Restore()` | Restore state | `io.ReadCloser`<br>Returns `error` | Returns `ErrNotImplemented` |
+| `Snapshot()` | Create snapshot | None<br>Returns `raft.FSMSnapshot, error` | Creates BadgerDB backup |
+| `Persist()` | Write snapshot | `sink raft.SnapshotSink`<br>No return | Handles backup errors |
+| `Restore()` | Restore state | `io.ReadCloser`<br>Returns `error` | Restores from backup |
 
 ### File: `/internal/pipeline/pipeline.go`
 
-**Purpose:** Core data pipeline orchestration with DAG-based operations
+**Purpose:** Core data pipeline orchestration with operation chaining and transformations
 
 **Key Types (Structs & Interfaces):**
 
 | Name | Description | Key Fields / Methods |
 |------|-------------|---------------------|
-| `DataPipeline` | Pipeline controller | `nodes []*PipelineNode`: Operation DAG<br>`jobs chan *models.Job`: Job queue<br>`Run()`: Execute pipeline |
-| `PipelineOps` | Operation metadata | `ID string`: Unique identifier<br>`Type string`: Operation type<br>`Process()`: Execute operation |
-| `Operation` | Operation interface | `Process()`: Transform data |
+| `DataPipeline` | Pipeline controller | `source DataSource`: Input source<br>`sink DataSink`: Output sink<br>`operations []*PipelineOps`: Transform chain |
+| `PipelineOps` | Operation node | `id string`: Unique ID<br>`operation Operation`: Transform<br>`parents/children []*PipelineNode`: DAG links |
+| `Operation` | Operation interface | `Process(*models.Job) (*models.Job, error)`: Transform |
 
 **Key Functions/Methods:**
 
 | Function/Method | Description | Parameters & Returns | Error Handling |
 |-----------------|-------------|---------------------|----------------|
 | `Run()` | Execute pipeline | `ctx context.Context`<br>No return | Context cancellation |
-| `AddOperation()` | Add pipeline op | `op Operation`<br>No return | None |
-| `processJobs()` | Process job queue | `ctx context.Context`<br>No return | Logs errors, continues |
+| `AddOperation()` | Add transform | `op Operation`<br>No return | Chains operations |
+| `runOperation()` | Process jobs | `ctx context.Context, op *PipelineOps`<br>No return | Logs and continues |
 
-### File: `/internal/pipeline/processor.go`
+### File: `/internal/models/job.go`
 
-**Purpose:** Parallel job processing with partitioning support
+**Purpose:** Core job model with UUID v7 identification and thread-safe operations
 
 **Key Types (Structs & Interfaces):**
 
 | Name | Description | Key Fields / Methods |
 |------|-------------|---------------------|
-| `JobProcessor` | Job processor | `partitions int`: Parallelism level<br>`Process()`: Execute jobs<br>`writeToSink()`: Output handler |
+| `Job` | Job structure | `ID uuid.UUID`: UUID v7 identifier<br>`data any`: Payload<br>`eventTime time.Time`: Event timestamp<br>`mu sync.RWMutex`: Thread safety |
 
 **Key Functions/Methods:**
 
 | Function/Method | Description | Parameters & Returns | Error Handling |
 |-----------------|-------------|---------------------|----------------|
-| `Process()` | Process job batch | `jobs []*models.Job`<br>No return | Logs sink write errors |
-| `writeToSink()` | Write to output | `job *models.Job`<br>Returns `error` | Returns sink errors |
+| `New()` | Create job | `data []byte`<br>Returns `*Job, error` | JSON parsing errors |
+| `Data()` | Get data | None<br>Returns `any` | Thread-safe read |
+| `SetData()` | Set data | `data any`<br>No return | Thread-safe write |
+| `parseEventTime()` | Extract time | `jsonData map[string]any`<br>Returns `time.Time` | Returns current time on error |
 
 ### File: `/internal/http/service.go`
 
-**Purpose:** HTTP API service for cluster management and operations
+**Purpose:** Gin-based HTTP API service for cluster management and pipeline operations
 
 **Key Types (Structs & Interfaces):**
 
 | Name | Description | Key Fields / Methods |
 |------|-------------|---------------------|
-| `Service` | HTTP server | `router *gin.Engine`: Web framework<br>`store Store`: Raft store<br>`Start()`: Launch server |
-| `Store` | Store interface | `Join()`, `Notify()`: Cluster ops<br>`Query()`, `Execute()`: Data ops |
+| `Service` | HTTP server | `Context context.Context`: App context<br>`store Store`: NodeStore<br>`Start(ctx)`: Launch server |
+| `Store` | Store interface | `StoreInDatabase()`: Write KV<br>`GetFromDatabase()`: Read KV<br>`Nodes()`: Get cluster nodes |
 
 **Key Functions/Methods:**
 
 | Function/Method | Description | Parameters & Returns | Error Handling |
 |-----------------|-------------|---------------------|----------------|
-| `Start()` | Start HTTP server | None<br>Returns `error` | Server startup errors |
-| `StatusHandler()` | Cluster status | `gin.Context`<br>No return | HTTP 500 on errors |
-| `JoinHandler()` | Join cluster | `gin.Context`<br>No return | HTTP 400/500 on errors |
-| `KeyHandler()` | KV operations | `gin.Context`<br>No return | HTTP 400/404/500 errors |
+| `Start()` | Start HTTP server | `ctx context.Context`<br>Returns `error` | Server startup errors |
+| `handleStatus()` | Cluster status | `gin.Context`<br>No return | HTTP 500 on errors |
+| `createPipeline()` | Create pipeline | `gin.Context`<br>No return | HTTP 400 on parse errors |
+| `handleConnector()` | Pipeline routes | `gin.Context`<br>No return | Route to handlers |
 
 **Global Variables & Constants:**
-- Queue capacity: 16 for write operations
-- Default timeouts for operations
+- `VersionHTTPHeader`: X-WIRE-VERSION
+- `ServedByHTTPHeader`: X-WIRE-SERVED-BY
+- Queue processing with goroutines
 
 ---
 
@@ -237,8 +273,10 @@ HTTP Request → Gin Router → Handler → Store/Pipeline → BadgerDB/Raft
 **Internal Packages:**
 - `internal/cluster`: Cluster management
 - `internal/tcp`: Network multiplexing
-- `internal/models`: Data structures
+- `internal/models`: Job data structures
 - `internal/transform`: Data transformations
+- `internal/new/db`: Database abstraction layer
+- `internal/pipeline`: Pipeline orchestration
 
 **Third-Party Libraries:**
 - `github.com/hashicorp/raft`: Distributed consensus
@@ -248,49 +286,54 @@ HTTP Request → Gin Router → Handler → Store/Pipeline → BadgerDB/Raft
 - `github.com/twmb/franz-go`: Kafka client
 - `go.mongodb.org/mongo-driver`: MongoDB client
 - `github.com/elastic/go-elasticsearch/v8`: Elasticsearch client
+- `github.com/knadh/koanf/v2`: Configuration management
+- `go.etcd.io/bbolt`: BoltDB for Raft log storage
+- `github.com/google/uuid`: UUID v7 generation
 
 ---
 
 ## 6️⃣ Usage Example
 
 ```go
-// Example: Starting a Wire node and joining a cluster
+// Example: Starting a Wire node with backend selection
 package main
 
 import (
     "log"
-    "github.com/yourusername/wire/cmd"
+    "github.com/tarungka/wire/cmd"
 )
 
 func main() {
-    // Single node bootstrap
+    // Single node bootstrap with BadgerDB backend
     cfg := &cmd.Config{
-        HTTPAddr:   "localhost:8080",
-        RaftAddr:   "localhost:8089",
-        NodeID:     "node1",
-        DataDir:    "/var/wire/data",
-        Bootstrap:  true,
+        HTTPAddr:      "localhost:8080",
+        RaftAddr:      "localhost:8089", 
+        NodeID:        "node1",
+        DataPath:      "/var/wire/data",
+        StoreDatabase: "badgerdb", // or "bbolt", "rocksdb"
+        Bootstrap:     true,
     }
     
-    // Join existing cluster
-    cfg2 := &cmd.Config{
-        HTTPAddr:   "localhost:8081",
-        RaftAddr:   "localhost:8090",
-        NodeID:     "node2",
-        DataDir:    "/var/wire/data2",
-        JoinAddr:   []string{"localhost:8080"},
-    }
-    
-    // Configure pipeline
+    // Configure pipeline via HTTP API
     pipelineConfig := `{
-        "sources": [{
-            "type": "kafka",
-            "config": {"brokers": ["localhost:9092"], "topic": "events"}
-        }],
-        "sinks": [{
-            "type": "elasticsearch",
-            "config": {"url": "http://localhost:9200", "index": "events"}
-        }]
+        "source": {
+            "name": "Kafka Events",
+            "type": "kafka", 
+            "key": "events_pipeline",
+            "config": {
+                "brokers": ["localhost:9092"],
+                "topic": "events",
+                "consumer_group": "wire_consumer"
+            }
+        },
+        "sink": {
+            "name": "Events File",
+            "type": "file",
+            "key": "events_pipeline", 
+            "config": {
+                "path": "/var/wire/output/events.json"
+            }
+        }
     }`
 }
 ```
@@ -305,11 +348,11 @@ func main() {
 - Battle-tested implementation from HashiCorp
 - Trade-off: Requires majority quorum, limiting availability during partitions
 
-**Why BadgerDB?**
-- Pure Go implementation (no CGO dependencies)
-- LSM-tree design optimized for SSDs
-- Built-in compression and encryption
-- Trade-off: Higher memory usage than BoltDB
+**Why Multiple Database Backends?**
+- **BadgerDB**: Default for FSM, pure Go, LSM-tree optimized for SSDs
+- **BoltDB**: Lower memory usage, B+tree design, stable for small datasets
+- **RocksDB**: Maximum performance, requires CGO, best for large datasets
+- Trade-off: Complexity vs flexibility for different deployment scenarios
 
 **Why Pipeline Architecture?**
 - Composable data transformations
@@ -324,21 +367,28 @@ func main() {
 - Trade-off: Custom protocol handling complexity
 
 **Interface Abstractions:**
-- `Store` interface allows swapping consensus implementations
+- `DbStore` interface for pluggable storage backends
 - `Operation` interface enables custom transforms
-- `Source`/`Sink` interfaces for extensibility
-- Trade-off: Additional indirection layers
+- `DataSource`/`DataSink` interfaces for extensibility
+- Trade-off: Additional indirection layers vs flexibility
+
+**Why Gin Framework?**
+- Better routing and middleware support
+- Built-in JSON validation and binding
+- Performance optimizations
+- Trade-off: Additional dependency vs standard library
 
 ---
 
 ## 8️⃣ Potential Pitfalls & TODOs
 
 **Current TODOs:**
-- `fsm.go`: Implement `Snapshot()` and `Restore()` methods (currently return `ErrNotImplemented`)
 - Complete TLS/mTLS configuration for production security
 - Add metrics collection beyond basic expvar
 - Implement additional sources (Pulsar, RabbitMQ)
 - Add transaction support for multi-key operations
+- Implement pipeline state persistence and recovery
+- Add support for exactly-once semantics
 
 **Potential Improvements:**
 1. **Error Handling:** Wrap errors with context using `fmt.Errorf("operation failed: %w", err)`
@@ -349,10 +399,12 @@ func main() {
 6. **Operations:** Implement graceful leader transfer during maintenance
 
 **Known Limitations:**
-- Snapshot/restore not implemented (limits large state recovery)
 - No built-in data schema validation
 - Limited to single-region deployments (no geo-replication)
 - HTTP API lacks pagination for large result sets
+- Pipeline operations are in-memory only (no persistence)
+- No support for complex event processing (CEP)
+- Job prioritization not yet implemented
 
 ---
 

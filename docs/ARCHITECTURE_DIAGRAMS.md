@@ -66,28 +66,28 @@ graph LR
     subgraph "Wire Node Internal Architecture"
         subgraph "Entry Points"
             Main[main.go]
-            Init[init.go]
+            Init[init.go<br/>+ Koanf Config]
             Signals[signals.go]
         end
 
         subgraph "Core Services"
-            HTTPService[HTTP Service<br/>gin/chi router]
+            HTTPService[HTTP Service<br/>Gin Framework]
             TCPMux[TCP Multiplexer<br/>Port sharing]
             ClusterMgmt[Cluster Manager]
         end
 
         subgraph "Distributed Store"
-            RaftEngine[Raft Consensus<br/>Engine]
-            FSM[Finite State<br/>Machine]
-            BadgerDB[(BadgerDB<br/>Key-Value Store)]
-            LogStore[(Raft Log Store<br/>Badger/Bolt/Rocks)]
-            StableStore[(Stable Store<br/>Config/State)]
+            NodeStore[NodeStore<br/>FSM Implementation]
+            BadgerDB[(BadgerDB<br/>FSM Storage)]
+            DbStore[(Backend Store<br/>Badger/Bolt/Rocks)]
+            LogStore[(Raft Log Store)]
+            StableStore[(Stable Store)]
         end
 
         subgraph "Pipeline System"
             PipelineEngine[Pipeline<br/>Orchestrator]
-            JobProcessor[Job Processor<br/>Partitioned]
-            TransformOps[Transform<br/>Operations]
+            JobModel[Job Model<br/>UUID v7]
+            Operations[Operation<br/>Chain]
             Sources[Source<br/>Adapters]
             Sinks[Sink<br/>Adapters]
         end
@@ -95,25 +95,25 @@ graph LR
         Main --> Init
         Init --> HTTPService
         Init --> TCPMux
-        Init --> RaftEngine
+        Init --> NodeStore
 
         HTTPService --> ClusterMgmt
         HTTPService --> PipelineEngine
-        HTTPService --> FSM
+        HTTPService --> NodeStore
 
-        TCPMux --> RaftEngine
+        TCPMux --> NodeStore
 
-        RaftEngine --> FSM
-        FSM --> BadgerDB
-        RaftEngine --> LogStore
-        RaftEngine --> StableStore
+        NodeStore --> BadgerDB
+        NodeStore --> DbStore
+        NodeStore --> LogStore
+        NodeStore --> StableStore
 
         PipelineEngine --> Sources
-        PipelineEngine --> TransformOps
-        TransformOps --> JobProcessor
-        JobProcessor --> Sinks
+        PipelineEngine --> Operations
+        Operations --> JobModel
+        JobModel --> Sinks
 
-        ClusterMgmt --> RaftEngine
+        ClusterMgmt --> NodeStore
     end
 ```
 
@@ -211,11 +211,13 @@ sequenceDiagram
 classDiagram
     class NodeStore {
         -raft: *raft.Raft
-        -db: *badger.DB
-        -config: *Config
-        -mu: sync.RWMutex
+        -db: *badgerdb.DB
+        -dbStore: db.DbStore
+        -storeDb: string
+        -fsmIndex: *atomic.Uint64
+        -fsmTerm: *atomic.Uint64
         +Bootstrap(servers)
-        +Join(nodeID, httpAddr, raftAddr)
+        +Join(nodeID, httpAddr, addr)
         +StoreInDatabase(key, value)
         +GetFromDatabase(key)
         +Apply(log) interface{}
@@ -248,28 +250,43 @@ classDiagram
         +DeleteRange(min, max)
     }
 
+    class DbStore {
+        <<interface>>
+        +Get(key []byte) []byte
+        +Set(key, val []byte)
+        +Delete(key []byte)
+        +FirstIndex() uint64
+        +LastIndex() uint64
+        +Close()
+    }
+
     class BadgerDB {
         +Update(fn)
         +View(fn)
         +NewTransaction(update)
-        +Close()
+        +Backup(w io.Writer)
     }
 
-    class Transport {
-        -localAddr: net.Addr
-        -consumeCh: chan RPC
-        -logger: *log.Logger
-        +Consumer() chan RPC
-        +LocalAddr() net.Addr
-        +AppendEntriesPipeline(id, target)
-        +AppendEntries(id, target, args, resp)
+    class BoltDB {
+        +Update(fn)
+        +View(fn)
+        +Begin(writable)
+    }
+
+    class RocksDB {
+        +Put(key, val)
+        +Get(key)
+        +Delete(key)
     }
 
     NodeStore ..|> FSM : implements
     NodeStore ..|> StableStore : implements
     NodeStore ..|> LogStore : implements
-    NodeStore --> BadgerDB : uses
-    NodeStore --> Transport : uses
+    NodeStore --> BadgerDB : FSM storage
+    NodeStore --> DbStore : backend storage
+    DbStore <|-- BadgerDB : implements
+    DbStore <|-- BoltDB : implements
+    DbStore <|-- RocksDB : implements
 ```
 
 ## 6. HTTP API Request Flow
@@ -316,42 +333,46 @@ graph TB
     subgraph "Job Model"
         Job[Job Structure]
         JobID[ID: UUID v7]
-        JobData[Data: interface{}]
-        JobMeta[Metadata]
+        JobData[Data: any]
         JobTime[EventTime: time.Time]
+        JobMutex[mu: sync.RWMutex]
         
         Job --> JobID
         Job --> JobData
-        Job --> JobMeta
         Job --> JobTime
+        Job --> JobMutex
     end
     
-    subgraph "Processing Pipeline"
-        Source[Source Adapter] -->|Create Jobs| JobQueue[Job Queue<br/>Buffered Channel]
+    subgraph "Pipeline Processing"
+        Source[DataSource] -->|Read()| JobChannel[chan *models.Job]
         
-        JobQueue --> Processor[Job Processor]
+        JobChannel --> Pipeline[DataPipeline]
         
-        Processor --> Partition1[Partition 1]
-        Processor --> Partition2[Partition 2]
-        Processor --> PartitionN[Partition N]
+        Pipeline --> Op1[Operation 1]
+        Op1 --> Op2[Operation 2]
+        Op2 --> OpN[Operation N]
         
-        Partition1 --> Transform1[Transform]
-        Partition2 --> Transform2[Transform]
-        PartitionN --> TransformN[Transform]
+        OpN --> Sink[DataSink]
+    end
+    
+    subgraph "Available Sinks"
+        SinkRouter[Sink Router]
+        ESSink[Elasticsearch<br/>Sink]
+        KafkaSink[Kafka<br/>Sink]
+        FileSink[File<br/>Sink]
         
-        Transform1 --> SinkWriter[Sink Writer]
-        Transform2 --> SinkWriter
-        TransformN --> SinkWriter
+        Sink --> SinkRouter
+        SinkRouter --> ESSink
+        SinkRouter --> KafkaSink
+        SinkRouter --> FileSink
     end
     
     subgraph "Concurrency Control"
         WaitGroup[sync.WaitGroup]
         Context[context.Context]
-        Mutex[sync.RWMutex]
         
-        Processor -.-> WaitGroup
-        Processor -.-> Context
-        Job -.-> Mutex
+        Pipeline -.-> WaitGroup
+        Pipeline -.-> Context
     end
 ```
 
@@ -387,45 +408,45 @@ graph LR
 ```mermaid
 flowchart TD
     Start([Start]) --> ParseFlags[Parse CLI Flags]
-    ParseFlags --> LoadEnv[Load Environment Vars]
-    LoadEnv --> MergeConfig[Merge Configurations]
+    ParseFlags --> LoadConfig[Load Config Files<br/>via Koanf]
+    LoadConfig --> MergeConfig[Merge Configurations]
     
     MergeConfig --> Validate{Validate Config}
     Validate -->|Invalid| Exit1[Exit with Error]
-    Validate -->|Valid| InitLogging[Initialize Logging]
+    Validate -->|Valid| InitLogging[Initialize Zerolog]
     
-    InitLogging --> CheckMode{Bootstrap Mode?}
+    InitLogging --> SelectDB{Select DB Backend}
+    SelectDB -->|BadgerDB| InitBadger[Init BadgerDB]
+    SelectDB -->|BoltDB| InitBolt[Init BoltDB]
+    SelectDB -->|RocksDB| InitRocks[Init RocksDB]
     
-    CheckMode -->|Yes| CheckSingle{Single Node?}
-    CheckMode -->|No| CheckJoin{Join Addresses?}
+    InitBadger --> CreateMux[Create TCP Mux]
+    InitBolt --> CreateMux
+    InitRocks --> CreateMux
     
-    CheckSingle -->|No| Exit2[Exit: Multi-node bootstrap]
-    CheckSingle -->|Yes| CreateMux[Create TCP Mux]
+    CreateMux --> InitStore[Initialize NodeStore]
+    InitStore --> OpenStore[Open Store]
     
-    CheckJoin -->|No| Exit3[Exit: No join addresses]
-    CheckJoin -->|Yes| CreateMux
+    OpenStore --> CheckMode{Bootstrap Mode?}
     
-    CreateMux --> InitStore[Initialize Store]
-    InitStore --> InitRaft[Initialize Raft]
+    CheckMode -->|Bootstrap| CreateCluster[Bootstrap Cluster]
+    CheckMode -->|Join| JoinCluster[Join Existing Cluster]
+    CheckMode -->|Existing| UseExisting[Use Existing State]
     
-    InitRaft --> BootstrapOrJoin{Bootstrap or Join?}
-    
-    BootstrapOrJoin -->|Bootstrap| CreateCluster[Create New Cluster]
-    BootstrapOrJoin -->|Join| JoinCluster[Join Existing Cluster]
-    
-    CreateCluster --> StartHTTP[Start HTTP Service]
+    CreateCluster --> StartHTTP[Start Gin HTTP Service]
     JoinCluster --> StartHTTP
+    UseExisting --> StartHTTP
     
-    StartHTTP --> LoadPipeline{Pipeline Config?}
+    StartHTTP --> WaitAPI{Wait for API Calls}
     
-    LoadPipeline -->|Yes| InitPipeline[Initialize Pipeline]
-    LoadPipeline -->|No| WaitSignal[Wait for Signal]
+    WaitAPI -->|Pipeline Create| CreatePipeline[Create Pipeline<br/>via HTTP POST]
+    WaitAPI -->|Shutdown Signal| Shutdown[Graceful Shutdown]
     
-    InitPipeline --> StartPipeline[Start Pipeline]
-    StartPipeline --> WaitSignal
+    CreatePipeline --> RunPipeline[Run Pipeline<br/>with Context]
+    RunPipeline --> WaitAPI
     
-    WaitSignal --> Shutdown[Graceful Shutdown]
-    Shutdown --> End([End])
+    Shutdown --> CloseStore[Close Store & DB]
+    CloseStore --> End([End])
 ```
 
 ## 10. State Machine Transitions
