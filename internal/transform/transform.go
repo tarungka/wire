@@ -3,8 +3,6 @@ package transform
 import (
 	"context"
 	"fmt"
-
-	// "github.com/elastic/go-elasticsearch/v8/typedapi/slm/executeretention"
 	"github.com/rs/zerolog/log"
 
 	"encoding/json"
@@ -14,7 +12,6 @@ import (
 
 	"github.com/apache/beam/sdks/v2/go/pkg/beam"
 	"github.com/apache/beam/sdks/v2/go/pkg/beam/io/textio"
-
 	// "github.com/apache/beam/sdks/v2/go/pkg/beam/options/jobopts"
 	// "github.com/apache/beam/sdks/v2/go/pkg/beam/options/pipelineopts"
 	_ "github.com/apache/beam/sdks/v2/go/pkg/beam/io/filesystem/local"
@@ -24,9 +21,6 @@ import (
 // Transformer represents the processing pipeline
 type Transformer struct {
 	initalized bool
-
-	pipeline *beam.Pipeline
-	scope beam.Scope
 }
 
 func (tf *Transformer) Init() {
@@ -34,8 +28,6 @@ func (tf *Transformer) Init() {
 		beam.Init()
 		tf.initalized = true
 	}
-
-	tf.pipeline, tf.scope = beam.NewPipelineWithRoot()
 }
 
 // applyTransformation applies Beam transformations
@@ -43,21 +35,23 @@ func (tf *Transformer) ApplyTransformation(inputData []string) error {
 	// Create a new Beam pipeline
 	beam.Init()
 
+	p := beam.NewPipeline()
+	s := p.Root()
 
 	// Create a PCollection from inputData
-	input := beam.CreateList(tf.scope, inputData)
+	input := beam.CreateList(s, inputData)
 
 	// Example transformation: Convert to uppercase
-	transformed := beam.ParDo(tf.scope, func(line string) string {
+	transformed := beam.ParDo(s, func(line string) string {
 		return fmt.Sprintf("Processed: %s", line)
 	}, input)
 
 	// Write output to a text file (Replace with your sink logic)
 	outputPath := "output.txt"
-	textio.Write(tf.scope, outputPath, transformed)
+	textio.Write(s, outputPath, transformed)
 
 	// Run the pipeline
-	a, err := prism.Execute(context.Background(), tf.pipeline)
+	a, err := prism.Execute(context.Background(), p)
 	if err != nil {
 		log.Fatal().Msgf("Pipeline failed: %v", err)
 		return err
@@ -150,8 +144,6 @@ func (tf *Transformer) ApplyTransformationJob(ctx context.Context, jobChannel <-
 				if err != nil {
 					log.Printf("Error processing job: %v", err)
 				}
-				// log.Debug().Msgf("Processed JOB: %s", data)
-				log.Debug().Msgf("Processed JOB")
 				// Update the data and add it to the channel
 				job.SetData(data)
 				outChannel <- job
@@ -168,11 +160,10 @@ func (tf *Transformer) runBeamPipeline(inputData []string) (any, error) {
 	s := p.Root()
 	input := beam.CreateList(s, inputData)
 
-	// log.Debug().Msgf("In the runBeamPipeline function")
-
 	// transformed := beam.ParDo(s, func(line string) string {
 	// 	return fmt.Sprintf("Processed: %s", line)
 	// }, input)
+	transformed := beam.ParDo(s, toUppercaseJSON, input)
 
 	// This is for debugging
 	// outputPath := "output.txt"
@@ -181,10 +172,8 @@ func (tf *Transformer) runBeamPipeline(inputData []string) (any, error) {
 	if _, err := prism.Execute(context.Background(), p); err != nil {
 		return nil, fmt.Errorf("pipeline execution failed: %w", err)
 	}
-	// log.Debug().Msgf("executeResult: %s", executeResult)
-	transformed := beam.ParDo(s, toUppercaseJSON, input)
 
-	log.Debug().Msgf("Processed Bro! | %s", transformed)
+	log.Debug().Msg("Batch processed successfully.")
 	return transformed, nil
 }
 
