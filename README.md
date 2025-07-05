@@ -239,13 +239,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 ## Troubleshooting
 
-### Common Issues
-
-1. **Pipeline not starting**: Check configuration syntax and connectivity
-2. **High memory usage**: Adjust worker pool size and batch settings
-3. **Data loss**: Verify acknowledgment settings in sources/sinks
-
-For more troubleshooting tips, see our [FAQ](docs/faq.md).
+For troubleshooting tips and common issues, see our [FAQ](docs/faq.md).
 
 ## License
 
