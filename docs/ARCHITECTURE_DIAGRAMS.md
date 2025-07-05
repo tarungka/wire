@@ -295,11 +295,11 @@ classDiagram
 flowchart TD
     Client[HTTP Client] --> Router{Gin Router}
     
-    Router --> Status[/status]
-    Router --> Join[/join]
-    Router --> Key["/key/*"]
-    Router --> Connector["/connector/*"]
-    Router --> Ready[/readyz]
+    Router --> Status[status endpoint]
+    Router --> Join[join endpoint]
+    Router --> Key[key endpoint]
+    Router --> Connector[connector endpoint]
+    Router --> Ready[readyz endpoint]
     
     Status --> CheckLeader1{Is Leader?}
     CheckLeader1 -->|Yes| ReturnStatus[Return Status]
