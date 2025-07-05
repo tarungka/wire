@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/go-%3E%3D1.21-blue.svg)](go.mod)
 
-Wire is a tool for moving data from one place to another. Think of it as a smart pipe that can read data from various sources (like files, databases, or APIs) and send it to different destinations.
+Wire is a high-performance, distributed stream processing framework designed for real-time data ingestion, transformation, and distribution. Built with Go, it provides a modular architecture with extensive connector support and powerful processing capabilities.
 
 ## What Wire Does
 
