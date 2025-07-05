@@ -1,0 +1,125 @@
+@startuml
+!theme vibrant
+
+package "Application (cmd)" <<Folder>> {
+  [main] as CmdMain
+  [init] as CmdInit
+  [signals] as CmdSignals
+}
+
+package "Internal" <<Folder>> {
+  package "cluster" <<Package>> {
+    [ClusterService]
+    [ClusterClient]
+    [RaftDialer]
+  }
+
+  package "config" <<Package>> {
+    [Config]
+  }
+
+  package "db" <<Package>> {
+    [DBStore]
+    [BadgerDB] #LightBlue
+  }
+
+  package "http" <<Package>> {
+    [HTTPService]
+    [RequestParser]
+    [NodesHandler]
+    [QueryHandler]
+  }
+
+  package "logger" <<Package>> {
+    [Logger]
+  }
+
+  package "store (new)" <<Package>> {
+    [NodeStore]
+    [FSM]
+    [RaftLogStore]
+    [RaftStableStore]
+    [SnapshotStore]
+    [NodeTransport]
+  }
+
+  package "tcp" <<Package>> {
+    [Mux]
+    [Layer]
+    [Dialer]
+  }
+}
+
+package "External Libraries" <<Cloud>> {
+  [HashicorpRaft]
+  [Pflag]
+  [Zerolog]
+}
+
+' Relationships for cmd package
+CmdMain --> CmdInit
+CmdMain --> CmdSignals
+CmdMain --> Config
+CmdMain --> Logger
+CmdMain --> Mux
+CmdMain --> NodeStore
+CmdMain --> ClusterService
+CmdMain --> ClusterClient
+CmdMain --> HTTPService
+
+' Relationships for internal/config
+CmdInit ..> Pflag : uses
+
+' Relationships for internal/logger
+CmdMain ..> Logger
+NodeStore ..> Logger
+HTTPService ..> Logger
+ClusterService ..> Logger
+Mux ..> Logger
+
+' Relationships for internal/tcp
+CmdMain --> Mux
+NodeStore --|> Layer : uses (via raftTn)
+NodeTransport --|> Layer : uses
+NodeTransport --> Mux : uses (indirectly via net.Listener from Mux)
+ClusterService --> Mux : uses (listens on Mux)
+RaftDialer ..> Dialer : uses
+
+' Relationships for internal/cluster
+CmdMain --> ClusterService
+CmdMain --> ClusterClient
+ClusterService --> NodeStore : uses (Database, Manager interfaces)
+ClusterClient --> Dialer : uses (via tcp.Dialer)
+HTTPService --> ClusterClient : uses
+
+' Relationships for internal/new/store
+CmdMain --> NodeStore
+NodeStore --> FSM : implements
+NodeStore --> RaftLogStore : implements
+NodeStore --> RaftStableStore : implements
+NodeStore --> SnapshotStore : uses
+NodeStore --> NodeTransport : uses
+NodeStore --> DBStore : uses
+NodeStore ..> HashicorpRaft : uses
+FSM ..> BadgerDB : uses (for actual data storage)
+RaftLogStore ..> DBStore : uses
+RaftStableStore ..> DBStore : uses
+
+' Relationships for internal/db
+NodeStore --> DBStore
+DBStore <|-- BadgerDB : implements
+
+' Relationships for internal/http
+CmdMain --> HTTPService
+HTTPService --> NodeStore : uses
+HTTPService --> ClusterClient : uses
+HTTPService --> RequestParser
+HTTPService --> NodesHandler
+HTTPService --> QueryHandler
+
+' External library usage
+NodeStore ..> HashicorpRaft
+CmdInit ..> Pflag
+Logger ..> Zerolog : uses (likely, for actual logging implementation)
+
+@enduml
