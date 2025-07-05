@@ -344,7 +344,7 @@ graph TB
     end
     
     subgraph "Pipeline Processing"
-        Source[DataSource] -->|Read method| JobChannel[Job Channel]
+        Source[DataSource] -->|Reads data| JobChannel[Job Channel]
         
         JobChannel --> Pipeline[DataPipeline]
         
