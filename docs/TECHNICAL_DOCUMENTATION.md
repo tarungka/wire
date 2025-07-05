@@ -15,6 +15,9 @@
 - Automatic leader election and cluster membership management
 - Multi-database backend support (BadgerDB, BoltDB, RocksDB)
 - Job-based processing with UUID v7 identification
+- Configurable pipeline parallelization with worker pools
+- Adaptive parallelism for dynamic resource optimization
+- Performance metrics for pipeline monitoring
 
 ---
 
@@ -185,6 +188,13 @@ Source (Kafka/MongoDB) → Pipeline → Transform → Job Processor → Sink (ES
 | `Run()` | Execute pipeline | `ctx context.Context`<br>No return | Context cancellation |
 | `AddOperation()` | Add transform | `op Operation`<br>No return | Chains operations |
 | `runOperation()` | Process jobs | `ctx context.Context, op *PipelineOps`<br>No return | Logs and continues |
+| `SetParallelism()` | (Conceptual) Set processing workers | `count int`<br>No return | Updates worker count |
+
+**Parallel Processing Details:**
+The pipeline engine now incorporates a `WorkerPool` (`internal/pipeline/worker_pool.go`) to manage concurrent job processing. The `ParallelPipeline` (`internal/pipeline/parallel_pipeline.go`) orchestrates this by distributing jobs from the source to the worker pool and collecting results for the sink.
+- **Parallelism Configuration:** Defined in the main YAML config, allowing per-pipeline settings for number of workers and buffer sizes. Defaults to `runtime.NumCPU()` if parallelism is set to 0.
+- **Adaptive Parallelism:** An `AdaptivePipeline` (`internal/pipeline/adaptive.go`) can wrap a `ParallelPipeline`. It monitors processing latency (via `PipelineMetrics`) and dynamically adjusts the worker count within configured min/max bounds to meet a target latency. *Note: Dynamic scaling of the worker pool itself is a complex feature and the current implementation has placeholders for full dynamic resizing.*
+- **Metrics:** `PipelineMetrics` (`internal/pipeline/metrics.go`) collects data on job throughput, processing times, and errors, which feeds into the adaptive logic and can be used for monitoring.
 
 ### File: `/internal/models/job.go`
 
@@ -384,7 +394,8 @@ func main() {
 
 **Current TODOs:**
 - Complete TLS/mTLS configuration for production security
-- Add metrics collection beyond basic expvar
+- Add metrics collection beyond basic expvar (foundational `PipelineMetrics` now exists, but advanced features like histograms/rates are TODOs)
+- Fully implement dynamic worker pool scaling for `AdaptivePipeline`.
 - Implement additional sources (Pulsar, RabbitMQ)
 - Add transaction support for multi-key operations
 - Implement pipeline state persistence and recovery
