@@ -419,5 +419,3 @@ If you have questions or need help, don't hesitate to ask in:
 - GitHub Issues
 - GitHub Discussions
 - Community forums
-
-Happy coding! 🚀
