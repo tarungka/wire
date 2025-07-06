@@ -87,12 +87,18 @@ We welcome contributions in many forms:
 
 2. **Install development tools**:
    ```bash
-   make install-tools
+   # Install golangci-lint
+   curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.61.0
    ```
 
-3. **Verify setup**:
+3. **Install Git hooks** (recommended):
    ```bash
-   make test
+   ./scripts/install-hooks.sh
+   ```
+
+4. **Verify setup**:
+   ```bash
+   make test-fast
    ```
 
 ## Making Changes
@@ -158,25 +164,43 @@ Implements AWS S3 sink with support for:
 Closes #123
 ```
 
+### CI/CD Triggers
+
+To optimize CI/CD costs, we use commit message triggers to control when expensive workflows run:
+
+| Trigger | Description | Example |
+|---------|-------------|---------|
+| `[test]` | Run full test suite with race detection (10 min) | `fix: memory leak [test]` |
+| `[build]` | Build binaries for all platforms (10 min) | `feat: new feature [build]` |
+| `[release]` | Create a GitHub release | `feat: v1.2.0 [release]` |
+| `[security]` | Run security vulnerability scans (5 min) | `chore: update deps [security]` |
+| `[skip ci]` | Skip all CI workflows | `docs: fix typo [skip ci]` |
+
+**Notes:**
+- Without triggers, only minimal validation runs (3 minutes)
+- Multiple triggers can be combined: `[test] [build]`
+- For releases, include version: `feat: v1.2.0 release [release]`
+- Use `[major]` or `[minor]` with `[release]` for version bumps
+
 ## Testing
 
 ### Running Tests
 
 ```bash
-# Run all tests
-make test
+# Quick tests (for pre-commit)
+make test-fast
 
-# Run unit tests only
-make test-unit
+# Full test suite with race detection
+make test-full
 
-# Run integration tests
-make test-integration
+# Test with coverage report
+make test-coverage
 
 # Run specific package tests
 go test ./internal/pipeline/...
 
-# Run with coverage
-make test-coverage
+# Simulate CI locally
+make ci-local
 ```
 
 ### Writing Tests
@@ -220,11 +244,12 @@ func TestPipelineStart(t *testing.T) {
 ### Pre-submission Checklist
 
 - [ ] Code follows project style guidelines
-- [ ] All tests pass locally
+- [ ] All tests pass locally (`make ci-local`)
 - [ ] New tests added for new functionality
 - [ ] Documentation updated if needed
 - [ ] Commit messages follow convention
 - [ ] Branch is up to date with main
+- [ ] Consider which CI triggers to use
 
 ### Pull Request Process
 

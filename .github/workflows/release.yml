@@ -1,0 +1,175 @@
+name: Create Release
+on:
+  push:
+    branches: [master]
+
+jobs:
+  release:
+    if: contains(github.event.head_commit.message, '[release]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      
+      - name: Determine Version
+        id: version
+        run: |
+          # Extract version from commit message (e.g., "feat: add feature [release] v1.2.3")
+          VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || echo "")
+          
+          if [ -z "$VERSION" ]; then
+            # Get the latest tag
+            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            
+            # Parse version components
+            MAJOR=$(echo $LATEST_TAG | cut -d. -f1 | sed 's/v//')
+            MINOR=$(echo $LATEST_TAG | cut -d. -f2)
+            PATCH=$(echo $LATEST_TAG | cut -d. -f3)
+            
+            # Increment patch version by default
+            PATCH=$((PATCH + 1))
+            
+            # Check commit message for version bump hints
+            if [[ "${{ github.event.head_commit.message }}" == *"[major]"* ]]; then
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+            elif [[ "${{ github.event.head_commit.message }}" == *"[minor]"* ]]; then
+              MINOR=$((MINOR + 1))
+              PATCH=0
+            fi
+            
+            VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Determined version: $VERSION"
+      
+      - name: Build Release Binaries
+        run: |
+          # Build for multiple platforms
+          for PLATFORM in "linux/amd64" "darwin/amd64" "darwin/arm64" "windows/amd64"; do
+            OS=$(echo $PLATFORM | cut -d/ -f1)
+            ARCH=$(echo $PLATFORM | cut -d/ -f2)
+            EXT=""
+            [ "$OS" = "windows" ] && EXT=".exe"
+            
+            BINARY="wire-${OS}-${ARCH}${EXT}"
+            echo "Building $BINARY..."
+            
+            GOOS=$OS GOARCH=$ARCH go build \
+              -ldflags="-s -w \
+                -X github.com/tarungka/wire/internal/cmd.Version=${{ steps.version.outputs.version }} \
+                -X github.com/tarungka/wire/internal/cmd.Commit=${{ github.sha }} \
+                -X github.com/tarungka/wire/internal/cmd.Buildtime=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+              -o "$BINARY" ./cmd/.
+            
+            # Create checksum
+            sha256sum "$BINARY" > "${BINARY}.sha256"
+          done
+          
+          # Create a combined checksums file
+          cat *.sha256 > checksums.txt
+          
+          # Create tarball for each platform
+          for OS in linux darwin; do
+            for ARCH in amd64 arm64; do
+              if [ -f "wire-${OS}-${ARCH}" ]; then
+                tar czf "wire-${OS}-${ARCH}.tar.gz" "wire-${OS}-${ARCH}" "wire-${OS}-${ARCH}.sha256"
+              fi
+            done
+          done
+          
+          # Zip for Windows
+          if [ -f "wire-windows-amd64.exe" ]; then
+            zip "wire-windows-amd64.zip" "wire-windows-amd64.exe" "wire-windows-amd64.exe.sha256"
+          fi
+      
+      - name: Generate Release Notes
+        id: notes
+        run: |
+          # Get commits since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          
+          if [ -z "$LAST_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            COMMITS=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          fi
+          
+          # Create release notes
+          cat > release_notes.md << EOF
+          ## What's Changed
+          
+          ${COMMITS}
+          
+          ## Installation
+          
+          ### Binary Installation
+          
+          Download the appropriate binary for your platform:
+          
+          \`\`\`bash
+          # Linux (amd64)
+          wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/wire-linux-amd64.tar.gz
+          tar xzf wire-linux-amd64.tar.gz
+          chmod +x wire-linux-amd64
+          sudo mv wire-linux-amd64 /usr/local/bin/wire
+          
+          # macOS (Intel)
+          wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/wire-darwin-amd64.tar.gz
+          tar xzf wire-darwin-amd64.tar.gz
+          chmod +x wire-darwin-amd64
+          sudo mv wire-darwin-amd64 /usr/local/bin/wire
+          
+          # macOS (Apple Silicon)
+          wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/wire-darwin-arm64.tar.gz
+          tar xzf wire-darwin-arm64.tar.gz
+          chmod +x wire-darwin-arm64
+          sudo mv wire-darwin-arm64 /usr/local/bin/wire
+          \`\`\`
+          
+          ### Verify Installation
+          
+          \`\`\`bash
+          wire --version
+          \`\`\`
+          
+          ## Checksums
+          
+          See \`checksums.txt\` for SHA256 checksums of all binaries.
+          EOF
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          files: |
+            wire-*.tar.gz
+            wire-*.zip
+            checksums.txt
+      
+      - name: Release Summary
+        run: |
+          echo "### 🚀 Release ${{ steps.version.outputs.version }} Created!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Artifacts:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Linux AMD64" >> $GITHUB_STEP_SUMMARY
+          echo "- macOS AMD64 (Intel)" >> $GITHUB_STEP_SUMMARY
+          echo "- macOS ARM64 (Apple Silicon)" >> $GITHUB_STEP_SUMMARY
+          echo "- Windows AMD64" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Release URL:** https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
