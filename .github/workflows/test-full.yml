@@ -1,0 +1,67 @@
+name: Full Test Suite
+permissions:
+  contents: read
+  pull-requests: write
+on:
+  pull_request:
+    types: [opened, synchronize]
+  push:
+    branches: [master]
+
+jobs:
+  full-test:
+    if: |
+      contains(github.event.head_commit.message, '[test]') ||
+      contains(github.event.pull_request.title, '[test]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      
+      - name: Cache test dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-test-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-test-
+            ${{ runner.os }}-go-
+      
+      - name: Run Full Tests with Race Detection
+        run: |
+          go test -race -coverprofile=coverage.out -timeout 5m ./...
+          go tool cover -html=coverage.out -o coverage.html
+          echo "### Test Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "Coverage: $(go tool cover -func=coverage.out | grep total | awk '{print $3}')" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report-${{ github.sha }}
+          path: |
+            coverage.out
+            coverage.html
+          retention-days: 7
+      
+      - name: Comment Coverage on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const coverage = require('fs').readFileSync('coverage.out', 'utf8');
+            const total = coverage.match(/total:\s+\(statements\)\s+(\d+\.\d+)%/);
+            if (total) {
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `### Test Coverage: ${total[1]}%\n\nFull test suite with race detection completed successfully.`
+              });
+            }

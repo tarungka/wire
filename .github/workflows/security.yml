@@ -1,0 +1,131 @@
+name: Security Scan
+on:
+  pull_request:
+    types: [opened, synchronize]
+  push:
+    branches: [master]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * 1'  # Weekly on Monday at 2 AM
+
+jobs:
+  security:
+    if: |
+      contains(github.event.head_commit.message, '[security]') ||
+      contains(github.event.pull_request.title, '[security]') ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      
+      - name: Run Gosec Security Scanner
+        uses: securego/gosec@master
+        with:
+          args: '-fmt sarif -out gosec-results.sarif -severity medium ./...'
+      
+      - name: Upload Gosec results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gosec-results.sarif
+      
+      - name: Run Gosec for Summary
+        run: |
+          # Install gosec
+          curl -sfL https://raw.githubusercontent.com/securego/gosec/master/install.sh | sh -s latest
+          
+          # Run gosec and capture results
+          ./gosec -fmt json -out gosec-results.json ./... || true
+          
+          # Parse results for summary
+          if [ -f gosec-results.json ]; then
+            ISSUES=$(jq '.Issues | length' gosec-results.json)
+            HIGH=$(jq '[.Issues[] | select(.severity == "HIGH")] | length' gosec-results.json)
+            MEDIUM=$(jq '[.Issues[] | select(.severity == "MEDIUM")] | length' gosec-results.json)
+            LOW=$(jq '[.Issues[] | select(.severity == "LOW")] | length' gosec-results.json)
+            
+            echo "### 🔒 Security Scan Results" >> $GITHUB_STEP_SUMMARY
+            echo "- Total Issues: $ISSUES" >> $GITHUB_STEP_SUMMARY
+            echo "- High Severity: $HIGH" >> $GITHUB_STEP_SUMMARY
+            echo "- Medium Severity: $MEDIUM" >> $GITHUB_STEP_SUMMARY
+            echo "- Low Severity: $LOW" >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      - name: Check Go Vulnerabilities
+        run: |
+          # Install govulncheck
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          
+          # Run vulnerability check
+          echo "### 🛡️ Go Vulnerability Check" >> $GITHUB_STEP_SUMMARY
+          govulncheck ./... 2>&1 | tee vuln-results.txt || true
+          
+          if grep -q "No vulnerabilities found" vuln-results.txt; then
+            echo "✅ No known vulnerabilities found in dependencies" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Vulnerabilities detected - see details above" >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      - name: Run License Check
+        run: |
+          # Install go-licenses
+          go install github.com/google/go-licenses@latest
+          
+          # Check licenses
+          echo "### 📜 License Check" >> $GITHUB_STEP_SUMMARY
+          go-licenses report ./cmd/. --ignore github.com/tarungka/wire 2>&1 | head -20 >> $GITHUB_STEP_SUMMARY || true
+      
+      - name: Upload Security Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports-${{ github.sha }}
+          path: |
+            gosec-results.json
+            gosec-results.sarif
+            vuln-results.txt
+          retention-days: 30
+      
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let comment = '### 🔒 Security Scan Results\n\n';
+            
+            try {
+              const gosecResults = JSON.parse(fs.readFileSync('gosec-results.json', 'utf8'));
+              const issues = gosecResults.Issues || [];
+              const high = issues.filter(i => i.severity === 'HIGH').length;
+              const medium = issues.filter(i => i.severity === 'MEDIUM').length;
+              
+              if (issues.length === 0) {
+                comment += '✅ **No security issues found!**\n';
+              } else {
+                comment += `⚠️ **Found ${issues.length} security issues:**\n`;
+                comment += `- High: ${high}\n`;
+                comment += `- Medium: ${medium}\n`;
+                comment += `- Low: ${issues.length - high - medium}\n\n`;
+                comment += 'Please review the security scan results in the workflow logs.\n';
+              }
+            } catch (e) {
+              comment += '✅ Security scan completed. Check workflow for details.\n';
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });

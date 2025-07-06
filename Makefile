@@ -12,9 +12,15 @@ help:
 	@echo "  run -                 Run the project"
 	@echo "  test -                Run the integration tests"
 	@echo "  unittest -            Run unit tests"
+	@echo "  test-fast -           Run quick unit tests (for pre-commit)"
+	@echo "  test-full -           Run full test suite with race detection"
+	@echo "  test-coverage -       Run tests with coverage report"
 	@echo "  build-docker -        Build docker image"
 	@echo "  lint -                Run linter"
+	@echo "  lint-fast -           Run linter on changed files only"
 	@echo "  clean -               Remove build artifacts"
+	@echo "  pre-commit -          Run pre-commit checks locally"
+	@echo "  ci-local -            Simulate CI checks locally"
 
 # Target to build the project
 build:
@@ -50,6 +56,58 @@ build-docker:
 clean:
 	@echo "Cleaning build..."
 	rm -f wire
+
+# Quick test for pre-commit hooks
+test-fast:
+	@echo "Running quick unit tests..."
+	go test -short -timeout 30s ./...
+
+# Full test suite with race detection
+test-full:
+	@echo "Running full test suite with race detection..."
+	go test -race -timeout 5m ./...
+
+# Test with coverage report
+test-coverage:
+	@echo "Running tests with coverage..."
+	go test -race -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report generated: coverage.html"
+	@go tool cover -func=coverage.out | grep total
+
+# Run unit tests
+unittest:
+	@echo "Running unit tests..."
+	go test -v ./...
+
+# Fast lint for changed files only
+lint-fast:
+	@echo "Running linter on changed files..."
+	@CHANGED_FILES=$$(git diff --name-only --cached | grep "\.go$$" || true); \
+	if [ -n "$$CHANGED_FILES" ]; then \
+		golangci-lint run $$CHANGED_FILES; \
+	else \
+		echo "No Go files to lint"; \
+	fi
+
+# Pre-commit checks
+pre-commit: format lint-fast test-fast
+	@echo "✅ Pre-commit checks passed!"
+
+# Simulate CI locally
+ci-local:
+	@echo "Simulating CI checks locally..."
+	@echo "1. Running formatter..."
+	@make format
+	@echo "2. Running linter..."
+	@make lint
+	@echo "3. Running tests..."
+	@make test-fast
+	@echo "✅ Local CI simulation complete!"
+	@echo ""
+	@echo "💡 To run full tests, use: make test-full"
+	@echo "💡 To run security scan, add [security] to commit message"
+	@echo "💡 To build binaries, add [build] to commit message"
 
 # Default target
 all: build
