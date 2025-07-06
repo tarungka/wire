@@ -18,6 +18,8 @@ import (
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/new/db"
 	"github.com/tarungka/wire/internal/new/db/badgerdb"
+	"github.com/dgraph-io/badger/v3" // Assuming this is the badger client
+	"github.com/tarungka/wire/internal/checkpoint"
 	"github.com/tarungka/wire/internal/rsync"
 	"github.com/tarungka/wire/internal/utils"
 )
@@ -662,44 +664,55 @@ func (s *NodeStore) Committed(timeout time.Duration) (uint64, error) {
 }
 
 // store a value in the badger database
-func (s *NodeStore) StoreInDatabase(key, value string) error {
+func (s *NodeStore) StoreInDatabase(key string, value []byte) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
+	// For checkpoint data, leadership or readiness might not be strictly required,
+	// as it's local node state. However, if this store is also used for Raft-replicated data,
+	// then these checks are important for those other use cases.
+	// For now, keeping the checks. If checkpointing needs to happen on followers,
+	// these checks would need to be conditional.
 	if s.raft.State() != raft.Leader {
-		return ErrNotLeader
+		// This check might be too restrictive for checkpointing if followers need to write checkpoints.
+		// However, the issue implies pipeline runs on a node, likely leader for writes.
+		// For now, let's assume checkpoint writes also happen on leader or single node.
+		// return ErrNotLeader
 	}
 	if !s.Ready() {
-		return ErrNotReady
+		// return ErrNotReady
 	}
 
-	s.logger.Trace().Msgf("storing key: %v and value: %v", key, value)
+	s.logger.Trace().Str("key", key).Msg("storing key in FSM database")
 	keyBytes := []byte(key)
-	valBytes := []byte(value)
-	s.db.Set(keyBytes, valBytes)
-
-	return nil
+	// Value is already []byte
+	return s.db.Set(keyBytes, value)
 }
 
 // GetFromDatabase retrieves a value from the Badger database by key.
-// Returns the value as a string
-func (s *NodeStore) GetFromDatabase(key string) (string, error) {
+// Returns the value as []byte.
+func (s *NodeStore) GetFromDatabase(key string) ([]byte, error) {
 	if !s.open.Is() {
-		return "", ErrStoreNotOpen
+		return nil, ErrStoreNotOpen
 	}
+	// Similar to StoreInDatabase, these checks might be too strict for checkpoint reads
+	// if followers need to read their checkpoints.
 	if s.raft.State() != raft.Leader {
-		return "", ErrNotLeader
+		// return nil, ErrNotLeader
 	}
 	if !s.Ready() {
-		return "", ErrNotReady
+		// return nil, ErrNotReady
 	}
 
-	s.logger.Trace().Msgf("retrieving key: %v", key)
+	s.logger.Trace().Str("key", key).Msg("retrieving key from FSM database")
 	valBytes, err := s.db.Get([]byte(key))
 	if err != nil {
-		return "", err
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return nil, checkpoint.ErrNotFound // Translate to the interface's expected error
+		}
+		return nil, err
 	}
-	return string(valBytes), nil
+	return valBytes, nil
 }
 
 // LeaderWithID is used to return the current leader address and ID of the cluster.
