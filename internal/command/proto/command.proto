@@ -28,7 +28,7 @@ message Request {
 }
 
 message QueryRequest {
-	Request request = 1;
+	repeated string q = 1;
 	bool timings = 2;
 	enum Level {
 		QUERY_REQUEST_LEVEL_NONE = 0;
@@ -39,6 +39,7 @@ message QueryRequest {
 	Level level = 3;
 	int64 freshness = 4;
 	bool freshness_strict = 5;
+	bool transaction = 6;
 }
 
 message Values {
