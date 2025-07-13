@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -274,7 +275,7 @@ func (w *WAL) Append(entry *Entry) (int64, error) {
 		Offset:       currentOffset,
 		FilePosition: w.currentSegment.size, // Position *before* this write
 		Size:         int32(entryDiskSize),
-		Timestamp:    entry.Timestamp, // Store timestamp for potential time-based lookups
+		Timestamp:    entry.Timestamp.UnixNano(), // Store timestamp for potential time-based lookups
 	}
 	if err := w.currentSegment.index.Add(indexEntry); err != nil {
 		// This is problematic, index is out of sync with segment.
@@ -475,73 +476,61 @@ func (w *WAL) recover() error {
 	w.metrics.IncRecoveryCalls()
 
 	w.logger.Info().Msg("Starting WAL recovery process...")
-	files, err := filepath.Glob(filepath.Join(w.dir, "*" + walFileExtension))
+	files, err := filepath.Glob(filepath.Join(w.dir, "*"+walFileExtension))
 	if err != nil {
 		return fmt.Errorf("list segments: %w", err)
 	}
 	if len(files) == 0 {
 		w.logger.Info().Msg("No existing WAL segments found. Initializing new WAL state.")
-		// writeOffset remains 0, currentSegment will be created by NewWAL if nil
 		w.metrics.IncRecoverySuccess(time.Since(startTime), 0, 0, 0)
 		return nil
 	}
 
-	sort.Strings(files) // Sorts by filename, which includes timestamp-based ID
+	sort.Strings(files)
 
 	var recoveredSegments []*SegmentInfo
 	var segmentsScannedDuringRecovery uint64
 	var entriesRecoveredDuringRecovery uint64
 	var corruptedSegmentsDuringRecovery uint64
-	var maxOffsetSeen int64 = -1 // Start before the first possible offset
+	var maxOffsetSeen int64 = -1
 
 	for _, segPath := range files {
 		segmentID, err := parseSegmentID(segPath)
 		if err != nil {
 			w.logger.Error().Err(err).Str("path", segPath).Msg("Failed to parse segment ID during recovery, skipping file.")
-			// Potentially move this file to a .badformat suffix or similar
 			continue
 		}
 		segmentsScannedDuringRecovery++
 		w.logger.Info().Str("segment_path", segPath).Int64("segment_id", segmentID).Msg("Recovering segment")
 
-		// Attempt to open the segment and its index
-		// For recovery, we primarily scan the .wal file and rebuild index if necessary,
-		// or validate entries against an existing index.
 		idxPath := segmentIndexPath(w.dir, segmentID)
-		segment, err := OpenSegment(w.dir, segmentID, defaultSegmentWriterBufferSize, w.logger) // Opens for reading
+		segment, err := OpenSegment(w.dir, segmentID, defaultSegmentWriterBufferSize, w.logger)
 		if err != nil {
 			w.logger.Error().Err(err).Str("path", segPath).Msg("Failed to open segment for recovery, attempting to mark as corrupted.")
 			w.handleCorruptedSegmentFile(segPath, idxPath)
 			corruptedSegmentsDuringRecovery++
 			continue
 		}
+		segment.wal = w
 
-		// Load or rebuild index
-		err = segment.index.Load(segment.indexPath)
-		if err != nil {
+		if err := segment.index.Load(); err != nil {
 			w.logger.Warn().Err(err).Str("segment_id", segment.idStr).Msg("Failed to load index, will attempt to rebuild by scanning segment.")
-			// Index will be rebuilt during scan if load fails
 		}
 
-		currentSegmentOffset, segmentValid := segment.ScanAndVerify(maxOffsetSeen + 1)
-		// ScanAndVerify should update segment.startOffset, segment.endOffset, and segment.size
-		// It also rebuilds the index if it was missing or decided to rebuild.
-
+		_, segmentValid := segment.ScanAndVerify(maxOffsetSeen + 1)
 		if !segmentValid {
 			w.logger.Warn().Str("segment_id", segment.idStr).Msg("Segment validation failed during recovery. Marking as corrupted.")
-			segment.Close() // Close before moving
+			segment.Close()
 			corruptedSegmentsDuringRecovery++
 			w.handleCorruptedSegmentFile(segment.path, segment.indexPath)
 			continue
 		}
 
-		if segment.startOffset == -1 { // Empty but valid segment
+		if segment.startOffset == -1 {
 			w.logger.Info().Str("segment_id", segment.idStr).Msg("Segment is empty but valid.")
-			// We might want to keep it if it's the only/last one, or remove it if older and empty.
-			// For now, let's assume an empty segment can be part of the list.
 		}
 
-		if segment.index != nil { // segment.index could be nil if OpenSegment failed badly but didn't error out
+		if segment.index != nil {
 			entriesRecoveredDuringRecovery += uint64(segment.index.Count())
 		}
 		if segment.endOffset > maxOffsetSeen {
@@ -555,57 +544,37 @@ func (w *WAL) recover() error {
 			StartOffset: segment.startOffset,
 			EndOffset:   segment.endOffset,
 			Created:     segment.created,
-			Size:        segment.size, // Physical size
+			Size:        segment.size,
 		}
 		recoveredSegments = append(recoveredSegments, segInfo)
 
-		// If this segment had entries, persist its (potentially rebuilt) index.
 		if segment.index.Count() > 0 {
 			if err := segment.index.Persist(); err != nil {
 				w.logger.Error().Err(err).Str("segment_id", segment.idStr).Msg("Failed to persist rebuilt index during recovery")
-				// This is not ideal, but we might proceed if data is readable.
 			}
 		}
 
-		// Close the segment as we are done scanning it for now.
-		// The last segment will be reopened for writes later.
 		if err := segment.Close(); err != nil {
 			w.logger.Error().Err(err).Str("segment_id", segment.idStr).Msg("Error closing segment during recovery scan.")
 		}
 	}
 
 	w.segments = recoveredSegments
-	w.writeOffset = maxOffsetSeen + 1 // Next offset to write
+	w.writeOffset = maxOffsetSeen + 1
 
-	// Open the last segment for writing, or create a new one
 	if len(w.segments) > 0 {
 		lastSegInfo := w.segments[len(w.segments)-1]
 		w.logger.Info().Str("segment_id", segmentIDToString(lastSegInfo.ID)).Msg("Opening last recovered segment for append.")
-		// OpenSegment should handle creating the file object appropriately for append.
-		// We need to ensure it's the *same* Segment instance potentially.
-		// For simplicity, let's re-open.
 		lastSegment, err := OpenSegment(w.dir, lastSegInfo.ID, defaultSegmentWriterBufferSize, w.logger)
 		if err != nil {
 			w.logger.Error().Err(err).Msg("Failed to re-open last segment for writing after recovery. Creating new segment.")
-			// Fall through to createNewSegment
 		} else {
-			// Seek writer to the end of the file if not already.
-			// bufio.NewWriterSize opens in append mode implicitly by some OS, but explicit seek is safer.
-			// However, OpenSegment's file is os.O_RDWR. We need to be careful.
-			// For now, assume OpenSegment + LoadIndex has correctly set up the segment.
-			// The segment's writer needs to be positioned at segment.size.
-			// This is complex. Let's simplify: if a segment was recovered, its file is there.
-			// We need to open it in append mode.
-
-			// Re-opening specifically for append:
 			currentSegFile, err := os.OpenFile(lastSegInfo.Path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
 			if err != nil {
 				return fmt.Errorf("wal: open last segment for append %s: %w", lastSegInfo.Path, err)
 			}
-
-			lastSegment.file = currentSegFile // Replace the read-only file descriptor
+			lastSegment.file = currentSegFile
 			lastSegment.writer = bufio.NewWriterSize(currentSegFile, defaultSegmentWriterBufferSize)
-			// The size and index should be consistent from the recovery scan.
 			w.currentSegment = lastSegment
 			lastSegInfo.IsActive = true
 		}
@@ -613,7 +582,7 @@ func (w *WAL) recover() error {
 
 	if w.currentSegment == nil {
 		w.logger.Info().Msg("No valid segments to append to after recovery, or last segment opening failed. Creating a new segment.")
-		if err := w.createNewSegment(); err != nil { // createNewSegment will inc its own metric
+		if err := w.createNewSegment(); err != nil {
 			w.metrics.IncRecoveryErrors()
 			return fmt.Errorf("create new segment after recovery: %w", err)
 		}
@@ -622,7 +591,7 @@ func (w *WAL) recover() error {
 	w.metrics.IncRecoverySuccess(time.Since(startTime), segmentsScannedDuringRecovery, entriesRecoveredDuringRecovery, corruptedSegmentsDuringRecovery)
 
 	w.logger.Info().
-		Int64("recovered_offset", w.writeOffset-1). // -1 because writeOffset is the *next* offset
+		Int64("recovered_offset", w.writeOffset-1).
 		Int("segments_loaded", len(w.segments)).
 		Msg("WAL recovery completed.")
 	return nil
@@ -803,193 +772,19 @@ func segmentIDToString(id int64) string {
 // func (w *WAL) compress(data []byte) ([]byte, error) { /* ... */ }
 // func (w *WAL) decompress(data []byte) ([]byte, error) { /* ... */ }
 
-// Ensure WALConfig is accessible.
-// CompressionType, ParseCompressionType, compress, decompress are now in compression.go.
-// Segment, SegmentIndex, IndexEntry, and their methods are in segment.go and index.go.
-// These will be fleshed out in segment.go and index.go (or within segment.go)
-// For now, just enough to make wal.go compile.
 
-type Segment struct {
-	wal    *WAL // Reference back to WAL for config, logger
-	id     int64
-	idStr  string // string version of ID for logging
-	path   string
-	idxPath string
-	file   *os.File
-	writer *bufio.Writer // Buffered writer for efficiency
-	index  *SegmentIndex
-
-	size         int64 // Current physical size of the segment file on disk
-	startOffset  int64 // Logical offset of the first entry
-	endOffset    int64 // Logical offset of the last entry (inclusive)
-	maxSizeBytes int64 // Max size for this segment (from WAL config)
-
-	created time.Time
-	logger  zerolog.Logger
-}
-
-type SegmentIndex struct {
-	// For now, a simple in-memory list. Can be optimized later.
-	entries []IndexEntry
-	mu      sync.RWMutex
-	path    string // path to its disk representation
-	logger  zerolog.Logger
-}
-
-type IndexEntry struct {
-	Offset       int64     // Logical offset of the WAL entry
-	FilePosition int64     // Physical byte offset in the segment file where the entry (or its length header) begins
-	Size         int32     // Total size of the entry on disk (including its length header and data)
-	Timestamp    time.Time // Timestamp of the entry, useful for time-based searches or retention
-}
-
-
-func (s *Segment) Close() error {
-	if s.writer != nil {
-		if err := s.writer.Flush(); err != nil {
-			s.logger.Error().Err(err).Msg("Failed to flush segment writer on close")
-			// continue to close file anyway
-		}
-	}
-	if s.file != nil {
-		err := s.file.Close()
-		s.file = nil // Mark as closed
-		if err != nil {
-			s.logger.Error().Err(err).Msg("Failed to close segment file")
-			return err
-		}
-	}
-	if s.index != nil {
-		// Persist index on close if it has entries
-		if s.index.Count() > 0 {
-			if err := s.index.Persist(); err != nil {
-				s.logger.Error().Err(err).Msg("Failed to persist segment index on close")
-				// Not returning error here as file is closed.
-			}
-		}
-	}
-	s.logger.Info().Str("segment_id", s.idStr).Msg("Segment closed.")
-	return nil
-}
-func (s *Segment) Flush() error {
-	if s.writer == nil {
-		return errors.New("segment writer is nil")
-	}
-	return s.writer.Flush()
-}
-func (s *Segment) Sync() error {
-	if s.file == nil {
-		return errors.New("segment file is nil")
-	}
-	return s.file.Sync()
-}
-
-// ScanAndVerify is a placeholder. Actual implementation will be in segment.go
-func (s *Segment) ScanAndVerify(expectedStartOffset int64) (lastOffset int64, valid bool) {
-	s.logger.Warn().Msg("Segment.ScanAndVerify is a placeholder")
-	// This should read through the segment, validate CRC, check offset continuity
-	// and update s.startOffset, s.endOffset, s.size, and rebuild s.index.
-	// For now, assume valid and empty for placeholder.
-	s.startOffset = -1
-	s.endOffset = -1
-	s.size = 0 // initial size of file header or 0 if new
-	return -1, true
-}
-
-func (idx *SegmentIndex) Add(entry IndexEntry) error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-	// Basic check for offset ordering (optional, but good for sanity)
-	if len(idx.entries) > 0 && entry.Offset <= idx.entries[len(idx.entries)-1].Offset {
-		idx.logger.Error().Int64("new_offset", entry.Offset).Int64("last_offset", idx.entries[len(idx.entries)-1].Offset).Msg("Index add: new offset is not greater than last offset")
-		return fmt.Errorf("index add: new offset %d not > last offset %d", entry.Offset, idx.entries[len(idx.entries)-1].Offset)
-	}
-	idx.entries = append(idx.entries, entry)
-	return nil
-}
-func (idx *SegmentIndex) Load(path string) error {
-	idx.logger.Warn().Str("path", path).Msg("SegmentIndex.Load is a placeholder")
-	// This should load from disk. For now, assume empty.
-	idx.path = path
-	idx.entries = make([]IndexEntry,0)
-	return nil
-}
-func (idx *SegmentIndex) Persist() error {
-	idx.logger.Warn().Str("path", idx.path).Msg("SegmentIndex.Persist is a placeholder")
-	// This should save to disk.
-	return nil
-}
-func (idx *SegmentIndex) Count() int {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return len(idx.entries)
-}
-
-func OpenSegment(dir string, id int64, bufferSize int, logger zerolog.Logger) (*Segment, error) {
-	logger.Warn().Msg("OpenSegment is a placeholder")
-	// This should open segment and index files.
-	// For now, return a dummy segment.
-	segPath := segmentPath(dir, id)
-	idxPath := segmentIndexPath(dir, id)
-
-	// Try to open existing file, or create if not found (though recovery path might create first)
-	file, err := os.OpenFile(segPath, os.O_RDWR|os.O_CREATE, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("open segment file %s: %w", segPath, err)
-	}
-
-	stat, err := file.Stat()
-	if err != nil {
-		file.Close()
-		return nil, fmt.Errorf("stat segment file %s: %w", segPath, err)
-	}
-
-
-	s := &Segment{
-		id:     id,
-		idStr:  segmentIDToString(id),
-		path:   segPath,
-		idxPath: idxPath,
-		file:   file,
-		writer: bufio.NewWriterSize(file, bufferSize),
-		index:  &SegmentIndex{path: idxPath, logger: logger.With().Str("sub_component", "index").Logger()},
-		size:   stat.Size(), // Initial size
-		created: stat.ModTime(), // Use ModTime as proxy for creation if not stored separately
-		logger: logger.With().Str("sub_component", "segment").Str("segment_id", segmentIDToString(id)).Logger(),
-		startOffset: -1, // Must be determined by scanning or loading index
-		endOffset:   -1, // Must be determined by scanning or loading index
-	}
-	s.index.path = s.idxPath // ensure index knows its path
-	return s, nil
-}
-
-// createNewSegment is a placeholder for now.
 func (w *WAL) createNewSegment() error {
-	w.logger.Info().Msg("WAL.createNewSegment called (placeholder implementation)")
-
-	w.mu.Lock() // Lock for modifying w.currentSegment and w.segments
+	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// Close current segment if it exists
 	if w.currentSegment != nil {
-		w.logger.Info().Str("segment_id", w.currentSegment.idStr).Msg("Closing current segment before creating new one.")
-		// Persist its index before closing
-		if w.currentSegment.index != nil && w.currentSegment.index.Count() > 0 {
-			if err := w.currentSegment.index.Persist(); err != nil {
-				w.logger.Error().Err(err).Str("segment_id", w.currentSegment.idStr).Msg("Failed to persist index of old current segment")
-				// Potentially problematic, but continue to rotate.
-			}
-		}
 		if err := w.currentSegment.Close(); err != nil {
-			// Log error but proceed to create a new segment to avoid getting stuck.
-			// Segment.Close() might have its own metrics for errors.
 			w.logger.Error().Err(err).Str("segment_id", w.currentSegment.idStr).Msg("Error closing current segment")
 		}
-		// Update SegmentInfo for the old segment
 		for _, si := range w.segments {
 			if si.ID == w.currentSegment.id {
 				si.IsActive = false
-				si.EndOffset = w.currentSegment.endOffset // Ensure this is up-to-date
+				si.EndOffset = w.currentSegment.endOffset
 				si.Size = w.currentSegment.size
 				break
 			}
@@ -997,82 +792,66 @@ func (w *WAL) createNewSegment() error {
 	}
 
 	newSegmentID := time.Now().UnixNano()
-	// Ensure newSegmentID is unique if called in rapid succession (highly unlikely for ns precision)
-	// Could add a small counter if sub-ns uniqueness is ever an issue.
-
 	newSeg, err := OpenSegment(w.dir, newSegmentID, defaultSegmentWriterBufferSize, w.logger)
 	if err != nil {
 		return fmt.Errorf("failed to open new segment file: %w", err)
 	}
-	newSeg.startOffset = atomic.LoadInt64(&w.writeOffset) // The new segment starts at the current global writeOffset
-	newSeg.endOffset = newSeg.startOffset -1 // No entries yet, so endOffset is before startOffset
-	// newSeg.size is already set by OpenSegment from file stat (should be 0 or minimal for new file)
+	newSeg.startOffset = atomic.LoadInt64(&w.writeOffset)
+	newSeg.endOffset = newSeg.startOffset - 1
+	newSeg.wal = w
 
 	w.currentSegment = newSeg
-	w.logger.Info().Str("segment_id", w.currentSegment.idStr).Int64("start_offset", newSeg.startOffset).Msg("Created new current segment.")
 	w.metrics.IncSegmentsCreated()
 
 	segInfo := &SegmentInfo{
 		ID:          newSeg.id,
 		Path:        newSeg.path,
-		IndexPath:   newSeg.idxPath,
+		IndexPath:   newSeg.indexPath,
 		StartOffset: newSeg.startOffset,
-		EndOffset:   newSeg.endOffset, // Initially no entries
+		EndOffset:   newSeg.endOffset,
 		Created:     newSeg.created,
-		Size:        newSeg.size,       // Initial size
+		Size:        newSeg.size,
 		IsActive:    true,
 	}
 	w.segments = append(w.segments, segInfo)
 
-	// Enforce retention policy
 	if len(w.segments) > w.maxSegments {
-		go w.deleteOldestSegment() // Run in goroutine to not block current write
+		go w.deleteOldestSegment()
 	}
 
 	return nil
 }
 
 func (w *WAL) deleteOldestSegment() {
-	w.mu.Lock() // Lock for modifying w.segments
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	if len(w.segments) <= w.maxSegments {
-		w.mu.Unlock()
 		return
 	}
 
-	// Sort segments by ID (which is timestamp) to be sure, though append order should maintain this.
-	// SegmentInfo slice needs to be sortable.
 	sort.Slice(w.segments, func(i, j int) bool {
 		return w.segments[i].ID < w.segments[j].ID
 	})
 
 	segToDeleteInfo := w.segments[0]
-	if segToDeleteInfo.IsActive { // Should not happen if logic is correct
+	if segToDeleteInfo.IsActive {
 		w.logger.Error().Str("segment_id", segmentIDToString(segToDeleteInfo.ID)).Msg("Attempted to delete active segment. This is a bug.")
-		w.mu.Unlock()
 		return
 	}
-	w.mu.Unlock() // Unlock before performing file operations
-
 
 	w.logger.Info().Str("segment_id", segmentIDToString(segToDeleteInfo.ID)).Msg("Deleting oldest segment due to retention policy.")
 	if err := os.Remove(segToDeleteInfo.Path); err != nil {
 		w.logger.Error().Err(err).Str("path", segToDeleteInfo.Path).Msg("Failed to delete old segment file.")
 	}
 	if err := os.Remove(segToDeleteInfo.IndexPath); err != nil {
-		// Log if index file exists and fails to delete, but don't make it a critical error if segment is gone.
 		if !os.IsNotExist(err) {
 			w.logger.Error().Err(err).Str("path", segToDeleteInfo.IndexPath).Msg("Failed to delete old segment index file.")
 		}
-		// If successful, this is where IncSegmentsDeleted would go.
 	}
 
-	w.mu.Lock() // Lock again to modify slice
-	// Remove from the slice
 	w.segments = w.segments[1:]
-	w.mu.Unlock()
-	// metrics.IncSegmentsDeleted() should be here if deletion was successful
-	// However, os.Remove errors are not checked for success before this point in the original logic.
+	w.metrics.IncSegmentsDeleted()
 }
 
 // jsonMarshaler from internal/wal/json_marshal.go is used for headers.

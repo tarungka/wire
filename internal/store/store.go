@@ -1315,13 +1315,13 @@ func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
 	// For this basic implementation, we'll ignore qr.Timings, qr.Transaction, qr.Freshness, qr.Strict
 	// A full implementation would check s.isStaleRead(qr.Freshness, qr.Strict) here.
 
-	if len(qr.Statements) == 0 || qr.Statements[0] == nil || qr.Statements[0].Sql == "" {
+	if len(qr.GetQ()) == 0 {
 		s.logger.Error().Msg("empty query statement received")
 		return nil, errors.New("empty query statement")
 	}
 
 	// Assuming one statement for basic GET query
-	stmtStr := qr.Statements[0].Sql
+	stmtStr := qr.GetQ()[0]
 	parts := strings.Fields(stmtStr)
 
 	if len(parts) != 2 || strings.ToUpper(parts[0]) != "GET" {
@@ -1342,7 +1342,7 @@ func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
 					{
 						Columns: []string{"key", "value"},
 						Types:   []string{"text", "text"},
-						Values:  make([]*proto.RowValue, 0), // Empty values
+						Values:  make([]*proto.QueryRows_RowValue, 0), // Empty values
 					},
 				}
 				return nil // Key not found is not a failure for the View operation itself for this query type
@@ -1370,7 +1370,7 @@ func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
 		// Value Datum - store as bytes (blob)
 		valueDatum := &proto.Datum{Value: &proto.Datum_B{B: valueBytes}}
 
-		row := &proto.RowValue{
+		row := &proto.QueryRows_RowValue{
 			Values: []*proto.Datum{keyDatum, valueDatum},
 		}
 
@@ -1378,7 +1378,7 @@ func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
 			{
 				Columns: []string{"key", "value"},
 				Types:   []string{"text", "blob"}, // Value is effectively a blob
-				Values:  []*proto.RowValue{row},
+				Values:  []*proto.QueryRows_RowValue{row},
 			},
 		}
 		return nil
