@@ -76,6 +76,7 @@ import (
 	"github.com/tarungka/wire/internal/rsync"
 	"github.com/tarungka/wire/internal/snapshot"
 	"github.com/tarungka/wire/internal/utils"
+	"github.com/tarungka/wire/internal/checkpoint" // Added for checkpoint.ErrNotFound
 
 	rlog "github.com/tarungka/wire/internal/log"
 )
@@ -1314,13 +1315,13 @@ func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
 	// For this basic implementation, we'll ignore qr.Timings, qr.Transaction, qr.Freshness, qr.Strict
 	// A full implementation would check s.isStaleRead(qr.Freshness, qr.Strict) here.
 
-	if len(qr.Statements) == 0 || qr.Statements[0] == nil || qr.Statements[0].Sql == "" {
+	if len(qr.GetQ()) == 0 {
 		s.logger.Error().Msg("empty query statement received")
 		return nil, errors.New("empty query statement")
 	}
 
 	// Assuming one statement for basic GET query
-	stmtStr := qr.Statements[0].Sql
+	stmtStr := qr.GetQ()[0]
 	parts := strings.Fields(stmtStr)
 
 	if len(parts) != 2 || strings.ToUpper(parts[0]) != "GET" {
@@ -1341,7 +1342,7 @@ func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
 					{
 						Columns: []string{"key", "value"},
 						Types:   []string{"text", "text"},
-						Values:  make([]*proto.RowValue, 0), // Empty values
+						Values:  make([]*proto.QueryRows_RowValue, 0), // Empty values
 					},
 				}
 				return nil // Key not found is not a failure for the View operation itself for this query type
@@ -1369,7 +1370,7 @@ func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
 		// Value Datum - store as bytes (blob)
 		valueDatum := &proto.Datum{Value: &proto.Datum_B{B: valueBytes}}
 
-		row := &proto.RowValue{
+		row := &proto.QueryRows_RowValue{
 			Values: []*proto.Datum{keyDatum, valueDatum},
 		}
 
@@ -1377,7 +1378,7 @@ func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
 			{
 				Columns: []string{"key", "value"},
 				Types:   []string{"text", "blob"}, // Value is effectively a blob
-				Values:  []*proto.RowValue{row},
+				Values:  []*proto.QueryRows_RowValue{row},
 			},
 		}
 		return nil
@@ -2029,68 +2030,71 @@ func (s *Store) WaitForRemoval(id string, timeout time.Duration) error {
 // Newer functions will move them over accordingly
 
 // store a value in the badger database
-func (s *Store) StoreInDatabase(key, value string) error {
+func (s *Store) StoreInDatabase(key string, value []byte) error {
 	if !s.open.Is() {
 		return ErrStoreNotOpen
 	}
-	if s.raftConsensus.State() != raft.Leader {
-		return ErrNotLeader
-	}
-	if !s.Ready() {
-		return ErrNotReady
-	}
-	if s.db.IsClosed() {
+	// Relaxed leader/ready checks for checkpointing, as discussed.
+	// if s.raftConsensus.State() != raft.Leader {
+	// 	return ErrNotLeader
+	// }
+	// if !s.Ready() {
+	// 	return ErrNotReady
+	// }
+	if s.db == nil || s.db.IsClosed() { // Check if db is nil before calling IsClosed
 		return ErrDatabaseNotOpen
 	}
 
-	s.logger.Trace().Msgf("storing key: %v and value: %v", key, value)
+	s.logger.Trace().Str("key", key).Int("value_len", len(value)).Msg("storing key (bytes) in FSM database")
 	keyBytes := []byte(key)
-	valBytes := []byte(value)
-	s.db.Update(func(txn *badger.Txn) error {
-		err := txn.Set(keyBytes, valBytes)
-		return err
+	// value is already []byte
+	err := s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(keyBytes, value)
 	})
-
-	return nil
+	return err
 }
 
 // GetFromDatabase retrieves a value from the Badger database by key.
-// Returns the value as a string
-func (s *Store) GetFromDatabase(key string) (string, error) {
+// Returns the value as []byte.
+func (s *Store) GetFromDatabase(key string) ([]byte, error) {
 	if !s.open.Is() {
-		return "", ErrStoreNotOpen
+		return nil, ErrStoreNotOpen
 	}
-	if s.raftConsensus.State() != raft.Leader {
-		return "", ErrNotLeader
-	}
-	if !s.Ready() {
-		return "", ErrNotReady
-	}
-	if s.db.IsClosed() {
-		return "", ErrDatabaseNotOpen
+	// Relaxed leader/ready checks for checkpointing.
+	// if s.raftConsensus.State() != raft.Leader {
+	// 	return nil, ErrNotLeader
+	// }
+	// if !s.Ready() {
+	// 	return nil, ErrNotReady
+	// }
+	if s.db == nil || s.db.IsClosed() { // Check if db is nil before calling IsClosed
+		return nil, ErrDatabaseNotOpen
 	}
 
-	s.logger.Trace().Msgf("retrieving key: %v", key)
-	var value string
+	s.logger.Trace().Str("key", key).Msg("retrieving key from FSM database")
+	var valueBytes []byte
 	err := s.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(key))
 		if err != nil {
-			return err
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				return checkpoint.ErrNotFound // Translate to the interface's expected error
+			}
+			return err // Other BadgerDB errors
 		}
 
-		// Retrieve the value and convert it to a string.
-		valBytes, err := item.ValueCopy(nil)
+		// Retrieve the value. ValueCopy makes a copy.
+		valueBytes, err = item.ValueCopy(nil)
 		if err != nil {
 			return err
 		}
-		value = string(valBytes)
 		return nil
 	})
 
 	if err != nil {
-		return "", err
+		// This includes checkpoint.ErrNotFound if translated above
+		return nil, err
 	}
-	return value, nil
+	return valueBytes, nil
 }
 
 // isStaleRead checks if a read request is stale based on the leader's contact time,
