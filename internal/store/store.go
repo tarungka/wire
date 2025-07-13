@@ -68,6 +68,7 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
+	"github.com/tarungka/wire/internal/checkpoint" // Added for checkpoint.ErrNotFound
 	"github.com/tarungka/wire/internal/command"
 	"github.com/tarungka/wire/internal/command/proto"
 	commandProto "github.com/tarungka/wire/internal/command/proto"
@@ -76,7 +77,6 @@ import (
 	"github.com/tarungka/wire/internal/rsync"
 	"github.com/tarungka/wire/internal/snapshot"
 	"github.com/tarungka/wire/internal/utils"
-	"github.com/tarungka/wire/internal/checkpoint" // Added for checkpoint.ErrNotFound
 
 	rlog "github.com/tarungka/wire/internal/log"
 )
@@ -1753,7 +1753,7 @@ func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
 		// Queries are read-only and don't change FSM state.
 		// If it's here, it's likely an error in routing or command design for Raft.
 		return &fsmExecuteQueryResponse{error: fmt.Errorf("QUERY command type should not be applied to FSM state")}
-	
+
 	case commandProto.Command_COMMAND_TYPE_EXECUTE_QUERY:
 		s.logger.Warn().Msg("fsmApply: EXECUTE_QUERY command received. Complex queries with potential state changes not supported by this simple FSM.")
 		// EXECUTE_QUERY might modify state and return results.
@@ -1817,7 +1817,6 @@ func (s *Store) fsmRestore(rc io.ReadCloser) (retErr error) {
 	} else {
 		s.logger.Warn().Str("default_db_path", dbPath).Msg("s.dbDir is not set, using default path derived from raftDir for BadgerDB. Ensure this is intended.")
 	}
-
 
 	// Close the current database instance, if open.
 	if s.db != nil {
@@ -1903,9 +1902,9 @@ func (s *Store) fsmRestore_backup(rc io.ReadCloser) (retErr error) {
 	//      and then replacing s.db with the new instance, or using DB-specific load/restore functions.
 	// 4. After successfully restoring, Raft core updates FSM index/term from snapshot metadata.
 	s.logger.Info().Msg("fsmRestore: Actual database restoration from snapshot stream is not implemented in this scope.")
-	
+
 	// For now, returning ErrNotImplemented to signify that the DB restore part is missing.
-	retErr = ErrNotImplemented 
+	retErr = ErrNotImplemented
 	return retErr
 
 	// startT := time.Now()

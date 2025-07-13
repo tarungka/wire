@@ -26,7 +26,7 @@ type Transformer struct {
 	initalized bool
 
 	pipeline *beam.Pipeline
-	scope beam.Scope
+	scope    beam.Scope
 }
 
 func (tf *Transformer) Init() {
@@ -42,7 +42,6 @@ func (tf *Transformer) Init() {
 func (tf *Transformer) ApplyTransformation(inputData []string) error {
 	// Create a new Beam pipeline
 	beam.Init()
-
 
 	// Create a PCollection from inputData
 	input := beam.CreateList(tf.scope, inputData)

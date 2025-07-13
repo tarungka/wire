@@ -283,7 +283,6 @@ func TestStore_FSMApply_Unimplemented(t *testing.T) {
 	assert.ErrorIs(t, fsmResp.error, ErrNotImplemented) // Changed to ErrNotImplemented based on fsmApply logic
 	assert.Contains(t, fsmResp.error.Error(), "QUERY command type should not be applied to FSM state")
 
-
 	assert.Equal(t, uint64(1), s.fsmIdx.Load()) // Index/term updated
 	assert.Equal(t, uint64(1), s.fsmTerm.Load())
 }
@@ -308,7 +307,6 @@ func TestStore_FSMInteraction_SnapshotAndPersist(t *testing.T) {
 	fsmApplyResp, _ := applyResp.(*fsmExecuteQueryResponse)
 	require.NoError(t, fsmApplyResp.error)
 
-
 	// 2. Call fsmSnapshot
 	fsmSnap, err := s.fsmSnapshot()
 	require.NoError(t, err)
@@ -327,8 +325,7 @@ func TestStore_FSMInteraction_SnapshotAndPersist(t *testing.T) {
 	restoredTerm := binary.BigEndian.Uint64(snapData[8:16])
 
 	assert.Equal(t, s.fsmIdx.Load(), restoredIndex, "snapshot index mismatch") // Should be 11
-	assert.Equal(t, s.fsmTerm.Load(), restoredTerm, "snapshot term mismatch")   // Should be 2
-
+	assert.Equal(t, s.fsmTerm.Load(), restoredTerm, "snapshot term mismatch")  // Should be 2
 
 	// 5. (Harder part) Verify data by loading into a new DB
 	snapshotDBContent := bytes.NewReader(snapData[16:]) // Skip metadata
@@ -375,12 +372,12 @@ func createMinimalBadgerBackup(t *testing.T, key, value string) []byte {
 	var buf bytes.Buffer
 	_, err = tempDB.Backup(&buf, 0) // since=0 for full backup
 	require.NoError(t, err)
-	
+
 	// It's important to close the DB before its directory is removed by t.TempDir()
 	// If not closed properly, Badger might not flush everything or might hold locks.
 	err = tempDB.Close()
 	require.NoError(t, err)
-	
+
 	// Double check removal, sometimes TempDir might have issues if files are locked
 	// This is more of a sanity check for test stability than a requirement for the backup itself.
 	// On Windows, file locks can be particularly sticky.
@@ -479,16 +476,16 @@ func TestStore_Query_SimpleGet(t *testing.T) {
 	queryRows, err := s.Query(queryReq)
 	require.NoError(t, err)
 	require.Len(t, queryRows, 1, "expected one QueryRows result")
-	
+
 	result := queryRows[0]
 	require.Len(t, result.Columns, 2, "expected two columns")
 	assert.Equal(t, "key", result.Columns[0])
 	assert.Equal(t, "value", result.Columns[1])
-	
+
 	require.Len(t, result.Values, 1, "expected one row in values")
 	rowValue := result.Values[0]
 	require.Len(t, rowValue.Values, 2, "expected two datums in row")
-	
+
 	assert.Equal(t, key, rowValue.Values[0].GetS(), "key mismatch in query result")
 	assert.Equal(t, []byte(value), rowValue.Values[1].GetB(), "value mismatch in query result")
 }

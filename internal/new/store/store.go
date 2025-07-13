@@ -12,14 +12,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dgraph-io/badger/v3" // Assuming this is the badger client
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
+	"github.com/tarungka/wire/internal/checkpoint"
 	"github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/new/db"
 	"github.com/tarungka/wire/internal/new/db/badgerdb"
-	"github.com/dgraph-io/badger/v3" // Assuming this is the badger client
-	"github.com/tarungka/wire/internal/checkpoint"
 	"github.com/tarungka/wire/internal/rsync"
 	"github.com/tarungka/wire/internal/utils"
 )
