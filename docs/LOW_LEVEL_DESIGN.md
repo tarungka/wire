@@ -40,32 +40,32 @@ Wire is a high-performance, distributed stream processing framework built with G
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                           Wire Cluster                               │
+│                           Wire Cluster                              │
 ├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐       │
-│  │   Node 1     │     │   Node 2     │     │   Node 3     │       │
-│  │  (Leader)    │◄────┤  (Follower)  │◄────┤  (Follower)  │       │
-│  └──────┬───────┘     └──────┬───────┘     └──────┬───────┘       │
+│                                                                     │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐         │
+│  │   Node 1     │     │   Node 2     │     │   Node 3     │         │
+│  │  (Leader)    │◄────┤  (Follower)  │◄────┤  (Follower)  │         │
+│  └──────┬───────┘     └──────┬───────┘     └──────┬───────┘         │
 │         │                    │                     │                │
 │         └────────────────────┴─────────────────────┘                │
 │                         Raft Consensus                              │
-│                                                                      │
-│  ┌──────────────────────────────────────────────────────────┐      │
-│  │                    Data Pipeline Layer                    │      │
-│  │  ┌─────────┐    ┌────────────┐    ┌──────────┐          │      │
-│  │  │ Sources │───►│ Transform  │───►│  Sinks   │          │      │
-│  │  └─────────┘    └────────────┘    └──────────┘          │      │
-│  └──────────────────────────────────────────────────────────┘      │
-│                                                                      │
-│  ┌──────────────────────────────────────────────────────────┐      │
-│  │                  Service Layer                            │      │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐               │      │
-│  │  │   HTTP   │  │ Cluster  │  │  Store   │               │      │
-│  │  │ Service  │  │ Service  │  │ Service  │               │      │
-│  │  └──────────┘  └──────────┘  └──────────┘               │      │
-│  └──────────────────────────────────────────────────────────┘      │
-│                                                                      │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────┐       │
+│  │                    Data Pipeline Layer                   │       │
+│  │  ┌─────────┐    ┌────────────┐    ┌──────────┐           │       │
+│  │  │ Sources │───►│ Transform  │───►│  Sinks   │           │       │
+│  │  └─────────┘    └────────────┘    └──────────┘           │       │
+│  └──────────────────────────────────────────────────────────┘       │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────┐       │
+│  │                  Service Layer                           │       │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐                │       │
+│  │  │   HTTP   │  │ Cluster  │  │  Store   │                │       │
+│  │  │ Service  │  │ Service  │  │ Service  │                │       │
+│  │  └──────────┘  └──────────┘  └──────────┘                │       │
+│  └──────────────────────────────────────────────────────────┘       │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -242,17 +242,17 @@ type Service struct {
 
 **API Endpoints:**
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | /health | Health check |
-| GET | /status | Node status |
-| POST | /db/execute | Execute write operation |
-| GET | /db/query | Execute read query |
-| POST | /cluster/join | Join cluster |
-| DELETE | /cluster/remove | Remove node |
-| GET | /pipelines | List pipelines |
-| POST | /pipelines | Create pipeline |
-| DELETE | /pipelines/:id | Delete pipeline |
+| Method | Path              | Description              |
+|--------|-------------------|--------------------------|
+| GET    | /health           | Health check             |
+| GET    | /status           | Node status              |
+| POST   | /db/execute       | Execute write operation  |
+| GET    | /db/query         | Execute read query       |
+| POST   | /cluster/join     | Join cluster             |
+| DELETE | /cluster/remove   | Remove node              |
+| GET    | /pipelines        | List pipelines           |
+| POST   | /pipelines        | Create pipeline          |
+| DELETE | /pipelines/:id    | Delete pipeline          |
 
 ### 5. Cluster Service (`internal/cluster/`)
 
@@ -359,14 +359,14 @@ type Operation interface {
 
 **Multiplexer Architecture:**
 ```
-┌──────────────────────────────┐
-│     TCP Listener (Single)     │
-├──────────────────────────────┤
-│         Multiplexer           │
-├────────────┬─────────────────┤
-│ Raft Stream │ Cluster Stream  │
-│  (Header 1) │   (Header 2)    │
-└────────────┴─────────────────┘
+┌────────────────────────────────┐
+│      TCP Listener (Single)     │
+├────────────────────────────────┤
+│          Multiplexer           │
+├──────────────┬─────────────────┤
+│ Raft Stream  │ Cluster Stream  │
+│  (Header 1)  │   (Header 2)    │
+└──────────────┴─────────────────┘
 ```
 
 **Implementation:**
@@ -407,13 +407,13 @@ message JoinRequest {
 
 ```
 ┌─────────────────────────────┐
-│     Application Layer        │
+│     Application Layer       │
 ├─────────────────────────────┤
-│    Database Interface        │
+│    Database Interface       │
 ├─────────────────────────────┤
-│   Storage Backend Driver     │
+│   Storage Backend Driver    │
 ├─────────────────────────────┤
-│    BadgerDB / RocksDB        │
+│    BadgerDB / RocksDB       │
 └─────────────────────────────┘
 ```
 
