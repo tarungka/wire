@@ -49,7 +49,11 @@ func New(dbType string, config *Config) (DbStore, error) {
 		db.Open()
 		return db, nil
 	case "rocksdb":
-		return rocksdb.New((*rocksdb.Config)(config)), nil
+		db := rocksdb.New((*rocksdb.Config)(config))
+		if err := db.Open(); err != nil {
+			return nil, err
+		}
+		return db, nil
 	case "bbolt":
 		bs, err := raftboltdb.New(raftboltdb.Options{
 			BoltOptions: &bbolt.Options{
