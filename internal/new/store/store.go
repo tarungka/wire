@@ -15,11 +15,11 @@ import (
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/command/proto"
-	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/new/db"
 	"github.com/tarungka/wire/internal/new/db/badgerdb"
-	"github.com/tarungka/wire/internal/rsync"
 	"github.com/tarungka/wire/internal/utils"
+	"github.com/tarungka/wire/pkg/common/logging"
+	"github.com/tarungka/wire/pkg/common/rsync"
 )
 
 var (
@@ -146,7 +146,7 @@ type NodeStore struct {
 }
 
 func New(ly Layer, c *Config) (*NodeStore, error) {
-	newLogger := logger.GetLogger("store")
+	newLogger := logging.GetLogger("store")
 	newLogger.Print("creating new store")
 	// dbConfig := db.Config{
 	// 	Dir: c.Dir,

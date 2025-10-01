@@ -6,7 +6,7 @@ import (
 	"time"
 
 	uuid "github.com/google/uuid"
-	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/pkg/common/logging"
 )
 
 // Job is a struct that holds all the data about the job
@@ -59,7 +59,7 @@ func (j *Job) GetUpdatedAt() (time.Time, error) {
 func New(data any) (*Job, error) {
 	jId, err := uuid.NewV7()
 	if err != nil {
-		logger.AdHocLogger.Err(err).Msg("error when creating a new job")
+		logging.AdHocLogger.Err(err).Msg("error when creating a new job")
 		return nil, err
 	}
 	now := time.Now()
@@ -75,7 +75,7 @@ func New(data any) (*Job, error) {
 		// TODO: what other time formats do I need to support?
 		eventTime, err = time.Parse(time.RFC3339, stringEventTime)
 		if err != nil {
-			logger.AdHocLogger.Err(err).Msg("error when parsing eventTime")
+			logging.AdHocLogger.Err(err).Msg("error when parsing eventTime")
 			break
 		}
 	}

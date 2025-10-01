@@ -11,7 +11,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/cluster/proto"
 	command "github.com/tarungka/wire/internal/command/proto"
-	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/pkg/common/logging"
 )
 
 var (
@@ -135,7 +135,7 @@ func NewBootstrapper(p AddressProvider, client *Client) *Bootstrapper {
 		provider: p,
 		client:   client,
 		// logger:   log.New(os.Stderr, "[cluster-bootstrap] ", log.LstdFlags),
-		logger:   logger.GetLogger("cluster-bootstrap"),
+		logger:   logging.GetLogger("cluster-bootstrap"),
 		Interval: bootCheckInterval,
 	}
 	return bs

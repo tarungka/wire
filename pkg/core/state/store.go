@@ -49,6 +49,8 @@ func (s *Store) setKeyTime(key string, t time.Time) error
 */
 
 import (
+	"bufio"
+	"encoding/binary"
 	"errors"
 	"expvar"
 	"fmt"
@@ -60,8 +62,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"bufio"
-	"encoding/binary"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,14 +70,14 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
-	"google.golang.org/protobuf/proto"
 	"github.com/tarungka/wire/internal/command"
 	commandProto "github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/db"
+	"github.com/tarungka/wire/internal/utils"
 	"github.com/tarungka/wire/pkg/common/logging"
 	"github.com/tarungka/wire/pkg/common/rsync"
 	"github.com/tarungka/wire/pkg/core/checkpoint"
-	"github.com/tarungka/wire/internal/utils"
+	"google.golang.org/protobuf/proto"
 
 	rlog "github.com/tarungka/wire/internal/log"
 )
@@ -364,7 +364,7 @@ type Store struct {
 	readyChans *rsync.ReadyChannels
 
 	// Checkpoint
-	snapshotDir   string // To be renamed to checkpointDir later if desired
+	snapshotDir   string          // To be renamed to checkpointDir later if desired
 	snapshotStore CheckpointStore // To be renamed to checkpointStore later
 
 	// Database
@@ -1767,7 +1767,7 @@ func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
 		// Queries are read-only and don't change FSM state.
 		// If it's here, it's likely an error in routing or command design for Raft.
 		return &fsmExecuteQueryResponse{error: fmt.Errorf("QUERY command type should not be applied to FSM state")}
-	
+
 	case commandProto.Command_COMMAND_TYPE_EXECUTE_QUERY:
 		s.logger.Warn().Msg("fsmApply: EXECUTE_QUERY command received. Complex queries with potential state changes not supported by this simple FSM.")
 		// EXECUTE_QUERY might modify state and return results.
@@ -1831,7 +1831,6 @@ func (s *Store) fsmRestore(rc io.ReadCloser) (retErr error) {
 	} else {
 		s.logger.Warn().Str("default_db_path", dbPath).Msg("s.dbDir is not set, using default path derived from raftDir for BadgerDB. Ensure this is intended.")
 	}
-
 
 	// Close the current database instance, if open.
 	if s.db != nil {
@@ -1917,9 +1916,9 @@ func (s *Store) fsmRestore_backup(rc io.ReadCloser) (retErr error) {
 	//      and then replacing s.db with the new instance, or using DB-specific load/restore functions.
 	// 4. After successfully restoring, Raft core updates FSM index/term from snapshot metadata.
 	s.logger.Info().Msg("fsmRestore: Actual database restoration from snapshot stream is not implemented in this scope.")
-	
+
 	// For now, returning ErrNotImplemented to signify that the DB restore part is missing.
-	retErr = ErrNotImplemented 
+	retErr = ErrNotImplemented
 	return retErr
 
 	// startT := time.Now()

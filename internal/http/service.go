@@ -28,11 +28,11 @@ import (
 	clstrPB "github.com/tarungka/wire/internal/cluster/proto"
 	"github.com/tarungka/wire/internal/command/encoding"
 	command "github.com/tarungka/wire/internal/command/proto"
-	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/new/store"
 	"github.com/tarungka/wire/internal/pipeline"
-	"github.com/tarungka/wire/sinks"
-	"github.com/tarungka/wire/sources"
+	"github.com/tarungka/wire/pkg/common/logging"
+	"github.com/tarungka/wire/pkg/connectors/sinks"
+	"github.com/tarungka/wire/pkg/connectors/sources"
 )
 
 var (
@@ -377,7 +377,7 @@ func New(addr string, store Store, cluster Cluster, credentials CredentialStore)
 		start:               time.Now(),
 		statuses:            make(map[string]StatusReporter),
 		credentialStore:     credentials,
-		logger:              logger.GetLogger("http"),
+		logger:              logging.GetLogger("http"),
 	}
 }
 

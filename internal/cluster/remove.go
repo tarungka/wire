@@ -6,7 +6,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/cluster/proto"
 	command "github.com/tarungka/wire/internal/command/proto"
-	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/pkg/common/logging"
 )
 
 const (
@@ -38,7 +38,7 @@ func NewRemover(client *Client, timeout time.Duration, control Control) *Remover
 		timeout: timeout,
 		control: control,
 		// log:     log.New(os.Stderr, "[cluster-remove] ", log.LstdFlags),
-		log: logger.GetLogger("cluster-remove"),
+		log: logging.GetLogger("cluster-remove"),
 	}
 }
 

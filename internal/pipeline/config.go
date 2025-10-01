@@ -7,8 +7,12 @@ import (
 
 	"github.com/knadh/koanf/v2"
 	"github.com/rs/zerolog/log"
-	"github.com/tarungka/wire/sinks"
-	"github.com/tarungka/wire/sources"
+	"github.com/tarungka/wire/pkg/connectors/sinks"
+	"github.com/tarungka/wire/pkg/connectors/sinks/file"
+	kafkasink "github.com/tarungka/wire/pkg/connectors/sinks/kafka"
+	"github.com/tarungka/wire/pkg/connectors/sources"
+	kafkasource "github.com/tarungka/wire/pkg/connectors/sources/kafka"
+	"github.com/tarungka/wire/pkg/connectors/sources/mongo"
 )
 
 // currently working on adding metadata to the running pipelines
@@ -252,11 +256,11 @@ func DataSourceFactory(config sources.SourceConfig) (DataSource, error) {
 	log.Debug().Msgf("Creating and allocating object for source: %s", sourceType)
 	switch sourceType {
 	case "mongodb":
-		x := sources.NewMongoSource()
+		x := mongo.NewMongoSource()
 		x.Init(config)
 		return x, nil
 	case "kafka":
-		x := &sources.KafkaSource{}
+		x := &kafkasource.KafkaSource{}
 		x.Init(config)
 		return x, nil
 	// case "mysql":
@@ -277,11 +281,11 @@ func DataSinkFactory(config sinks.SinkConfig) (DataSink, error) {
 	// 	x.Init(config)
 	// 	return x, nil
 	case "kafka":
-		x := &sinks.KafkaSink{}
+		x := &kafkasink.KafkaSink{}
 		x.Init(config)
 		return x, nil
 	case "file":
-		x := &sinks.FileSink{}
+		x := &file.FileSink{}
 		x.Init(config)
 		return x, nil
 	default:

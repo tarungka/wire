@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/rs/zerolog/log"
-	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/pkg/common/logging"
 )
 
 type Partitoner[T any] struct {
@@ -86,7 +86,7 @@ func NewPartitoner[T any](partitions uint, hashFn func(T) (uint64, error), opts 
 
 	if hashFn == nil {
 		// TODO: write code to default to round robin
-		logger.AdHocLogger.Panic().Msg("not implemented a default partitioner")
+		logging.AdHocLogger.Panic().Msg("not implemented a default partitioner")
 	}
 
 	// Create a default partitioner with basic values

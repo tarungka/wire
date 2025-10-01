@@ -3,9 +3,9 @@ package rocksdb
 import (
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
-	dberrors "github.com/tarungka/wire/internal/errors"
-	"github.com/tarungka/wire/internal/logger"
-	"github.com/tarungka/wire/internal/rsync"
+	dberrors "github.com/tarungka/wire/pkg/common/errors"
+	"github.com/tarungka/wire/pkg/common/logging"
+	"github.com/tarungka/wire/pkg/common/rsync"
 )
 
 type Config struct {
@@ -19,7 +19,7 @@ type DB struct {
 }
 
 func New(c *Config) *DB {
-	newLogger := logger.GetLogger("baddb")
+	newLogger := logging.GetLogger("baddb")
 	newLogger.Print("creating new store")
 	return &DB{
 		dbPath: c.Dir,

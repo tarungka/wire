@@ -5,8 +5,8 @@ import (
 	"sync"
 
 	"github.com/tarungka/wire/internal/models"
-	"github.com/tarungka/wire/sinks"
-	"github.com/tarungka/wire/sources"
+	"github.com/tarungka/wire/pkg/connectors/sinks"
+	"github.com/tarungka/wire/pkg/connectors/sources"
 )
 
 type DataSource interface {

@@ -12,7 +12,7 @@ import (
 
 	"github.com/rqlite/rqlite/v8/rtls"
 	"github.com/rs/zerolog"
-	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/pkg/common/logging"
 )
 
 const (
@@ -46,7 +46,7 @@ type Layer struct {
 
 // NewLayer returns a new instance of Layer.
 func NewLayer(ln net.Listener, dialer *Dialer) *Layer {
-	newLogger := logger.GetLogger("layer")
+	newLogger := logging.GetLogger("layer")
 	newLogger.Print("creating a new layer")
 	return &Layer{
 		ln:     ln,
@@ -112,7 +112,7 @@ func NewMux(ln net.Listener, adv net.Addr) (*Mux, error) {
 		Timeout: DefaultTimeout,
 		// TODO: update this to zerolog
 		// Logger: log.New(os.Stderr, "[mux] ", log.LstdFlags),
-		Logger: logger.GetLogger("mux"),
+		Logger: logging.GetLogger("mux"),
 	}, nil
 }
 

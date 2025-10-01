@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	"github.com/dgraph-io/badger/v4"
-	"github.com/tarungka/wire/internal/rsync"
+	"github.com/tarungka/wire/pkg/common/rsync"
 )
 
 type StoreNew struct {

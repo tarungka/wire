@@ -17,9 +17,9 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/cluster/proto"
 	command "github.com/tarungka/wire/internal/command/proto"
-	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/tcp"
 	"github.com/tarungka/wire/internal/tcp/pool"
+	"github.com/tarungka/wire/pkg/common/logging"
 	pb "google.golang.org/protobuf/proto"
 )
 
@@ -84,7 +84,7 @@ type Client struct {
 // that the operation failed. In addition, higher-level code will
 // usually retry these operations.
 func NewClient(dl Dialer, t time.Duration) *Client {
-	newLogger := logger.GetLogger("client")
+	newLogger := logging.GetLogger("client")
 	newLogger.Printf("creating a new client with dialer: %v", dl)
 	return &Client{
 		dialer:  dl,
@@ -566,7 +566,7 @@ func writeCommand(conn net.Conn, c *proto.Command, timeout time.Duration) error 
 	}
 	b := make([]byte, protoBufferLengthSize)
 	binary.LittleEndian.PutUint64(b[0:], uint64(len(p)))
-	logger.AdHocLogger.Trace().Msgf("writeCommand: %v", b)
+	logging.AdHocLogger.Trace().Msgf("writeCommand: %v", b)
 	_, err = conn.Write(b)
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
@@ -578,7 +578,7 @@ func writeCommand(conn net.Conn, c *proto.Command, timeout time.Duration) error 
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return err
 	}
-	logger.AdHocLogger.Trace().Msgf("writeCommand: %v", p)
+	logging.AdHocLogger.Trace().Msgf("writeCommand: %v", p)
 	_, err = conn.Write(p)
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {

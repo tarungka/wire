@@ -9,10 +9,10 @@ import (
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	dberrors "github.com/tarungka/wire/internal/errors"
-	"github.com/tarungka/wire/internal/logger"
-	"github.com/tarungka/wire/internal/rsync"
 	utils "github.com/tarungka/wire/internal/utils"
+	dberrors "github.com/tarungka/wire/pkg/common/errors"
+	"github.com/tarungka/wire/pkg/common/logging"
+	"github.com/tarungka/wire/pkg/common/rsync"
 )
 
 type Config struct {
@@ -33,7 +33,7 @@ type DB struct {
 }
 
 func New(c *Config) *DB {
-	newLogger := logger.GetLogger("baddb")
+	newLogger := logging.GetLogger("baddb")
 	newLogger.Print("creating new badgerDB")
 	return &DB{
 		dbPath: c.Dir,

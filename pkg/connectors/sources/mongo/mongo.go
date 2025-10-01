@@ -11,8 +11,8 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/models"
+	"github.com/tarungka/wire/pkg/common/logging"
 	"github.com/tarungka/wire/pkg/connectors/sources"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -241,7 +241,7 @@ func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan *mod
 		defer func() {
 			log.Trace().Msg("Closing the mongo change stream")
 			// Close here? Probably not as this stream is being used to watch for changes
-			// mongoStream.Close(ctx) 
+			// mongoStream.Close(ctx)
 			close(changeStreamChan)
 		}()
 
@@ -335,7 +335,7 @@ func (m *MongoSource) Info() string {
 
 // NewMongoSource returns a new instance of MongoSource
 func NewMongoSource() *MongoSource {
-	newLogger := logger.GetLogger("mongo-source")
+	newLogger := logging.GetLogger("mongo-source")
 	newLogger.Print("creating new mongo source")
 	return &MongoSource{
 		mongoDbUri:             "",

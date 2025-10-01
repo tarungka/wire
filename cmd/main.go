@@ -17,9 +17,9 @@ import (
 	"github.com/tarungka/wire/internal/cluster"
 	"github.com/tarungka/wire/internal/cmd"
 	httpd "github.com/tarungka/wire/internal/http"
-	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/new/store"
 	"github.com/tarungka/wire/internal/tcp"
+	"github.com/tarungka/wire/pkg/common/logging"
 )
 
 var (
@@ -70,10 +70,10 @@ func main() {
 	}
 	fmt.Println(logo)
 
-	logger.SetDevelopment(cfg.DebugMode)
-	logger.SetLogFile(logFile)
+	logging.SetDevelopment(cfg.DebugMode)
+	logging.SetLogFile(logFile)
 
-	log.Logger = logger.GetLogger("main")
+	log.Logger = logging.GetLogger("main")
 
 	if cfg.DebugMode {
 		hostName, err := os.Hostname()

@@ -9,7 +9,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/cluster/proto"
 	command "github.com/tarungka/wire/internal/command/proto"
-	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/pkg/common/logging"
 )
 
 var (
@@ -39,7 +39,7 @@ type Joiner struct {
 
 // NewJoiner returns an instantiated Joiner.
 func NewJoiner(client *Client, numAttempts int, attemptInterval time.Duration) *Joiner {
-	newLogger := logger.GetLogger("cluster-join")
+	newLogger := logging.GetLogger("cluster-join")
 	newLogger.Printf("creating a new joiner with client: %v", client)
 	return &Joiner{
 		client:          client,

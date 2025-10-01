@@ -15,7 +15,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/tarungka/wire/internal/cluster/proto"
 	commandProto "github.com/tarungka/wire/internal/command/proto"
-	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/pkg/common/logging"
 	pb "google.golang.org/protobuf/proto"
 )
 
@@ -151,7 +151,7 @@ func New(ln net.Listener, db Database, m Manager) *Service {
 		db:   db,
 		mgr:  m,
 		// logger: log.New(os.Stderr, "[cluster] ", log.LstdFlags),
-		logger: logger.GetLogger("cluster"),
+		logger: logging.GetLogger("cluster"),
 	}
 }
 
@@ -367,12 +367,12 @@ func marshalAndWrite(conn net.Conn, m pb.Message) error {
 func writeBytesWithLength(conn net.Conn, p []byte) error {
 	b := make([]byte, protoBufferLengthSize)
 	binary.LittleEndian.PutUint64(b[0:], uint64(len(p)))
-	logger.AdHocLogger.Debug().Msgf("writeBytesWithLength: %v", b)
+	logging.AdHocLogger.Debug().Msgf("writeBytesWithLength: %v", b)
 	_, err := conn.Write(b)
 	if err != nil {
 		return err
 	}
-	logger.AdHocLogger.Debug().Msgf("writeBytesWithLength: %v", p)
+	logging.AdHocLogger.Debug().Msgf("writeBytesWithLength: %v", p)
 	_, err = conn.Write(p)
 	return err
 }

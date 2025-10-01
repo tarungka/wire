@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/pkg/common/logging"
 )
 
 // NewDialer returns an initialized Dialer.
 func NewDialer(header byte, tlsConfig *tls.Config) *Dialer {
-	newLogger := logger.GetLogger("tcp")
+	newLogger := logging.GetLogger("tcp")
 	newLogger.Printf("creating a new dialer with header: %v", header)
 	return &Dialer{
 		header:    header,
