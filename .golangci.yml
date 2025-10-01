@@ -1,30 +1,103 @@
 run:
-  timeout: 5m
+  timeout: 10m # Increased timeout for more linters
   tests: true
-  modules-download-mode: readonly
+  modules-download-mode: readonly # Recommended for CI
   allow-parallel-runners: true
 
 linters:
+  disable-all: true # Good practice to explicitly enable linters
   enable:
+    # Core Go tools
     - gofmt
     - goimports
     - govet
+    # Error checking
     - errcheck
-    - staticcheck
-    - ineffassign
-    - typecheck
-  disable-all: true
+    # Static analysis & style
+    - staticcheck # Comprehensive static analysis
+    - stylecheck  # Style enforcement (includes naming like initialisms)
+    - revive      # Successor to golint, very configurable
+    # Code quality & maintainability
+    - ineffassign # Check for ineffective assignments
+    - typecheck   # Ensure code type-checks
+    - misspell    # Correct commonly misspelled English words in comments and identifiers
+    - gocritic    # Many valuable checks for code quality
+    - nolintlint  # Checks nolint directives
+    - unconvert   # Remove unnecessary type conversions
+    - unused      # Check for unused code (supplements staticcheck)
+    - gocyclo     # Check cyclomatic complexity
+    - bodyclose   # Check if HTTP response bodies are closed
+    - prealloc    # Find slice declarations that could be preallocated
+    - exportloopref # Check for loops that capture loop variables by reference
 
 linters-settings:
   gofmt:
     simplify: true
   goimports:
     local-prefixes: github.com/tarungka/wire
+  govet:
+    check-shadowing: true # Check for variable shadowing
+  errcheck:
+    # Consider enabling for blank assignments if appropriate: check-blank: true
+    exclude-functions:
+      - io/ioutil.ReadFile # Common false positive if error is handled by caller
+      - (*os.File).Close # Often deferred, errcheck can be noisy
+  stylecheck:
+    checks: ["all", "-ST1000", "-ST1003"] # Enable all, but ST1000 (package comment) and ST1003 (initialisms) can be noisy initially.
+                                      # ST1003 (Initialisms) should be enabled once codebase is consistent (e.g. HTTPClient vs HttpClient)
+                                      # Forcing HTTPClient: initialisms: ["HTTP", "URL", "JSON", "API", "ID"]
+    dot-imports: false # Disallow dot imports
+  revive:
+    confidence: 0.8 # Minimum confidence level for issues
+    rules:
+      - name: var-naming
+        # Default revive var-naming checks for `camelCase` or `PascalCase` for vars/consts.
+        # It also flags `snake_case`. This should align with Go conventions.
+        # To strictly enforce no underscores for vars (except special cases like `cgo_`):
+        # arguments: ["allowLeadingUnderscore"] # if you want to allow _myVar for unexported globals (not typical)
+      - name: function-naming
+        # Enforces camelCase or PascalCase for functions.
+      - name: package-comments
+        disabled: true # Often skipped for internal packages
+      - name: dot-imports
+        disabled: false
+      - name: blank-imports
+        disabled: false
+      - name: exported # Checks if exported items are commented (can be noisy)
+        disabled: true
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+      - experimental # Enable if you want to try newer checks
+    disabled-checks:
+      - whyNoLint # Can be too verbose
+      - wrapperFunc # Can have false positives
+  gocyclo:
+    min-complexity: 15 # Report functions with complexity > 15
+  unused:
+    # Default checks are good. staticcheck also handles much of this.
+    check-exported: false # Don't check unused exported for now
+  misspell:
+    locale: US
 
 issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
-  exclude-use-default: false
-  exclude:
-    - "Error return value of .((Close|Write).*) is not checked"
-    - "SA1019:" # Deprecated function usage
+  max-issues-per-linter: 0 # No limit per linter
+  max-same-issues: 0       # No limit for same issues
+  exclude-use-default: false # Keep default exclusions unless overriding
+  exclude-rules: # More granular exclusion than by text matching
+    - path: _test\.go # Exclude test files from some rules if needed
+      linters:
+        - funlen # Test functions can be long
+        - gocritic # e.g. if tests use `appendAssign` style intentionally
+    # Keep existing exclusions if still relevant, but try to fix underlying code
+    - linters:
+        - errcheck
+      text: "Error return value of .((Close|Write|Seek|Sync|Flush).*) is not checked"
+    - linters:
+        - staticcheck
+      text: "SA1019:" # Deprecated function usage, to be addressed during refactor
+
+# For Go version, golangci-lint usually picks it up from go.mod
+# go: "1.21" # Example if you need to specify
