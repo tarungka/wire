@@ -1,0 +1,17 @@
+pipelines:
+  - name: "kafka-to-postgres-and-es"
+    source:
+      type: "kafka"
+      config:
+        brokers: ["kafka:9092"]
+        topic: "events"
+        group_id: "wire-consumer"
+    sinks:
+      - type: "postgresql"
+        config:
+          connection: "postgres://user:password@postgres:5432/wire?sslmode=disable"
+          table: "events"
+      - type: "elasticsearch"
+        config:
+          url: "http://elasticsearch:9200"
+          index: "events"

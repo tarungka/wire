@@ -10,6 +10,7 @@ import (
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	"github.com/rs/zerolog/log"
+	"github.com/tarungka/wire/internal/models"
 )
 
 type ElasticSink struct {
@@ -35,7 +36,6 @@ func (e *ElasticSink) Init(args SinkConfig) error {
 	e.elasticApiKey = args.Config["api_key"]
 	e.elasticIndex = args.Config["index_name"]
 
-	// e.objectContext = context.Background()
 	return nil
 }
 
@@ -57,79 +57,74 @@ func (e *ElasticSink) Connect(ctx context.Context) error {
 	return nil
 }
 
-// Accepts a byte array of json data and writes to elastic search index
-func (e *ElasticSink) Write(ctx context.Context, wg *sync.WaitGroup, dataChan <-chan []byte, initialDataChan <-chan []byte) error {
-	// Receive data from the MongoSource channel
+func (e *ElasticSink) Write(ctx context.Context, dataChan <-chan *models.Job, initialDataChan <-chan *models.Job) error {
+	var wg sync.WaitGroup
 
-	wg.Add(1)
-	defer func() {
-		log.Trace().Msg("Done Writing to the elastic sink")
-		wg.Done()
-	}()
+	processChan := func(ch <-chan *models.Job) {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				log.Info().Msg("Context cancelled, stopping elasticsearch write worker.")
+				return
+			case job, ok := <-ch:
+				if !ok {
+					log.Info().Msg("Channel closed, stopping elasticsearch write worker.")
+					return
+				}
 
-	for docBytes := range dataChan {
+				docData, err := job.GetData()
+				if err != nil {
+					log.Err(err).Msg("Error getting data from job")
+					continue
+				}
 
-		var changeDoc map[string]interface{}
-		docBytes = []byte(`{"doc":` + string(docBytes) + `}`)
-		// Convert change document to JSON for Elasticsearch
-		err := json.Unmarshal(docBytes, &changeDoc)
-		if err != nil {
-			log.Err(err).Msg("Error un-marshalling MongoDB change document")
-			continue
-		}
+				docMap, ok := docData.(map[string]interface{})
+				if !ok {
+					log.Error().Msgf("Data is not a map[string]interface{}, but %T", docData)
+					continue
+				}
 
-		log.Trace().Msgf("Writing data to elastic index: %s", changeDoc)
+				var docID string
+				if id, ok := docMap["_id"]; ok {
+					docID = fmt.Sprintf("%v", id)
+				} else {
+					docID = job.ID.String()
+				}
 
-		// TODO: Doing this for the initial dev, will optimize this in the later versions
-		// Convert change document back to JSON for Elasticsearch (optional: already bytes in mongoChan)
-		// However, this is technically not required as we're already reading from a byte channel.
-		// So you could directly send changeDocBytes if Mongo source is already sending JSON-encoded bytes.
-		// But for clarity, we're re-marshalling it here.
-		data, err := json.Marshal(changeDoc)
-		if err != nil {
-			log.Err(err).Msg("Error marshalling MongoDB change document to JSON:")
-			continue
-		}
+				docBytes, err := json.Marshal(docMap)
+				if err != nil {
+					log.Err(err).Msg("Error marshalling document to JSON")
+					continue
+				}
 
-		fullDocument, ok := changeDoc["doc"]
-		if !ok {
-			log.Err(fmt.Errorf("no doc in the document")).Msg("No 'doc' in the document!")
-			continue
-		}
-		documentID, ok := fullDocument.(map[string]interface{})["_id"]
-		if !ok {
-			log.Err(fmt.Errorf("missing _id field")).Msg("Change document is missing _id field")
-			continue
-		}
+				req := esapi.IndexRequest{
+					Index:      e.elasticIndex,
+					DocumentID: docID,
+					Body:       bytes.NewReader(docBytes),
+					Refresh:    "true",
+				}
 
-		log.Debug().Msgf("Event document ID: %s", documentID)
-		log.Trace().Msgf("Writing data to elastic index: %s", data)
+				res, err := req.Do(e.objectContext, e.esConnection)
+				if err != nil {
+					log.Err(err).Msg("Error indexing document to Elasticsearch")
+					continue
+				}
+				defer res.Body.Close()
 
-		// Create an Elasticsearch index request
-		req := esapi.IndexRequest{
-			Index:      e.elasticIndex,                // Elasticsearch index name
-			DocumentID: fmt.Sprintf("%v", documentID), // Assuming the changeDoc has an "_id" field
-			Body:       bytes.NewReader(data),
-			Refresh:    "true", // Auto-refresh to make the document available immediately
-		}
-
-		// Execute the request
-		res, err := req.Do(e.objectContext, e.esConnection)
-		if err != nil {
-			log.Err(err).Msg("Error indexing document to Elasticsearch:")
-			continue
-		}
-		defer res.Body.Close()
-
-		if res.IsError() {
-			log.Printf("Elasticsearch indexing error: %s", res.String())
-			return fmt.Errorf("%s", res.String())
-		} else {
-			log.Printf("Document indexed successfully to Elasticsearch: %v", documentID)
+				if res.IsError() {
+					log.Error().Msgf("Elasticsearch indexing error: %s", res.String())
+				} else {
+					log.Debug().Msgf("Document indexed successfully to Elasticsearch: %v", docID)
+				}
+			}
 		}
 	}
 
-	log.Trace().Msg("Closed the upstream channel, need to clean up the es connection also")
+	wg.Add(2)
+	go processChan(dataChan)
+	go processChan(initialDataChan)
+	wg.Wait()
 
 	return nil
 }

@@ -49,6 +49,8 @@ func (s *Store) setKeyTime(key string, t time.Time) error
 */
 
 import (
+	"bufio"
+	"encoding/binary"
 	"errors"
 	"expvar"
 	"fmt"
@@ -1314,13 +1316,13 @@ func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
 	// For this basic implementation, we'll ignore qr.Timings, qr.Transaction, qr.Freshness, qr.Strict
 	// A full implementation would check s.isStaleRead(qr.Freshness, qr.Strict) here.
 
-	if len(qr.Statements) == 0 || qr.Statements[0] == nil || qr.Statements[0].Sql == "" {
+	if len(qr.Request.Statements) == 0 || qr.Request.Statements[0] == nil || qr.Request.Statements[0].Sql == "" {
 		s.logger.Error().Msg("empty query statement received")
 		return nil, errors.New("empty query statement")
 	}
 
 	// Assuming one statement for basic GET query
-	stmtStr := qr.Statements[0].Sql
+	stmtStr := qr.Request.Statements[0].Sql
 	parts := strings.Fields(stmtStr)
 
 	if len(parts) != 2 || strings.ToUpper(parts[0]) != "GET" {
@@ -1341,7 +1343,7 @@ func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
 					{
 						Columns: []string{"key", "value"},
 						Types:   []string{"text", "text"},
-						Values:  make([]*proto.RowValue, 0), // Empty values
+						Values:  make([]*proto.Values, 0), // Empty values
 					},
 				}
 				return nil // Key not found is not a failure for the View operation itself for this query type
@@ -1364,20 +1366,20 @@ func (s *Store) Query(qr *proto.QueryRequest) ([]*proto.QueryRows, error) {
 		s.logger.Debug().Str("key", queryKey).Bytes("value", valueBytes).Msg("key found with value")
 
 		// Construct the result
-		// Key Datum
-		keyDatum := &proto.Datum{Value: &proto.Datum_S{S: queryKey}}
-		// Value Datum - store as bytes (blob)
-		valueDatum := &proto.Datum{Value: &proto.Datum_B{B: valueBytes}}
+		// Key Parameter
+		keyParam := &proto.Parameter{Value: &proto.Parameter_S{S: queryKey}}
+		// Value Parameter - store as bytes (blob)
+		valueParam := &proto.Parameter{Value: &proto.Parameter_Y{Y: valueBytes}}
 
-		row := &proto.RowValue{
-			Values: []*proto.Datum{keyDatum, valueDatum},
+		row := &proto.Values{
+			Parameters: []*proto.Parameter{keyParam, valueParam},
 		}
 
 		resultRows = []*proto.QueryRows{
 			{
 				Columns: []string{"key", "value"},
 				Types:   []string{"text", "blob"}, // Value is effectively a blob
-				Values:  []*proto.RowValue{row},
+				Values:  []*proto.Values{row},
 			},
 		}
 		return nil
@@ -1607,7 +1609,7 @@ func (s *Store) fsmSnapshot() (fSnap raft.FSMSnapshot, retErr error) {
 		// Stream the BadgerDB backup. since=0 means a full backup.
 		// s.db.Backup itself writes to the provided writer.
 		startTime := time.Now()
-		if err := s.db.Backup(bufioWriter, 0); err != nil {
+		if _, err := s.db.Backup(bufioWriter, 0); err != nil {
 			s.logger.Error().Err(err).Msg("failed to backup database to snapshot pipe")
 			pipeWriter.CloseWithError(fmt.Errorf("backup database: %w", err))
 			stats.Add(numSnapshotsFailed, 1)
@@ -1649,24 +1651,23 @@ func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
 	switch cmd.Type {
 	case commandProto.Command_COMMAND_TYPE_EXECUTE:
 		var ex commandProto.ExecuteRequest
-		// command.UnmarshalExecuteRequest is assumed to handle decompression if cmd.Compressed is true.
-		if err := command.UnmarshalExecuteRequest(&ex, cmd.SubCommand, cmd.Compressed); err != nil {
+		if err := command.UnmarshalSubCommand(&cmd, &ex); err != nil {
 			s.logger.Error().Err(err).Msg("failed to unmarshal execute request")
 			return &fsmExecuteQueryResponse{error: fmt.Errorf("unmarshal execute request: %w", err)}
 		}
 
-		if len(ex.Statements) == 0 {
+		if len(ex.Request.Statements) == 0 {
 			s.logger.Error().Msg("no statements found in ExecuteRequest")
 			return &fsmExecuteQueryResponse{error: errors.New("no statements found in ExecuteRequest")}
 		}
 		// As per requirement, assume one statement for SET/DELETE FSM.
 		// For other operations, multiple statements might be valid but not for this FSM's scope.
-		if len(ex.Statements) > 1 {
-			s.logger.Warn().Int("statements_count", len(ex.Statements)).Msg("multiple statements received, but FSM handles one for SET/DELETE")
+		if len(ex.Request.Statements) > 1 {
+			s.logger.Warn().Int("statements_count", len(ex.Request.Statements)).Msg("multiple statements received, but FSM handles one for SET/DELETE")
 			// Continue with the first statement for SET/DELETE, or return error if strict one-statement policy is desired.
 			// For this implementation, we'll process only the first one if it's SET/DELETE.
 		}
-		stmtStr := ex.Statements[0].Sql
+		stmtStr := ex.Request.Statements[0].Sql
 
 		parts := strings.Fields(stmtStr)
 		if len(parts) == 0 {
@@ -1675,7 +1676,12 @@ func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
 		}
 
 		resp := &fsmExecuteQueryResponse{results: make([]*commandProto.ExecuteQueryResponse, 1)}
-		resp.results[0] = &commandProto.ExecuteQueryResponse{}
+		execResult := &commandProto.ExecuteResult{}
+		resp.results[0] = &commandProto.ExecuteQueryResponse{
+			Result: &commandProto.ExecuteQueryResponse_E{
+				E: execResult,
+			},
+		}
 
 		op := strings.ToUpper(parts[0])
 		switch op {
@@ -1701,8 +1707,8 @@ func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
 				resp.error = err
 				return resp
 			}
-			resp.results[0].LastInsertId = 0 // Not applicable for SET
-			resp.results[0].RowsAffected = 1
+			execResult.LastInsertId = 0 // Not applicable for SET
+			execResult.RowsAffected = 1
 		case "DELETE":
 			if len(parts) != 2 { // Must be DELETE <key> exactly
 				err := errors.New("invalid DELETE format. Expected DELETE <key>")
@@ -1727,7 +1733,7 @@ func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
 			// We assume success means 1 row affected if it existed, or 0 if it didn't.
 			// For simplicity, and common KV behavior, we can claim 1 if no error.
 			// A more accurate RowsAffected would require a pre-check or different DB API.
-			resp.results[0].RowsAffected = 1
+			execResult.RowsAffected = 1
 		default:
 			err := fmt.Errorf("unrecognized statement type in EXECUTE: %s", op)
 			s.logger.Error().Err(err).Str("statement", stmtStr).Msg("parsing EXECUTE statement")
@@ -1752,7 +1758,7 @@ func (s *Store) fsmApply(l *raft.Log) (e interface{}) {
 		// Queries are read-only and don't change FSM state.
 		// If it's here, it's likely an error in routing or command design for Raft.
 		return &fsmExecuteQueryResponse{error: fmt.Errorf("QUERY command type should not be applied to FSM state")}
-	
+
 	case commandProto.Command_COMMAND_TYPE_EXECUTE_QUERY:
 		s.logger.Warn().Msg("fsmApply: EXECUTE_QUERY command received. Complex queries with potential state changes not supported by this simple FSM.")
 		// EXECUTE_QUERY might modify state and return results.
@@ -1816,7 +1822,6 @@ func (s *Store) fsmRestore(rc io.ReadCloser) (retErr error) {
 	} else {
 		s.logger.Warn().Str("default_db_path", dbPath).Msg("s.dbDir is not set, using default path derived from raftDir for BadgerDB. Ensure this is intended.")
 	}
-
 
 	// Close the current database instance, if open.
 	if s.db != nil {
@@ -1902,9 +1907,9 @@ func (s *Store) fsmRestore_backup(rc io.ReadCloser) (retErr error) {
 	//      and then replacing s.db with the new instance, or using DB-specific load/restore functions.
 	// 4. After successfully restoring, Raft core updates FSM index/term from snapshot metadata.
 	s.logger.Info().Msg("fsmRestore: Actual database restoration from snapshot stream is not implemented in this scope.")
-	
+
 	// For now, returning ErrNotImplemented to signify that the DB restore part is missing.
-	retErr = ErrNotImplemented 
+	retErr = ErrNotImplemented
 	return retErr
 
 	// startT := time.Now()

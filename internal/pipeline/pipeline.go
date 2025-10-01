@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
-	"strings"
 
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/models"
@@ -91,7 +92,6 @@ func (d *DataPipeline) SetSink(sink DataSink) {
 // Run the data pipeline, connects to the source and sink. Reads data from the source
 // then writes the data to the sink.
 func (dp *DataPipeline) Run(pctx context.Context) {
-
 	defer func() {
 		log.Trace().Msgf("The RUN function is done/returning.[%v]", dp.Sink.Info())
 	}()
@@ -105,43 +105,31 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 	// Connect to source
 	if sourceConnectError := dp.Source.Connect(ctx); sourceConnectError != nil {
 		log.Err(sourceConnectError).Msg("Error when connecting to source")
+		return
 	}
 
 	// Connect to sink
 	if sinkConnectError := dp.Sink.Connect(ctx); sinkConnectError != nil {
 		log.Err(sinkConnectError).Msg("Error when connecting to sink")
+		return
 	}
 
 	initialDataChannel, err := dp.Source.LoadInitialData(ctx, &wg)
 	if err != nil {
 		log.Err(err).Msg("Error when loading initial data")
+		return
 	}
 
-	// TODO: This code IMO will only hold good for low throughput scenarios
-	// and does not scale when there are multiple pipelines running.
 	dataChannel, err := dp.Source.Read(ctx, &wg)
 	if err != nil {
 		log.Err(err).Msg("Error when reading from the data source")
 		return
 	}
 
-	// TODO: abstract this out of there, create a default hash function
-	// and make this overrideable
 	hashFn := partitioner.HashFnv
-
-	// TODO: Implement code make the channel to a job and process the job
-	// Partition the data into multiple jobs (channel)
 	jobPartitioner := partitioner.NewPartitoner[*models.Job](dp.jobCount, hashFn)
-
 	partitionedInitialDataChannels := jobPartitioner.PartitionData(initialDataChannel)
 	partitionedDataChannels := jobPartitioner.PartitionData(dataChannel)
-
-	jobPartitioner.Examine()
-
-	// for i := 0; i < jobCount; i++ {
-	// 	log.Debug().Printf("Channel [%v] = %v\n", i, partitionedInitialDataChannels[i])
-	// 	fmt.Printf("|Channel [%v] = %v\n", i, partitionedDataChannels[i])
-	// }
 
 	t := &transform.Transformer{}
 	t.Init()
@@ -149,33 +137,30 @@ func (dp *DataPipeline) Run(pctx context.Context) {
 	log.Debug().Msgf("Creating %d jobs", dp.jobCount)
 	for i := range dp.jobCount {
 		wg.Add(1)
-
 		go dp.processJob(ctx, &wg, t, partitionedDataChannels[i], partitionedInitialDataChannels[i])
 	}
 
-	<-ctx.Done()
-	wg.Wait()  // Wait till you finish reading and writing all the data
-	dp.Close() // the pipeline context is cancelled in here
+	waitCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(waitCh)
+	}()
+
+	select {
+	case <-ctx.Done():
+		<-waitCh
+	case <-waitCh:
+	}
 }
 
-// Process job as of now only writes the data to the sink in a non deterministic manner
-// i.e the writes can be in a different order to the reads
 func (dp *DataPipeline) processJob(ctx context.Context, wg *sync.WaitGroup, t *transform.Transformer, dataChannel <-chan *models.Job, initialDataChannel <-chan *models.Job) {
+	defer wg.Done()
 	log.Debug().Msg("In a process job")
-	log.Debug().Msgf("The wg and dataChannel are: %v | %v", wg, len(dataChannel))
 
-	// TODO: need to add code to transform the input to the expected output
-	// transform.ApplyTransformation()
 	initialTransformedChannel := toUpperCaseJSON(ctx, initialDataChannel)
-	// transformedChannel := t.ApplyTransformationJob(ctx, dataChannel)
-	//
-	// go dp.writeToFile(fmt.Sprintf("tests/test/initialTransformedChannel_%d.json", dp.getCounterValue()), initialTransformedChannel)
-	// go dp.writeToFile(fmt.Sprintf("tests/test/transformedChannel_%d.json", dp.getCounterValue()), transformedChannel)
+	transformedChannel := toUpperCaseJSON(ctx, dataChannel)
 
-	// dp.incrementCounter()
-
-	// TODO: wg.Done is called in Write, not very readable code, need to refactor this
-	if err := dp.Sink.Write(ctx, wg, initialTransformedChannel, dataChannel); err != nil {
+	if err := dp.Sink.Write(ctx, transformedChannel, initialTransformedChannel); err != nil {
 		log.Err(err).Msg("Error when writing to the data sink")
 	}
 }
@@ -217,20 +202,17 @@ func (dp *DataPipeline) Show() (string, error) {
 	return dp.Source.Name() + " -> " + dp.Sink.Name(), nil
 }
 
-
 func (dp *DataPipeline) AddOperation(op Operation) (*DataPipeline, error) {
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
 
 	opsNode := &PipelineOps{
-		id: op.ID(),
+		id:        op.ID(),
 		operation: op,
 	}
 
-	// TODO: update the parents and the children
 	if len(dp.operations) > 0 {
-		// do something
-		latest := dp.operations[len(dp.operations) - 1]
+		latest := dp.operations[len(dp.operations)-1]
 		latest.children = append(latest.children, &PipelineNode{node: []*PipelineOps{opsNode}})
 		opsNode.parents = append(opsNode.parents, &PipelineNode{node: []*PipelineOps{latest}})
 	}
@@ -241,41 +223,33 @@ func (dp *DataPipeline) AddOperation(op Operation) (*DataPipeline, error) {
 
 // Close the data pipeline
 func (dp *DataPipeline) Close() bool {
-	dpInfo, _ := dp.Show()
-	log.Info().Msgf("Closing data pipeline: %s", dpInfo)
-	// close(dp.pipelineDone)
+	if dp.open.Load() {
+		dpInfo, _ := dp.Show()
+		log.Info().Msgf("Closing data pipeline: %s", dpInfo)
 
-	dp.open.Store(false)
+		dp.open.Store(false)
+		if dp.cancel != nil {
+			dp.cancel()
+		}
 
-	// Cancel the context
-	dp.cancel()
-
-	dp.Source.Disconnect()
-	dp.Sink.Disconnect()
+		dp.Source.Disconnect()
+		dp.Sink.Disconnect()
+	}
 	return false
 }
 
 // Create a new DataPipeline and initialize it
 func NewDataPipeline(source DataSource, sink DataSink) *DataPipeline {
-
 	dataPipeline := &DataPipeline{
-		Source:   source,
-		Sink:     sink,
-		open:     atomic.Bool{},
-		cancel:   nil,
-		key:      "",
-		jobCount: 1,
-		mu:       sync.RWMutex{},
+		Source:     source,
+		Sink:       sink,
+		open:       atomic.Bool{},
+		cancel:     nil,
+		key:        "",
+		jobCount:   uint(runtime.NumCPU()),
+		mu:         sync.RWMutex{},
 		operations: []*PipelineOps{},
 	}
-	// dataPipeline.Init() // does nothing as of now
-
-	// TODO: Remove this, code is only for testing
-	// go func() {
-	// 	time.Sleep(3 * time.Second)
-	// 	dataPipeline.Close()
-	// }()
-
 	return dataPipeline
 }
 
@@ -318,8 +292,6 @@ func toUpperCaseJSON(ctx context.Context, in <-chan *models.Job) <-chan *models.
 	}()
 	return out
 }
-
-
 
 func uppercaseJSON(data any) {
 	switch v := data.(type) {

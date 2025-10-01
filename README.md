@@ -60,6 +60,27 @@ sink:
 
 That's it! Wire will read from `input.txt` and write to `output.txt`.
 
+## Running with Docker Compose
+
+For a complete development and testing environment, you can use the provided `docker-compose.yml` file. This will set up the Wire service along with a PostgreSQL database, Kafka, Zookeeper, and Elasticsearch.
+
+1.  **Start the services:**
+
+    ```bash
+    docker-compose up --build
+    ```
+
+2.  **Services:**
+    *   `wire`: The main application, available on port `4001`.
+    *   `postgres`: PostgreSQL database, available on port `5432`.
+    *   `kafka`: Kafka broker, available on port `9092`.
+    *   `zookeeper`: Zookeeper for Kafka.
+    *   `elasticsearch`: Elasticsearch instance, available on port `9200`.
+
+3.  **Testing the pipeline:**
+
+    The default `config.yml` sets up a pipeline from Kafka to PostgreSQL and Elasticsearch. To test it, you can produce a message to the `events` topic in Kafka.
+
 ## Available Connectors
 
 ### Sources (Where data comes from)

@@ -47,7 +47,6 @@ func (k *KafkaSink) Connect(ctx context.Context) error {
 		kgo.SeedBrokers(k.bootstrapServers),
 		kgo.DefaultProduceTopic(k.topic),
 		kgo.AllowAutoTopicCreation(), // TODO: I think this needs to be a setting
-		// kgo.AutoCommitMarks(),
 	}
 	kafkaProducerClient, err := kgo.NewClient(opts...)
 	if err != nil {
@@ -75,80 +74,50 @@ func (k *KafkaSink) sendMessageToKafka(ctx context.Context, docBytes []byte) {
 	wgKafkaSend.Wait()
 }
 
-// BUG: There is an error when trying to clean up/ close this channel/ function; unsure what the error is
-func (k *KafkaSink) Write(ctx context.Context, wg *sync.WaitGroup, dataChan <-chan *models.Job, initialDataChan <-chan *models.Job) error {
+func (k *KafkaSink) Write(ctx context.Context, dataChan <-chan *models.Job, initialDataChan <-chan *models.Job) error {
+	var wg sync.WaitGroup
 
-	defer func() {
-		log.Trace().Msg("Created a new write instance, exiting the parent thread!")
-		wg.Done()
-	}()
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	go func() {
-		defer func() {
-			log.Debug().Msg("Write go routine is cleaning up")
-			cancel()
-		}()
+	processChan := func(ch <-chan *models.Job) {
+		defer wg.Done()
 		for {
 			select {
-			case docBytes, ok := <-dataChan:
+			case <-ctx.Done():
+				log.Info().Msg("Context cancelled, stopping kafka write worker.")
+				return
+			case job, ok := <-ch:
 				if !ok {
-					// dataChan is closed, return from the function
-					log.Debug().Msg("The upstream channel (dataChan) closed")
+					log.Info().Msg("Channel closed, stopping kafka write worker.")
 					return
 				}
 
-				log.Debug().Msg("New data on the channel")
-				data, err := docBytes.GetData()
+				data, err := job.GetData()
 				if err != nil {
 					log.Err(err).Msg("error no data in the job object")
-					return
-				}
-				dataBytes, ok := data.([]byte)
-				if !ok {
-					log.Err(err).Msg("error converting the job data to bytes")
-					return
-				}
-				k.sendMessageToKafka(ctx, dataBytes)
-				log.Trace().Msg("After wait")
-			case docBytes, ok := <-initialDataChan:
-				if !ok {
-					// log.Info().Msg("Initial data channel closed")
 					continue
 				}
-				log.Debug().Msg("New initial data on the channel")
-				data, err := docBytes.GetData()
-				if err != nil {
-					log.Err(err).Msg("error no data in the job object")
-					return
-				}
 				dataBytes, ok := data.([]byte)
 				if !ok {
 					log.Err(err).Msg("error converting the job data to bytes")
-					return
+					continue
 				}
 				k.sendMessageToKafka(ctx, dataBytes)
-				log.Trace().Msg("After wait")
-				// default:
-				// case <-done:
-				// 	// This probably should not happen, as this function should return only when
-				// 	// the upstream channel is closed
-				// 	log.Debug().Msg("Received done signal, terminating write operation")
-				// 	return nil
-				// default:
 			}
 		}
-	}()
+	}
 
-	// log.Debug().Msg("The upstream channel(source) closed")
+	wg.Add(2)
+	go processChan(dataChan)
+	go processChan(initialDataChan)
+	wg.Wait()
 
 	return nil
 }
 
 func (k *KafkaSink) Disconnect() error {
 	log.Info().Msg("Disconnecting kafka sink")
-	k.kafkaProducerClient.Close()
+	if k.kafkaProducerClient != nil {
+		k.kafkaProducerClient.Close()
+	}
 	return nil
 }
 

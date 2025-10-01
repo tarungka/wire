@@ -5,8 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +14,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	pb "google.golang.org/protobuf/proto"
 
 	"github.com/tarungka/wire/internal/command"
 	commandProto "github.com/tarungka/wire/internal/command/proto"
@@ -76,9 +75,7 @@ func newTestStore(t *testing.T, useMemDB bool) (*Store, func()) {
 	}
 
 	// Suppress verbose logging during tests unless explicitly needed.
-	// log := logger.New(logger.Pretty, zerolog.Disabled) // Or zerolog.ErrorLevel for errors only
-	log := logger.GetLogger("store_test")
-	log = log.Level(zerolog.ErrorLevel) // Reduce noise during tests
+	log := logger.GetLogger("store_test").Level(zerolog.ErrorLevel) // Reduce noise
 
 	s := &Store{
 		open:            rsync.NewAtomicBool(),
@@ -104,8 +101,6 @@ func newTestStore(t *testing.T, useMemDB bool) (*Store, func()) {
 			err := s.db.Close()
 			assert.NoError(t, err, "error closing test db")
 		}
-		// Raft dir cleanup is handled by t.TempDir()
-		// If db was file-based, its t.TempDir() also handles cleanup.
 	}
 
 	return s, cleanup
@@ -119,9 +114,14 @@ func TestStore_FSMApply_Set(t *testing.T) {
 	value := "testvalue"
 	stmt := fmt.Sprintf("SET %s %s", key, value)
 
+	execReq := &commandProto.ExecuteRequest{
+		Request: &commandProto.Request{Statements: []*commandProto.Statement{{Sql: stmt}}},
+	}
+	subCommand, err := pb.Marshal(execReq)
+	require.NoError(t, err)
 	cmd := &commandProto.Command{
 		Type:       commandProto.Command_COMMAND_TYPE_EXECUTE,
-		SubCommand: command.MustMarshal(&commandProto.ExecuteRequest{Statements: []*commandProto.Statement{{Sql: stmt}}}),
+		SubCommand: subCommand,
 	}
 	logData, err := command.Marshal(cmd)
 	require.NoError(t, err)
@@ -139,7 +139,7 @@ func TestStore_FSMApply_Set(t *testing.T) {
 
 	assert.NoError(t, fsmResp.error)
 	require.Len(t, fsmResp.results, 1)
-	assert.Equal(t, int64(1), fsmResp.results[0].GetRowsAffected())
+	assert.Equal(t, int64(1), fsmResp.results[0].GetE().GetRowsAffected())
 
 	assert.Equal(t, uint64(1), s.fsmIdx.Load())
 	assert.Equal(t, uint64(1), s.fsmTerm.Load())
@@ -166,10 +166,10 @@ func TestStore_FSMApply_Delete(t *testing.T) {
 
 	// 1. SET the key first
 	setStmt := fmt.Sprintf("SET %s %s", key, value)
-	setCmd := &commandProto.Command{
-		Type:       commandProto.Command_COMMAND_TYPE_EXECUTE,
-		SubCommand: command.MustMarshal(&commandProto.ExecuteRequest{Statements: []*commandProto.Statement{{Sql: setStmt}}}),
-	}
+	setExecReq := &commandProto.ExecuteRequest{Request: &commandProto.Request{Statements: []*commandProto.Statement{{Sql: setStmt}}}}
+	setSubCmd, err := pb.Marshal(setExecReq)
+	require.NoError(t, err)
+	setCmd := &commandProto.Command{Type: commandProto.Command_COMMAND_TYPE_EXECUTE, SubCommand: setSubCmd}
 	setLogData, err := command.Marshal(setCmd)
 	require.NoError(t, err)
 	setRaftLog := &raft.Log{Index: 1, Term: 1, Data: setLogData}
@@ -177,18 +177,14 @@ func TestStore_FSMApply_Delete(t *testing.T) {
 
 	// 2. DELETE the key
 	delStmt := fmt.Sprintf("DELETE %s", key)
-	delCmd := &commandProto.Command{
-		Type:       commandProto.Command_COMMAND_TYPE_EXECUTE,
-		SubCommand: command.MustMarshal(&commandProto.ExecuteRequest{Statements: []*commandProto.Statement{{Sql: delStmt}}}),
-	}
+	delExecReq := &commandProto.ExecuteRequest{Request: &commandProto.Request{Statements: []*commandProto.Statement{{Sql: delStmt}}}}
+	delSubCmd, err := pb.Marshal(delExecReq)
+	require.NoError(t, err)
+	delCmd := &commandProto.Command{Type: commandProto.Command_COMMAND_TYPE_EXECUTE, SubCommand: delSubCmd}
 	delLogData, err := command.Marshal(delCmd)
 	require.NoError(t, err)
 
-	delRaftLog := &raft.Log{
-		Index: 2, // Next index
-		Term:  1,
-		Data:  delLogData,
-	}
+	delRaftLog := &raft.Log{Index: 2, Term: 1, Data: delLogData}
 
 	resp := s.fsmApply(delRaftLog)
 	require.NotNil(t, resp)
@@ -197,7 +193,7 @@ func TestStore_FSMApply_Delete(t *testing.T) {
 
 	assert.NoError(t, fsmResp.error)
 	require.Len(t, fsmResp.results, 1)
-	assert.Equal(t, int64(1), fsmResp.results[0].GetRowsAffected()) // Badger Delete is idempotent
+	assert.Equal(t, int64(1), fsmResp.results[0].GetE().GetRowsAffected())
 
 	assert.Equal(t, uint64(2), s.fsmIdx.Load())
 	assert.Equal(t, uint64(1), s.fsmTerm.Load())
@@ -216,10 +212,10 @@ func TestStore_FSMApply_InvalidStatement(t *testing.T) {
 	defer cleanup()
 
 	stmt := "INVALIDCMD foo bar"
-	cmd := &commandProto.Command{
-		Type:       commandProto.Command_COMMAND_TYPE_EXECUTE,
-		SubCommand: command.MustMarshal(&commandProto.ExecuteRequest{Statements: []*commandProto.Statement{{Sql: stmt}}}),
-	}
+	execReq := &commandProto.ExecuteRequest{Request: &commandProto.Request{Statements: []*commandProto.Statement{{Sql: stmt}}}}
+	subCmd, err := pb.Marshal(execReq)
+	require.NoError(t, err)
+	cmd := &commandProto.Command{Type: commandProto.Command_COMMAND_TYPE_EXECUTE, SubCommand: subCmd}
 	logData, err := command.Marshal(cmd)
 	require.NoError(t, err)
 
@@ -233,7 +229,7 @@ func TestStore_FSMApply_InvalidStatement(t *testing.T) {
 	assert.Error(t, fsmResp.error)
 	assert.Contains(t, fsmResp.error.Error(), "unrecognized statement type in EXECUTE: INVALIDCMD")
 
-	assert.Equal(t, uint64(1), s.fsmIdx.Load()) // Index/term still updated
+	assert.Equal(t, uint64(1), s.fsmIdx.Load())
 	assert.Equal(t, uint64(1), s.fsmTerm.Load())
 }
 
@@ -263,13 +259,12 @@ func TestStore_FSMApply_Unimplemented(t *testing.T) {
 	s, cleanup := newTestStore(t, true)
 	defer cleanup()
 
-	// Using QUERY type which is not meant to modify state via fsmApply directly
-	cmd := &commandProto.Command{
-		Type: commandProto.Command_COMMAND_TYPE_QUERY,
-		SubCommand: command.MustMarshal(&commandProto.QueryRequest{
-			Statements: []*commandProto.Statement{{Sql: "GET foo"}},
-		}),
+	queryReq := &commandProto.QueryRequest{
+		Request: &commandProto.Request{Statements: []*commandProto.Statement{{Sql: "GET foo"}}},
 	}
+	subCmd, err := pb.Marshal(queryReq)
+	require.NoError(t, err)
+	cmd := &commandProto.Command{Type: commandProto.Command_COMMAND_TYPE_QUERY, SubCommand: subCmd}
 	logData, err := command.Marshal(cmd)
 	require.NoError(t, err)
 
@@ -280,11 +275,10 @@ func TestStore_FSMApply_Unimplemented(t *testing.T) {
 	fsmResp, ok := resp.(*fsmExecuteQueryResponse)
 	require.True(t, ok)
 
-	assert.ErrorIs(t, fsmResp.error, ErrNotImplemented) // Changed to ErrNotImplemented based on fsmApply logic
+	assert.Error(t, fsmResp.error)
 	assert.Contains(t, fsmResp.error.Error(), "QUERY command type should not be applied to FSM state")
 
-
-	assert.Equal(t, uint64(1), s.fsmIdx.Load()) // Index/term updated
+	assert.Equal(t, uint64(1), s.fsmIdx.Load())
 	assert.Equal(t, uint64(1), s.fsmTerm.Load())
 }
 
@@ -293,21 +287,20 @@ func TestStore_FSMInteraction_SnapshotAndPersist(t *testing.T) {
 	defer cleanup()
 
 	// 1. Set some data
-	s.fsmIdx.Store(10) // Simulate prior logs
+	s.fsmIdx.Store(10)
 	s.fsmTerm.Store(2)
 	key, value := "snapkey", "snapvalue"
 	setStmt := fmt.Sprintf("SET %s %s", key, value)
-	setCmd := &commandProto.Command{
-		Type:       commandProto.Command_COMMAND_TYPE_EXECUTE,
-		SubCommand: command.MustMarshal(&commandProto.ExecuteRequest{Statements: []*commandProto.Statement{{Sql: setStmt}}}),
-	}
+	execReq := &commandProto.ExecuteRequest{Request: &commandProto.Request{Statements: []*commandProto.Statement{{Sql: setStmt}}}}
+	subCmd, err := pb.Marshal(execReq)
+	require.NoError(t, err)
+	setCmd := &commandProto.Command{Type: commandProto.Command_COMMAND_TYPE_EXECUTE, SubCommand: subCmd}
 	setLogData, err := command.Marshal(setCmd)
 	require.NoError(t, err)
-	setRaftLog := &raft.Log{Index: 11, Term: 2, Data: setLogData} // Apply this log
+	setRaftLog := &raft.Log{Index: 11, Term: 2, Data: setLogData}
 	applyResp := s.fsmApply(setRaftLog)
 	fsmApplyResp, _ := applyResp.(*fsmExecuteQueryResponse)
 	require.NoError(t, fsmApplyResp.error)
-
 
 	// 2. Call fsmSnapshot
 	fsmSnap, err := s.fsmSnapshot()
@@ -326,23 +319,20 @@ func TestStore_FSMInteraction_SnapshotAndPersist(t *testing.T) {
 	restoredIndex := binary.BigEndian.Uint64(snapData[0:8])
 	restoredTerm := binary.BigEndian.Uint64(snapData[8:16])
 
-	assert.Equal(t, s.fsmIdx.Load(), restoredIndex, "snapshot index mismatch") // Should be 11
-	assert.Equal(t, s.fsmTerm.Load(), restoredTerm, "snapshot term mismatch")   // Should be 2
+	assert.Equal(t, s.fsmIdx.Load(), restoredIndex, "snapshot index mismatch")
+	assert.Equal(t, s.fsmTerm.Load(), restoredTerm, "snapshot term mismatch")
 
-
-	// 5. (Harder part) Verify data by loading into a new DB
-	snapshotDBContent := bytes.NewReader(snapData[16:]) // Skip metadata
+	// 5. Verify data by loading into a new DB
+	snapshotDBContent := bytes.NewReader(snapData[16:])
 
 	restoreDBPath := t.TempDir()
 	restoredDB, err := db.Open(restoreDBPath)
 	require.NoError(t, err, "failed to open DB for restore validation")
 	defer restoredDB.Close()
 
-	// Load the snapshot content (actual DB backup part)
-	err = restoredDB.Load(snapshotDBContent, 256) // Using 256 as MaxPendingWrites
+	err = restoredDB.Load(snapshotDBContent, 256)
 	require.NoError(t, err, "failed to load snapshot data into new DB")
 
-	// Check if the original data is present
 	err = restoredDB.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(key))
 		require.NoError(t, err)
@@ -353,17 +343,15 @@ func TestStore_FSMInteraction_SnapshotAndPersist(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Release the snapshot (closes the pipe reader in our snapshot implementation)
 	fsmSnap.Release()
 }
 
-// Helper to create a minimal BadgerDB backup stream for testing restore
 func createMinimalBadgerBackup(t *testing.T, key, value string) []byte {
 	t.Helper()
 	tempDBPath := t.TempDir()
 	tempDB, err := db.Open(tempDBPath)
 	require.NoError(t, err)
-	defer tempDB.Close() // Ensure tempDB is closed to release resources
+	defer tempDB.Close()
 
 	if key != "" && value != "" {
 		err = tempDB.Update(func(txn *badger.Txn) error {
@@ -373,67 +361,48 @@ func createMinimalBadgerBackup(t *testing.T, key, value string) []byte {
 	}
 
 	var buf bytes.Buffer
-	_, err = tempDB.Backup(&buf, 0) // since=0 for full backup
+	_, err = tempDB.Backup(&buf, 0)
 	require.NoError(t, err)
-	
-	// It's important to close the DB before its directory is removed by t.TempDir()
-	// If not closed properly, Badger might not flush everything or might hold locks.
+
 	err = tempDB.Close()
 	require.NoError(t, err)
-	
-	// Double check removal, sometimes TempDir might have issues if files are locked
-	// This is more of a sanity check for test stability than a requirement for the backup itself.
-	// On Windows, file locks can be particularly sticky.
-	// For this test, we assume t.TempDir() handles cleanup after tempDB.Close().
 
 	return buf.Bytes()
 }
 
 func TestStore_FSMInteraction_Restore(t *testing.T) {
-	s, cleanup := newTestStore(t, false) // Use file-based DB
+	s, cleanup := newTestStore(t, false)
 	defer cleanup()
 
-	// --- Prepare initial state for the store (will be wiped out by restore) ---
 	initialKey, initialValue := "initialkey", "initialvalue"
 	err := s.db.Update(func(txn *badger.Txn) error {
 		return txn.Set([]byte(initialKey), []byte(initialValue))
 	})
 	require.NoError(t, err)
-	s.fsmIdx.Store(1) // Initial FSM state
+	s.fsmIdx.Store(1)
 	s.fsmTerm.Store(1)
 
-	// --- Prepare snapshot data ---
 	restoreKey, restoreValue := "restorekey", "restorevalue"
 	snapIndex, snapTerm := uint64(10), uint64(2)
 
 	dbBackupData := createMinimalBadgerBackup(t, restoreKey, restoreValue)
 
 	var snapshotDataBuf bytes.Buffer
-	// Write metadata (index, term)
 	metaBytes := make([]byte, 16)
 	binary.BigEndian.PutUint64(metaBytes[0:8], snapIndex)
 	binary.BigEndian.PutUint64(metaBytes[8:16], snapTerm)
 	_, err = snapshotDataBuf.Write(metaBytes)
 	require.NoError(t, err)
-	// Write DB backup
 	_, err = snapshotDataBuf.Write(dbBackupData)
 	require.NoError(t, err)
-
-	// --- Call fsmRestore ---
-	// s.dbDir should be set by newTestStore if not using in-memory.
-	// If s.dbDir was not set, fsmRestore would use filepath.Join(s.raftDir, "badgerdb")
-	// Ensure the db path logic in fsmRestore aligns with how newTestStore sets up s.dbDir.
-	// For file-based, newTestStore sets s.dbDir.
 
 	err = s.fsmRestore(io.NopCloser(bytes.NewReader(snapshotDataBuf.Bytes())))
 	require.NoError(t, err)
 
-	// --- Verify restored state ---
 	assert.Equal(t, snapIndex, s.fsmIdx.Load(), "restored FSM index mismatch")
 	assert.Equal(t, snapTerm, s.fsmTerm.Load(), "restored FSM term mismatch")
 	assert.NotZero(t, s.fsmUpdateTime.Load(), "fsmUpdateTime should be set after restore")
 
-	// Verify new data is present
 	err = s.db.View(func(txn *badger.Txn) error {
 		item, errGet := txn.Get([]byte(restoreKey))
 		require.NoError(t, errGet, "restored key not found")
@@ -444,7 +413,6 @@ func TestStore_FSMInteraction_Restore(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify old data is gone
 	err = s.db.View(func(txn *badger.Txn) error {
 		_, errGet := txn.Get([]byte(initialKey))
 		assert.ErrorIs(t, errGet, badger.ErrKeyNotFound, "initial key should be gone after restore")
@@ -453,44 +421,39 @@ func TestStore_FSMInteraction_Restore(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TODO: Add tests for Store.Query (basic GET) if not covered elsewhere
-// TODO: Add tests for Store.Execute (basic SET/DELETE via Raft Apply path) if not covered
-
 func TestStore_Query_SimpleGet(t *testing.T) {
 	s, cleanup := newTestStore(t, true)
 	defer cleanup()
 
 	key, value := "querykey", "queryvalue"
 
-	// Set data using fsmApply (simulating data committed via Raft)
 	setStmt := fmt.Sprintf("SET %s %s", key, value)
-	setCmd := &commandProto.Command{
-		Type:       commandProto.Command_COMMAND_TYPE_EXECUTE,
-		SubCommand: command.MustMarshal(&commandProto.ExecuteRequest{Statements: []*commandProto.Statement{{Sql: setStmt}}}),
-	}
+	execReq := &commandProto.ExecuteRequest{Request: &commandProto.Request{Statements: []*commandProto.Statement{{Sql: setStmt}}}}
+	subCmd, err := pb.Marshal(execReq)
+	require.NoError(t, err)
+	setCmd := &commandProto.Command{Type: commandProto.Command_COMMAND_TYPE_EXECUTE, SubCommand: subCmd}
 	setLogData, err := command.Marshal(setCmd)
 	require.NoError(t, err)
 	s.fsmApply(&raft.Log{Index: 1, Term: 1, Data: setLogData})
 
-	// Query the data
 	queryReq := &commandProto.QueryRequest{
-		Statements: []*commandProto.Statement{{Sql: fmt.Sprintf("GET %s", key)}},
+		Request: &commandProto.Request{Statements: []*commandProto.Statement{{Sql: fmt.Sprintf("GET %s", key)}}},
 	}
 	queryRows, err := s.Query(queryReq)
 	require.NoError(t, err)
 	require.Len(t, queryRows, 1, "expected one QueryRows result")
-	
+
 	result := queryRows[0]
 	require.Len(t, result.Columns, 2, "expected two columns")
 	assert.Equal(t, "key", result.Columns[0])
 	assert.Equal(t, "value", result.Columns[1])
-	
+
 	require.Len(t, result.Values, 1, "expected one row in values")
 	rowValue := result.Values[0]
-	require.Len(t, rowValue.Values, 2, "expected two datums in row")
-	
-	assert.Equal(t, key, rowValue.Values[0].GetS(), "key mismatch in query result")
-	assert.Equal(t, []byte(value), rowValue.Values[1].GetB(), "value mismatch in query result")
+	require.Len(t, rowValue.Parameters, 2, "expected two parameters in row")
+
+	assert.Equal(t, key, rowValue.Parameters[0].GetS(), "key mismatch in query result")
+	assert.Equal(t, []byte(value), rowValue.Parameters[1].GetY(), "value mismatch in query result")
 }
 
 func TestStore_Query_KeyNotFound(t *testing.T) {
@@ -498,7 +461,7 @@ func TestStore_Query_KeyNotFound(t *testing.T) {
 	defer cleanup()
 
 	queryReq := &commandProto.QueryRequest{
-		Statements: []*commandProto.Statement{{Sql: "GET nonexistingkey"}},
+		Request: &commandProto.Request{Statements: []*commandProto.Statement{{Sql: "GET nonexistingkey"}}},
 	}
 	queryRows, err := s.Query(queryReq)
 	require.NoError(t, err, "Query should not error for key not found")

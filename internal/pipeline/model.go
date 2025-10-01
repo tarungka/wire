@@ -49,8 +49,7 @@ type DataSink interface {
 
 	// Write is responsible to read data from the upstream input channel and
 	// write data to the sink
-	Write(context.Context, *sync.WaitGroup, <-chan *models.Job, <-chan *models.Job) error
-	// Write(context.Context, *sync.WaitGroup, interface{}, <-chan *models.Job) error
+	Write(context.Context, <-chan *models.Job, <-chan *models.Job) error
 
 	// Get the key
 	Key() (string, error)

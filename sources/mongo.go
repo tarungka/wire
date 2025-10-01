@@ -240,7 +240,7 @@ func (m *MongoSource) Read(ctx context.Context, wg *sync.WaitGroup) (<-chan *mod
 		defer func() {
 			log.Trace().Msg("Closing the mongo change stream")
 			// Close here? Probably not as this stream is being used to watch for changes
-			// mongoStream.Close(ctx) 
+			// mongoStream.Close(ctx)
 			close(changeStreamChan)
 		}()
 

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync"
 	"path/filepath"
+	"sync"
 
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/models"
@@ -35,17 +35,6 @@ func (f *FileSink) Init(args SinkConfig) error {
 	return nil
 }
 
-// func (f *FileSink) Connect(ctx context.Context) error {
-// 	log.Trace().Str("file_path", f.filePath).Msg("Opening file for writing")
-// 	file, err := os.OpenFile(f.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-// 	if err != nil {
-// 		log.Err(err).Msg("Failed to open file")
-// 		return err
-// 	}
-// 	f.file = file
-// 	return nil
-// }
-
 func (f *FileSink) Connect(ctx context.Context) error {
 	log.Trace().Str("file_path", f.filePath).Msg("Preparing to open file for writing")
 
@@ -72,33 +61,30 @@ func (f *FileSink) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (f *FileSink) Write(ctx context.Context, wg *sync.WaitGroup, dataChan <-chan *models.Job, initialDataChan <-chan *models.Job) error {
-	// defer func() {
-	// 	// log.Trace().Msg("Exiting file sink write goroutine")
-	// 	wg.Done()
-	// }()
+func (f *FileSink) Write(ctx context.Context, dataChan <-chan *models.Job, initialDataChan <-chan *models.Job) error {
+	var wg sync.WaitGroup
 
-	ctx, cancel := context.WithCancel(ctx)
-
-	go func() {
-		defer cancel()
+	processChan := func(ch <-chan *models.Job) {
+		defer wg.Done()
 		for {
 			select {
-			case job, ok := <-dataChan:
+			case <-ctx.Done():
+				log.Info().Msg("Context cancelled, stopping file write worker.")
+				return
+			case job, ok := <-ch:
 				if !ok {
-					log.Debug().Msg("Data channel closed")
+					log.Info().Msg("Channel closed, stopping file write worker.")
 					return
-				}
-				f.writeToFile(ctx, job)
-
-			case job, ok := <-initialDataChan:
-				if !ok {
-					continue
 				}
 				f.writeToFile(ctx, job)
 			}
 		}
-	}()
+	}
+
+	wg.Add(2)
+	go processChan(dataChan)
+	go processChan(initialDataChan)
+	wg.Wait()
 
 	return nil
 }
@@ -124,9 +110,11 @@ func (f *FileSink) writeToFile(ctx context.Context, job *models.Job) {
 
 func (f *FileSink) Disconnect() error {
 	log.Info().Msg("Closing file sink")
-	if err := f.file.Close(); err != nil {
-		log.Err(err).Msg("Failed to close file")
-		return err
+	if f.file != nil {
+		if err := f.file.Close(); err != nil {
+			log.Err(err).Msg("Failed to close file")
+			return err
+		}
 	}
 	return nil
 }
