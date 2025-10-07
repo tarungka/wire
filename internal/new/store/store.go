@@ -198,8 +198,8 @@ func (s *NodeStore) Open() (retErr error) {
 	s.snapshotStore = snapshotStore
 
 	cfg := &db.Config{
-		Dir: "/tmp/new-wire-store",
-	}
+		Dir: "/tmp/new-wire-store", // TODO: add this to the config
+	 }
 	s.logger.Printf("the backend database for the store is: %v", s.storeDb)
 	s.dbStore, err = db.New(s.storeDb, cfg)
 	if err != nil {
@@ -212,6 +212,9 @@ func (s *NodeStore) Open() (retErr error) {
 		s.logger.Err(err).Msgf("error when creating a new cached log store")
 		return err
 	}
+
+	// TODO: refactor this code to make it more abstract and configurable on what store is being
+	// chosen for this - according to the implementation I need to support both badger and rocksdb
 	// when sending the path for badger, IsNewNode also needs to be updated
 	badgerCfg := &badgerdb.Config{Dir: ""} // this defaults to /tmp/badger
 	s.db = badgerdb.New(badgerCfg)
@@ -245,6 +248,7 @@ func (s *NodeStore) Open() (retErr error) {
 	// Register and listen for leader changes.
 	s.raft.RegisterObserver(s.observer)
 	// TODO: write the observer channels
+	//
 
 	return nil
 }

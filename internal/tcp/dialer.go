@@ -12,7 +12,7 @@ import (
 
 // NewDialer returns an initialized Dialer.
 func NewDialer(header byte, tlsConfig *tls.Config) *Dialer {
-	newLogger := logger.GetLogger("tcp")
+	newLogger := logger.GetLogger("tcp/dailer")
 	newLogger.Printf("creating a new dialer with header: %v", header)
 	return &Dialer{
 		header:    header,

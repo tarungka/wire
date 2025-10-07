@@ -84,7 +84,7 @@ type Client struct {
 // that the operation failed. In addition, higher-level code will
 // usually retry these operations.
 func NewClient(dl Dialer, t time.Duration) *Client {
-	newLogger := logger.GetLogger("client")
+	newLogger := logger.GetLogger("cluster/client")
 	newLogger.Printf("creating a new client with dialer: %v", dl)
 	return &Client{
 		dialer:  dl,
