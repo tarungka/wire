@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync"
 	"path/filepath"
+	"sync"
 
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/models"

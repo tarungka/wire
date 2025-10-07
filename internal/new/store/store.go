@@ -199,7 +199,7 @@ func (s *NodeStore) Open() (retErr error) {
 
 	cfg := &db.Config{
 		Dir: "/tmp/new-wire-store", // TODO: add this to the config
-	 }
+	}
 	s.logger.Printf("the backend database for the store is: %v", s.storeDb)
 	s.dbStore, err = db.New(s.storeDb, cfg)
 	if err != nil {
