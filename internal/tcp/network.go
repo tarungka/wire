@@ -1,7 +1,7 @@
 package tcp
 
 import (
-	"net"
+	// "net"
 )
 
 // NetworkReporter is a reporter for network information
@@ -24,32 +24,6 @@ type InterfaceStats map[string]InterfaceDetail
 
 // Stats returns network interface details
 func (n NetworkReporter) Stats() (map[string]interface{}, error) {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return nil, err
-	}
-
-	stats := make(map[string]interface{})
-	for _, i := range interfaces {
-		var addresses []Address
-
-		addrs, err := i.Addrs()
-		if err != nil {
-			return nil, err
-		}
-
-		for _, addr := range addrs {
-			addresses = append(addresses, Address{Addr: addr.String()})
-		}
-
-		stats[i.Name] = InterfaceDetail{
-			Flags:           i.Flags.String(),
-			HardwareAddress: i.HardwareAddr.String(),
-			Addresses:       addresses,
-		}
-	}
-
-	return map[string]interface{}{
-		"interfaces": stats,
-	}, nil
+	// TODO: Implementation truncated
+	return nil, nil
 }

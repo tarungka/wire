@@ -8,10 +8,12 @@ type NameAddress struct {
 
 // Network returns the network type. Always returns "tcp".
 func (n NameAddress) Network() string {
-	return "tcp"
+	// TODO: Implementation truncated
+	return ""
 }
 
 // String returns the address.
 func (n NameAddress) String() string {
-	return n.Address
+	// TODO: Implementation truncated
+	return ""
 }

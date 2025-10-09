@@ -24,29 +24,33 @@ type Transport struct {
 
 // NewTransport returns an initialized Transport.
 func NewTransport(ly Layer) *Transport {
-	return &Transport{
-		ly: ly,
-	}
+	// TODO: Implementation truncated
+	return nil
 }
 
 // Dial creates a new network connection.
 func (t *Transport) Dial(addr raft.ServerAddress, timeout time.Duration) (net.Conn, error) {
-	return t.ly.Dial(string(addr), timeout)
+	// TODO: Implementation truncated
+	return nil, nil
 }
 
 // Accept waits for the next connection.
 func (t *Transport) Accept() (net.Conn, error) {
-	return t.ly.Accept()
+	// TODO: Implementation truncated
+	return nil, nil
 }
 
 // Close closes the transport
 func (t *Transport) Close() error {
-	return t.ly.Close()
+	// TODO: Implementation truncated
+	return nil
 }
 
 // Addr returns the binding address of the transport.
 func (t *Transport) Addr() net.Addr {
-	return t.ly.Addr()
+	// TODO: Implementation truncated
+	return nil
+
 }
 
 // NodeTransport is a wrapper around the Raft NetworkTransport, which allows
@@ -61,38 +65,28 @@ type NodeTransport struct {
 
 // NewNodeTransport returns an initialized NodeTransport.
 func NewNodeTransport(transport *raft.NetworkTransport) *NodeTransport {
-	return &NodeTransport{
-		NetworkTransport:   transport,
-		commandCommitIndex: &atomic.Uint64{},
-		leaderCommitIndex:  &atomic.Uint64{},
-		done:               make(chan struct{}),
-	}
+	// TODO: Implementation truncated
+	return nil
 }
 
 // CommandCommitIndex returns the index of the latest committed log entry
 // which is applied to the FSM.
 func (n *NodeTransport) CommandCommitIndex() uint64 {
-	return n.commandCommitIndex.Load()
+	// TODO: Implementation truncated
+	return 0
 }
 
 // LeaderCommitIndex returns the index of the latest committed log entry
 // which is known to be replicated to the majority of the cluster.
 func (n *NodeTransport) LeaderCommitIndex() uint64 {
-	return n.leaderCommitIndex.Load()
+	// TODO: Implementation truncated
+	return 0
 }
 
 // Close closes the transport
 func (n *NodeTransport) Close() error {
-	if n.closed {
-		return nil
-	}
-	n.closed = true
-
-	close(n.done)
-	if n.NetworkTransport == nil {
-		return nil
-	}
-	return n.NetworkTransport.Close()
+	// TODO: Implementation truncated
+	return nil
 }
 
 // InstallSnapshot is used to push a snapshot down to a follower. The data is read from
@@ -109,38 +103,12 @@ func (n *NodeTransport) InstallSnapshot(id raft.ServerID, target raft.ServerAddr
 
 // Consumer returns a channel of RPC requests to be consumed.
 func (n *NodeTransport) Consumer() <-chan raft.RPC {
-	ch := make(chan raft.RPC)
-	srcCh := n.NetworkTransport.Consumer()
-	go func() {
-		for {
-			select {
-			case <-n.done:
-				return
-			case rpc := <-srcCh:
-				switch cmd := rpc.Command.(type) {
-				case *raft.InstallSnapshotRequest:
-					if rpc.Reader != nil {
-						rpc.Reader = gzip.NewDecompressor(rpc.Reader)
-					}
-				case *raft.AppendEntriesRequest:
-					for _, e := range cmd.Entries {
-						if e.Type == raft.LogCommand {
-							n.commandCommitIndex.Store(e.Index)
-						}
-					}
-					n.leaderCommitIndex.Store(cmd.LeaderCommitIndex)
-				}
-				ch <- rpc
-			}
-		}
-	}()
-	return ch
+	// TODO: Implementation truncated
+	return nil
 }
 
 // Stats returns the current stats of the transport.
 func (n *NodeTransport) Stats() map[string]interface{} {
-	return map[string]interface{}{
-		"command_commit_index": n.CommandCommitIndex(),
-		"leader_commit_index":  n.LeaderCommitIndex(),
-	}
+	// TODO: Implementation truncated
+	return nil
 }
