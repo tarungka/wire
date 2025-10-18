@@ -1,7 +1,7 @@
 package tcp
 
 import (
-	// "net"
+// "net"
 )
 
 // NetworkReporter is a reporter for network information

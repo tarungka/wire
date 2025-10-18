@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
-	"strings"
 
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/models"
@@ -217,20 +217,19 @@ func (dp *DataPipeline) Show() (string, error) {
 	return dp.Source.Name() + " -> " + dp.Sink.Name(), nil
 }
 
-
 func (dp *DataPipeline) AddOperation(op Operation) (*DataPipeline, error) {
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
 
 	opsNode := &PipelineOps{
-		id: op.ID(),
+		id:        op.ID(),
 		operation: op,
 	}
 
 	// TODO: update the parents and the children
 	if len(dp.operations) > 0 {
 		// do something
-		latest := dp.operations[len(dp.operations) - 1]
+		latest := dp.operations[len(dp.operations)-1]
 		latest.children = append(latest.children, &PipelineNode{node: []*PipelineOps{opsNode}})
 		opsNode.parents = append(opsNode.parents, &PipelineNode{node: []*PipelineOps{latest}})
 	}
@@ -259,13 +258,13 @@ func (dp *DataPipeline) Close() bool {
 func NewDataPipeline(source DataSource, sink DataSink) *DataPipeline {
 
 	dataPipeline := &DataPipeline{
-		Source:   source,
-		Sink:     sink,
-		open:     atomic.Bool{},
-		cancel:   nil,
-		key:      "",
-		jobCount: 1,
-		mu:       sync.RWMutex{},
+		Source:     source,
+		Sink:       sink,
+		open:       atomic.Bool{},
+		cancel:     nil,
+		key:        "",
+		jobCount:   1,
+		mu:         sync.RWMutex{},
 		operations: []*PipelineOps{},
 	}
 	// dataPipeline.Init() // does nothing as of now
@@ -318,8 +317,6 @@ func toUpperCaseJSON(ctx context.Context, in <-chan *models.Job) <-chan *models.
 	}()
 	return out
 }
-
-
 
 func uppercaseJSON(data any) {
 	switch v := data.(type) {

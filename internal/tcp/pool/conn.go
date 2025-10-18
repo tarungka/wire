@@ -16,20 +16,9 @@ type Conn struct {
 
 // Close puts the given connection back into the pool instead of closing it.
 func (p *Conn) Close() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.unusable {
-		if p.Conn != nil {
-			return p.Conn.Close()
-		}
-		return nil
-	}
-	return p.c.put(p.Conn)
+	return errNotImplemented
 }
 
 // MarkUnusable marks the connection not usable anymore, to let the pool close it instead of returning it to pool.
 func (p *Conn) MarkUnusable() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.unusable = true
 }
