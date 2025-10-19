@@ -1,7 +1,6 @@
 package pool
 
 import (
-	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -10,8 +9,6 @@ import (
 
 	"github.com/tarungka/wire/internal/logger"
 )
-
-var errNotImplemented = errors.New("not implemented")
 
 // channelPool implements the Pool interface based on buffered channels.
 type channelPool struct {
@@ -39,7 +36,7 @@ func NewChannelPool(maxConns int, factory ConnFactory) (Pool, error) {
 		return nil, errInvalidPoolSize
 	}
 	newLogger := logger.GetLogger("channel")
-	newLogger.Print("creating new channel")
+	newLogger.Info().Int("capacity", maxConns).Msg("creating channel-based connection pool")
 
 	return &channelPool{
 		conns:   make(chan net.Conn, maxConns),
@@ -54,42 +51,58 @@ func NewChannelPool(maxConns int, factory ConnFactory) (Pool, error) {
 func (c *channelPool) Get() (net.Conn, error) {
 	conns, factory := c.getConnsAndFactory()
 	if c.conns == nil {
+		c.logger.Warn().Msg("attempted to get connection from closed pool")
 		return nil, ErrClosed
 	}
-	c.logger.Debug().Msg("Getting a new connection from the pool")
+	// TODO: remove this when its in alpha, unecessary computation
+	open := atomic.LoadInt64(&c.nOpenConns)
+	c.logger.Debug().Int64("open_connections", open).Msg("acquiring connection from pool")
 
 	select {
 	case conn := <-conns:
-		// TODO: think if I need to validate if conn can ever be nil here
-		return conn, nil
+		if conn == nil {
+			c.logger.Warn().Msg("received nil connection from pool channel")
+			return nil, errConnNotDefined
+		}
+		c.logger.Debug().Msg("reusing idle connection from pool")
+		return c.wrapConn(conn), nil
 	default:
 		conn, err := factory()
 		if err != nil {
+			c.logger.Error().Err(err).Msg("factory failed to create new connection")
 			return nil, err
 		}
 		atomic.AddInt64(&c.nOpenConns, 1)
-		return conn, nil
+		c.logger.Debug().Int64("open_connections", atomic.LoadInt64(&c.nOpenConns)).Msg("dialled new connection for pool")
+		return c.wrapConn(conn), nil
 	}
 }
 
 // Close closes every connection in the pool.
 func (c *channelPool) Close() {
 	if c.conns == nil {
-		c.logger.Warn().Msg("Close connections called when no connection pool is available")
+		c.logger.Warn().Msg("close invoked on already closed pool")
 		return
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	idle := len(c.conns)
+	// TODO: remove this when its in alpha, unecessary computation
+	open := atomic.LoadInt64(&c.nOpenConns)
+	c.logger.Info().Int("idle", idle).Int64("open", open).Msg("closing connection pool")
+
 	close(c.conns)
 
 	for conn := range c.conns {
+		c.logger.Debug().Msg("closing pooled connection during shutdown")
 		conn.Close()
 	}
 	c.conns = nil
 	c.factory = nil
 	atomic.StoreInt64(&c.nOpenConns, 0)
+	c.logger.Info().Msg("connection pool closed")
 }
 
 // Len returns the number of idle connections.
@@ -117,22 +130,26 @@ func (c *channelPool) Stats() (map[string]any, error) {
 // conn is simply closed. A nil conn will be rejected.
 func (c *channelPool) put(conn net.Conn) error {
 	if conn == nil {
+		c.logger.Error().Msg("refusing to return nil connection to pool")
 		return errConnNotDefined
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conns == nil {
-		atomic.StoreInt64(&c.nOpenConns, -1)
+		c.logger.Warn().Msg("connection returned after pool closed; closing underlying connection")
+		atomic.AddInt64(&c.nOpenConns, -1)
 		return conn.Close()
 	}
 
 	select {
 	// Add it back to the pool
 	case c.conns <- conn:
+		c.logger.Debug().Int("idle", len(c.conns)).Msg("returned connection to pool")
 		return nil
 	// If the pool cannot hold the connection then we close it
 	default:
+		c.logger.Warn().Int("capacity", cap(c.conns)).Msg("pool full; closing returned connection")
 		atomic.AddInt64(&c.nOpenConns, -1)
 		return conn.Close()
 	}
