@@ -107,7 +107,10 @@ func main() {
 	if err != nil {
 		log.Fatal().Msgf("failed to create Raft dialer: %s", err.Error())
 	}
-	raftTn := tcp.NewLayer(raftLn, raftDialer)
+	raftTn, err := tcp.NewLayer(raftLn, raftDialer)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to create raft layer")
+	}
 	log.Debug().Msgf("raft layer is ready")
 
 	// Create the store

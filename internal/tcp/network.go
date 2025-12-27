@@ -23,7 +23,7 @@ type InterfaceDetail struct {
 type InterfaceStats map[string]InterfaceDetail
 
 // Stats returns network interface details
-func (n NetworkReporter) Stats() (map[string]interface{}, error) {
+func (n NetworkReporter) Stats() (map[string]any, error) {
 	// TODO: Implementation truncated
 	return nil, nil
 }

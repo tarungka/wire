@@ -20,6 +20,66 @@ small, thread-safe pool with bounded capacity and simple statistics.
   or pool state (`errFactoryNotDefined`, `errInvalidPoolSize`, `errConnNotDefined`,
   `ErrClosed`).
 
+### Class Diagram
+
+```mermaid
+classDiagram
+    direction LR
+
+    class Pool {
+        <<interface>>
+        +Get() (net.Conn, error)
+        +Close()
+        +Len() int
+        +Stats() (map[string]any, error)
+    }
+
+    class channelPool {
+        -sync.RWMutex mu
+        -chan net.Conn conns
+        -ConnFactory factory
+        -int64 nOpenConns
+        -zerolog.Logger logger
+        +Get() (net.Conn, error)
+        +Close()
+        +Len() int
+        +LenUsedConnections() int
+        +Stats() (map[string]any, error)
+        -put(net.Conn) error
+        -wrapConn(net.Conn) net.Conn
+    }
+
+    class NetConn {
+        <<interface>>
+        +Read(b []byte) (int, error)
+        +Write(b []byte) (int, error)
+        +Close() error
+        +LocalAddr() net.Addr
+        +RemoteAddr() net.Addr
+        +SetDeadline(time.Time) error
+    }
+
+    class PoolConn {
+        -net.Conn Conn
+        -sync.Mutex mu
+        -bool unusable
+        -channelPool* c
+        +Close() error
+        +MarkUnusable()
+    }
+
+    class ConnFactory {
+        <<function>>
+        +Invoke() (net.Conn, error)
+    }
+
+    Pool <|.. channelPool : implements
+    channelPool o--> ConnFactory : uses
+    channelPool --> PoolConn : wraps
+    PoolConn --> channelPool : returns to
+    PoolConn ..|> NetConn
+```
+
 ## Lifecycle Overview
 
 ```mermaid
@@ -50,6 +110,29 @@ stateDiagram-v2
 - **Shutdown** – `channelPool.Close()` locks the pool, closes the channel, drains
   any remaining connections (closing each underlying `net.Conn`), nils the
   factory, and resets counters.
+
+## Logging and Metrics
+
+- **Structured logging** – `channelPool` emits zerolog entries whenever it dials,
+  hands out, or reclaims a connection. Warnings call out suspicious states such
+  as `nil` sockets or returns after shutdown.
+- **Counters** – `Len()` reports the idle queue length while
+  `LenUsedConnections()` (and the `openConnections` stat) track total sockets
+  currently in-flight. Downstream metrics scrapers can sample `Stats()` to build
+  dashboards.
+- **Errors** – All exportable error cases use sentinel values so callers can
+  branch on them (`errors.Is`). Avoid string matching.
+
+## Operational Guidelines
+
+1. **Pool sizing** – Choose `maxConns` based on the expected concurrent
+   work. Over-sizing wastes memory; under-sizing forces new dials.
+2. **Factory quality** – `ConnFactory` should be fast and idempotent. Perform
+   authentication or TLS handshakes here, not in pool internals.
+3. **Handle unusable sockets** – If a connection fails mid-use, call
+   `MarkUnusable()` before closing to ensure the pool removes it.
+4. **Graceful shutdown** – Always defer `pool.Close()` to avoid leaking file
+   descriptors in long-lived services.
 
 ## Module API
 
