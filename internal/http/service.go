@@ -25,6 +25,8 @@ import (
 	"github.com/rqlite/rqlite/v8/queue"
 	"github.com/rqlite/rqlite/v8/rtls"
 	"github.com/rs/zerolog"
+	"github.com/tarungka/wire/internal/analytics/planner"
+	aruntime "github.com/tarungka/wire/internal/analytics/runtime"
 	clstrPB "github.com/tarungka/wire/internal/cluster/proto"
 	"github.com/tarungka/wire/internal/command/encoding"
 	command "github.com/tarungka/wire/internal/command/proto"
@@ -353,6 +355,7 @@ type Service struct {
 	seqNum int64 // Last sequence number written OK.
 
 	credentialStore CredentialStore
+	JobManager      *aruntime.JobManager
 
 	BuildInfo map[string]interface{}
 
@@ -363,7 +366,7 @@ type Service struct {
 
 // New returns an uninitialized HTTP service. If credentials is nil, then
 // the service performs no authentication and authorization checks.
-func New(addr string, store Store, cluster Cluster, credentials CredentialStore) *Service {
+func New(addr string, store Store, cluster Cluster, credentials CredentialStore, jm *aruntime.JobManager) *Service {
 	return &Service{
 		addr:                addr,
 		store:               store,
@@ -374,6 +377,7 @@ func New(addr string, store Store, cluster Cluster, credentials CredentialStore)
 		start:               time.Now(),
 		statuses:            make(map[string]StatusReporter),
 		credentialStore:     credentials,
+		JobManager:          jm,
 		logger:              logger.GetLogger("http"),
 	}
 }
@@ -560,6 +564,8 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	engine.GET("/debug/pprof/*any", func(c *gin.Context) {
 		s.handlePprof(c.Writer, c.Request)
 	})
+
+	engine.POST("/analytics/submit", s.handleAnalyticsSubmit)
 
 	// Set up fallback for unknown routes
 	engine.NoRoute(func(c *gin.Context) {
@@ -1765,4 +1771,31 @@ func (s *Service) getTest(k string) (string, error) {
 		return "", err
 	}
 	return value, nil
+}
+
+func (s *Service) handleAnalyticsSubmit(c *gin.Context) {
+	if s.JobManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "analytical engine not enabled"})
+		return
+	}
+
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		return
+	}
+
+	logicalPlan, err := planner.ParseDSL(body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid DSL: %v", err)})
+		return
+	}
+
+	jobID := fmt.Sprintf("job-%d", time.Now().UnixNano())
+	if err := s.JobManager.SubmitJob(jobID, logicalPlan); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to submit job: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"job_id": jobID, "message": "job submitted successfully"})
 }

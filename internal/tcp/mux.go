@@ -278,7 +278,6 @@ func (mux *Mux) Serve() error {
 
 		mux.wg.Add(1)
 		go mux.handleConn(conn)
-		return nil
 	}
 }
 

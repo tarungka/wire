@@ -1,19 +1,17 @@
 package cluster
 
 import (
-	"bytes"
-	"compress/gzip"
 	"encoding/binary"
 	"expvar"
 	"fmt"
 	"io"
 	"net"
-	"strconv"
-	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/tarungka/wire/internal/cluster/proto"
+	"github.com/tarungka/wire/internal/analytics/planner"
+	aruntime "github.com/tarungka/wire/internal/analytics/runtime"
+	clstrPB "github.com/tarungka/wire/internal/cluster/proto"
 	commandProto "github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/logger"
 	pb "google.golang.org/protobuf/proto"
@@ -87,146 +85,86 @@ type Dialer interface {
 
 // Database is the interface any queryable system must implement
 type Database interface {
-	// Execute executes a slice of SQL statements.
-	// Execute(er *commandProto.ExecuteRequest) ([]*commandProto.ExecuteQueryResponse, error)
-
-	// Query executes a slice of queries, each of which returns rows.
-	// Query(qr *commandProto.QueryRequest) ([]*commandProto.QueryRows, error)
-
-	// Request processes a request that can both executes and queries.
-	// Request(rr *commandProto.ExecuteQueryRequest) ([]*commandProto.ExecuteQueryResponse, error)
-
-	// Backup writes a backup of the database to the writer.
-	// Backup(br *commandProto.BackupRequest, dst io.Writer) error
-
-	// Loads an entire BadgerDB file into the database
-	// Load(lr *commandProto.LoadRequest) error
 }
 
-// Manager is the interface node-management systems must implement
+// Manager is the interface any cluster management system must implement.
 type Manager interface {
-	// LeaderAddr returns the Raft address of the leader of the cluster.
-	LeaderAddr() (string, error)
+	// Join joins a node to the cluster.
+	Join(jr *commandProto.JoinRequest) error
 
-	// CommitIndex returns the Raft commit index of the cluster.
-	CommitIndex() (uint64, error)
+	// Notify notifies a node that another node is ready.
+	Notify(nr *commandProto.NotifyRequest) error
 
-	// Remove removes the node, given by id, from the cluster
+	// Remove removes a node from the cluster.
 	Remove(rn *commandProto.RemoveNodeRequest) error
 
-	// Notify notifies this node that a remote node is ready
-	// for bootstrapping.
-	Notify(n *commandProto.NotifyRequest) error
+	// LeaderAddr returns the Raft address of the leader.
+	LeaderAddr() (string, error)
 
-	// Join joins a remote node to the cluster.
-	Join(n *commandProto.JoinRequest) error
+	// CommitIndex returns the Raft commit index.
+	CommitIndex() (uint64, error)
 }
 
-// CredentialStore is the interface credential stores must support.
-type CredentialStore interface {
-	// AA authenticates and checks authorization for the given perm.
-	AA(username, password, perm string) bool
-}
-
-// Service provides information about the node and cluster.
+// Service provides cluster management and distributed database operations.
 type Service struct {
-	ln   net.Listener // Incoming connections to the service
-	addr net.Addr     // Address on which this service is listening
+	ln   net.Listener
+	db   Database
+	mgr  Manager
+	addr string // API address
 
-	db  Database // a database system
-	mgr Manager  // a cluster management system.
+	https bool
 
-	mu      sync.RWMutex
-	https   bool   // Serving HTTPS?
-	apiAddr string // host:port this node serves the HTTP API.
+	WorkerManager *aruntime.WorkerManager
 
 	logger zerolog.Logger
 }
 
-// New returns a new instance of the cluster service
-func New(ln net.Listener, db Database, m Manager) *Service {
+// New returns a new Service instance.
+func New(ln net.Listener, db Database, mgr Manager) *Service {
 	return &Service{
-		ln:   ln,
-		addr: ln.Addr(),
-		db:   db,
-		mgr:  m,
-		// logger: log.New(os.Stderr, "[cluster] ", log.LstdFlags),
+		ln:     ln,
+		db:     db,
+		mgr:    mgr,
 		logger: logger.GetLogger("cluster"),
 	}
 }
 
-// Open opens the Service.
+// Open opens the service.
 func (s *Service) Open() error {
 	go s.serve()
-	// s.logger.Print("service listening on", s.addr)
 	return nil
 }
 
 // Close closes the service.
 func (s *Service) Close() error {
-	s.logger.Printf("closing the listener")
-	s.ln.Close()
-	return nil
+	return s.ln.Close()
 }
 
-// Addr returns the address the service is listening on.
-func (s *Service) Addr() string {
-	return s.addr.String()
-}
-
-// EnableHTTPS tells the cluster service the API serves HTTPS.
-func (s *Service) EnableHTTPS(b bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.https = b
-}
-
-// SetAPIAddr sets the API address the cluster service returns.
+// SetAPIAddr sets the API address of this node.
 func (s *Service) SetAPIAddr(addr string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.logger.Printf("setting api address as %s", addr)
-	s.apiAddr = addr
+	s.addr = addr
 }
 
-// GetAPIAddr returns the previously-set API address
-func (s *Service) GetAPIAddr() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.apiAddr
+// EnableHTTPS enables HTTPS for the API.
+func (s *Service) EnableHTTPS(https bool) {
+	s.https = https
 }
 
-// GetNodeAPIURL returns fully-specified HTTP(S) API URL for the
-// node running this service.
+// GetNodeAPIURL returns the API URL for this node.
 func (s *Service) GetNodeAPIURL() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	scheme := "http"
+	protocol := "http"
 	if s.https {
-		scheme = "https"
+		protocol = "https"
 	}
-	return fmt.Sprintf("%s://%s", scheme, s.apiAddr)
+	return fmt.Sprintf("%s://%s", protocol, s.addr)
 }
 
-// Stats returns status of the Service.
-func (s *Service) Stats() (map[string]interface{}, error) {
-	st := map[string]interface{}{
-		"addr":     s.addr.String(),
-		"https":    strconv.FormatBool(s.https),
-		"api_addr": s.apiAddr,
-	}
-
-	return st, nil
-}
-
-func (s *Service) serve() error {
+func (s *Service) serve() {
 	for {
-		s.logger.Print("waiting for request")
-		conn, err := s.ln.Accept() // I think this is blocking until a request
+		conn, err := s.ln.Accept()
 		if err != nil {
-			return err
+			return
 		}
-		s.logger.Print("got a new request")
 		go s.handleConn(conn)
 	}
 }
@@ -234,66 +172,56 @@ func (s *Service) serve() error {
 func (s *Service) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	b := make([]byte, protoBufferLengthSize)
 	for {
+		// Read command length
+		b := make([]byte, 8)
 		_, err := io.ReadFull(conn, b)
 		if err != nil {
 			return
 		}
-		sz := binary.LittleEndian.Uint64(b[0:])
+		sz := binary.LittleEndian.Uint64(b)
 
+		// Read command
 		p := make([]byte, sz)
 		_, err = io.ReadFull(conn, p)
 		if err != nil {
 			return
 		}
 
-		c := &proto.Command{}
+		c := &clstrPB.Command{}
 		err = pb.Unmarshal(p, c)
 		if err != nil {
-			conn.Close()
+			return
 		}
 
 		switch c.Type {
-		case proto.Command_COMMAND_TYPE_GET_NODE_API_URL:
+		case clstrPB.Command_COMMAND_TYPE_GET_NODE_API_URL:
 			s.logger.Print("got a command to get node api url")
 			stats.Add(numGetNodeAPIRequest, 1)
 			ci, err := s.mgr.CommitIndex()
 			if err != nil {
-				conn.Close()
 				return
 			}
-			p, err = pb.Marshal(&proto.NodeMeta{
+			p, err = pb.Marshal(&clstrPB.NodeMeta{
 				Url:         s.GetNodeAPIURL(),
 				CommitIndex: ci,
 			})
 			if err != nil {
-				conn.Close()
+				return
 			}
 			if err := writeBytesWithLength(conn, p); err != nil {
 				return
 			}
 			stats.Add(numGetNodeAPIResponse, 1)
 
-		case proto.Command_COMMAND_TYPE_LOAD_CHUNK:
-			s.logger.Print("got a command to load chunk")
-			resp := &proto.CommandLoadChunkResponse{
-				Error: "unsupported",
-			}
-			if err := marshalAndWrite(conn, resp); err != nil {
-				return
-			}
-
-		case proto.Command_COMMAND_TYPE_REMOVE_NODE:
+		case clstrPB.Command_COMMAND_TYPE_REMOVE_NODE:
 			s.logger.Print("got a command to remove a node")
 			stats.Add(numRemoveNodeRequest, 1)
-			resp := &proto.CommandRemoveNodeResponse{}
+			resp := &clstrPB.CommandRemoveNodeResponse{}
 
 			rn := c.GetRemoveNodeRequest()
 			if rn == nil {
 				resp.Error = "LoadRequest is nil"
-			} else if !true {
-				resp.Error = "unauthorized"
 			} else {
 				if err := s.mgr.Remove(rn); err != nil {
 					resp.Error = err.Error()
@@ -303,16 +231,14 @@ func (s *Service) handleConn(conn net.Conn) {
 				return
 			}
 
-		case proto.Command_COMMAND_TYPE_NOTIFY:
+		case clstrPB.Command_COMMAND_TYPE_NOTIFY:
 			s.logger.Print("got a command to notify")
 			stats.Add(numNotifyRequest, 1)
-			resp := &proto.CommandNotifyResponse{}
+			resp := &clstrPB.CommandNotifyResponse{}
 
 			nr := c.GetNotifyRequest()
 			if nr == nil {
 				resp.Error = "NotifyRequest is nil"
-			} else if !true {
-				resp.Error = "unauthorized"
 			} else {
 				if err := s.mgr.Notify(nr); err != nil {
 					resp.Error = err.Error()
@@ -322,16 +248,15 @@ func (s *Service) handleConn(conn net.Conn) {
 				return
 			}
 
-		case proto.Command_COMMAND_TYPE_JOIN:
+		case clstrPB.Command_COMMAND_TYPE_JOIN:
 			s.logger.Print("got a command to join")
 			stats.Add(numJoinRequest, 1)
-			resp := &proto.CommandJoinResponse{}
+			resp := &clstrPB.CommandJoinResponse{}
 
 			jr := c.GetJoinRequest()
 			if jr == nil {
 				resp.Error = "JoinRequest is nil"
 			} else {
-				// TODO: These logics are wrong, need to rewrite them
 				if jr.Voter {
 					if err := s.mgr.Join(jr); err != nil {
 						resp.Error = err.Error()
@@ -351,45 +276,59 @@ func (s *Service) handleConn(conn net.Conn) {
 			if err := marshalAndWrite(conn, resp); err != nil {
 				return
 			}
+
+		case clstrPB.Command_COMMAND_TYPE_ANALYTICS_DEPLOY:
+			s.logger.Print("got a command to deploy analytics task")
+			s.handleAnalyticsDeploy(conn, c)
+
+		default:
 		}
+	}
+}
+
+func (s *Service) handleAnalyticsDeploy(conn net.Conn, c *clstrPB.Command) {
+	req := c.GetAnalyticsDeployRequest()
+	if req == nil {
+		return
+	}
+
+	if s.WorkerManager == nil {
+		s.logger.Error().Msg("WorkerManager not initialized")
+		return
+	}
+
+	// Create task from request
+	task := &planner.Task{
+		ID:          req.TaskId,
+		OperatorID:  req.JobId,
+		NodeID:      s.addr,
+		InputTasks:  req.InputTasks,
+		OutputTasks: req.OutputTasks,
+	}
+
+	// Instantiate operator
+	op, err := aruntime.CreateOperator(req.OperatorType, nil)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Failed to create operator")
+		return
+	}
+
+	if err := s.WorkerManager.DeployTask(task, op); err != nil {
+		s.logger.Error().Err(err).Msg("Failed to deploy task")
 	}
 }
 
 func marshalAndWrite(conn net.Conn, m pb.Message) error {
 	p, err := pb.Marshal(m)
 	if err != nil {
-		conn.Close()
 		return err
 	}
 	return writeBytesWithLength(conn, p)
 }
 
 func writeBytesWithLength(conn net.Conn, p []byte) error {
-	b := make([]byte, protoBufferLengthSize)
+	b := make([]byte, 8)
 	binary.LittleEndian.PutUint64(b[0:], uint64(len(p)))
-	logger.AdHocLogger.Debug().Msgf("writeBytesWithLength: %v", b)
 	_, err := conn.Write(b)
-	if err != nil {
-		return err
-	}
-	logger.AdHocLogger.Debug().Msgf("writeBytesWithLength: %v", p)
-	_, err = conn.Write(p)
 	return err
-}
-
-// gzCompress compresses the given byte slice.
-func gzCompress(b []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	gzw, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
-	if err != nil {
-		return nil, fmt.Errorf("gzip new writer: %s", err)
-	}
-
-	if _, err := gzw.Write(b); err != nil {
-		return nil, fmt.Errorf("gzip Write: %s", err)
-	}
-	if err := gzw.Close(); err != nil {
-		return nil, fmt.Errorf("gzip Close: %s", err)
-	}
-	return buf.Bytes(), nil
 }

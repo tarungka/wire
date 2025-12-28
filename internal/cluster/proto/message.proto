@@ -4,7 +4,7 @@ package cluster;
 
 import "internal/command/proto/command.proto";
 
-option go_package = "github.com/tarungka/wire/cluster/proto";
+option go_package = "github.com/tarungka/wire/internal/cluster/proto";
 
 message Credentials {
     string username = 1;
@@ -30,6 +30,7 @@ message Command {
         COMMAND_TYPE_REQUEST = 9;
         COMMAND_TYPE_LOAD_CHUNK = 10;
         COMMAND_TYPE_BACKUP_STREAM = 11;
+        COMMAND_TYPE_ANALYTICS_DEPLOY = 12;
     }
     Type type = 1;
 
@@ -43,9 +44,19 @@ message Command {
         command.JoinRequest join_request = 9;
         command.ExecuteQueryRequest execute_query_request = 10;
         command.LoadChunkRequest load_chunk_request = 11;
+        AnalyticsDeployRequest analytics_deploy_request = 12;
     }
 
     Credentials credentials = 4;
+}
+
+message AnalyticsDeployRequest {
+    string job_id = 1;
+    string task_id = 2;
+    string operator_type = 3;
+    bytes operator_config = 4;
+    repeated string input_tasks = 5;
+    repeated string output_tasks = 6;
 }
 
 message CommandExecuteResponse {
