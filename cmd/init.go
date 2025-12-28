@@ -233,12 +233,11 @@ type Config struct {
 	// DebugMode enables additional logs and other metadata to be printed
 	DebugMode bool
 
-	// StoreDatabase is the supporting backend database: badgerdb, bbolt, rocksdb
+	// StoreDatabase is the supporting backend database: badgerdb, bbolt
 	StoreDatabase string
 }
 
-// Validate checks the configuration for internal consistency, and activates
-// important rockdb policies. It must be called at least once on a Config
+// Validate checks the configuration for internal consistency. It must be called at least once on a Config
 // object before the Config object is used. It is OK to call more than
 // once.
 func (c *Config) Validate() error {

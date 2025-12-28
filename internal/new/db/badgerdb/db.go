@@ -3,16 +3,21 @@ package badgerdb
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"sync"
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/hashicorp/raft"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	dberrors "github.com/tarungka/wire/internal/errors"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/rsync"
 	utils "github.com/tarungka/wire/internal/utils"
+)
+
+var (
+	ErrDBNotOpen = errors.New("database is not open")
+	ErrDBOpen    = errors.New("database is already open")
 )
 
 type Config struct {
@@ -43,7 +48,7 @@ func New(c *Config) *DB {
 
 func (db *DB) Open() (*badger.DB, error) {
 	if db.open.Is() {
-		return nil, dberrors.ErrDBNotOpen
+		return nil, ErrDBNotOpen
 	}
 	if db.dbPath == "" {
 		db.dbPath = "/tmp/badger"
@@ -63,7 +68,7 @@ func (db *DB) Open() (*badger.DB, error) {
 // Opens an in memory database
 func (db *DB) OpenInMemory() (*badger.DB, error) {
 	if db.open.Is() {
-		return nil, dberrors.ErrDBOpen
+		return nil, ErrDBOpen
 	}
 	badgerInMemory, err := badger.Open(badger.DefaultOptions("").WithInMemory(true))
 	if err != nil {
@@ -79,7 +84,7 @@ func (db *DB) Set(key, val []byte) error {
 		db.logger.Printf("Set done!")
 	}()
 	if !db.open.Is() {
-		return dberrors.ErrDBNotOpen
+		return ErrDBNotOpen
 	}
 	db.logger.Trace().Msgf("setting value of key %v to %v", key, val)
 
@@ -96,7 +101,7 @@ func (db *DB) Set(key, val []byte) error {
 // Get returns the value for key, or an empty byte slice if key was not found.
 func (db *DB) Get(key []byte) ([]byte, error) {
 	if !db.open.Is() {
-		return nil, dberrors.ErrDBNotOpen
+		return nil, ErrDBNotOpen
 	}
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -119,7 +124,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 
 func (db *DB) SetUint64(key []byte, val uint64) error {
 	if !db.open.Is() {
-		return dberrors.ErrDBNotOpen
+		return ErrDBNotOpen
 	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -142,7 +147,7 @@ func (db *DB) SetUint64(key []byte, val uint64) error {
 // GetUint64 returns the uint64 value for key, or 0 if key was not found.
 func (db *DB) GetUint64(key []byte) (uint64, error) {
 	if !db.open.Is() {
-		return 0, dberrors.ErrDBNotOpen
+		return 0, ErrDBNotOpen
 	}
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -280,7 +285,7 @@ func (db *DB) DeleteRange(min, max uint64) error {
 
 func (db *DB) Sync() error {
 	if !db.open.Is() {
-		return dberrors.ErrDBNotOpen
+		return ErrDBNotOpen
 	}
 	return db.db.Sync()
 }
@@ -305,14 +310,14 @@ func (db *DB) Persist(sink raft.SnapshotSink) error {
 
 func (db *DB) GetDbPath() (string, error) {
 	if !db.open.Is() {
-		return "", dberrors.ErrDBNotOpen
+		return "", ErrDBNotOpen
 	}
 	return db.dbPath, nil
 }
 
 func (db *DB) Close() (retErr error) {
 	if !db.open.Is() {
-		return dberrors.ErrDBNotOpen
+		return ErrDBNotOpen
 	}
 	err := db.db.Close()
 	if err != nil {
@@ -325,7 +330,7 @@ func (db *DB) Close() (retErr error) {
 func (db *DB) Stats() (map[string]interface{}, error) {
 
 	if !db.open.Is() {
-		return nil, dberrors.ErrDBNotOpen
+		return nil, ErrDBNotOpen
 	}
 	stats := make(map[string]interface{})
 

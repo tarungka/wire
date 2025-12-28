@@ -96,7 +96,7 @@ type Config struct {
 	Dir string // The working directory for raft.
 	ID  string // Node ID.
 
-	StoreDatabase string // can be one of: badgerdb, rocksdb
+	StoreDatabase string // can be one of: badgerdb, bbolt
 }
 
 type NodeStore struct {
@@ -148,21 +148,13 @@ type NodeStore struct {
 func New(ly Layer, c *Config) (*NodeStore, error) {
 	newLogger := logger.GetLogger("store")
 	newLogger.Print("creating new store")
-	// dbConfig := db.Config{
-	// 	Dir: c.Dir,
-	// }
-	// newDbStore, err := db.New(c.DatabaseType, &dbConfig)
-	// newDbStore, err := db.New("badgerdb", &dbConfig)
-	// if err != nil {
-	// 	return nil, err
-	// }
+
 	return &NodeStore{
-		open:    rsync.NewAtomicBool(),
-		ly:      ly,
-		raftDir: c.Dir,
-		raftID:  c.ID,
-		logger:  newLogger,
-		// dbStore:      newDbStore,
+		open:           rsync.NewAtomicBool(),
+		ly:             ly,
+		raftDir:        c.Dir,
+		raftID:         c.ID,
+		logger:         newLogger,
 		fsmIndex:       &atomic.Uint64{},
 		fsmTerm:        &atomic.Uint64{},
 		fsmUpdatedAt:   rsync.NewAtomicTime(),

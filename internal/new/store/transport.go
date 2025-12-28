@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
-	"github.com/tarungka/wire/internal/store/gzip"
+	"github.com/tarungka/wire/internal/new/store/gzip"
 )
 
 // Layer is the interface expected by the Store for network communication

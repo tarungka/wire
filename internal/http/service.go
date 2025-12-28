@@ -30,9 +30,6 @@ import (
 	command "github.com/tarungka/wire/internal/command/proto"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/new/store"
-	"github.com/tarungka/wire/internal/pipeline"
-	"github.com/tarungka/wire/sinks"
-	"github.com/tarungka/wire/sources"
 )
 
 var (
@@ -564,12 +561,6 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handlePprof(c.Writer, c.Request)
 	})
 
-	// Handle all GET, POST, PUT, DELETE under /connector/*
-	engine.GET("/connector/*any", s.handleConnector)
-	engine.POST("/connector/*any", s.createPipeline)
-	engine.PUT("/connector/*any", s.handleConnector)
-	engine.DELETE("/connector/*any", s.handleConnector)
-
 	// Set up fallback for unknown routes
 	engine.NoRoute(func(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
@@ -577,26 +568,6 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Run the Gin engine with the request
 	engine.ServeHTTP(w, r)
-}
-
-// Function to handle all requests under /connector/*
-func (s *Service) handleConnector(c *gin.Context) {
-	switch c.Request.Method {
-	case http.MethodGet:
-		// Handle GET logic here
-		c.JSON(http.StatusOK, gin.H{"message": "GET request to /connector"})
-
-	case http.MethodPut:
-		// Handle PUT logic here
-		c.JSON(http.StatusOK, gin.H{"message": "PUT request to /connector"})
-
-	case http.MethodDelete:
-		deletePipeline(c.Writer, c.Request)
-
-	default:
-		// Fallback for unsupported methods
-		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "Method not allowed"})
-	}
 }
 
 // RegisterStatus allows other modules to register status for serving over HTTP.
@@ -1794,82 +1765,4 @@ func (s *Service) getTest(k string) (string, error) {
 		return "", err
 	}
 	return value, nil
-}
-
-//
-
-func (s *Service) createPipeline(c *gin.Context) {
-	r := c.Request
-	w := c.Writer
-
-	// Read the request body
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		s.logger.Err(err).Msg("Error reading request body")
-		SendResponseWithHeader(w, false, nil, "error reading request body", http.StatusInternalServerError, nil)
-		return
-	}
-
-	// Check if the request body is empty
-	if len(body) == 0 {
-		SendResponseWithHeader(w, false, nil, "error: no request body", http.StatusBadRequest, nil)
-		return
-	}
-
-	var pipelineData CreatePipelineModel
-	if err := json.Unmarshal(body, &pipelineData); err != nil {
-		s.logger.Err(err).Msg("Error when creating a new pipeline!")
-		SendResponseWithHeader(w, false, nil, "invalid request payload", http.StatusBadRequest, nil)
-		return
-	}
-	fmt.Printf(":->%v\n", pipelineData.Source)
-	fmt.Printf(":->%v\n", pipelineData.Sink)
-
-	var sourceConfig sources.SourceConfig
-	var sinkConfig sinks.SinkConfig
-
-	// Marshal the map to JSON, and then unmarshal it into the struct.
-	sourceBytes, err := json.Marshal(pipelineData.Source)
-	if err != nil {
-		s.logger.Err(err).Msg("Error marshalling source data")
-		return
-	}
-	if err := json.Unmarshal(sourceBytes, &sourceConfig); err != nil {
-		s.logger.Err(err).Msg("Error un-marshalling source configuration")
-		return
-	}
-
-	// Do the same for Sink
-	sinkBytes, err := json.Marshal(pipelineData.Sink)
-	if err != nil {
-		s.logger.Err(err).Msg("Error marshalling sink data")
-		return
-	}
-	if err := json.Unmarshal(sinkBytes, &sinkConfig); err != nil {
-		s.logger.Err(err).Msg("Error un-marshalling sink configuration")
-		return
-	}
-
-	dataSourceInterface, err := pipeline.DataSourceFactory(sourceConfig)
-	if err != nil {
-		// TODO
-	}
-	dataSinkInterface, err := pipeline.DataSinkFactory(sinkConfig)
-	if err != nil {
-		// TODO
-	}
-
-	newPipeline := pipeline.NewDataPipeline(dataSourceInterface, dataSinkInterface)
-	pipelineString, err := newPipeline.Show()
-	if err != nil {
-		s.logger.Err(err).Send()
-	}
-	s.logger.Debug().Str("key", newPipeline.Key()).Msgf("Creating and running pipeline: %s", pipelineString)
-
-	// store the pipeline in persistent storage
-	s.store.StoreInDatabase("config", string(body))
-
-	go newPipeline.Run(s.Context)
-
-	SendResponse(w, true, nil, "")
 }

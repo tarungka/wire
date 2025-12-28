@@ -6,7 +6,6 @@ import (
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/rqlite/raft-boltdb/v2"
 	"github.com/tarungka/wire/internal/new/db/badgerdb"
-	"github.com/tarungka/wire/internal/new/db/rocksdb"
 	"go.etcd.io/bbolt"
 )
 
@@ -48,8 +47,6 @@ func New(dbType string, config *Config) (DbStore, error) {
 		db := badgerdb.New((*badgerdb.Config)(config))
 		db.Open()
 		return db, nil
-	case "rocksdb":
-		return rocksdb.New((*rocksdb.Config)(config)), nil
 	case "bbolt":
 		bs, err := raftboltdb.New(raftboltdb.Options{
 			BoltOptions: &bbolt.Options{
