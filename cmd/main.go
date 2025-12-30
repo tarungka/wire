@@ -60,7 +60,7 @@ func main() {
 	if err != nil {
 		fmt.Printf("failed to parse command-line flags: %s", err.Error())
 	}
-	fmt.Println(logo)
+	fmt.Print(logo)
 
 	logger.SetDevelopment(cfg.DebugMode)
 	logger.SetLogFile(logFile)
