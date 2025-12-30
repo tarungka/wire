@@ -96,7 +96,6 @@ func main() {
 	log.Debug().Msgf(mainCtx.Err().Error(), mux)
 }
 
-
 // TODO: move this to a different file
 func getHostIP() (string, error) {
 	addrs, err := net.InterfaceAddrs()
