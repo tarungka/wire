@@ -11,35 +11,15 @@ permissions:
 
 jobs:
   integration-test:
-    name: Kafka Integration
+    name: Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
-      
-      - name: Start Infrastructure
-        run: |
-          cd tests/docker-composes/kafka
-          docker compose up -d
-          
-      - name: Wait for Kafka
-        run: |
-          # Simple wait loop or use a tool like wait-for-it
-          sleep 30
-          
+
       - name: Run Integration Tests
-        run: |
-          # Assuming integration tests are triggered via a specific tag or directory
-          # If they are part of ./... they run in the main test job, 
-          # but here we ensure the infra is up.
-          # For now, we list the command. Adjust if integration tests are separated.
-          go test -v -tags=integration ./tests/...
-          
-      - name: Stop Infrastructure
-        if: always()
-        run: |
-          cd tests/docker-composes/kafka
-          docker compose down
+        run: go test -v -tags=integration -timeout 5m ./...
