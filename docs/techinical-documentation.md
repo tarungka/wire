@@ -76,11 +76,11 @@ How complex pipelines are structured. Include a YAML schema example.
 Detailed Go definitions for the Source and Sink interfaces.
 
 ### 4.2 Built-in Connectors
-- **Sources:** Kafka, SQS, Webhooks, HTTP, File.
-- **Sinks:** Postgres, S3, Redis, Elasticsearch, Webhooks.
+- **Sources:** HTTP API (push-based — external systems POST events to Wire).
+- **Sinks:** HTTP API (Wire POSTs processed events to external HTTP endpoints).
 
 ### 4.3 State Management for Connectors
-How a connector saves its progress (e.g., Kafka offsets) so it can resume after a crash.
+How a connector saves its progress (e.g., HTTP API sequence numbers) so it can resume after a crash.
 
 ---
 

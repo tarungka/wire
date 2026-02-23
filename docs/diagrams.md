@@ -91,8 +91,8 @@ An example pipeline showing events, watermarks, and barriers flowing through ope
 ```mermaid
 flowchart LR
     subgraph Sources
-        KA[Kafka Partition 0]
-        KB[Kafka Partition 1]
+        KA[HTTP Source 1]
+        KB[HTTP Source 2]
     end
 
     subgraph Operators
@@ -104,8 +104,8 @@ flowchart LR
     end
 
     subgraph Sinks
-        PG1[Postgres Sink 1]
-        PG2[Postgres Sink 2]
+        PG1[HTTP Sink 1]
+        PG2[HTTP Sink 2]
     end
 
     KA -->|Events + Watermarks + Barriers| M1
@@ -226,7 +226,7 @@ How backpressure propagates backwards through the entire pipeline — no unbound
 
 ```mermaid
 flowchart RL
-    KAFKA["Kafka Source<br/>stops fetching"] -->|blocked| SRC_CH>"Source Output<br/>Channel FULL"]
+    SRC["HTTP Source<br/>stops accepting"] -->|blocked| SRC_CH>"Source Output<br/>Channel FULL"]
     SRC_CH -->|blocked| MAP["Map Operator<br/>blocked on write"]
     MAP -->|blocked| YAMUX_OUT["Yamux Stream<br/>window closes"]
     YAMUX_OUT -->|blocked| NET["Network send<br/>pauses"]
@@ -237,7 +237,7 @@ flowchart RL
     SINK_CH -->|blocked| SINK["Slow Sink<br/>ROOT CAUSE"]
 
     style SINK fill:#f66,stroke:#333,color:#fff
-    style KAFKA fill:#ff9,stroke:#333,color:#333
+    style SRC fill:#ff9,stroke:#333,color:#333
 ```
 
 ---
@@ -248,8 +248,8 @@ How watermarks flow through multi-input operators using the min-watermark rule.
 
 ```mermaid
 sequenceDiagram
-    participant SA as Source A<br/>(Kafka P0)
-    participant SB as Source B<br/>(Kafka P1)
+    participant SA as Source A<br/>(HTTP Src 1)
+    participant SB as Source B<br/>(HTTP Src 2)
     participant J as Join Operator
     participant W as Window Operator
 
@@ -363,11 +363,8 @@ Sources and Sinks available in Wire.
 flowchart LR
     subgraph Sources
         direction TB
-        SK[Apache Kafka]
-        SS[AWS SQS]
-        SR[RabbitMQ]
-        S3S[S3 / MinIO]
-        SH[HTTP / Webhooks]
+        SH["HTTP API<br/>(External systems POST events to Wire)"]
+        SC["Custom<br/>(Connector SDK — WIP-16)"]
     end
 
     subgraph Wire Engine
@@ -377,24 +374,13 @@ flowchart LR
 
     subgraph Sinks
         direction TB
-        OK[Apache Kafka]
-        OP[PostgreSQL]
-        OM[MongoDB]
-        OR[Redis]
-        OE[Elasticsearch]
-        OS[S3 / MinIO]
+        OH["HTTP API<br/>(Wire POSTs events to external endpoints)"]
+        OC["Custom<br/>(Connector SDK — WIP-16)"]
     end
 
-    SK --> P
-    SS --> P
-    SR --> P
-    S3S --> P
     SH --> P
+    SC --> P
 
-    P --> OK
-    P --> OP
-    P --> OM
-    P --> OR
-    P --> OE
-    P --> OS
+    P --> OH
+    P --> OC
 ```

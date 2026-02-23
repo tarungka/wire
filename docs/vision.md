@@ -29,7 +29,7 @@ Wire provides the following non-negotiable guarantees to the user:
 
 ### 3.1 Exactly-Once Semantics (EOS)
 In the event of a failure (node crash, network partition), the effect of processing a record on the system state and output will be reflected **exactly once**.
-*   *Note:* This requires compliant sources (replayable, e.g., Kafka) and sinks (transactional or idempotent).
+*   *Note:* This requires compliant sources (replayable) and sinks (transactional or idempotent).
 
 ### 3.2 Deterministic Recovery
 Recovery is **mechanistic**, not probabilistic.

@@ -33,7 +33,7 @@ These topics are completely absent — no doc covers them.
 
 3. **CLI Reference** — `wire coordinator` and `wire worker` mentioned as commands but no `--help` output, no flag reference, no usage examples. (The code has ~720 lines of flag parsing in `cmd/init.go` that isn't documented.)
 
-4. **Connector Documentation** — The technical doc lists connectors (Kafka, SQS, Postgres, S3, Redis, Elasticsearch, Webhooks) but provides zero detail — no interfaces, no configuration, no usage examples. The Go interfaces for Source/Sink don't exist in code or docs.
+4. **Connector Documentation** — Wire's only planned connector is HTTP API (push/pull). The technical doc references this but provides zero detail — no interfaces, no configuration, no usage examples. The Go interfaces for Source/Sink don't exist in code or docs. The Connector SDK (WIP-16) is planned but not yet specified.
 
 5. **Wire Protocol / Serialization** — No specification for the binary format used between nodes. What does a message look like on the wire? What serialization (protobuf? msgpack? custom?)? The code has msgpack utilities but no protocol spec.
 
@@ -88,7 +88,7 @@ This file is labeled Draft v0.1.0 but is functionally an outline, not documentat
 
 23. **AGENTS.md references non-existent code** — References `internal/service/http/`, `internal/service/cluster/`, and other paths that don't exist. This file is stale.
 
-24. **Connectors listed but not implemented** — The technical doc lists Kafka, Postgres, S3, Redis, Elasticsearch connectors as "built-in" but zero connector code exists and no interfaces are defined.
+24. **Connectors not yet implemented** — The only planned connector is HTTP API (push/pull). No connector code exists yet and no interfaces are defined. Additional connectors will be user-built via the Connector SDK (WIP-16).
 
 ---
 

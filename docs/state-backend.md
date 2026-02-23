@@ -15,7 +15,7 @@ State in Wire is not a "sidecar" cache; it is a first-class citizen embedded in 
     *   Scoped to the current partition key.
     *   Examples: `ValueState`, `ListState`, `MapState`.
 2.  **Operator State:** Bound to a parallel task instance.
-    *   Examples: Kafka Partition Offsets, File Reader cursors.
+    *   Examples: Source read positions (e.g., HTTP API sequence numbers).
 3.  **Broadcast State:** Configuration data sent to all parallel instances.
 
 ---

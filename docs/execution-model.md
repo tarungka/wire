@@ -72,7 +72,7 @@ Wire utilizes a combination of **Yamux Flow Control** and Go Channels to manage 
     *   The upstream Operator blocks on write (channel full).
     *   Yamux stops reading from the network for that stream.
     *   ... This propagates recursively to the Source.
-4.  **Source Behavior:** When blocked, the Source stops reading from external systems (e.g., stops fetching Kafka offsets).
+4.  **Source Behavior:** When blocked, the Source stops reading from external systems (e.g., stops accepting events from external systems).
 
 **Guarantee:** No unlimited buffering. No silent data drops under load.
 
@@ -124,5 +124,5 @@ This alignment ensures the snapshot captures **exactly** the state of "All event
 *   **Internal State:** Always Exactly-Once (due to rollback).
 *   **Sink Output:**
     *   **Idempotent Sinks (KV Store):** Naturally Exactly-Once.
-    *   **Transactional Sinks (Kafka/Postgres):** Require "Two-Phase Commit" tied to the Checkpoint completion mechanism.
+    *   **Transactional Sinks:** Require "Two-Phase Commit" tied to the Checkpoint completion mechanism.
     *   **Standard Sinks:** At-Least-Once (may see duplicates after replay).

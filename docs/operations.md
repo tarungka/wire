@@ -64,7 +64,7 @@ Critical alerts for production:
 
 ### 4.1 Checkpoint Interval
 *   **Low Interval (e.g., 1s):** faster recovery (replay less data), but higher I/O and network overhead.
-*   **High Interval (e.g., 5m):** low overhead, but painful recovery (replaying 5m of Kafka data).
+*   **High Interval (e.g., 5m):** low overhead, but painful recovery (replaying 5m of source data).
 *   *Recommendation:* Start with **10s to 30s**.
 
 ### 4.2 Pebble Tuning
