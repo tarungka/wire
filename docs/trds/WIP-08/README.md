@@ -1,6 +1,6 @@
-# Technical Requirements Document (TRD)
+# Heartbeat & Health Monitoring
 
-> **Feature/Project:** `Two-Phase Commit for Transactional Sinks`
+> **Feature/Project:** `Heartbeat & Health Monitoring`
 >
 > **WIP ID:** `WIP-08`
 >
@@ -24,235 +24,178 @@
 
 ### 1.1 Problem Statement
 
-Wire's execution-model.md states that exactly-once semantics for external sinks require "transactional or idempotent" sinks, but **never defines the two-phase commit (2PC) protocol**, the pre-commit/commit hooks, or how sink transactions integrate with the checkpoint lifecycle. Without this specification, it is impossible to implement exactly-once delivery to systems like Kafka (transactions) or PostgreSQL (SQL transactions).
+Wire's architecture.md states "Workers send periodic heartbeats to the Coordinator" and "Timeout triggers a Job Failure event" but **specifies no interval, no timeout duration, no payload, and no configuration options**. Without this, developers cannot implement the heartbeat system, and operators cannot tune it for their network characteristics (e.g., high-latency cross-region deployments need longer timeouts).
 
 ### 1.2 Proposed Solution (Technical Summary)
 
-Define a two-phase commit protocol where the checkpoint lifecycle drives the transaction lifecycle. Phase 1 (PreCommit) occurs when a checkpoint barrier arrives at a sink — the sink flushes all buffered data and prepares its transaction. Phase 2 (Commit) occurs when the Coordinator confirms global checkpoint completion — the sink finalizes the transaction. On failure, Abort rolls back any in-flight transaction and processing resumes from the last committed checkpoint.
-
-### 1.3 Goals & Non-Goals
-
-| Goals (In Scope) | Non-Goals (Explicitly Out) |
-| -- | -- |
-| Define the 2PC protocol tied to checkpoint barriers | Distributed transactions across multiple sinks |
-| Specify PreCommit, Commit, Abort semantics | Exactly-once for non-transactional sinks |
-| Document integration with Kafka transactions | Cross-system atomic commits (e.g., Kafka + Postgres together) |
-| Document integration with PostgreSQL transactions | Saga pattern or compensating transactions |
-| Define failure recovery for each phase | Read-your-own-writes consistency |
-
-### 1.4 Success Metrics
-
-| Metric | Current Baseline | Target | Measurement |
-| -- | -- | -- | -- |
-| 2PC protocol specified | No specification | Complete protocol with sequence diagram | Doc review |
-| Kafka exactly-once implementable from spec | No | Yes | Implementation test |
-| Postgres exactly-once implementable from spec | No | Yes | Implementation test |
+Define the heartbeat protocol: workers send heartbeats every `heartbeat_interval` (default 5s) to the Coordinator over the RPC channel. Each heartbeat includes worker status, task statuses, resource utilization, and current load. The Coordinator marks a worker as lost after `heartbeat_timeout` (default 30s) of no heartbeats, which triggers job failure for all jobs with tasks on that worker.
 
 ---
 
 ## 2. Architecture & System Design
 
-### 2.1 High-Level Architecture
+### 2.1 Heartbeat Flow
 
 ```
-Coordinator                     Worker (Sink Task)               External System
-    │                               │                               │
-    │ TriggerCheckpoint(N)          │                               │
-    ├──────────────────────────────▶│                               │
-    │                               │                               │
-    │                    ┌──────────┤                               │
-    │                    │ Barrier N│arrives                        │
-    │                    │ at sink  │                               │
-    │                    └──────────┤                               │
-    │                               │                               │
-    │                               │──PreCommit(N)────────────────▶│
-    │                               │  (flush + prepare tx)        │
-    │                               │◀────────────── prepared ──────│
-    │                               │                               │
-    │  AcknowledgeCheckpoint(N)     │                               │
-    │◀──────────────────────────────│                               │
-    │                               │                               │
-    │  ... wait for ALL tasks ...   │                               │
-    │                               │                               │
-    │  Checkpoint N COMPLETE        │                               │
-    │──────────────────────────────▶│                               │
-    │                               │                               │
-    │                               │──Commit(N)───────────────────▶│
-    │                               │  (finalize tx)               │
-    │                               │◀────────────── committed ─────│
-    │                               │                               │
-    │                               │──BeginTransaction()──────────▶│
-    │                               │  (start next tx)             │
-    │                               │                               │
+Worker                                  Coordinator
+  │                                        │
+  │  Heartbeat(WorkerID, tasks, load)      │
+  ├───────────────────────────────────────▶│
+  │                                        │ Reset timer for this worker
+  │         HeartbeatResponse(commands)    │
+  │◀───────────────────────────────────────┤
+  │                                        │
+  │  ... 5 seconds later ...               │
+  │                                        │
+  │  Heartbeat(WorkerID, tasks, load)      │
+  ├───────────────────────────────────────▶│
+  │                                        │
+  │  ... worker crashes ...                │
+  │                                        │
+  │  [30s with no heartbeat]               │
+  │                                        │ Timer expires
+  │                                        │ Mark worker LOST
+  │                                        │ Jobs on this worker → FAILING
 ```
 
-### 2.2 Component Breakdown
+### 2.2 Heartbeat Payload
 
-**Component 1:** Checkpoint Coordinator
-* **Responsibility:** Triggers checkpoints, collects ACKs, declares global completion.
-* **Technology:** Coordinator RPC (see WIP-05)
-* **Interactions:** Sends TriggerCheckpoint to sources, receives AcknowledgeCheckpoint from all tasks, then broadcasts Commit notification.
+```go
+type Heartbeat struct {
+    WorkerID        string
+    Timestamp       int64                 // Worker's wall clock (Unix millis)
+    TaskStatuses    []TaskStatus          // Status of each task running on this worker
+    ResourceReport  ResourceReport        // CPU, memory, disk usage
+    TaskSlotsTotal  int                   // Total task slots on this worker
+    TaskSlotsInUse  int                   // Currently occupied task slots
+}
 
-**Component 2:** Sink Task Runtime
-* **Responsibility:** Manages the TransactionalSink lifecycle within the checkpoint protocol.
-* **Technology:** Go runtime wrapping the TransactionalSink interface (see WIP-02)
-* **Interactions:** Calls PreCommit on barrier arrival, Commit on global completion notification, Abort on failure.
+type TaskStatus struct {
+    TaskID          string
+    JobID           string
+    Status          string                // DEPLOYING | RUNNING | FINISHED | FAILED
+    Metrics         TaskMetrics
+}
 
-**Component 3:** TransactionalSink Implementation (per connector)
-* **Responsibility:** Maps Wire's 2PC phases to the external system's transaction semantics.
-* **Technology:** Connector-specific (Kafka transactions, SQL BEGIN/COMMIT, S3 multipart)
-* **Interactions:** Translates PreCommit/Commit/Abort to external system calls.
+type TaskMetrics struct {
+    RecordsIn       int64
+    RecordsOut      int64
+    BytesIn         int64
+    BytesOut        int64
+    BackpressureMs  int64                 // Time spent blocked on output (last interval)
+}
 
-### 2.3 Data Flow — Full Checkpoint-Transaction Cycle
+type ResourceReport struct {
+    CPUUsagePercent    float64
+    MemoryUsedBytes    int64
+    MemoryTotalBytes   int64
+    DiskUsedBytes      int64
+    DiskTotalBytes     int64
+    GoroutineCount     int
+}
+```
 
-1. **Coordinator** triggers Checkpoint N by injecting barriers into all source streams.
-2. Barriers flow through the operator graph (with alignment per execution-model.md).
-3. Each **operator** snapshots its Pebble state when the barrier arrives.
-4. **Sink** receives the barrier:
-   a. Calls `sink.PreCommit(ctx, N)` — flushes all buffered writes, prepares the transaction.
-   b. Sends `AcknowledgeCheckpoint(N, taskID, stateHandle)` to Coordinator.
-5. **Coordinator** collects ACKs from ALL tasks.
-6. When all ACKs received: Checkpoint N is globally complete.
-7. Coordinator notifies all sink tasks: **Commit Checkpoint N**.
-8. **Sink** calls `sink.Commit(ctx, N)` — finalizes the transaction in the external system.
-9. **Sink** calls `sink.BeginTransaction(ctx)` — starts the next transaction for Epoch N+1.
+### 2.3 Heartbeat Response
 
-### 2.4 Failure Recovery
+The Coordinator can piggyback commands on the heartbeat response:
 
-**Failure during Phase 1 (before global completion):**
-1. Job enters FAILING state.
-2. All tasks are canceled.
-3. Sink tasks call `sink.Abort(ctx)` — rolls back any prepared-but-not-committed transactions.
-4. Job restarts from last **committed** Checkpoint (N-1).
-5. Sink re-opens and calls `BeginTransaction(ctx)` — fresh transaction.
-6. Events from Epoch N are reprocessed. No duplicates because the Epoch N transaction was aborted.
+```go
+type HeartbeatResponse struct {
+    Commands []WorkerCommand
+}
 
-**Failure during Phase 2 (Commit):**
-1. If `Commit(N)` succeeds on some sinks but the ACK is lost, on restart the Coordinator re-sends the Commit notification.
-2. Sink implementations **must handle idempotent Commit** — committing the same checkpointID twice must be a no-op.
-3. If `Commit(N)` fails (e.g., external system down), the sink retries with exponential backoff.
-4. If retries are exhausted, the job enters FAILING. On restart, the Coordinator will re-attempt the Commit.
+type WorkerCommand struct {
+    Type    string   // "CANCEL_TASK" | "DEPLOY_TASK" | "TRIGGER_CHECKPOINT"
+    Payload []byte   // Command-specific payload
+}
+```
 
 ---
 
 ## 3. API Design
 
-### 3.1 TransactionalSink Interface (from WIP-02)
+### 3.1 Configuration
 
-```go
-type TransactionalSink interface {
-    Sink
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `heartbeat.interval` | `5s` | How often workers send heartbeats |
+| `heartbeat.timeout` | `30s` | Time without heartbeat before worker declared lost |
+| `heartbeat.max_failures` | `0` | Consecutive failures before declaring loss (0 = use timeout only) |
 
-    // BeginTransaction starts a new transaction context.
-    // Called once at startup and after each Commit.
-    BeginTransaction(ctx context.Context) error
-
-    // PreCommit flushes all buffered data and prepares the transaction.
-    // After PreCommit returns, no more WriteBatch calls occur until Commit or Abort.
-    // This is Phase 1 of the two-phase commit.
-    PreCommit(ctx context.Context, checkpointID int64) error
-
-    // Commit finalizes the transaction. Called ONLY after global checkpoint completion.
-    // Must be idempotent — calling Commit(N) twice must be safe.
-    // This is Phase 2 of the two-phase commit.
-    Commit(ctx context.Context, checkpointID int64) error
-
-    // Abort rolls back the current transaction.
-    // Called on failure recovery before restarting from a checkpoint.
-    Abort(ctx context.Context) error
-}
+```yaml
+# wire.yaml
+heartbeat:
+  interval: "5s"
+  timeout: "30s"
 ```
 
-### 3.2 Kafka Transaction Mapping
+### 3.2 Failure Detection Cascade
 
-| Wire 2PC Phase | Kafka API Call |
-|----------------|---------------|
-| `BeginTransaction()` | `producer.BeginTransaction()` |
-| `WriteBatch(events)` | `producer.Produce(records)` (within transaction) |
-| `PreCommit(N)` | `producer.Flush()` — ensure all records are in Kafka broker buffers |
-| `Commit(N)` | `producer.CommitTransaction()` — atomically commits all records |
-| `Abort()` | `producer.AbortTransaction()` — discards all uncommitted records |
+1. Worker misses heartbeat → Coordinator starts countdown.
+2. After `heartbeat_timeout` with no heartbeat → Worker marked **LOST**.
+3. All tasks on lost worker → status **FAILED**.
+4. All jobs with failed tasks → status **FAILING**.
+5. Coordinator initiates recovery per job's restart strategy (see WIP-15).
 
-**Kafka-specific details:**
-- Each parallel sink subtask gets a unique `transactional.id` = `{user-prefix}-{subtask-index}`.
-- On recovery, Kafka's transaction coordinator automatically fences old producer instances with the same `transactional.id`.
-- Consumer isolation level must be `read_committed` to avoid reading uncommitted records.
+### 3.3 Worker Self-Termination
 
-### 3.3 PostgreSQL Transaction Mapping
+If a worker loses contact with the Coordinator (no heartbeat response for `heartbeat_timeout`), it self-terminates:
+1. Stops processing all tasks.
+2. Closes all Yamux connections.
+3. Exits with non-zero status (for supervisor restart).
 
-| Wire 2PC Phase | PostgreSQL Call |
-|----------------|----------------|
-| `BeginTransaction()` | `BEGIN` |
-| `WriteBatch(events)` | `INSERT INTO ... VALUES (...)` (batched) |
-| `PreCommit(N)` | `SAVEPOINT wire_chk_N` — flush all pending inserts |
-| `Commit(N)` | `RELEASE SAVEPOINT wire_chk_N; COMMIT` |
-| `Abort()` | `ROLLBACK` |
+This prevents split-brain scenarios where a worker continues processing while the Coordinator has already rescheduled its tasks.
 
-**PostgreSQL-specific details:**
-- Long-running transactions can cause vacuum issues. Checkpoint interval should be kept reasonable (< 5 minutes) for Postgres sinks.
-- For idempotent Commit: track committed checkpoint IDs in a metadata table `wire_checkpoints(sink_id, checkpoint_id, committed_at)`.
+### 3.4 Metrics
 
-### 3.4 S3 Transaction Mapping
-
-| Wire 2PC Phase | S3 API Call |
-|----------------|-------------|
-| `BeginTransaction()` | `CreateMultipartUpload()` |
-| `WriteBatch(events)` | Buffer in memory / temp file; `UploadPart()` when buffer full |
-| `PreCommit(N)` | `UploadPart()` for remaining buffered data |
-| `Commit(N)` | `CompleteMultipartUpload()` — atomically makes file visible |
-| `Abort()` | `AbortMultipartUpload()` — cleans up all parts |
-
-**S3-specific details:**
-- Multipart uploads have a 10,000 part limit. If exceeded, roll to a new upload within the same transaction.
-- S3 lifecycle rules should be configured to clean up incomplete multipart uploads after 24 hours.
+| Metric | Type | Description |
+|--------|------|-------------|
+| `wire_heartbeat_latency_ms` | Histogram | Round-trip time for heartbeat RPC |
+| `wire_heartbeat_failures_total` | Counter | Failed heartbeat attempts (network errors) |
+| `wire_workers_alive` | Gauge | Number of workers with active heartbeat |
+| `wire_workers_lost_total` | Counter | Workers declared lost |
 
 ---
 
 ## 4. Data Model & Storage
 
-### 4.1 Checkpoint-Transaction State
-
-The Coordinator tracks per-sink-task transaction state:
+Heartbeat state is ephemeral — maintained in Coordinator memory:
 
 | Field | Type | Description |
-| -- | -- | -- |
-| task_id | string | Sink task identifier |
-| current_checkpoint | int64 | Checkpoint currently in PreCommit |
-| last_committed_checkpoint | int64 | Last successfully committed checkpoint |
-| transaction_state | enum | ACTIVE / PRE_COMMITTED / COMMITTED |
+|-------|------|-------------|
+| worker_id | string | Worker identifier |
+| last_heartbeat | timestamp | Time of last successful heartbeat |
+| status | enum | ALIVE / LOST |
+| task_slots | int | Available task slots |
+| resource_report | ResourceReport | Latest resource usage |
 
-### 4.2 Recovery Metadata
-
-On recovery, the Coordinator determines which transactions need Commit vs Abort:
-
-- If `checkpoint N` is globally complete but a sink has `last_committed_checkpoint = N-1` → re-send Commit(N).
-- If `checkpoint N` is NOT complete → Abort any in-flight transactions and restart from last committed checkpoint.
+Heartbeat state is **not** persisted to the Raft log (too frequent, too ephemeral). On Coordinator failover, workers must re-register via the next heartbeat cycle.
 
 ---
 
 ## 5. Design Decisions & Trade-offs
 
-### Decision 1: Checkpoint-driven 2PC (not independent transaction boundaries)
+### Decision 1: 5s interval / 30s timeout (6x ratio)
 
 |  |  |
 | -- | -- |
-| **Context** | Transaction boundaries must align with checkpoints for exactly-once. |
-| **Options Considered** | (A) 2PC tied to checkpoint lifecycle, (B) Independent transaction boundaries with periodic commit, (C) Write-ahead log for sinks |
-| **Decision** | Option A |
-| **Rationale** | Checkpoint = the consistency boundary. If we commit transactions at checkpoint boundaries, recovery always rolls back to a consistent state. Independent transactions create gaps between checkpoint and transaction boundaries. |
-| **Trade-offs Accepted** | Transaction duration = checkpoint interval. Long checkpoint intervals mean long-held transactions (problematic for Postgres lock contention). |
-| **Revisit Trigger** | If Postgres users report lock contention issues with checkpoint intervals > 1 minute. |
+| **Context** | Interval and timeout determine detection speed vs false positive rate. |
+| **Options Considered** | (A) 1s / 5s (fast detection, more network traffic), (B) 5s / 30s (balanced), (C) 10s / 60s (conservative) |
+| **Decision** | Option B: 5s / 30s |
+| **Rationale** | 6 missed heartbeats before declaration gives resilience against network blips and GC pauses. 30s detection is fast enough for most workloads. Balanced default for distributed systems. |
+| **Trade-offs Accepted** | 30 seconds of stalled processing before recovery starts. |
+| **Revisit Trigger** | If users need sub-10s failure detection. Allow per-job configuration. |
 
-### Decision 2: Idempotent Commit requirement
+### Decision 2: Worker self-termination on coordinator loss
 
 |  |  |
 | -- | -- |
-| **Context** | The Commit notification may be delivered more than once (coordinator crash/restart). |
-| **Options Considered** | (A) Require sinks to handle idempotent Commit, (B) Coordinator tracks Commit delivery with ACK, (C) Exactly-once Commit delivery via Raft log |
-| **Decision** | Option A |
-| **Rationale** | Simplest. Kafka transactions are already idempotent by ID. Postgres can check a metadata table. Pushing idempotency to the sink avoids complex coordinator-side exactly-once delivery. |
-| **Trade-offs Accepted** | Sink implementors must think about idempotency. |
-| **Revisit Trigger** | If sink idempotency proves too burdensome for custom connector authors. |
+| **Context** | Workers that can't reach the Coordinator are in an ambiguous state. |
+| **Options Considered** | (A) Worker self-terminates, (B) Worker continues processing optimistically, (C) Worker pauses and waits |
+| **Decision** | Option A: Self-terminate |
+| **Rationale** | Prevents split-brain. If the Coordinator has rescheduled the worker's tasks to another node, both nodes processing the same data violates exactly-once. Self-termination + external supervisor (systemd, K8s) provides clean restart. |
+| **Trade-offs Accepted** | Transient network partition kills the worker (even if it could have reconnected). |
+| **Revisit Trigger** | If network partitions are frequent. Consider a "grace period" before self-termination. |
 
 ---
 
@@ -260,28 +203,23 @@ On recovery, the Coordinator determines which transactions need Commit vs Abort:
 
 | # | Scenario | Handling | Impact | Severity |
 | -- | -- | -- | -- | -- |
-| 1 | PreCommit times out (external system slow) | Checkpoint times out → Job enters FAILING → Abort + restart from last checkpoint | Checkpoint lost, brief delay | Medium |
-| 2 | Commit succeeds but worker crashes before ACK | On restart, Coordinator re-sends Commit(N). Sink Commit is idempotent → no duplicate data. | No impact | Low |
-| 3 | External system down during Commit | Sink retries with backoff. If exhausted, job FAILING. On recovery, Coordinator re-attempts Commit. | Delayed commit | High |
-| 4 | Kafka transaction timeout (default 60s) | If checkpoint takes > 60s, Kafka broker aborts the transaction. Solution: increase `transaction.timeout.ms` or decrease checkpoint interval. | Data loss if misconfigured | High |
-| 5 | Postgres long transaction causes deadlock | PreCommit should flush quickly. If deadlock detected, Abort and retry via checkpoint recovery. | Brief delay | Medium |
-| 6 | S3 multipart upload exceeds 10,000 parts | Sink implementation must detect this and roll to new upload within same logical transaction. | Implementation complexity | Low |
-| 7 | Mixed transactional and non-transactional sinks | Non-transactional sinks get at-least-once (may see duplicates). Transactional sinks get exactly-once. Documented as expected behavior. | Partial exactly-once | Low |
+| 1 | Network partition between worker and coordinator | Worker self-terminates after timeout. Coordinator marks worker lost. Tasks rescheduled. | Brief downtime for affected jobs | High |
+| 2 | Coordinator failover during heartbeat | Worker's next heartbeat goes to new leader. Worker re-registers automatically. | One missed heartbeat cycle | Low |
+| 3 | Worker GC pause > heartbeat timeout | Worker declared lost. After GC, worker self-terminates (no coordinator response). | False positive | Medium |
+| 4 | Clock skew between worker and coordinator | Heartbeat uses wall-clock round-trip, not timestamp comparison. Clock skew doesn't affect detection. | No impact | Low |
+| 5 | All workers lost simultaneously | All jobs enter FAILING. Coordinator waits for workers to rejoin (new or restarted). | Full cluster outage | Critical |
 
 ---
 
 ## 7. Security & Compliance
 
-### 7.1 Transaction Credentials
+### 7.1 Heartbeat Authentication
 
-* Kafka transactional producers require `transactional.id` permission (ACL: `WRITE` on `TransactionalId`).
-* PostgreSQL transactions use the same connection credentials as normal writes.
-* S3 multipart uploads require `s3:PutObject` and `s3:AbortMultipartUpload` permissions.
+Heartbeat RPC uses the same authentication as other Coordinator-Worker RPCs (mTLS on port 4002). See WIP-17.
 
-### 7.2 Data Consistency
+### 7.2 Resource Report Privacy
 
-* The 2PC protocol guarantees that external system state is consistent with Wire's internal checkpoint state.
-* In case of doubt, the `wire_checkpoints` metadata table (for sinks that support it) provides an audit trail.
+ResourceReport includes system-level metrics (CPU, memory, disk). These are not externally exposed — only accessible to the Coordinator for scheduling decisions.
 
 ---
 
@@ -289,19 +227,16 @@ On recovery, the Coordinator determines which transactions need Commit vs Abort:
 
 | Test Type | Scope | Tools | Coverage Target |
 | -- | -- | -- | -- |
-| Unit Tests | 2PC state machine, phase transitions | Go `testing` | 100% of state transitions |
-| Integration Tests | Kafka exactly-once: write → checkpoint → kill → verify no duplicates | Docker (Kafka), testcontainers | Happy path + failure in each phase |
-| Integration Tests | Postgres exactly-once: write → checkpoint → kill → verify no duplicates | Docker (Postgres) | Happy path + failure in each phase |
-| Chaos Tests | Kill worker during PreCommit/Commit | toxiproxy + Docker | All failure scenarios in Section 6 |
+| Unit Tests | Timer logic, timeout detection, status transitions | Go `testing` | 100% |
+| Integration Tests | Worker → heartbeat → Coordinator | MiniCluster | Normal + timeout + recovery |
+| Chaos Tests | Kill worker, network partition | toxiproxy | Detection latency < timeout + 1s |
 
 ### 8.1 Key Test Scenarios
 
-1. Normal cycle: BeginTransaction → WriteBatch(×N) → PreCommit → Commit → verify data visible
-2. Abort after PreCommit: BeginTransaction → WriteBatch → PreCommit → kill worker → restart → verify no data from aborted transaction
-3. Idempotent Commit: Commit(N) called twice → verify no duplicate data
-4. Kafka: Produce records → checkpoint → consume with `isolation.level=read_committed` → verify exactly records from committed transactions
-5. Postgres: INSERT rows → checkpoint → verify row count matches expected (no duplicates)
-6. Recovery: Write 1000 records across 3 checkpoints → kill during checkpoint 3 → restart → verify exactly 2 checkpoints worth of data committed
+1. Normal: Worker heartbeats → Coordinator tracks status → worker marked ALIVE
+2. Worker crash: Stop heartbeats → wait timeout → verify worker marked LOST, jobs FAILING
+3. Worker self-termination: Block coordinator response → verify worker exits after timeout
+4. Recovery: Worker lost → restart → new heartbeat → worker marked ALIVE, tasks rescheduled
 
 ---
 
@@ -309,8 +244,6 @@ On recovery, the Coordinator determines which transactions need Commit vs Abort:
 
 | # | Question / Risk | Owner | Status |
 | -- | -- | -- | -- |
-| 1 | Should we support cross-sink atomic commits (e.g., Kafka AND Postgres in one transaction)? | Tarun | Open — likely No for v1 |
-| 2 | What is the maximum acceptable checkpoint interval for Postgres sinks before lock contention becomes a problem? | Tarun | Open |
-| 3 | Should PreCommit have its own timeout separate from the checkpoint timeout? | Tarun | Open |
-| 4 | Risk: Kafka's `transaction.timeout.ms` default (60s) may be too short for large checkpoints. Need to document recommended configuration. | — | Acknowledged |
-| 5 | Risk: S3 eventual consistency may cause Commit to succeed but data not immediately visible. Acceptable? | — | Acknowledged |
+| 1 | Should heartbeat interval be configurable per-worker (not just globally)? | Tarun | Open |
+| 2 | Should we use Raft's built-in heartbeat instead of a separate mechanism? | Tarun | Open |
+| 3 | Risk: GC pauses in Go can exceed 5s on large heaps. Default timeout may need tuning for large workers. | — | Acknowledged |

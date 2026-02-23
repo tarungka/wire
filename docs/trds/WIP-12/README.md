@@ -1,6 +1,6 @@
-# Technical Requirements Document (TRD)
+# Late Data & Allowed Lateness
 
-> **Feature/Project:** `Key Group Assignment & State Sharding`
+> **Feature/Project:** `Late Data & Allowed Lateness`
 >
 > **WIP ID:** `WIP-12`
 >
@@ -24,195 +24,157 @@
 
 ### 1.1 Problem Statement
 
-Wire's state-backend.md mentions Key Groups as "the atomic unit for redistribution" and the key encoding includes a `KeyGroupPrefix`, but the **assignment algorithm is never specified**. How many Key Groups exist? What hash function maps keys to groups? How are groups assigned to parallel task instances? How does rebalancing work during rescaling? This is critical for correctness — an incorrect assignment means state lookups return wrong data, and rescaling loses state.
+Wire's execution-model.md mentions "Allowed Lateness: Users can configure a grace period where late events trigger a window re-computation/update" but provides **no configuration syntax, no units, no per-operator scoping, and no side-output mechanism** for events that arrive after the allowed lateness expires.
 
 ### 1.2 Proposed Solution (Technical Summary)
 
-Define a static Key Group model: the number of Key Groups is fixed at job creation time (default 128, configurable up to 32768). Keys are assigned to groups via `murmur3(key) mod numKeyGroups`. Groups are assigned to parallel task instances via range partitioning: task `i` of `n` owns groups `[i * numKeyGroups/n, (i+1) * numKeyGroups/n)`. On rescaling, groups are redistributed to new ranges and the corresponding Pebble key ranges are transferred.
+Define "late data" as any event with `EventTime < CurrentWatermark`. Implement a configurable `AllowedLateness` duration per window operator. Late events within the allowed lateness re-open the window and trigger an updated result emission. Late events beyond the allowed lateness are routed to a configurable side output (DLQ). Window state is retained for `WindowEnd + AllowedLateness` before purge.
 
 ### 1.3 Goals & Non-Goals
 
 | Goals (In Scope) | Non-Goals (Explicitly Out) |
 | -- | -- |
-| Define Key Group count and its lifecycle | Dynamic Key Group splitting |
-| Specify key-to-group hash function | Consistent hashing (virtual nodes) |
-| Specify group-to-task assignment algorithm | Weighted assignment based on load |
-| Define rescaling state transfer protocol | Hot rescaling without savepoint |
+| Define late data semantics | Retracting/correcting previously emitted results |
+| Specify AllowedLateness configuration | Per-key lateness configuration |
+| Define side output for too-late events | Automatic lateness detection/tuning |
+| Specify window state retention policy | Stateless operator lateness handling |
 
 ---
 
 ## 2. Architecture & System Design
 
-### 2.1 Key Group Model
+### 2.1 Late Data Flow
 
 ```
-Keys:        [user-1] [user-2] [user-3] ... [user-N]
-               │         │         │
-        murmur3(key) mod 128
-               │         │         │
-               ▼         ▼         ▼
-Key Groups:  [0]  [1]  [2] ... [63] [64] [65] ... [127]
-              ├─── Task 0 ────┤     ├──── Task 1 ────┤
-              (groups 0-63)         (groups 64-127)
-              (parallelism = 2)
+Event arrives: EventTime = T
+
+Is T >= CurrentWatermark?
+  ├── Yes → Normal processing (assign to window)
+  └── No → Event is LATE
+            │
+            Is AllowedLateness configured for this window?
+              ├── No → Drop event (default) or route to side output
+              └── Yes → Is T >= WindowEnd - AllowedLateness?
+                          ├── Yes → Re-open window, update aggregation, emit updated result
+                          └── No → Event is TOO LATE → route to side output
 ```
 
-### 2.2 Component Breakdown
+### 2.2 Window State Retention
 
-**Component 1:** Key Group Assigner
-* **Responsibility:** Map user keys to Key Groups via hash function.
-* **Technology:** `murmur3` hash (fast, good distribution, deterministic)
-* **Interactions:** Called by KeyBy operator for every event to determine routing.
+Without allowed lateness:
+- Window state purged when `Watermark > WindowEnd`
 
-**Component 2:** Task Range Calculator
-* **Responsibility:** Assign Key Group ranges to parallel task instances.
-* **Technology:** Simple range partitioning: `startGroup = taskIndex * numGroups / parallelism`
-* **Interactions:** Called by Coordinator when building the ExecutionGraph.
-
-**Component 3:** State Transfer (Rescaling)
-* **Responsibility:** During rescale, transfer Pebble key ranges between workers.
-* **Technology:** Pebble range scan + network transfer
-* **Interactions:** Coordinator calculates old and new assignments. Workers download relevant Key Group ranges from the savepoint.
-
-### 2.3 Key Encoding in Pebble
-
-From state-backend.md, the composite key format:
-
-```
-[KeyGroupPrefix (2 bytes)][OperatorID (4 bytes)][UserKey (N bytes)][Namespace/Window (M bytes)]
-```
-
-- **KeyGroupPrefix:** `uint16` big-endian. Allows Pebble range scans to extract all state for a Key Group range.
-- Range scan for groups [64, 128): `Scan(prefix=0x0040, end=0x0080)`.
+With allowed lateness:
+- Window state purged when `Watermark > WindowEnd + AllowedLateness`
+- During `[WindowEnd, WindowEnd + AllowedLateness]`, the window is "closed but retained"
+- Late events re-trigger the window function, emitting an **updated** result
 
 ---
 
 ## 3. API Design
 
-### 3.1 Configuration
+### 3.1 Go SDK
 
-| Parameter | Default | Constraints | Description |
-|-----------|---------|-------------|-------------|
-| `key_groups` | `128` | Must be power of 2. Range: [1, 32768]. | Number of Key Groups. Fixed at job creation. |
+```go
+keyed.Window(sdk.TumblingWindow(5 * time.Minute)).
+    AllowedLateness(30 * time.Second)
+```
+
+### 3.2 YAML Configuration
 
 ```yaml
-# pipeline.yaml
-name: "my-job"
-parallelism: 4
-key_groups: 256      # Optional, default 128
+transforms:
+  - name: "count-window"
+    type: "tumbling-window"
+    input: "keyed-stream"
+    config:
+      size: "5m"
+      aggregation: "count"
+      allowed_lateness: "30s"       # Grace period for late events
+      late_output: "late-events"    # Side output name for too-late events
 ```
 
-### 3.2 Key-to-Group Function
+### 3.3 Side Output for Too-Late Events
 
 ```go
-func KeyGroup(key []byte, numKeyGroups int) uint16 {
-    hash := murmur3.Sum32(key)
-    return uint16(hash % uint32(numKeyGroups))
-}
+lateTag := sdk.NewOutputTag("late-events")
+
+windowed := keyed.Window(sdk.TumblingWindow(5 * time.Minute)).
+    AllowedLateness(30 * time.Second).
+    SetLateOutputTag(lateTag)
+
+// Collect too-late events as a separate stream
+lateStream := mainStream.GetSideOutput(lateTag)
+lateStream.AddSink("late-sink", lateSink)
 ```
 
-### 3.3 Group-to-Task Assignment
+### 3.4 Updated Result Emission
+
+When a late event re-opens a window:
+- The window function is re-invoked with the updated accumulator.
+- The emitted result is marked as an **update** (not a new result).
+- Downstream operators receive both the original and updated results.
 
 ```go
-func AssignedTask(keyGroup uint16, numKeyGroups int, parallelism int) int {
-    return int(keyGroup) * parallelism / numKeyGroups
-}
-
-func TaskKeyGroupRange(taskIndex int, numKeyGroups int, parallelism int) (start, end uint16) {
-    start = uint16(taskIndex * numKeyGroups / parallelism)
-    end = uint16((taskIndex + 1) * numKeyGroups / parallelism)
-    return
+type WindowResult struct {
+    Key        []byte
+    WindowStart int64
+    WindowEnd   int64
+    Value      []byte
+    IsUpdate   bool    // true if this is a re-computation due to late data
 }
 ```
 
-**Example:** 128 Key Groups, parallelism = 4:
+### 3.5 Metrics
 
-| Task | Key Groups |
-|------|-----------|
-| 0 | [0, 32) |
-| 1 | [32, 64) |
-| 2 | [64, 96) |
-| 3 | [96, 128) |
-
-### 3.4 Rescaling Protocol
-
-When parallelism changes (e.g., 4 → 8) via savepoint-based rescale:
-
-1. Old assignment: Task 0 owned [0, 32).
-2. New assignment: Task 0 owns [0, 16), Task 4 owns [16, 32).
-3. Task 0 downloads its state from the savepoint and retains groups [0, 16).
-4. Task 4 downloads state from the savepoint and extracts groups [16, 32).
-5. Each task opens a Pebble instance with only its assigned key range.
-
-State transfer is via the durable storage (S3/MinIO), not direct worker-to-worker.
+| Metric | Type | Description |
+|--------|------|-------------|
+| `wire_late_events_total` | Counter | Events arriving after watermark (per operator) |
+| `wire_late_events_allowed_total` | Counter | Late events within allowed lateness (re-opened window) |
+| `wire_late_events_dropped_total` | Counter | Events beyond allowed lateness (too late) |
+| `wire_window_state_retention_bytes` | Gauge | Extra state held for allowed lateness |
 
 ---
 
 ## 4. Data Model & Storage
 
-### 4.1 Key Group Metadata
+### 4.1 Window State Lifecycle
 
-Stored in checkpoint metadata (see WIP-18):
+| Phase | Watermark Position | State | Behavior |
+|-------|-------------------|-------|----------|
+| Open | `W < WindowEnd` | Active | Events assigned, aggregation updated |
+| Closed but retained | `WindowEnd <= W < WindowEnd + AllowedLateness` | Retained | Late events re-trigger, updated results emitted |
+| Purged | `W >= WindowEnd + AllowedLateness` | Deleted | State purged from Pebble. Events are too-late. |
 
-```json
-{
-  "num_key_groups": 128,
-  "task_assignments": {
-    "task-0": { "start": 0, "end": 32 },
-    "task-1": { "start": 32, "end": 64 },
-    "task-2": { "start": 64, "end": 96 },
-    "task-3": { "start": 96, "end": 128 }
-  }
-}
-```
+### 4.2 Storage Impact
 
-### 4.2 Pebble Key Layout
-
-```
-[0x0000][op-id][user-key]  ← Key Group 0
-[0x0001][op-id][user-key]  ← Key Group 1
-...
-[0x007F][op-id][user-key]  ← Key Group 127
-```
-
-Range scans are efficient because Key Group is the prefix.
+AllowedLateness increases state retention duration. For tumbling windows with `size=5m` and `allowed_lateness=30s`, state lives for 5m30s instead of 5m. For session windows, the impact is proportional to the number of active sessions.
 
 ---
 
 ## 5. Design Decisions & Trade-offs
 
-### Decision 1: Fixed Key Group count (not dynamic)
+### Decision 1: Updated results (not retractions)
 
 |  |  |
 | -- | -- |
-| **Context** | Key Group count affects rescale granularity and overhead. |
-| **Options Considered** | (A) Fixed at job creation, (B) Dynamic splitting (like HBase regions), (C) Per-operator Key Group count |
-| **Decision** | Option A: Fixed |
-| **Rationale** | Simple. Deterministic. No runtime overhead for splitting. numKeyGroups >> max parallelism ensures fine-grained rescaling. Flink uses the same model (default 128). |
-| **Trade-offs Accepted** | Cannot increase Key Group count without reprocessing all state. Must be set high enough at creation. |
-| **Revisit Trigger** | If users need to rescale beyond initial Key Group count. |
+| **Context** | When a late event updates a window, downstream needs to know. |
+| **Options Considered** | (A) Emit updated result with `IsUpdate=true` flag, (B) Emit retraction of old result + new result, (C) Only emit final result at purge time |
+| **Decision** | Option A: Updated result with flag |
+| **Rationale** | Simplest. Sinks that support upsert naturally handle updates. Retractions add complexity and require all downstream operators to handle negative records. |
+| **Trade-offs Accepted** | Append-only sinks will see duplicate records for the same window. Users must handle `IsUpdate` flag. |
+| **Revisit Trigger** | If users need true retraction semantics for SQL-style materialized views. |
 
-### Decision 2: murmur3 hash (not SHA or CRC)
-
-|  |  |
-| -- | -- |
-| **Context** | Need a fast, well-distributed hash for key routing. |
-| **Options Considered** | (A) murmur3, (B) xxhash, (C) CRC32, (D) SHA-256 |
-| **Decision** | Option A: murmur3 |
-| **Rationale** | Good distribution, fast, widely used for partitioning (Kafka, Cassandra). Non-cryptographic (no need for crypto here). |
-| **Trade-offs Accepted** | Not cryptographically secure (irrelevant for partitioning). |
-| **Revisit Trigger** | If hash collision hotspots are observed with real-world key distributions. |
-
-### Decision 3: Range partitioning (not consistent hashing)
+### Decision 2: Drop by default (no AllowedLateness = drop late events)
 
 |  |  |
 | -- | -- |
-| **Context** | Assigning Key Groups to tasks. |
-| **Options Considered** | (A) Contiguous range partitioning, (B) Consistent hashing with virtual nodes |
-| **Decision** | Option A: Range partitioning |
-| **Rationale** | Deterministic — task assignment is a pure function of (keyGroup, parallelism). No lookup table needed. Contiguous ranges enable efficient Pebble prefix scans. Consistent hashing adds complexity for no benefit when Key Group count is fixed. |
-| **Trade-offs Accepted** | Rescaling moves contiguous blocks (may cause temporary load imbalance if key distribution is skewed). |
-| **Revisit Trigger** | If skewed key distributions cause persistent load imbalance. |
+| **Context** | What happens to late events when AllowedLateness is not configured? |
+| **Options Considered** | (A) Drop silently, (B) Drop with metric, (C) Route to global DLQ |
+| **Decision** | Option B: Drop with metric |
+| **Rationale** | Dropping silently is dangerous (users don't know they're losing data). Routing everything to DLQ is noisy. Metric-only is a good default — users monitor `wire_late_events_dropped_total` and add AllowedLateness if needed. |
+| **Trade-offs Accepted** | Data loss by default if events are late. Users must configure AllowedLateness for correctness. |
+| **Revisit Trigger** | If users frequently lose data without realizing it. Consider making AllowedLateness mandatory. |
 
 ---
 
@@ -220,11 +182,11 @@ Range scans are efficient because Key Group is the prefix.
 
 | # | Scenario | Handling | Impact | Severity |
 | -- | -- | -- | -- | -- |
-| 1 | parallelism > numKeyGroups | Error at job submission: "parallelism cannot exceed key_groups" | Job rejected | Low |
-| 2 | numKeyGroups not power of 2 | Error at job submission: "key_groups must be a power of 2" | Job rejected | Low |
-| 3 | Key is nil/empty | Assigned to Key Group 0 (murmur3 of empty bytes). Consistent. | Hotspot on group 0 if many nil keys | Medium |
-| 4 | Rescale from 4→3 (not evenly divisible) | Range partitioning handles this: groups distributed as [0,42), [42,85), [85,128). Unequal but correct. | Slight imbalance | Low |
-| 5 | Savepoint has different numKeyGroups than new job | Error: "Key Group count mismatch (savepoint: 128, job: 256)" | Job rejected | Medium |
+| 1 | AllowedLateness > WindowSize | Valid but unusual. State retention = WindowSize + AllowedLateness. Documented as supported. | Extra state | Low |
+| 2 | Burst of late events re-opens same window 100 times | Each re-open triggers re-computation. If window function is expensive, this adds load. | Performance degradation | Medium |
+| 3 | Late event arrives for a session window that already merged | Session window is re-opened, late event added, potential re-merge with adjacent sessions. | Complex but correct | Medium |
+| 4 | Recovery rewinds watermark → events no longer "late" | On recovery from checkpoint, watermark rewinds. Events that were previously late are now on-time. Windows re-compute correctly. | Expected behavior | Low |
+| 5 | AllowedLateness configured but no late output tag set | Too-late events dropped with metric. No side output. | Data loss (documented) | Low |
 
 ---
 
@@ -238,17 +200,16 @@ No additional security considerations.
 
 | Test Type | Scope | Tools | Coverage Target |
 | -- | -- | -- | -- |
-| Unit Tests | Hash function, range assignment, rescale calculation | Go `testing` | 100% |
-| Property Tests | Uniform distribution of random keys across groups | Go `testing/quick` | Distribution within 10% of uniform |
-| Integration Tests | Rescale: write state → savepoint → rescale → verify state | MiniCluster | 4→8, 8→4, 4→3 |
+| Unit Tests | Late event detection, window state retention, purge timing | Go `testing` | 100% |
+| Integration Tests | Late event → updated result → verify downstream | MiniCluster | All window types |
 
 ### 8.1 Key Test Scenarios
 
-1. Hash distribution: 1M random keys → verify each Key Group has ~7800 keys (128 groups, within 20%)
-2. Assignment: 128 groups, parallelism 4 → task 0 gets [0,32), task 3 gets [96,128)
-3. Rescale 4→8: State in Key Group 50 (originally task 1) now in task 3 → verify state accessible
-4. Rescale 8→4: State from two old tasks merged into one → verify all state present
-5. Nil key: Consistently routed to the same task
+1. On-time event → window fires → late event within AllowedLateness → updated result emitted
+2. Late event beyond AllowedLateness → routed to side output
+3. No AllowedLateness configured → late events dropped, metric incremented
+4. Window state purged after `WindowEnd + AllowedLateness` → verify Pebble state cleaned up
+5. Recovery: checkpoint before late event → restore → late event replayed → correct result
 
 ---
 
@@ -256,6 +217,6 @@ No additional security considerations.
 
 | # | Question / Risk | Owner | Status |
 | -- | -- | -- | -- |
-| 1 | Should default numKeyGroups be 128 or 256? Higher = finer rescale granularity but more overhead. | Tarun | Open |
-| 2 | Should we support changing numKeyGroups via state migration (rekey)? | Tarun | Open — likely No for v1 |
-| 3 | Risk: Highly skewed key distributions (e.g., 50% of events have key "null") cause hotspots. Should we detect and warn? | — | Acknowledged |
+| 1 | Should AllowedLateness be configurable per-key (not just per-operator)? | Tarun | Open — likely No for v1 |
+| 2 | Should updated results carry the previous result for diffing? | Tarun | Open |
+| 3 | Risk: Large AllowedLateness + many keys = significant state growth. Need monitoring. | — | Acknowledged |

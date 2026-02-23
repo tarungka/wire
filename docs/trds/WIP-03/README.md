@@ -1,6 +1,6 @@
-# Technical Requirements Document (TRD)
+# Key Group Assignment & State Sharding
 
-> **Feature/Project:** `Configuration Reference`
+> **Feature/Project:** `Key Group Assignment & State Sharding`
 >
 > **WIP ID:** `WIP-03`
 >
@@ -24,304 +24,195 @@
 
 ### 1.1 Problem Statement
 
-Wire's `operations.md` references "Configuration via `wire.yaml`" but the file format is never documented. The CLI has ~720 lines of flag parsing in `cmd/init.go` with 50+ flags covering HTTP, Raft, TLS, write queues, profiling, and cluster join — none of which are documented. Pipeline configuration exists as example YAML/JSON in `.config/` but with no schema or field reference. Users cannot configure or run Wire without reading source code.
+Wire's state-backend.md mentions Key Groups as "the atomic unit for redistribution" and the key encoding includes a `KeyGroupPrefix`, but the **assignment algorithm is never specified**. How many Key Groups exist? What hash function maps keys to groups? How are groups assigned to parallel task instances? How does rebalancing work during rescaling? This is critical for correctness — an incorrect assignment means state lookups return wrong data, and rescaling loses state.
 
 ### 1.2 Proposed Solution (Technical Summary)
 
-Document the complete configuration surface: CLI flags (derived from `cmd/init.go`), the `wire.yaml` system configuration file schema, the pipeline configuration schema, environment variable overrides, and all validation rules. This TRD serves as the single source of truth for "how to configure Wire."
+Define a static Key Group model: the number of Key Groups is fixed at job creation time (default 128, configurable up to 32768). Keys are assigned to groups via `murmur3(key) mod numKeyGroups`. Groups are assigned to parallel task instances via range partitioning: task `i` of `n` owns groups `[i * numKeyGroups/n, (i+1) * numKeyGroups/n)`. On rescaling, groups are redistributed to new ranges and the corresponding Pebble key ranges are transferred.
 
 ### 1.3 Goals & Non-Goals
 
 | Goals (In Scope) | Non-Goals (Explicitly Out) |
 | -- | -- |
-| Document all CLI flags with types, defaults, and descriptions | Documenting internal Go config structs |
-| Define wire.yaml schema with examples | Dynamic configuration reloading |
-| Define pipeline YAML schema with examples | Configuration UI / dashboard |
-| Document environment variable substitution | Configuration migration tooling |
-| Document all validation rules and error messages | Performance impact of config options |
-
-### 1.4 Success Metrics
-
-| Metric | Current Baseline | Target | Measurement |
-| -- | -- | -- | -- |
-| Documented CLI flags | 0 / 50+ | 100% | Cross-reference with cmd/init.go |
-| User can configure a cluster from docs alone | Impossible | Possible | Manual walkthrough |
-| Valid wire.yaml example provided | No | Yes | Example validates against schema |
+| Define Key Group count and its lifecycle | Dynamic Key Group splitting |
+| Specify key-to-group hash function | Consistent hashing (virtual nodes) |
+| Specify group-to-task assignment algorithm | Weighted assignment based on load |
+| Define rescaling state transfer protocol | Hot rescaling without savepoint |
 
 ---
 
 ## 2. Architecture & System Design
 
-### 2.1 Configuration Loading Hierarchy
+### 2.1 Key Group Model
 
 ```
-┌─────────────────────────────────────────────┐
-│             Configuration Precedence         │
-│   (later sources override earlier)          │
-│                                              │
-│   1. Built-in defaults (Go code)            │
-│   2. Config file (wire.yaml / config.json)  │
-│   3. Environment variables (WIRE_*)         │
-│   4. CLI flags (highest priority)           │
-└─────────────────────────────────────────────┘
+Keys:        [user-1] [user-2] [user-3] ... [user-N]
+               │         │         │
+        murmur3(key) mod 128
+               │         │         │
+               ▼         ▼         ▼
+Key Groups:  [0]  [1]  [2] ... [63] [64] [65] ... [127]
+              ├─── Task 0 ────┤     ├──── Task 1 ────┤
+              (groups 0-63)         (groups 64-127)
+              (parallelism = 2)
 ```
 
 ### 2.2 Component Breakdown
 
-**Component 1:** `cmd/init.go` — Flag Parser
-* **Responsibility:** Defines all CLI flags via `spf13/pflag`, parses command-line arguments, applies defaults.
-* **Technology:** Go, `spf13/pflag` library
-* **Interactions:** Produces a `Config` struct consumed by the main application.
+**Component 1:** Key Group Assigner
+* **Responsibility:** Map user keys to Key Groups via hash function.
+* **Technology:** `murmur3` hash (fast, good distribution, deterministic)
+* **Interactions:** Called by KeyBy operator for every event to determine routing.
 
-**Component 2:** Configuration File Loader
-* **Responsibility:** Reads `wire.yaml` or JSON config files, merges with flag defaults.
-* **Technology:** `knadh/koanf` (declared in go.mod, currently commented out in code)
-* **Interactions:** Config files specified via `--config` flag. Multiple files merged in order.
+**Component 2:** Task Range Calculator
+* **Responsibility:** Assign Key Group ranges to parallel task instances.
+* **Technology:** Simple range partitioning: `startGroup = taskIndex * numGroups / parallelism`
+* **Interactions:** Called by Coordinator when building the ExecutionGraph.
 
-**Component 3:** Pipeline Config Parser
-* **Responsibility:** Reads pipeline YAML/JSON and constructs a StreamGraph.
-* **Technology:** Go YAML/JSON unmarshaler
-* **Interactions:** Separate from system config. Submitted via CLI or REST API.
+**Component 3:** State Transfer (Rescaling)
+* **Responsibility:** During rescale, transfer Pebble key ranges between workers.
+* **Technology:** Pebble range scan + network transfer
+* **Interactions:** Coordinator calculates old and new assignments. Workers download relevant Key Group ranges from the savepoint.
+
+### 2.3 Key Encoding in Pebble
+
+From state-backend.md, the composite key format:
+
+```
+[KeyGroupPrefix (2 bytes)][OperatorID (4 bytes)][UserKey (N bytes)][Namespace/Window (M bytes)]
+```
+
+- **KeyGroupPrefix:** `uint16` big-endian. Allows Pebble range scans to extract all state for a Key Group range.
+- Range scan for groups [64, 128): `Scan(prefix=0x0040, end=0x0080)`.
 
 ---
 
 ## 3. API Design
 
-### 3.1 CLI Flag Reference
+### 3.1 Configuration
 
-#### General Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--config` | `[]string` | `.config/config.json` | Path to one or more config files (merged in order) |
-| `--node-id` | `string` | _(advertised Raft addr)_ | Unique identifier for this node |
-| `--store-db` | `string` | `bbolt` | Backend database for Raft stable/log store (`bbolt`, `badgerdb`) |
-| `--debug` | `bool` | `false` | Enable debug mode (verbose logging) |
-| `--version` | `bool` | `false` | Print version information and exit |
-
-#### HTTP Server Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--http-addr` | `string` | `localhost:4001` | HTTP server bind address |
-| `--http-adv-addr` | `string` | _(same as http-addr)_ | Advertised HTTP address |
-| `--http-allow-origin` | `string` | `""` | `Access-Control-Allow-Origin` header value |
-| `--http-cert` | `string` | `""` | Path to X.509 certificate for HTTPS |
-| `--http-key` | `string` | `""` | Path to X.509 private key for HTTPS |
-| `--http-ca-cert` | `string` | `""` | Path to CA certificate for HTTPS client verification |
-| `--http-verify-client` | `bool` | `false` | Enable mutual TLS for HTTPS |
-
-#### Raft Consensus Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--raft-addr` | `string` | `localhost:4002` | Raft communication bind address |
-| `--raft-adv-addr` | `string` | _(same as raft-addr)_ | Advertised Raft address |
-| `--raft-dir` | `string` | `""` | Directory for Raft data (logs, snapshots) |
-| `--raft-timeout` | `duration` | `1s` | Raft heartbeat timeout |
-| `--raft-election-timeout` | `duration` | `1s` | Raft election timeout |
-| `--raft-apply-timeout` | `duration` | `10s` | Raft log apply timeout |
-| `--raft-snap` | `uint64` | `8192` | Outstanding log entries before snapshot |
-| `--raft-snap-int` | `duration` | `10s` | Snapshot threshold check interval |
-| `--raft-leader-lease-timeout` | `duration` | `0s` | Leader lease timeout (0 = Raft default) |
-| `--raft-log-level` | `string` | `DEBUG` | Minimum Raft log level |
-| `--raft-non-voter` | `bool` | `false` | Configure as non-voting (read-only) node |
-| `--raft-shutdown-stepdown` | `bool` | `true` | Leader steps down before shutdown |
-| `--raft-remove-shutdown` | `bool` | `false` | Shutdown Raft if node removed |
-| `--raft-cluster-remove-shutdown` | `bool` | `false` | Remove node from cluster on shutdown |
-| `--raft-reap-node-timeout` | `duration` | `0` | Reap unreachable voting nodes after this duration (0 = disabled) |
-| `--raft-reap-read-only-node-timeout` | `duration` | `0` | Reap unreachable non-voting nodes after this duration (0 = disabled) |
-
-#### Cluster Join Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--join` | `string` | `""` | Comma-delimited `host:port` list for cluster join |
-| `--join-attempts` | `int` | `5` | Number of join attempts per address |
-| `--join-interval` | `duration` | `3s` | Delay between join retries |
-| `--join-as` | `string` | `""` | Username for authenticated join |
-| `--bootstrap-expect` | `int` | `0` | Min nodes required for bootstrap (0 = single-node) |
-| `--bootstrap-expect-timeout` | `duration` | `120s` | Max time for bootstrap process |
-
-#### Node-to-Node Encryption Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--node-cert` | `string` | `""` | X.509 certificate for inter-node encryption |
-| `--node-key` | `string` | `""` | X.509 private key for inter-node encryption |
-| `--node-ca-cert` | `string` | `""` | CA certificate for verifying node certificates |
-| `--node-no-verify` | `bool` | `false` | Skip verification of node certificates |
-| `--node-verify-client` | `bool` | `false` | Enable mutual TLS for inter-node communication |
-| `--node-verify-server-name` | `string` | `""` | Expected hostname on node certificates |
-
-#### Authentication & Backup Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--auth` | `string` | `""` | Path to authentication/authorization file |
-| `--auto-backup` | `string` | `""` | Path to auto-backup configuration |
-| `--auto-restore` | `string` | `""` | Path to auto-restore configuration |
-| `--auto-vacuum-int` | `duration` | `0` | Auto-vacuum interval (0 = disabled) |
-| `--auto-optimize-int` | `duration` | `24h` | Auto-optimize interval (0 = disabled) |
-
-#### Write Queue Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--write-queue-capacity` | `int` | `1024` | Capacity of queued writes queue |
-| `--write-queue-batch-size` | `int` | `128` | Batch size for queued writes |
-| `--write-queue-timeout` | `duration` | `50ms` | Max time before partial batch flush |
-| `--write-queue-tx` | `bool` | `false` | Use transactions for queued writes |
-
-#### Cluster Communication Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--cluster-connect-timeout` | `duration` | `30s` | Timeout for initial connection to other nodes |
-
-#### Profiling Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--cpu-profile` | `string` | `""` | Path to CPU profile output |
-| `--mem-profile` | `string` | `""` | Path to memory profile output |
-| `--trace-profile` | `string` | `""` | Path to trace profile output |
-
-### 3.2 System Configuration File (wire.yaml)
+| Parameter | Default | Constraints | Description |
+|-----------|---------|-------------|-------------|
+| `key_groups` | `128` | Must be power of 2. Range: [1, 32768]. | Number of Key Groups. Fixed at job creation. |
 
 ```yaml
-node:
-  id: "node-1"
-  data_dir: "/var/lib/wire"
-  store_db: "bbolt"
-  debug: false
-
-http:
-  addr: "0.0.0.0:4001"
-  adv_addr: "node1.wire.local:4001"
-  allow_origin: "*"
-  tls:
-    cert: "/etc/wire/certs/http.crt"
-    key: "/etc/wire/certs/http.key"
-    ca_cert: "/etc/wire/certs/ca.crt"
-    verify_client: false
-
-raft:
-  addr: "0.0.0.0:4002"
-  adv_addr: "node1.wire.local:4002"
-  heartbeat_timeout: "1s"
-  election_timeout: "1s"
-  apply_timeout: "10s"
-  snapshot_threshold: 8192
-  snapshot_interval: "10s"
-  leader_lease_timeout: "0s"
-  log_level: "INFO"
-  non_voter: false
-  shutdown_stepdown: true
-
-cluster:
-  join: ["node2:4002", "node3:4002"]
-  join_attempts: 5
-  join_interval: "3s"
-  bootstrap_expect: 3
-  bootstrap_expect_timeout: "120s"
-  connect_timeout: "30s"
-
-node_tls:
-  cert: "/etc/wire/certs/node.crt"
-  key: "/etc/wire/certs/node.key"
-  ca_cert: "/etc/wire/certs/ca.crt"
-  verify_client: true
-  verify_server_name: "wire-node"
-
-auth:
-  file: "/etc/wire/auth.json"
-
-write_queue:
-  capacity: 1024
-  batch_size: 128
-  timeout: "50ms"
-  transactional: false
-```
-
-### 3.3 Pipeline Configuration Schema
-
-See WIP-01 Section 3.5 for the full YAML pipeline schema. Key fields:
-
-```yaml
-name: "pipeline-name"         # Required
+# pipeline.yaml
+name: "my-job"
 parallelism: 4
-checkpoint:
-  interval: "10s"
-  timeout: "10m"
-restart:
-  strategy: "fixed-delay"
-  attempts: 3
-  delay: "10s"
-sources: [...]                # See WIP-02 for connector configs
-transforms: [...]             # See WIP-01 for transform types
-sinks: [...]                  # See WIP-02 for connector configs
+key_groups: 256      # Optional, default 128
 ```
 
-### 3.4 Environment Variable Substitution
+### 3.2 Key-to-Group Function
 
-Pipeline configs support `${VAR}` and `${VAR:-default}` syntax:
-
-```yaml
-config:
-  password: "${DB_PASSWORD}"           # Fails if not set
-  host: "${DB_HOST:-localhost}"        # Falls back to "localhost"
+```go
+func KeyGroup(key []byte, numKeyGroups int) uint16 {
+    hash := murmur3.Sum32(key)
+    return uint16(hash % uint32(numKeyGroups))
+}
 ```
+
+### 3.3 Group-to-Task Assignment
+
+```go
+func AssignedTask(keyGroup uint16, numKeyGroups int, parallelism int) int {
+    return int(keyGroup) * parallelism / numKeyGroups
+}
+
+func TaskKeyGroupRange(taskIndex int, numKeyGroups int, parallelism int) (start, end uint16) {
+    start = uint16(taskIndex * numKeyGroups / parallelism)
+    end = uint16((taskIndex + 1) * numKeyGroups / parallelism)
+    return
+}
+```
+
+**Example:** 128 Key Groups, parallelism = 4:
+
+| Task | Key Groups |
+|------|-----------|
+| 0 | [0, 32) |
+| 1 | [32, 64) |
+| 2 | [64, 96) |
+| 3 | [96, 128) |
+
+### 3.4 Rescaling Protocol
+
+When parallelism changes (e.g., 4 → 8) via savepoint-based rescale:
+
+1. Old assignment: Task 0 owned [0, 32).
+2. New assignment: Task 0 owns [0, 16), Task 4 owns [16, 32).
+3. Task 0 downloads its state from the savepoint and retains groups [0, 16).
+4. Task 4 downloads state from the savepoint and extracts groups [16, 32).
+5. Each task opens a Pebble instance with only its assigned key range.
+
+State transfer is via the durable storage (S3/MinIO), not direct worker-to-worker.
 
 ---
 
 ## 4. Data Model & Storage
 
-### 4.1 Port Assignments
+### 4.1 Key Group Metadata
 
-| Port | Protocol | Purpose |
-|------|----------|---------|
-| `4001` | HTTP/HTTPS | REST API, health checks, Prometheus metrics |
-| `4002` | TCP | Raft consensus + Yamux data transport |
+Stored in checkpoint metadata (see WIP-06):
 
-Both ports are configurable via `--http-addr` and `--raft-addr`.
+```json
+{
+  "num_key_groups": 128,
+  "task_assignments": {
+    "task-0": { "start": 0, "end": 32 },
+    "task-1": { "start": 32, "end": 64 },
+    "task-2": { "start": 64, "end": 96 },
+    "task-3": { "start": 96, "end": 128 }
+  }
+}
+```
 
-### 4.2 Data Directory Layout
+### 4.2 Pebble Key Layout
 
 ```
-/var/lib/wire/                      # --raft-dir
-  raft/                             # Raft log and stable store
-    raft.db                         # BoltDB (or BadgerDB) for log/stable store
-    snapshots/                      # Raft snapshots
-  state/                            # Pebble state databases (per task)
-    job-<id>/task-<n>/pebble-db/
+[0x0000][op-id][user-key]  ← Key Group 0
+[0x0001][op-id][user-key]  ← Key Group 1
+...
+[0x007F][op-id][user-key]  ← Key Group 127
 ```
+
+Range scans are efficient because Key Group is the prefix.
 
 ---
 
 ## 5. Design Decisions & Trade-offs
 
-### Decision 1: pflag for CLI parsing (not cobra)
+### Decision 1: Fixed Key Group count (not dynamic)
 
 |  |  |
 | -- | -- |
-| **Context** | Wire needs a CLI parser. |
-| **Options Considered** | (A) `spf13/cobra` (subcommands), (B) `spf13/pflag` (flat flags), (C) `urfave/cli` |
-| **Decision** | Option B: pflag (already implemented in codebase) |
-| **Rationale** | Wire is a single binary with a single mode. Subcommands add unnecessary complexity. pflag is mature and POSIX-compliant. |
-| **Trade-offs Accepted** | No subcommand structure. All flags are top-level. |
-| **Revisit Trigger** | If Wire adds separate `coordinator` and `worker` binaries/modes. |
+| **Context** | Key Group count affects rescale granularity and overhead. |
+| **Options Considered** | (A) Fixed at job creation, (B) Dynamic splitting (like HBase regions), (C) Per-operator Key Group count |
+| **Decision** | Option A: Fixed |
+| **Rationale** | Simple. Deterministic. No runtime overhead for splitting. numKeyGroups >> max parallelism ensures fine-grained rescaling. Flink uses the same model (default 128). |
+| **Trade-offs Accepted** | Cannot increase Key Group count without reprocessing all state. Must be set high enough at creation. |
+| **Revisit Trigger** | If users need to rescale beyond initial Key Group count. |
 
-### Decision 2: koanf for config file merging
+### Decision 2: murmur3 hash (not SHA or CRC)
 
 |  |  |
 | -- | -- |
-| **Context** | Need to merge multiple config file formats (YAML, JSON) with CLI flags. |
-| **Options Considered** | (A) `knadh/koanf` (already in go.mod), (B) `spf13/viper`, (C) Custom loader |
-| **Decision** | Option A: koanf (already chosen, implementation in progress) |
-| **Rationale** | Lightweight, supports multiple formats, composable providers. Already a dependency. |
-| **Trade-offs Accepted** | Less ecosystem support than Viper. |
-| **Revisit Trigger** | If koanf lacks features needed for config hot-reload. |
+| **Context** | Need a fast, well-distributed hash for key routing. |
+| **Options Considered** | (A) murmur3, (B) xxhash, (C) CRC32, (D) SHA-256 |
+| **Decision** | Option A: murmur3 |
+| **Rationale** | Good distribution, fast, widely used for partitioning in distributed systems. Non-cryptographic (no need for crypto here). |
+| **Trade-offs Accepted** | Not cryptographically secure (irrelevant for partitioning). |
+| **Revisit Trigger** | If hash collision hotspots are observed with real-world key distributions. |
+
+### Decision 3: Range partitioning (not consistent hashing)
+
+|  |  |
+| -- | -- |
+| **Context** | Assigning Key Groups to tasks. |
+| **Options Considered** | (A) Contiguous range partitioning, (B) Consistent hashing with virtual nodes |
+| **Decision** | Option A: Range partitioning |
+| **Rationale** | Deterministic — task assignment is a pure function of (keyGroup, parallelism). No lookup table needed. Contiguous ranges enable efficient Pebble prefix scans. Consistent hashing adds complexity for no benefit when Key Group count is fixed. |
+| **Trade-offs Accepted** | Rescaling moves contiguous blocks (may cause temporary load imbalance if key distribution is skewed). |
+| **Revisit Trigger** | If skewed key distributions cause persistent load imbalance. |
 
 ---
 
@@ -329,26 +220,17 @@ Both ports are configurable via `--http-addr` and `--raft-addr`.
 
 | # | Scenario | Handling | Impact | Severity |
 | -- | -- | -- | -- | -- |
-| 1 | `--http-addr` and `--raft-addr` set to same value | Validation error at startup: "HTTP and Raft addresses must differ" | Startup blocked | Low |
-| 2 | Advertised address is `0.0.0.0` | Validation error: "advertised address is not routable" | Startup blocked | Low |
-| 3 | `--http-cert` set without `--http-key` | Validation error: "both must be set, or neither" | Startup blocked | Low |
-| 4 | `--join` and `--disco-mode` both set | Validation error: "mutually exclusive" | Startup blocked | Low |
-| 5 | Node tries to join itself | Validation error: "cannot join with itself unless bootstrapping" | Startup blocked | Low |
-| 6 | `--raft-reap-node-timeout` set to 0 or negative | Validation error: "must be greater than 0" | Startup blocked | Low |
-| 7 | Config file references non-existent file path | Validation error from `CheckFilePaths()` | Startup blocked | Low |
-| 8 | Pipeline YAML references undefined transform input | Validation error: "input 'x' not found" | Job rejected | Low |
-| 9 | Environment variable in pipeline config not set | Substitution fails, error returned | Job rejected | Medium |
+| 1 | parallelism > numKeyGroups | Error at job submission: "parallelism cannot exceed key_groups" | Job rejected | Low |
+| 2 | numKeyGroups not power of 2 | Error at job submission: "key_groups must be a power of 2" | Job rejected | Low |
+| 3 | Key is nil/empty | Assigned to Key Group 0 (murmur3 of empty bytes). Consistent. | Hotspot on group 0 if many nil keys | Medium |
+| 4 | Rescale from 4→3 (not evenly divisible) | Range partitioning handles this: groups distributed as [0,42), [42,85), [85,128). Unequal but correct. | Slight imbalance | Low |
+| 5 | Savepoint has different numKeyGroups than new job | Error: "Key Group count mismatch (savepoint: 128, job: 256)" | Job rejected | Medium |
 
 ---
 
 ## 7. Security & Compliance
 
-### 7.1 Credential Handling
-
-* Credentials should **never** be stored in config files.
-* Use `${ENV_VAR}` substitution for all secrets in pipeline configs.
-* The `--auth` flag points to an external auth file (not inline in wire.yaml).
-* TLS certificate paths are validated at startup to prevent misconfiguration.
+No additional security considerations.
 
 ---
 
@@ -356,17 +238,17 @@ Both ports are configurable via `--http-addr` and `--raft-addr`.
 
 | Test Type | Scope | Tools | Coverage Target |
 | -- | -- | -- | -- |
-| Unit Tests | Config parsing, validation rules, env var substitution | Go `testing` | 100% of validation rules |
-| Integration Tests | Full config load from file + flags + env | Test fixtures | All config file formats |
-| Smoke Tests | Wire starts with example configs | Docker | Both wire.yaml and pipeline.yaml examples |
+| Unit Tests | Hash function, range assignment, rescale calculation | Go `testing` | 100% |
+| Property Tests | Uniform distribution of random keys across groups | Go `testing/quick` | Distribution within 10% of uniform |
+| Integration Tests | Rescale: write state → savepoint → rescale → verify state | MiniCluster | 4→8, 8→4, 4→3 |
 
 ### 8.1 Key Test Scenarios
 
-1. All default values produce a valid startup (single-node mode)
-2. `--config` with multiple files merges correctly (later overrides earlier)
-3. Every validation rule produces the expected error message
-4. `${ENV_VAR}` and `${ENV_VAR:-default}` substitution works correctly
-5. Example wire.yaml and pipeline.yaml from this TRD parse without errors
+1. Hash distribution: 1M random keys → verify each Key Group has ~7800 keys (128 groups, within 20%)
+2. Assignment: 128 groups, parallelism 4 → task 0 gets [0,32), task 3 gets [96,128)
+3. Rescale 4→8: State in Key Group 50 (originally task 1) now in task 3 → verify state accessible
+4. Rescale 8→4: State from two old tasks merged into one → verify all state present
+5. Nil key: Consistently routed to the same task
 
 ---
 
@@ -374,7 +256,6 @@ Both ports are configurable via `--http-addr` and `--raft-addr`.
 
 | # | Question / Risk | Owner | Status |
 | -- | -- | -- | -- |
-| 1 | Should wire.yaml support TOML format in addition to YAML and JSON? | Tarun | Open |
-| 2 | The koanf config loader is currently commented out in cmd/init.go. When will it be re-enabled? | Tarun | Open |
-| 3 | Should config validation produce all errors at once or fail on first error? | Tarun | Open |
-| 4 | Risk: Discovery modes (consul-kv, etcd-kv, dns, dns-srv) are defined in code but commented out. When will they be enabled? | — | Acknowledged |
+| 1 | Should default numKeyGroups be 128 or 256? Higher = finer rescale granularity but more overhead. | Tarun | Open |
+| 2 | Should we support changing numKeyGroups via state migration (rekey)? | Tarun | Open — likely No for v1 |
+| 3 | Risk: Highly skewed key distributions (e.g., 50% of events have key "null") cause hotspots. Should we detect and warn? | — | Acknowledged |

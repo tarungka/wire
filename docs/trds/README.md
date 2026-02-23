@@ -56,23 +56,41 @@ Draft --> In Review --> Approved --> Implemented --> Superseded
 
 ## WIP Index
 
-| WIP | Priority | Title | Status |
-|-----|----------|-------|--------|
-| [WIP-01](WIP-01/README.md) | P0 | User API & Go SDK | Draft |
-| [WIP-02](WIP-02/README.md) | P0 | Connector SDK & Built-in Connectors | Draft |
-| [WIP-03](WIP-03/README.md) | P0 | Configuration Reference | Draft |
-| [WIP-04](WIP-04/README.md) | P0 | Job Lifecycle & REST API | Draft |
-| [WIP-05](WIP-05/README.md) | P1 | RPC Interface Specification | Draft |
-| [WIP-06](WIP-06/README.md) | P1 | Wire Protocol & Serialization Format | Draft |
-| [WIP-07](WIP-07/README.md) | P1 | Coordinator High Availability | Draft |
-| [WIP-08](WIP-08/README.md) | P1 | Two-Phase Commit for Transactional Sinks | Draft |
-| [WIP-09](WIP-09/README.md) | P1 | Security Model | Draft |
-| [WIP-10](WIP-10/README.md) | P2 | Barrier Alignment Timeout & Failure Handling | Draft |
-| [WIP-11](WIP-11/README.md) | P2 | Watermark Generation Algorithm | Draft |
-| [WIP-12](WIP-12/README.md) | P2 | Key Group Assignment & State Sharding | Draft |
-| [WIP-13](WIP-13/README.md) | P2 | Error Handling & Dead Letter Queues | Draft |
-| [WIP-14](WIP-14/README.md) | P2 | Late Data & Allowed Lateness | Draft |
-| [WIP-15](WIP-15/README.md) | P3 | Glossary of Terms | Draft |
-| [WIP-16](WIP-16/README.md) | P3 | Goroutine & Concurrency Model | Draft |
-| [WIP-17](WIP-17/README.md) | P3 | Heartbeat & Health Monitoring | Draft |
-| [WIP-18](WIP-18/README.md) | P3 | Checkpoint Metadata Schema | Draft |
+Ordered by build dependency: engine core first, then runtime infrastructure, then user-facing layer.
+
+### Engine Core
+
+| WIP | Title | Status |
+|-----|-------|--------|
+| [WIP-01](WIP-01/README.md) | Wire Protocol & Serialization Format | Draft |
+| [WIP-02](WIP-02/README.md) | Goroutine & Concurrency Model | Draft |
+| [WIP-03](WIP-03/README.md) | Key Group Assignment & State Sharding | Draft |
+| [WIP-04](WIP-04/README.md) | Watermark Generation Algorithm | Draft |
+| [WIP-05](WIP-05/README.md) | Barrier Alignment Timeout & Failure Handling | Draft |
+| [WIP-06](WIP-06/README.md) | Checkpoint Metadata Schema | Draft |
+
+### Runtime Infrastructure
+
+| WIP | Title | Status |
+|-----|-------|--------|
+| [WIP-07](WIP-07/README.md) | RPC Interface Specification | Draft |
+| [WIP-08](WIP-08/README.md) | Heartbeat & Health Monitoring | Draft |
+| [WIP-09](WIP-09/README.md) | Coordinator High Availability | Draft |
+| [WIP-10](WIP-10/README.md) | Two-Phase Commit for Transactional Sinks | Draft |
+| [WIP-11](WIP-11/README.md) | Error Handling & Dead Letter Queues | Draft |
+| [WIP-12](WIP-12/README.md) | Late Data & Allowed Lateness | Draft |
+
+### User-Facing Layer
+
+| WIP | Title | Status |
+|-----|-------|--------|
+| [WIP-13](WIP-13/README.md) | Configuration Reference | Draft |
+| [WIP-14](WIP-14/README.md) | User API & Go SDK | Draft |
+| [WIP-15](WIP-15/README.md) | Job Lifecycle & REST API | Draft |
+| [WIP-16](WIP-16/README.md) | Connector SDK & Built-in Connectors | Draft |
+
+### Cross-Cutting & Reference
+
+| WIP | Title | Status |
+|-----|-------|--------|
+| [WIP-17](WIP-17/README.md) | Security Model | Draft |

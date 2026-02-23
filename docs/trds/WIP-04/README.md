@@ -1,6 +1,6 @@
-# Technical Requirements Document (TRD)
+# Watermark Generation Algorithm
 
-> **Feature/Project:** `Job Lifecycle & REST API`
+> **Feature/Project:** `Watermark Generation Algorithm`
 >
 > **WIP ID:** `WIP-04`
 >
@@ -24,494 +24,171 @@
 
 ### 1.1 Problem Statement
 
-Wire's architecture docs describe a `CREATED → DEPLOYING → RUNNING → FINISHED` task lifecycle state machine, but there is **no documentation on how jobs are submitted, started, paused, canceled, upgraded, or queried**. There is no REST API spec, no CLI command reference for job management, and no description of the savepoint mechanism for planned rescaling or upgrades.
+Wire's execution-model.md states that "Source Connectors generate watermarks based on observed data (monotonically increasing)" but provides **no algorithm specification**. Is it periodic or per-record? What about bounded out-of-orderness? What happens when a source is idle? Watermarks drive window closures and timer firings — incorrect watermarks cause either premature data loss (watermark too aggressive) or unbounded latency (watermark too conservative). This is critical for correctness.
 
 ### 1.2 Proposed Solution (Technical Summary)
 
-Define the complete job lifecycle state machine with all transitions, a REST API on the Coordinator's HTTP port (4001) for job CRUD, savepoint management, and cluster inspection, and CLI commands that wrap the REST API. Jobs transition through CREATED → DEPLOYING → RUNNING → (PAUSED/FAILING) → CANCELED/FINISHED with well-defined triggers and recovery semantics.
+Define three watermark generation strategies: `BoundedOutOfOrderness` (default — watermark = max observed timestamp minus a configured tolerance), `MonotonicTimestamps` (assumes perfectly ordered input), and `IngestionTime` (uses processing time). Additionally define watermark propagation rules for multi-input operators, idle source detection, and the relationship between watermarks and window closures.
 
 ### 1.3 Goals & Non-Goals
 
 | Goals (In Scope) | Non-Goals (Explicitly Out) |
 | -- | -- |
-| Define complete job state machine with all transitions | Job scheduling/cron triggers |
-| Specify REST API for job management (CRUD, savepoints) | GraphQL API |
-| Define CLI commands for job operations | Web UI for job management |
-| Document savepoint/upgrade workflow | Hot code upgrade without restart |
-| Specify cluster status and node management endpoints | Multi-cluster federation |
-
-### 1.4 Success Metrics
-
-| Metric | Current Baseline | Target | Measurement |
-| -- | -- | -- | -- |
-| Job lifecycle states documented | Partial (task states only) | Complete (job + task) | Doc review |
-| REST API endpoints documented | 0 | All CRUD + savepoint + cluster | API review |
-| User can manage jobs from docs | Impossible | Possible | Manual walkthrough |
+| Define watermark generation strategies | Custom user-defined watermark generators (v1) |
+| Specify watermark propagation rules | Watermark-based load balancing |
+| Define idle source handling | Watermark compression/optimization |
+| Document relationship with window closures | Per-key watermarks |
 
 ---
 
 ## 2. Architecture & System Design
 
-### 2.1 Job State Machine
+### 2.1 Watermark Flow
 
 ```
-                    +-----------+
-                    |  CREATED  |
-                    +-----+-----+
-                          |
-                    SubmitJob()
-                          |
-                    +-----v-----+
-              +---->| DEPLOYING |
-              |     +-----+-----+
-              |           |
-              |     All tasks RUNNING
-              |           |
-              |     +-----v-----+
-              |     |  RUNNING  |<------+
-              |     +-----+-----+       |
-              |       |   |   |         |
-              |  Pause|   |   |Failure  |
-              |       |   |   |detected |
-         Restart +----v+  | +-v-------+ |
-         from    |PAUSED| | | FAILING |-+
-         savepoint+-----+ | +-+-------+
-              |            |   |
-              |      Cancel|   |Recovery
-              |            |   |exhausted
-              |      +-----v---v--+
-              |      |  CANCELED  |
-              |      +------------+
-              |
-              |     +------------+
-              +-----|  FINISHED  |
-                    +------------+
+Source A ──(W=100)──▶ ┌──────────┐
+                      │  Join    │──(W=95)──▶ Window ──▶ Sink
+Source B ──(W=95)───▶ │ Min(A,B) │
+                      └──────────┘
 ```
 
-### 2.2 State Definitions
+**Propagation rule:** Each operator outputs `Watermark = Min(all input watermarks)`.
 
-| State | Description | Automatic Transition |
-|-------|-------------|---------------------|
-| **CREATED** | Job graph validated, registered. No resources allocated. | None (awaits submit) |
-| **DEPLOYING** | Tasks scheduled to workers. State being restored from checkpoint/savepoint. | → RUNNING when all tasks report running |
-| **RUNNING** | All tasks actively processing events. Checkpoints occurring. | → FINISHED when bounded sources exhaust |
-| **PAUSED** | Processing suspended. State preserved in savepoint. Resumes on user command. | None (awaits resume) |
-| **FAILING** | Failure detected. Automatic recovery in progress per restart strategy. | → DEPLOYING (if restart budget remains) or → CANCELED |
-| **CANCELED** | Stopped by user or exhausted restart attempts. Terminal state. | None |
-| **FINISHED** | All sources exhausted, all data flushed to sinks. Terminal state. | None |
+### 2.2 Strategies
 
-### 2.3 Data Flow
+**Strategy 1: BoundedOutOfOrderness (default)**
 
-**Job Submission:**
-1. User sends pipeline config (YAML) or compiled binary to Coordinator REST API.
-2. Coordinator validates the config and builds the StreamGraph.
-3. Coordinator optimizes StreamGraph → JobGraph.
-4. Job enters CREATED state. Response includes `job_id`.
-5. Coordinator calculates ExecutionGraph (parallel task instances).
-6. Job enters DEPLOYING. Tasks assigned to workers.
-7. Workers restore state (if savepoint provided), start processing.
-8. All tasks report RUNNING → Job enters RUNNING.
+```
+Watermark(t) = MaxObservedTimestamp - MaxOutOfOrderness
+```
 
-**Savepoint → Upgrade:**
-1. User triggers savepoint via `POST /api/v1/jobs/{id}/savepoints`.
-2. Coordinator injects barriers (same as checkpoint but user-triggered).
-3. All tasks snapshot, upload to durable storage.
-4. Savepoint marked COMPLETED with a path.
-5. User cancels old job.
-6. User submits new job with `--savepoint` pointing to the savepoint path.
-7. New job restores from savepoint (same semantics as checkpoint recovery).
+- `MaxObservedTimestamp` tracks the highest event time seen so far.
+- `MaxOutOfOrderness` is a user-configured duration (e.g., 5 seconds).
+- Events arriving with timestamp < Watermark are considered "late."
+
+**Strategy 2: MonotonicTimestamps**
+
+```
+Watermark(t) = MaxObservedTimestamp
+```
+
+- Equivalent to BoundedOutOfOrderness with `MaxOutOfOrderness = 0`.
+- Only safe when the source guarantees strict ordering.
+
+**Strategy 3: IngestionTime**
+
+```
+Watermark(t) = CurrentProcessingTime
+```
+
+- Event timestamps are overwritten with wall-clock time at ingestion.
+- Eliminates out-of-orderness but loses event-time semantics.
+
+### 2.3 Watermark Emission
+
+Watermarks are emitted **periodically** (not per-record) to avoid overwhelming downstream operators:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `watermark.emit_interval` | `200ms` | How often the source emits a watermark |
+
+Between emissions, the source updates `MaxObservedTimestamp` with every record but only emits a new Watermark control record every `emit_interval`.
+
+### 2.4 Idle Source Handling
+
+If a source partition produces no events for a configurable duration, it is marked **idle**. Idle sources are excluded from the `Min()` watermark calculation to prevent them from holding back the entire pipeline.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `watermark.idle_timeout` | `1m` | Mark source idle after this duration of no events |
+
+When an idle source produces a new event, it is immediately un-idled and its watermark re-enters the `Min()` calculation.
 
 ---
 
 ## 3. API Design
 
-### 3.1 Endpoint: `POST /api/v1/jobs`
+### 3.1 SDK Configuration
 
-| Field | Value |
-| -- | -- |
-| **Method** | POST |
-| **Path** | `/api/v1/jobs` |
-| **Auth** | Bearer JWT (see WIP-09) |
-| **Description** | Submit a new job from a YAML pipeline configuration |
+```go
+// On a Source
+source.SetWatermarkStrategy(sdk.BoundedOutOfOrderness(5 * time.Second))
+source.SetWatermarkStrategy(sdk.MonotonicTimestamps())
+source.SetWatermarkStrategy(sdk.IngestionTime())
+```
 
-**Request Body** (Content-Type: application/yaml)
+### 3.2 YAML Configuration
 
 ```yaml
-name: "user-event-counter"
-parallelism: 4
-sources: [...]
-transforms: [...]
-sinks: [...]
+sources:
+  - name: "events"
+    type: "http-api"
+    watermark:
+      strategy: "bounded-ooo"      # bounded-ooo | monotonic | ingestion-time
+      max_ooo: "5s"                # Only for bounded-ooo
+      emit_interval: "200ms"
+      idle_timeout: "1m"
+    config:
+      address: ":8080"
+      path: "/ingest"
 ```
 
-**Response (201 Created)**
+### 3.3 Watermark Control Record (Wire Protocol)
 
-```json
-{
-  "job_id": "job-a1b2c3d4",
-  "name": "user-event-counter",
-  "status": "CREATED",
-  "created_at": "2024-01-15T10:30:00Z"
+See WIP-01 for the binary format. The Watermark message contains:
+
+```
+Watermark {
+    Timestamp  int64   // The watermark timestamp (Unix millis)
+    SourceID   string  // Source operator that generated this watermark
 }
 ```
 
-**Error Responses**
+### 3.4 Propagation Rules
 
-| Code | Error | Description & When |
-| -- | -- | -- |
-| 400 | INVALID_CONFIG | Pipeline YAML is malformed or fails validation |
-| 401 | UNAUTHORIZED | Missing or invalid auth token |
-| 409 | JOB_EXISTS | A job with the same name already exists and is not in a terminal state |
+For an operator with N inputs:
 
----
-
-### 3.2 Endpoint: `POST /api/v1/jobs/submit`
-
-| Field | Value |
-| -- | -- |
-| **Method** | POST |
-| **Path** | `/api/v1/jobs/submit` |
-| **Auth** | Bearer JWT |
-| **Description** | Submit a compiled Wire job binary |
-
-**Request Body** (Content-Type: multipart/form-data)
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `jar` | file | Yes | Compiled Wire job binary |
-| `parallelism` | int | No | Override default parallelism |
-| `savepoint` | string | No | Path to savepoint to restore from |
-| `args` | string | No | Additional job arguments |
-
-**Response (201 Created)**
-
-```json
-{
-  "job_id": "job-e5f6g7h8",
-  "status": "DEPLOYING",
-  "created_at": "2024-01-15T10:30:00Z"
-}
+```
+OutputWatermark = Min(InputWatermark_1, InputWatermark_2, ..., InputWatermark_N)
+                  where idle inputs are excluded from Min()
 ```
 
----
-
-### 3.3 Endpoint: `GET /api/v1/jobs`
-
-| Field | Value |
-| -- | -- |
-| **Method** | GET |
-| **Path** | `/api/v1/jobs` |
-| **Auth** | Bearer JWT |
-| **Description** | List all jobs, optionally filtered by status |
-
-**Query Parameters**
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `status` | string | Filter by status (e.g., `RUNNING`) |
-
-**Response (200 OK)**
-
-```json
-{
-  "jobs": [
-    {
-      "job_id": "job-a1b2c3d4",
-      "name": "user-event-counter",
-      "status": "RUNNING",
-      "parallelism": 4,
-      "created_at": "2024-01-15T10:30:00Z",
-      "started_at": "2024-01-15T10:30:02Z"
-    }
-  ]
-}
-```
-
----
-
-### 3.4 Endpoint: `GET /api/v1/jobs/{job_id}`
-
-| Field | Value |
-| -- | -- |
-| **Method** | GET |
-| **Path** | `/api/v1/jobs/{job_id}` |
-| **Auth** | Bearer JWT |
-| **Description** | Get detailed job status including per-task metrics |
-
-**Response (200 OK)**
-
-```json
-{
-  "job_id": "job-a1b2c3d4",
-  "name": "user-event-counter",
-  "status": "RUNNING",
-  "parallelism": 4,
-  "created_at": "2024-01-15T10:30:00Z",
-  "started_at": "2024-01-15T10:30:02Z",
-  "config": { "..." : "..." },
-  "tasks": [
-    {
-      "task_id": "task-0",
-      "operator": "kafka-source",
-      "subtask_index": 0,
-      "status": "RUNNING",
-      "worker_id": "worker-1",
-      "metrics": {
-        "records_in": 1523400,
-        "records_out": 1523400,
-        "bytes_in": 304680000
-      }
-    }
-  ],
-  "checkpoints": {
-    "latest_completed": 42,
-    "latest_duration_ms": 1250,
-    "total_completed": 42,
-    "total_failed": 0
-  }
-}
-```
-
-**Error Responses**
-
-| Code | Error | Description & When |
-| -- | -- | -- |
-| 404 | NOT_FOUND | No job with this ID exists |
-
----
-
-### 3.5 Endpoint: `POST /api/v1/jobs/{job_id}/cancel`
-
-| Field | Value |
-| -- | -- |
-| **Method** | POST |
-| **Path** | `/api/v1/jobs/{job_id}/cancel` |
-| **Auth** | Bearer JWT |
-| **Description** | Cancel a running or paused job. Optionally trigger a savepoint first. |
-
-**Query Parameters**
-
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `savepoint` | bool | false | Trigger savepoint before canceling |
-
-**Response (200 OK)**
-
-```json
-{
-  "job_id": "job-a1b2c3d4",
-  "status": "CANCELED",
-  "savepoint_path": "s3://bucket/jobs/job-a1b2c3d4/savepoints/sp-1"
-}
-```
-
----
-
-### 3.6 Endpoint: `POST /api/v1/jobs/{job_id}/pause`
-
-| Field | Value |
-| -- | -- |
-| **Method** | POST |
-| **Path** | `/api/v1/jobs/{job_id}/pause` |
-| **Auth** | Bearer JWT |
-| **Description** | Pause a running job. Triggers a savepoint and suspends all tasks. |
-
-**Response (200 OK)**
-
-```json
-{
-  "job_id": "job-a1b2c3d4",
-  "status": "PAUSED",
-  "savepoint_path": "s3://bucket/jobs/job-a1b2c3d4/savepoints/sp-2"
-}
-```
-
----
-
-### 3.7 Endpoint: `POST /api/v1/jobs/{job_id}/resume`
-
-| Field | Value |
-| -- | -- |
-| **Method** | POST |
-| **Path** | `/api/v1/jobs/{job_id}/resume` |
-| **Auth** | Bearer JWT |
-| **Description** | Resume a paused job from its savepoint. |
-
-**Response (200 OK)**
-
-```json
-{
-  "job_id": "job-a1b2c3d4",
-  "status": "DEPLOYING"
-}
-```
-
----
-
-### 3.8 Endpoint: `POST /api/v1/jobs/{job_id}/savepoints`
-
-| Field | Value |
-| -- | -- |
-| **Method** | POST |
-| **Path** | `/api/v1/jobs/{job_id}/savepoints` |
-| **Auth** | Bearer JWT |
-| **Description** | Trigger a savepoint for a running job |
-
-**Response (202 Accepted)**
-
-```json
-{
-  "savepoint_id": "sp-1",
-  "job_id": "job-a1b2c3d4",
-  "status": "IN_PROGRESS",
-  "trigger_time": "2024-01-15T12:00:00Z"
-}
-```
-
----
-
-### 3.9 Endpoint: `GET /api/v1/jobs/{job_id}/savepoints/{savepoint_id}`
-
-**Response (200 OK)**
-
-```json
-{
-  "savepoint_id": "sp-1",
-  "status": "COMPLETED",
-  "path": "s3://bucket/jobs/job-a1b2c3d4/savepoints/sp-1",
-  "trigger_time": "2024-01-15T12:00:00Z",
-  "completion_time": "2024-01-15T12:00:01Z"
-}
-```
-
----
-
-### 3.10 Endpoint: `GET /api/v1/jobs/{job_id}/savepoints`
-
-Lists all savepoints for a job. Returns array of savepoint objects.
-
----
-
-### 3.11 Endpoint: `DELETE /api/v1/jobs/{job_id}/savepoints/{savepoint_id}`
-
-Deletes savepoint data from durable storage. Returns `204 No Content`.
-
----
-
-### 3.12 Endpoint: `GET /api/v1/cluster`
-
-| Field | Value |
-| -- | -- |
-| **Method** | GET |
-| **Path** | `/api/v1/cluster` |
-| **Auth** | Bearer JWT |
-| **Description** | Get cluster status and node information |
-
-**Response (200 OK)**
-
-```json
-{
-  "leader": "node-1",
-  "nodes": [
-    {
-      "node_id": "node-1",
-      "address": "node1:4002",
-      "status": "ALIVE",
-      "role": "LEADER",
-      "task_slots_total": 8,
-      "task_slots_available": 3,
-      "uptime": "72h15m30s"
-    }
-  ]
-}
-```
-
----
-
-### 3.13 Endpoint: `DELETE /api/v1/cluster/nodes/{node_id}`
-
-Removes a node from the Raft cluster. Running tasks are rescheduled.
-
----
-
-### 3.14 Health & Metrics Endpoints
-
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `GET /healthz` | Public | Returns 200 if healthy, 503 if not |
-| `GET /readyz` | Public | Returns 200 if ready to accept traffic |
-| `GET /metrics` | Public | Prometheus-formatted metrics (see operations.md) |
+If **all** inputs are idle, the operator does not advance its watermark.
 
 ---
 
 ## 4. Data Model & Storage
 
-### 4.1 Job Metadata Schema
-
-Stored in Coordinator's metadata store (Raft-replicated):
-
-| Field | Type | Description |
-| -- | -- | -- |
-| job_id | string | Unique identifier (UUID-based) |
-| name | string | User-provided job name |
-| status | enum | CREATED/DEPLOYING/RUNNING/PAUSED/FAILING/CANCELED/FINISHED |
-| config | blob | Serialized pipeline configuration |
-| job_graph | blob | Serialized optimized JobGraph |
-| parallelism | int | Effective parallelism |
-| created_at | timestamp | Creation time |
-| started_at | timestamp | First RUNNING transition |
-| finished_at | timestamp | Terminal state transition |
-| restart_count | int | Number of restarts from failure |
-| latest_checkpoint | int64 | Latest completed checkpoint ID |
-| savepoints | []SavepointMeta | List of savepoint metadata |
-
-### 4.2 Savepoint Metadata
-
-| Field | Type | Description |
-| -- | -- | -- |
-| savepoint_id | string | Unique identifier |
-| job_id | string | Parent job |
-| status | enum | IN_PROGRESS/COMPLETED/FAILED |
-| path | string | Durable storage path (e.g., `s3://...`) |
-| trigger_time | timestamp | When triggered |
-| completion_time | timestamp | When completed |
+No persistent storage. Watermark state is ephemeral:
+- `MaxObservedTimestamp` per source subtask (in memory)
+- `CurrentInputWatermarks[]` per operator (in memory)
+- These are reconstructed from source offsets on recovery.
 
 ---
 
 ## 5. Design Decisions & Trade-offs
 
-### Decision 1: Savepoint-based upgrade (not hot swap)
+### Decision 1: Periodic emission (not per-record)
 
 |  |  |
 | -- | -- |
-| **Context** | Users need to upgrade job logic without losing state. |
-| **Options Considered** | (A) Hot swap (replace operators in-place), (B) Savepoint → Cancel → Resubmit |
-| **Decision** | Option B: Savepoint-based |
-| **Rationale** | Hot swap requires ABI compatibility between old and new operators. Far too complex for v1. Savepoint approach is simple, correct, and well-understood (Flink uses the same model). |
-| **Trade-offs Accepted** | Brief downtime during upgrade (seconds to minutes depending on state size). |
-| **Revisit Trigger** | If downtime-sensitive users demand sub-second upgrades. |
+| **Context** | Watermarks are control records that consume bandwidth and processing. |
+| **Options Considered** | (A) Emit watermark per record, (B) Periodic emission at configurable interval |
+| **Decision** | Option B: Periodic (200ms default) |
+| **Rationale** | Per-record emission creates N watermark records for N data records — doubles traffic. 200ms is fast enough for most latency requirements and negligible overhead. |
+| **Trade-offs Accepted** | Window closure latency increases by up to `emit_interval`. |
+| **Revisit Trigger** | If sub-millisecond window closure latency is required. |
 
-### Decision 2: REST API (not gRPC for external clients)
-
-|  |  |
-| -- | -- |
-| **Context** | External clients (CLI, dashboards, CI/CD) need to interact with the Coordinator. |
-| **Options Considered** | (A) REST/JSON, (B) gRPC, (C) Both |
-| **Decision** | Option A: REST/JSON (gRPC for internal RPC only) |
-| **Rationale** | REST is universally accessible (curl, browsers, any language). Internal RPC uses gRPC for performance (see WIP-05). Users interact via CLI which wraps REST. |
-| **Trade-offs Accepted** | Slightly higher overhead for REST vs gRPC. Two API surfaces to maintain. |
-| **Revisit Trigger** | If programmatic clients demand gRPC for performance. |
-
-### Decision 3: Savepoints are user-managed (not auto-GC'd)
+### Decision 2: Exclude idle sources from Min()
 
 |  |  |
 | -- | -- |
-| **Context** | Savepoints and automatic checkpoints both produce snapshots, but serve different purposes. |
-| **Options Considered** | (A) Treat savepoints like checkpoints (auto-GC), (B) Savepoints persist until explicitly deleted |
-| **Decision** | Option B: Savepoints persist |
-| **Rationale** | Savepoints are intentional user actions (upgrade, rollback point). Deleting them automatically would lose the user's escape hatch. Checkpoints are internal and can be GC'd. |
-| **Trade-offs Accepted** | Savepoints consume storage until manually deleted. |
-| **Revisit Trigger** | If users accumulate too many savepoints. Add optional TTL. |
+| **Context** | A source with 100 partitions where partition 99 has no data would hold the watermark at -∞ forever. |
+| **Options Considered** | (A) Exclude idle sources from Min(), (B) Forward a special "idle" watermark, (C) Use max watermark instead of min |
+| **Decision** | Option A |
+| **Rationale** | Simple. Matches Flink's idle source behavior. Prevents one quiet partition from blocking the entire pipeline. |
+| **Trade-offs Accepted** | If the idle source suddenly produces old events, they will be "late" and handled per allowed-lateness policy (WIP-12). |
+| **Revisit Trigger** | If users report unexpected late data from sources that were temporarily idle. |
 
 ---
 
@@ -519,28 +196,17 @@ Stored in Coordinator's metadata store (Raft-replicated):
 
 | # | Scenario | Handling | Impact | Severity |
 | -- | -- | -- | -- | -- |
-| 1 | Savepoint triggered while checkpoint in progress | Queue savepoint after current checkpoint completes. Return 202 with IN_PROGRESS. | Brief delay | Low |
-| 2 | Cancel during DEPLOYING (state restore in progress) | Abort state download. Cancel tasks. Job → CANCELED. | Clean cancel | Low |
-| 3 | Resume a non-PAUSED job | Return 409 CONFLICT: "Job is not paused" | No effect | Low |
-| 4 | Submit job with savepoint from different job graph | Validate operator IDs match. If mismatch, reject with 400: "Savepoint incompatible with job graph" | Job rejected | Medium |
-| 5 | Coordinator crashes during savepoint | On restart, savepoint status stays IN_PROGRESS. User can re-trigger. Old incomplete savepoint cleaned up by GC. | Savepoint lost | Medium |
-| 6 | All workers die during RUNNING | Job → FAILING. Coordinator waits for workers to rejoin. After restart budget exhausted → CANCELED. | Downtime | High |
-| 7 | Network partition between coordinator and workers | Workers self-terminate after losing heartbeat. Coordinator detects loss → FAILING → recovery. | Brief downtime | High |
+| 1 | Source produces events with event_time = 0 | Watermark stays at 0 - maxOOO. Windows never close. | Pipeline stalls | High |
+| 2 | All source partitions idle | No watermark advancement. Windows don't close. | Expected behavior | Low |
+| 3 | Clock skew between event producers | BoundedOutOfOrderness absorbs it (if maxOOO > skew) | Correct if configured properly | Medium |
+| 4 | Event timestamps in the far future | Watermark jumps forward. All windows close prematurely. | Data loss | High |
+| 5 | Source restored from old checkpoint (old MaxObservedTimestamp) | Watermark rewinds to checkpoint position. Windows re-open. Correct behavior. | Expected on recovery | Low |
 
 ---
 
 ## 7. Security & Compliance
 
-### 7.1 Authentication & Authorization
-
-* All REST API endpoints (except `/healthz`, `/readyz`, `/metrics`) require authentication.
-* Auth mechanism defined in WIP-09 (Bearer JWT or API key).
-* Job management operations require appropriate role (e.g., `admin` or `operator`).
-
-### 7.2 Data Protection
-
-* Job configurations may contain connector credentials via `${ENV_VAR}` references — the resolved values are never stored in job metadata or returned in API responses.
-* Savepoint data inherits the encryption of the underlying storage (S3 SSE, filesystem encryption).
+No additional security considerations.
 
 ---
 
@@ -548,19 +214,15 @@ Stored in Coordinator's metadata store (Raft-replicated):
 
 | Test Type | Scope | Tools | Coverage Target |
 | -- | -- | -- | -- |
-| Unit Tests | State machine transitions, API handler logic | Go `testing` | 100% of state transitions |
-| Integration Tests | Full job lifecycle via REST API | httptest + MiniCluster | Submit → Run → Savepoint → Cancel |
-| E2E Tests | CLI → REST → Coordinator → Workers | Docker Compose | Happy path + failure recovery |
+| Unit Tests | Each strategy, propagation rules, idle detection | Go `testing` | 100% |
+| Integration Tests | Window closure driven by watermarks | MiniCluster | All 3 strategies |
 
 ### 8.1 Key Test Scenarios
 
-1. Submit YAML job → verify CREATED → auto-transitions to RUNNING
-2. Trigger savepoint → verify COMPLETED → cancel → resubmit from savepoint → verify state restored
-3. Kill a worker during RUNNING → verify FAILING → auto-recovery → RUNNING
-4. Exhaust restart budget → verify CANCELED
-5. Pause → Resume → verify seamless continuation
-6. Submit incompatible savepoint → verify 400 rejection
-7. Concurrent savepoint + checkpoint → verify no conflict
+1. BoundedOOO: Events arrive out of order within tolerance → correct window results
+2. BoundedOOO: Late event beyond tolerance → dropped or sent to side output
+3. Idle source: One source idle → watermark advances past it → windows close correctly
+4. Recovery: Checkpoint → restore → watermark rewinds → no duplicate window firings
 
 ---
 
@@ -568,8 +230,6 @@ Stored in Coordinator's metadata store (Raft-replicated):
 
 | # | Question / Risk | Owner | Status |
 | -- | -- | -- | -- |
-| 1 | Should the REST API support WebSocket for real-time job status streaming? | Tarun | Open |
-| 2 | Should job submission be synchronous (wait for RUNNING) or async (return CREATED immediately)? | Tarun | Open |
-| 3 | How are jobs persisted across Coordinator restarts? Raft log? Separate metadata DB? | Tarun | Open |
-| 4 | Should there be a `/api/v1/jobs/{id}/rescale` endpoint for changing parallelism? | Tarun | Open |
-| 5 | Risk: Savepoint storage costs could grow unbounded if users don't clean up. Consider auto-TTL. | — | Acknowledged |
+| 1 | Should users be able to write custom WatermarkGenerator implementations? | Tarun | Open |
+| 2 | What is the right default for `max_ooo`? 0s (strict) or 5s (lenient)? | Tarun | Open |
+| 3 | Should watermarks be per-key (not just per-partition)? | Tarun | Open — likely No for v1 |

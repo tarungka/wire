@@ -16,6 +16,7 @@ Central index for all Wire project documentation.
 | [diagrams.md](diagrams.md) | Visual reference — Mermaid architecture, data flow, checkpointing, and state diagrams | Canon v1.0.0 |
 | [techinical-documentation.md](techinical-documentation.md) | Full engineering spec — strategy, API surface, GPU design, and connectors | Draft v0.1.0 |
 | [gemini-conversations-export.md](gemini-conversations-export.md) | Exported Gemini research conversations — actor model, PebbleDB, Flink internals, language choice | Reference |
+| [glossary.md](glossary.md) | Glossary of Wire-specific terms and definitions | Reference |
 
 ## Conventions
 

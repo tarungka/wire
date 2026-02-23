@@ -1,6 +1,6 @@
-# Technical Requirements Document (TRD)
+# Configuration Reference
 
-> **Feature/Project:** `Error Handling & Dead Letter Queues`
+> **Feature/Project:** `Configuration Reference`
 >
 > **WIP ID:** `WIP-13`
 >
@@ -24,209 +24,304 @@
 
 ### 1.1 Problem Statement
 
-Wire has **no documented strategy for handling processing errors, poison messages, or routing failed events**. When a user's Map function returns an error, or a Sink write fails, or a deserialization throws an exception — what happens? Currently the implicit behavior would be to crash the task and trigger a full job restart from checkpoint, which is disproportionate for a single bad record.
+Wire's `operations.md` references "Configuration via `wire.yaml`" but the file format is never documented. The CLI has ~720 lines of flag parsing in `cmd/init.go` with 50+ flags covering HTTP, Raft, TLS, write queues, profiling, and cluster join — none of which are documented. Pipeline configuration exists as example YAML/JSON in `.config/` but with no schema or field reference. Users cannot configure or run Wire without reading source code.
 
 ### 1.2 Proposed Solution (Technical Summary)
 
-Implement a three-tier error handling model: (1) **Retry** — transient errors are retried with configurable backoff, (2) **Side Output / DLQ** — poison messages that fail after retries are routed to a Dead Letter Queue side output instead of crashing the job, (3) **Fail Job** — catastrophic errors (OOM, state corruption) cause job failure. Each operator can configure its error handling policy. A built-in DLQ sink writes failed events with error metadata.
+Document the complete configuration surface: CLI flags (derived from `cmd/init.go`), the `wire.yaml` system configuration file schema, the pipeline configuration schema, environment variable overrides, and all validation rules. This TRD serves as the single source of truth for "how to configure Wire."
 
 ### 1.3 Goals & Non-Goals
 
 | Goals (In Scope) | Non-Goals (Explicitly Out) |
 | -- | -- |
-| Define error classification (transient vs poison vs fatal) | Automatic error correction / data repair |
-| Specify retry policies (fixed, exponential backoff) | Circuit breaker pattern (deferred) |
-| Define DLQ routing mechanism via side outputs | DLQ replay / reprocessing workflow |
-| Document per-operator error handling configuration | Global error rate alerting (see operations.md) |
+| Document all CLI flags with types, defaults, and descriptions | Documenting internal Go config structs |
+| Define wire.yaml schema with examples | Dynamic configuration reloading |
+| Define pipeline YAML schema with examples | Configuration UI / dashboard |
+| Document environment variable substitution | Configuration migration tooling |
+| Document all validation rules and error messages | Performance impact of config options |
+
+### 1.4 Success Metrics
+
+| Metric | Current Baseline | Target | Measurement |
+| -- | -- | -- | -- |
+| Documented CLI flags | 0 / 50+ | 100% | Cross-reference with cmd/init.go |
+| User can configure a cluster from docs alone | Impossible | Possible | Manual walkthrough |
+| Valid wire.yaml example provided | No | Yes | Example validates against schema |
 
 ---
 
 ## 2. Architecture & System Design
 
-### 2.1 Error Flow
+### 2.1 Configuration Loading Hierarchy
 
 ```
-                    ┌──────────────┐
-                    │   Operator   │
-                    │  (Map/Sink)  │
-                    └──────┬───────┘
-                           │
-                    Process event
-                           │
-                    ┌──────▼───────┐
-                    │   Success?   │──Yes──▶ Continue
-                    └──────┬───────┘
-                           │ No (error)
-                    ┌──────▼───────┐
-                    │ Retryable?   │──No──▶ ┌──────────┐
-                    └──────┬───────┘        │ Fatal?   │──Yes──▶ FAIL JOB
-                           │ Yes            └────┬─────┘
-                    ┌──────▼───────┐             │ No (poison)
-                    │ Retry with   │             ▼
-                    │ backoff      │      ┌────────────┐
-                    └──────┬───────┘      │ DLQ Side   │
-                           │              │ Output     │
-                    ┌──────▼───────┐      └────────────┘
-                    │ Retries      │
-                    │ exhausted?   │──Yes──▶ DLQ Side Output
-                    └──────┬───────┘
-                           │ No
-                           ▼
-                    Retry the operation
+┌─────────────────────────────────────────────┐
+│             Configuration Precedence         │
+│   (later sources override earlier)          │
+│                                              │
+│   1. Built-in defaults (Go code)            │
+│   2. Config file (wire.yaml / config.json)  │
+│   3. Environment variables (WIRE_*)         │
+│   4. CLI flags (highest priority)           │
+└─────────────────────────────────────────────┘
 ```
 
-### 2.2 Error Classification
+### 2.2 Component Breakdown
 
-| Category | Examples | Default Handling |
-|----------|----------|-----------------|
-| **Transient** | Network timeout, connection reset, temporary unavailability | Retry with backoff |
-| **Poison** | Deserialization failure, null pointer in user code, schema mismatch | Route to DLQ |
-| **Fatal** | Out of memory, state corruption, disk full | Fail job |
+**Component 1:** `cmd/init.go` — Flag Parser
+* **Responsibility:** Defines all CLI flags via `spf13/pflag`, parses command-line arguments, applies defaults.
+* **Technology:** Go, `spf13/pflag` library
+* **Interactions:** Produces a `Config` struct consumed by the main application.
 
-### 2.3 Component Breakdown
+**Component 2:** Configuration File Loader
+* **Responsibility:** Reads `wire.yaml` or JSON config files, merges with flag defaults.
+* **Technology:** `knadh/koanf` (declared in go.mod, currently commented out in code)
+* **Interactions:** Config files specified via `--config` flag. Multiple files merged in order.
 
-**Component 1:** Error Handler (per operator)
-* **Responsibility:** Classify errors, apply retry logic, route to DLQ or fail.
-* **Technology:** Wrapper around user-provided operator functions
-* **Interactions:** Catches errors from Map/FlatMap/Filter/Process/WriteBatch. Applies configured policy.
-
-**Component 2:** DLQ Side Output
-* **Responsibility:** Collect failed events with error metadata. Route to a configured DLQ sink.
-* **Technology:** Wire's existing side output mechanism (see WIP-01)
-* **Interactions:** DLQ events include original event + error message + operator name + timestamp.
+**Component 3:** Pipeline Config Parser
+* **Responsibility:** Reads pipeline YAML/JSON and constructs a StreamGraph.
+* **Technology:** Go YAML/JSON unmarshaler
+* **Interactions:** Separate from system config. Submitted via CLI or REST API.
 
 ---
 
 ## 3. API Design
 
-### 3.1 Error Handling Configuration (Go SDK)
+### 3.1 CLI Flag Reference
 
-```go
-stream.Map("parse", parseFunc).
-    WithErrorHandler(sdk.ErrorHandler{
-        MaxRetries:   3,
-        Backoff:      sdk.ExponentialBackoff(100*time.Millisecond, 10*time.Second, 2.0),
-        OnExhausted:  sdk.RouteToDLQ,   // RouteToDLQ | FailJob | DropEvent
-    })
-```
+#### General Flags
 
-### 3.2 Error Handling Configuration (YAML)
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--config` | `[]string` | `.config/config.json` | Path to one or more config files (merged in order) |
+| `--node-id` | `string` | _(advertised Raft addr)_ | Unique identifier for this node |
+| `--store-db` | `string` | `bbolt` | Backend database for Raft stable/log store (`bbolt`, `badgerdb`) |
+| `--debug` | `bool` | `false` | Enable debug mode (verbose logging) |
+| `--version` | `bool` | `false` | Print version information and exit |
+
+#### HTTP Server Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--http-addr` | `string` | `localhost:4001` | HTTP server bind address |
+| `--http-adv-addr` | `string` | _(same as http-addr)_ | Advertised HTTP address |
+| `--http-allow-origin` | `string` | `""` | `Access-Control-Allow-Origin` header value |
+| `--http-cert` | `string` | `""` | Path to X.509 certificate for HTTPS |
+| `--http-key` | `string` | `""` | Path to X.509 private key for HTTPS |
+| `--http-ca-cert` | `string` | `""` | Path to CA certificate for HTTPS client verification |
+| `--http-verify-client` | `bool` | `false` | Enable mutual TLS for HTTPS |
+
+#### Raft Consensus Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--raft-addr` | `string` | `localhost:4002` | Raft communication bind address |
+| `--raft-adv-addr` | `string` | _(same as raft-addr)_ | Advertised Raft address |
+| `--raft-dir` | `string` | `""` | Directory for Raft data (logs, snapshots) |
+| `--raft-timeout` | `duration` | `1s` | Raft heartbeat timeout |
+| `--raft-election-timeout` | `duration` | `1s` | Raft election timeout |
+| `--raft-apply-timeout` | `duration` | `10s` | Raft log apply timeout |
+| `--raft-snap` | `uint64` | `8192` | Outstanding log entries before snapshot |
+| `--raft-snap-int` | `duration` | `10s` | Snapshot threshold check interval |
+| `--raft-leader-lease-timeout` | `duration` | `0s` | Leader lease timeout (0 = Raft default) |
+| `--raft-log-level` | `string` | `DEBUG` | Minimum Raft log level |
+| `--raft-non-voter` | `bool` | `false` | Configure as non-voting (read-only) node |
+| `--raft-shutdown-stepdown` | `bool` | `true` | Leader steps down before shutdown |
+| `--raft-remove-shutdown` | `bool` | `false` | Shutdown Raft if node removed |
+| `--raft-cluster-remove-shutdown` | `bool` | `false` | Remove node from cluster on shutdown |
+| `--raft-reap-node-timeout` | `duration` | `0` | Reap unreachable voting nodes after this duration (0 = disabled) |
+| `--raft-reap-read-only-node-timeout` | `duration` | `0` | Reap unreachable non-voting nodes after this duration (0 = disabled) |
+
+#### Cluster Join Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--join` | `string` | `""` | Comma-delimited `host:port` list for cluster join |
+| `--join-attempts` | `int` | `5` | Number of join attempts per address |
+| `--join-interval` | `duration` | `3s` | Delay between join retries |
+| `--join-as` | `string` | `""` | Username for authenticated join |
+| `--bootstrap-expect` | `int` | `0` | Min nodes required for bootstrap (0 = single-node) |
+| `--bootstrap-expect-timeout` | `duration` | `120s` | Max time for bootstrap process |
+
+#### Node-to-Node Encryption Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--node-cert` | `string` | `""` | X.509 certificate for inter-node encryption |
+| `--node-key` | `string` | `""` | X.509 private key for inter-node encryption |
+| `--node-ca-cert` | `string` | `""` | CA certificate for verifying node certificates |
+| `--node-no-verify` | `bool` | `false` | Skip verification of node certificates |
+| `--node-verify-client` | `bool` | `false` | Enable mutual TLS for inter-node communication |
+| `--node-verify-server-name` | `string` | `""` | Expected hostname on node certificates |
+
+#### Authentication & Backup Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--auth` | `string` | `""` | Path to authentication/authorization file |
+| `--auto-backup` | `string` | `""` | Path to auto-backup configuration |
+| `--auto-restore` | `string` | `""` | Path to auto-restore configuration |
+| `--auto-vacuum-int` | `duration` | `0` | Auto-vacuum interval (0 = disabled) |
+| `--auto-optimize-int` | `duration` | `24h` | Auto-optimize interval (0 = disabled) |
+
+#### Write Queue Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--write-queue-capacity` | `int` | `1024` | Capacity of queued writes queue |
+| `--write-queue-batch-size` | `int` | `128` | Batch size for queued writes |
+| `--write-queue-timeout` | `duration` | `50ms` | Max time before partial batch flush |
+| `--write-queue-tx` | `bool` | `false` | Use transactions for queued writes |
+
+#### Cluster Communication Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--cluster-connect-timeout` | `duration` | `30s` | Timeout for initial connection to other nodes |
+
+#### Profiling Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--cpu-profile` | `string` | `""` | Path to CPU profile output |
+| `--mem-profile` | `string` | `""` | Path to memory profile output |
+| `--trace-profile` | `string` | `""` | Path to trace profile output |
+
+### 3.2 System Configuration File (wire.yaml)
 
 ```yaml
-transforms:
-  - name: "parse-json"
-    type: "json-parse"
-    input: "source"
-    error_handling:
-      max_retries: 3
-      backoff: "exponential"         # fixed | exponential | none
-      initial_delay: "100ms"
-      max_delay: "10s"
-      multiplier: 2.0
-      on_exhausted: "dlq"            # dlq | fail | drop
+node:
+  id: "node-1"
+  data_dir: "/var/lib/wire"
+  store_db: "bbolt"
+  debug: false
+
+http:
+  addr: "0.0.0.0:4001"
+  adv_addr: "node1.wire.local:4001"
+  allow_origin: "*"
+  tls:
+    cert: "/etc/wire/certs/http.crt"
+    key: "/etc/wire/certs/http.key"
+    ca_cert: "/etc/wire/certs/ca.crt"
+    verify_client: false
+
+raft:
+  addr: "0.0.0.0:4002"
+  adv_addr: "node1.wire.local:4002"
+  heartbeat_timeout: "1s"
+  election_timeout: "1s"
+  apply_timeout: "10s"
+  snapshot_threshold: 8192
+  snapshot_interval: "10s"
+  leader_lease_timeout: "0s"
+  log_level: "INFO"
+  non_voter: false
+  shutdown_stepdown: true
+
+cluster:
+  join: ["node2:4002", "node3:4002"]
+  join_attempts: 5
+  join_interval: "3s"
+  bootstrap_expect: 3
+  bootstrap_expect_timeout: "120s"
+  connect_timeout: "30s"
+
+node_tls:
+  cert: "/etc/wire/certs/node.crt"
+  key: "/etc/wire/certs/node.key"
+  ca_cert: "/etc/wire/certs/ca.crt"
+  verify_client: true
+  verify_server_name: "wire-node"
+
+auth:
+  file: "/etc/wire/auth.json"
+
+write_queue:
+  capacity: 1024
+  batch_size: 128
+  timeout: "50ms"
+  transactional: false
 ```
 
-### 3.3 DLQ Event Format
+### 3.3 Pipeline Configuration Schema
 
-```go
-type DLQEvent struct {
-    OriginalEvent Event              // The event that failed
-    Error         string             // Error message
-    OperatorName  string             // Which operator failed
-    Timestamp     int64              // When the failure occurred
-    RetryCount    int                // How many retries were attempted
-}
-```
-
-Serialized as JSON in the DLQ sink:
-
-```json
-{
-  "original_event": {
-    "key": "base64...",
-    "value": "base64...",
-    "event_time": 1705312200000
-  },
-  "error": "json: cannot unmarshal string into Go value of type int",
-  "operator": "parse-json",
-  "timestamp": 1705312201000,
-  "retry_count": 3
-}
-```
-
-### 3.4 DLQ Sink Configuration
+See WIP-14 Section 3.5 for the full YAML pipeline schema. Key fields:
 
 ```yaml
-sinks:
-  - name: "dlq"
-    type: "kafka"
-    input: "__dlq__"                  # Special reserved input name
-    config:
-      brokers: ["localhost:9092"]
-      topic: "wire-dlq"
+name: "pipeline-name"         # Required
+parallelism: 4
+checkpoint:
+  interval: "10s"
+  timeout: "10m"
+restart:
+  strategy: "fixed-delay"
+  attempts: 3
+  delay: "10s"
+sources: [...]                # See WIP-16 for connector configs
+transforms: [...]             # See WIP-14 for transform types
+sinks: [...]                  # See WIP-16 for connector configs
 ```
 
-If no DLQ sink is configured, `on_exhausted: "dlq"` falls back to logging the event at ERROR level and dropping it.
+### 3.4 Environment Variable Substitution
 
-### 3.5 Retry Policies
+Pipeline configs support `${VAR}` and `${VAR:-default}` syntax:
 
-**Fixed Delay:**
+```yaml
+config:
+  password: "${DB_PASSWORD}"           # Fails if not set
+  host: "${DB_HOST:-localhost}"        # Falls back to "localhost"
 ```
-Attempt 1: wait 100ms
-Attempt 2: wait 100ms
-Attempt 3: wait 100ms
-```
-
-**Exponential Backoff:**
-```
-Attempt 1: wait 100ms
-Attempt 2: wait 200ms
-Attempt 3: wait 400ms
-(capped at max_delay)
-```
-
-### 3.6 Metrics
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `wire_operator_errors_total` | Counter | Total errors per operator, per error type |
-| `wire_operator_retries_total` | Counter | Total retry attempts per operator |
-| `wire_dlq_events_total` | Counter | Events routed to DLQ per operator |
-| `wire_operator_drops_total` | Counter | Events dropped (if on_exhausted=drop) |
 
 ---
 
 ## 4. Data Model & Storage
 
-No additional persistent storage. DLQ events are written to the configured DLQ sink (Kafka, file, etc.).
+### 4.1 Port Assignments
 
-Retry state is ephemeral — held in memory during retry attempts. If the task crashes mid-retry, the event is replayed from checkpoint (at-least-once).
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| `4001` | HTTP/HTTPS | REST API, health checks, Prometheus metrics |
+| `4002` | TCP | Raft consensus + Yamux data transport |
+
+Both ports are configurable via `--http-addr` and `--raft-addr`.
+
+### 4.2 Data Directory Layout
+
+```
+/var/lib/wire/                      # --raft-dir
+  raft/                             # Raft log and stable store
+    raft.db                         # BoltDB (or BadgerDB) for log/stable store
+    snapshots/                      # Raft snapshots
+  state/                            # Pebble state databases (per task)
+    job-<id>/task-<n>/pebble-db/
+```
 
 ---
 
 ## 5. Design Decisions & Trade-offs
 
-### Decision 1: Per-operator error handling (not global)
+### Decision 1: pflag for CLI parsing (not cobra)
 
 |  |  |
 | -- | -- |
-| **Context** | Different operators have different error profiles. A JSON parser should DLQ bad records. A Sink should retry on transient network errors. |
-| **Options Considered** | (A) Global error policy for entire job, (B) Per-operator configuration |
-| **Decision** | Option B |
-| **Rationale** | More flexible. A source might need aggressive retries while a map function should DLQ immediately on bad data. |
-| **Trade-offs Accepted** | More configuration per operator. |
-| **Revisit Trigger** | If users want a "set it once" global policy. Add global defaults with per-operator overrides. |
+| **Context** | Wire needs a CLI parser. |
+| **Options Considered** | (A) `spf13/cobra` (subcommands), (B) `spf13/pflag` (flat flags), (C) `urfave/cli` |
+| **Decision** | Option B: pflag (already implemented in codebase) |
+| **Rationale** | Wire is a single binary with a single mode. Subcommands add unnecessary complexity. pflag is mature and POSIX-compliant. |
+| **Trade-offs Accepted** | No subcommand structure. All flags are top-level. |
+| **Revisit Trigger** | If Wire adds separate `coordinator` and `worker` binaries/modes. |
 
-### Decision 2: DLQ via side outputs (not a separate pipeline)
+### Decision 2: koanf for config file merging
 
 |  |  |
 | -- | -- |
-| **Context** | Failed events need to go somewhere. |
-| **Options Considered** | (A) Side output to a DLQ sink, (B) Separate DLQ pipeline, (C) In-place error field on the event |
-| **Decision** | Option A |
-| **Rationale** | Reuses Wire's existing side output infrastructure (WIP-01). No new infrastructure. DLQ sink is just a regular Sink with a reserved input name. |
-| **Trade-offs Accepted** | DLQ events don't participate in checkpointing (at-least-once delivery to DLQ). |
-| **Revisit Trigger** | If users need exactly-once DLQ delivery. |
+| **Context** | Need to merge multiple config file formats (YAML, JSON) with CLI flags. |
+| **Options Considered** | (A) `knadh/koanf` (already in go.mod), (B) `spf13/viper`, (C) Custom loader |
+| **Decision** | Option A: koanf (already chosen, implementation in progress) |
+| **Rationale** | Lightweight, supports multiple formats, composable providers. Already a dependency. |
+| **Trade-offs Accepted** | Less ecosystem support than Viper. |
+| **Revisit Trigger** | If koanf lacks features needed for config hot-reload. |
 
 ---
 
@@ -234,20 +329,26 @@ Retry state is ephemeral — held in memory during retry attempts. If the task c
 
 | # | Scenario | Handling | Impact | Severity |
 | -- | -- | -- | -- | -- |
-| 1 | Every event fails (100% error rate) | All events routed to DLQ. Pipeline runs but produces no output. Metric alerts should catch this. | No useful output | High |
-| 2 | DLQ sink itself fails | DLQ write failure logged. Original event dropped. DLQ is best-effort. | Lost DLQ record | Medium |
-| 3 | Retry delay > checkpoint interval | Retry still in progress when barrier arrives. Barrier waits for retry to complete (bounded by max_delay). | Checkpoint delayed | Medium |
-| 4 | User function panics (not returns error) | Caught by `recover()`, wrapped as error, treated as poison message → DLQ | Event to DLQ | Medium |
-| 5 | Transient error becomes permanent | Retries exhausted → DLQ. If DLQ configured, pipeline continues. If not, event dropped with log. | Individual events lost | Medium |
+| 1 | `--http-addr` and `--raft-addr` set to same value | Validation error at startup: "HTTP and Raft addresses must differ" | Startup blocked | Low |
+| 2 | Advertised address is `0.0.0.0` | Validation error: "advertised address is not routable" | Startup blocked | Low |
+| 3 | `--http-cert` set without `--http-key` | Validation error: "both must be set, or neither" | Startup blocked | Low |
+| 4 | `--join` and `--disco-mode` both set | Validation error: "mutually exclusive" | Startup blocked | Low |
+| 5 | Node tries to join itself | Validation error: "cannot join with itself unless bootstrapping" | Startup blocked | Low |
+| 6 | `--raft-reap-node-timeout` set to 0 or negative | Validation error: "must be greater than 0" | Startup blocked | Low |
+| 7 | Config file references non-existent file path | Validation error from `CheckFilePaths()` | Startup blocked | Low |
+| 8 | Pipeline YAML references undefined transform input | Validation error: "input 'x' not found" | Job rejected | Low |
+| 9 | Environment variable in pipeline config not set | Substitution fails, error returned | Job rejected | Medium |
 
 ---
 
 ## 7. Security & Compliance
 
-### 7.1 DLQ Data Sensitivity
+### 7.1 Credential Handling
 
-* DLQ events contain the **full original event payload**. If events contain PII, the DLQ sink must have appropriate access controls.
-* DLQ error messages should not leak internal state or stack traces beyond the immediate error.
+* Credentials should **never** be stored in config files.
+* Use `${ENV_VAR}` substitution for all secrets in pipeline configs.
+* The `--auth` flag points to an external auth file (not inline in wire.yaml).
+* TLS certificate paths are validated at startup to prevent misconfiguration.
 
 ---
 
@@ -255,16 +356,17 @@ Retry state is ephemeral — held in memory during retry attempts. If the task c
 
 | Test Type | Scope | Tools | Coverage Target |
 | -- | -- | -- | -- |
-| Unit Tests | Retry logic, error classification, backoff calculation | Go `testing` | 100% |
-| Integration Tests | Map error → DLQ routing → verify DLQ sink receives event | MiniCluster | Happy path + all on_exhausted modes |
+| Unit Tests | Config parsing, validation rules, env var substitution | Go `testing` | 100% of validation rules |
+| Integration Tests | Full config load from file + flags + env | Test fixtures | All config file formats |
+| Smoke Tests | Wire starts with example configs | Docker | Both wire.yaml and pipeline.yaml examples |
 
 ### 8.1 Key Test Scenarios
 
-1. Map returns error on 1 of 100 events → 99 events to sink, 1 to DLQ
-2. Sink WriteBatch fails transiently → retry succeeds → no data loss
-3. Sink WriteBatch fails permanently → retries exhausted → job fails (Sink errors are fatal by default)
-4. Panic in user function → caught → event to DLQ → pipeline continues
-5. No DLQ configured + on_exhausted=dlq → event dropped with warning log
+1. All default values produce a valid startup (single-node mode)
+2. `--config` with multiple files merges correctly (later overrides earlier)
+3. Every validation rule produces the expected error message
+4. `${ENV_VAR}` and `${ENV_VAR:-default}` substitution works correctly
+5. Example wire.yaml and pipeline.yaml from this TRD parse without errors
 
 ---
 
@@ -272,7 +374,7 @@ Retry state is ephemeral — held in memory during retry attempts. If the task c
 
 | # | Question / Risk | Owner | Status |
 | -- | -- | -- | -- |
-| 1 | Should DLQ events participate in checkpointing (exactly-once DLQ)? | Tarun | Open |
-| 2 | Should there be a max DLQ rate (e.g., > 10% errors → fail job)? | Tarun | Open |
-| 3 | Should we support DLQ replay (reprocess failed events after fix)? | Tarun | Open — deferred to v2 |
-| 4 | Risk: Retry backoff can cause memory pressure if many events are in retry simultaneously | — | Acknowledged |
+| 1 | Should wire.yaml support TOML format in addition to YAML and JSON? | Tarun | Open |
+| 2 | The koanf config loader is currently commented out in cmd/init.go. When will it be re-enabled? | Tarun | Open |
+| 3 | Should config validation produce all errors at once or fail on first error? | Tarun | Open |
+| 4 | Risk: Discovery modes (consul-kv, etcd-kv, dns, dns-srv) are defined in code but commented out. When will they be enabled? | — | Acknowledged |
