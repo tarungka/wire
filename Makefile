@@ -10,7 +10,7 @@ help:
 	@echo "  build -               Build the project"
 	@echo "  format -              Format the code"
 	@echo "  run -                 Run the project"
-	@echo "  test -                Run the integration tests"
+	@echo "  test -                Run the integration tests (alias for test-full)"
 	@echo "  unittest -            Run unit tests"
 	@echo "  test-fast -           Run quick unit tests (for pre-commit)"
 	@echo "  test-full -           Run full test suite with race detection"
@@ -21,6 +21,7 @@ help:
 	@echo "  clean -               Remove build artifacts"
 	@echo "  pre-commit -          Run pre-commit checks locally"
 	@echo "  ci-local -            Simulate CI checks locally"
+	@echo "  ci -                  Run full CI checks (Lint + Test)"
 
 # Target to build the project
 build:
@@ -67,6 +68,9 @@ test-full:
 	@echo "Running full test suite with race detection..."
 	go test -race -timeout 5m ./...
 
+# Alias for test
+test: test-full
+
 # Test with coverage report
 test-coverage:
 	@echo "Running tests with coverage..."
@@ -106,8 +110,9 @@ ci-local:
 	@echo "✅ Local CI simulation complete!"
 	@echo ""
 	@echo "💡 To run full tests, use: make test-full"
-	@echo "💡 To run security scan, add [security] to commit message"
-	@echo "💡 To build binaries, add [build] to commit message"
+
+# Full CI target
+ci: lint test-full
 
 # Default target
 all: build
