@@ -2,20 +2,12 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"os"
-	"strings"
 	"syscall"
 
-	"github.com/knadh/koanf/v2"
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/cmd"
 	"github.com/tarungka/wire/internal/logger"
-	"github.com/tarungka/wire/internal/tcp"
-)
-
-var (
-	ko = koanf.New(".")
 )
 
 // Need to make up my mind on some of these:
@@ -68,83 +60,12 @@ func main() {
 	log.Logger = logger.GetLogger("main")
 
 	if cfg.DebugMode {
-		hostName, err := os.Hostname()
-		if err != nil {
-			log.Debug().Err(err).Msgf("error when getting hostname: %v", err)
-		}
-		hostIP, err := getHostIP()
-		if err != nil {
-			log.Debug().Err(err).Msgf("error when getting host IP: %v", err)
-		}
-		log.Debug().Msgf("PID: %v | PPID: %v | Host ID: %v | Host IP: %v", os.Getpid(), os.Getppid(), hostName, hostIP)
+		log.Debug().Msgf("PID: %v | PPID: %v", os.Getpid(), os.Getppid())
 	}
 
-	log.Info().Msg("Starting the application...")
+	log.Info().Msg("Starting wire...")
 
-	// Create internode network mux and configure.
-	muxListener, err := net.Listen("tcp", cfg.RaftAddr)
-	if err != nil {
-		log.Fatal().Err(err).Msgf("failed to listen on %s: %s", cfg.RaftAddr, err.Error())
-	}
-	log.Debug().Msgf("listener mux address is: %s", cfg.RaftAddr)
-	mux, err := startNodeMux(cfg, muxListener)
-	if err != nil {
-		log.Fatal().Msgf("failed to start node mux: %s", err.Error())
-	}
-	log.Debug().Msgf("node mux started")
-
-	log.Debug().Msgf(mainCtx.Err().Error(), mux)
-}
-
-// TODO: move this to a different file
-func getHostIP() (string, error) {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return "", fmt.Errorf("error getting IP addresses: %v", err)
-	}
-
-	for _, addr := range addrs {
-		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
-			if ipNet.IP.To4() != nil {
-				return ipNet.IP.String(), nil
-			}
-		}
-	}
-	return "", fmt.Errorf("error getting IP address")
-}
-
-// startNodeMux starts the TCP mux on the given listener, which should be already
-// bound to the relevant interface.
-func startNodeMux(cfg *Config, ln net.Listener) (*tcp.Mux, error) {
-	var err error
-	adv := tcp.NameAddress{
-		Address: cfg.RaftAdv,
-	}
-
-	log.Debug().Msgf("advertised mux address is: %s", cfg.RaftAdv)
-
-	var mux *tcp.Mux
-	if cfg.NodeX509Cert != "" {
-		// TODO: Implement this later
-		var b strings.Builder
-		b.WriteString(fmt.Sprintf("enabling node-to-node encryption with cert: %s, key: %s",
-			cfg.NodeX509Cert, cfg.NodeX509Key))
-		if cfg.NodeX509CACert != "" {
-			b.WriteString(fmt.Sprintf(", CA cert %s", cfg.NodeX509CACert))
-		}
-		if cfg.NodeVerifyClient {
-			b.WriteString(", mutual TLS enabled")
-		} else {
-			b.WriteString(", mutual TLS disabled")
-		}
-		mux, err = tcp.NewTLSMux(ln, adv, cfg.NodeX509Cert, cfg.NodeX509Key, cfg.NodeX509CACert,
-			cfg.NoNodeVerify, cfg.NodeVerifyClient)
-	} else {
-		mux, err = tcp.NewMux(ln, adv)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to create node-to-node mux: %s", err.Error())
-	}
-	go mux.Serve()
-	return mux, nil
+	// Block until context is canceled by signal.
+	<-mainCtx.Done()
+	log.Info().Msg("Shutting down.")
 }
