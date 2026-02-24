@@ -18,6 +18,7 @@
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
 | 0.2 | 2026-02-24 | Tarun Ashok | Add Handshake (0x00), CRC32C checksums, RecordBatch (0x06) reservation, StreamID clarification, message type range partitioning. Resolves open questions #1, #3, #5. |
+| 0.3 | 2026-02-24 | Tarun Ashok | Split handshake into session-level negotiation (SessionHandshake 0x07 on control stream) and per-stream declaration (StreamHeader 0x00). Based on Kafka/HTTP/2/HTTP/3 industry precedent. Resolves unidirectional stream contradiction. |
 
 ---
 
@@ -34,7 +35,7 @@ Wire nodes communicate over Yamux-multiplexed TCP connections (port 4002) to shu
 
 ### 1.2 Proposed Solution (Technical Summary)
 
-Define a binary, length-prefixed framing protocol that runs on top of Yamux streams. Every frame carries a 4-byte length prefix, a 1-byte message type discriminator, a 4-byte CRC32C checksum, and an N-byte msgpack-encoded payload. Seven message types cover the control and data plane: `Handshake`, `DataRecord`, `CheckpointBarrier`, `Watermark`, `EndOfPartition`, `Backpressure`, and `RecordBatch` (reserved for future batching). The protocol is designed for zero-copy-friendly reading, minimal allocation, and deterministic parsing.
+Define a binary, length-prefixed framing protocol that runs on top of Yamux streams. Every frame carries a 4-byte length prefix, a 1-byte message type discriminator, a 4-byte CRC32C checksum, and an N-byte msgpack-encoded payload. Eight message types cover the control and data plane: `StreamHeader`, `DataRecord`, `CheckpointBarrier`, `Watermark`, `EndOfPartition`, `Backpressure`, `RecordBatch` (reserved for future batching), and `SessionHandshake`. Version and feature negotiation happens once per Yamux session via `SessionHandshake` on the dedicated control stream (matching the Kafka `ApiVersions` / HTTP/2 `SETTINGS` pattern), while each data stream begins with a lightweight `StreamHeader` declaration for routing metadata. The protocol is designed for zero-copy-friendly reading, minimal allocation, and deterministic parsing.
 
 ### 1.3 Goals & Non-Goals
 
@@ -85,11 +86,17 @@ Define a binary, length-prefixed framing protocol that runs on top of Yamux stre
 
 Wire establishes **one TCP connection per worker pair**, managed by the `Mux` struct in `internal/tcp/mux.go`. Each logical data channel (one per upstream-task to downstream-task edge in the ExecutionGraph) maps to a dedicated **Yamux stream** within that connection.
 
-**Stream lifecycle:**
+**Session lifecycle:**
 
-1. **Open:** The upstream task calls `Mux.Dial(addr, timeout)` which reuses an existing Yamux session or creates a new one, then opens a stream via `session.Open()`.
-2. **Handshake:** The first frame on a new stream MUST be a `Handshake (0x00)` frame for version and feature negotiation (see Section 3.8). The receiver waits up to 5 seconds for this frame before closing the stream.
-3. **Data flow:** Frames are written sequentially. The wire protocol is strictly unidirectional per stream (upstream writes, downstream reads). Control messages (barriers, watermarks) flow inline with data.
+1. **Connect:** The upstream worker calls `Mux.Dial(addr, timeout)` which creates a new TCP connection and Yamux session (or reuses an existing one).
+2. **Session handshake:** On a new session, both sides open the **control stream** and exchange `SessionHandshake (0x07)` frames to negotiate protocol version and features (see Section 3.10). No data streams may be opened until this completes.
+3. **Data streams:** Once the session handshake succeeds, data streams are opened per logical channel (per task-to-task edge). All streams inherit the negotiated session-level settings.
+
+**Data stream lifecycle:**
+
+1. **Open:** The upstream task opens a stream via `session.Open()`.
+2. **StreamHeader:** The first frame on a new data stream MUST be a `StreamHeader (0x00)` frame declaring the source task, target task, and partition (see Section 3.8). This is a sender-only declaration — no response is needed.
+3. **Data flow:** Frames are written sequentially. The wire protocol is strictly unidirectional per data stream (upstream writes, downstream reads). Control messages (barriers, watermarks) flow inline with data.
 4. **Close:** The upstream task closes the stream by sending an `EndOfPartition` frame, then calling `stream.Close()`. The downstream reader observes EOF after processing the final frame.
 
 **Stream assignment:**
@@ -114,8 +121,8 @@ Wire uses a **partial mesh** topology. Connections are established on demand: Wo
 **Connection establishment policy:**
 
 - The **sender** always initiates the connection (calls `Mux.Dial`).
-- If a session already exists (checked via `peers` map), a new stream is opened on the existing session.
-- If no session exists, a new TCP connection is dialed, Yamux client handshake runs, and the session is stored for reuse.
+- If a session already exists (checked via `peers` map), a new data stream is opened on the existing session (session handshake already completed).
+- If no session exists, a new TCP connection is dialed, Yamux client handshake runs, the control stream is opened, `SessionHandshake (0x07)` is exchanged, and the session is stored for reuse. Only after the session handshake succeeds are data streams opened.
 - The **receiver** accepts streams from any session via `Mux.Accept()`, which returns streams from the shared channel fed by all active sessions.
 
 **Yamux configuration (from `internal/tcp/mux.go`):**
@@ -178,22 +185,24 @@ Every message transmitted on a Yamux stream is wrapped in a frame with the follo
 
 | MsgType | Value | Direction | Description |
 |---------|-------|-----------|-------------|
-| `Handshake` | `0x00` | Bidirectional | Protocol version and feature negotiation. Must be the first frame on every new stream. See Section 3.8. |
+| `StreamHeader` | `0x00` | Upstream → Downstream | Per-stream metadata declaration (source task, target task, partition). Must be the first frame on every new data stream. See Section 3.8. |
 | `DataRecord` | `0x01` | Upstream → Downstream | A user data record flowing through the pipeline |
 | `CheckpointBarrier` | `0x02` | Upstream → Downstream | Checkpoint barrier dividing epochs (see execution-model.md Section 5) |
 | `Watermark` | `0x03` | Upstream → Downstream | Watermark advancement notification |
 | `EndOfPartition` | `0x04` | Upstream → Downstream | Signals that the upstream partition is exhausted (bounded sources) |
-| `Backpressure` | `0x05` | Downstream → Upstream | Explicit backpressure signal (supplements Yamux flow control) |
+| `Backpressure` | `0x05` | Downstream → Upstream | Explicit backpressure signal on the control stream (supplements Yamux flow control) |
 | `RecordBatch` | `0x06` | Upstream → Downstream | **Reserved.** Batch of DataRecords in a single frame. See Section 3.9. |
+| `SessionHandshake` | `0x07` | Bidirectional (control stream only) | Session-level version and feature negotiation. Exchanged once per Yamux session on the control stream. See Section 3.10. |
 
 **Message type range allocation:**
 
 | Range | Purpose |
 |-------|---------|
-| `0x00` | Handshake (this protocol) |
-| `0x01`-`0x05` | Core protocol messages (this protocol) |
+| `0x00` | StreamHeader (per-stream metadata declaration) |
+| `0x01`-`0x05` | Core data/control messages |
 | `0x06` | RecordBatch (reserved, see Section 3.9) |
-| `0x07`-`0x3F` | Reserved for future core protocol extensions |
+| `0x07` | SessionHandshake (session-level negotiation, control stream only) |
+| `0x08`-`0x3F` | Reserved for future core protocol extensions |
 | `0x40`-`0x7F` | Reserved for user-defined / experimental extensions |
 | `0x80`-`0xFF` | Reserved (must not be used) |
 
@@ -378,56 +387,56 @@ const (
 - Yamux provides **transport-level** flow control via stream windows (1 MB default). When a receiver's buffer fills, Yamux stops granting window credit, which blocks the sender's `Write()` call.
 - The `Backpressure` message provides **application-level** flow control. The downstream can send a `Pause` signal before its buffer is completely full (e.g., at 80% capacity), giving the upstream time to slow down gracefully rather than hard-blocking.
 - `Backpressure` messages travel on a **dedicated control stream** (Yamux stream opened specifically for control traffic on each session), not on the data streams themselves. This prevents head-of-line blocking where a backpressure signal would be stuck behind a queue of data frames.
+- The control stream also carries `SessionHandshake (0x07)` frames during session establishment (see Section 3.10). The `SessionHandshake` is always the first message on the control stream; `Backpressure` messages flow after the session handshake completes.
 
-### 3.8 Message Type: Handshake (0x00)
+### 3.8 Message Type: StreamHeader (0x00)
 
-The first frame sent on any newly opened data stream MUST be a `Handshake` frame. This dedicated message type cleanly separates connection negotiation from data processing, avoiding the brittleness of in-band magic keys.
+The first frame sent on any newly opened data stream MUST be a `StreamHeader` frame. This is a **sender-only declaration** — no response is expected or permitted on the data stream, which remains strictly unidirectional. The StreamHeader provides routing metadata so the downstream node can dispatch the stream to the correct task.
+
+Version and feature negotiation is handled at the session level via `SessionHandshake (0x07)` on the control stream (see Section 3.10), not per-stream.
 
 **Payload structure (msgpack map):**
 
 | Field | msgpack Key | Type | Required | Description |
 |-------|-------------|------|----------|-------------|
-| **ProtocolVersion** | `"v"` | `uint16` | Yes | Protocol version offered by the sender. Current version: `1`. |
-| **MinVersion** | `"min_v"` | `uint16` | Yes | Minimum protocol version the sender supports. Current: `1`. |
-| **Features** | `"f"` | `uint32` | No | Bitmask of optional feature flags. Bit 0: CRC32C checksums enabled. Bit 1: LZ4 compression (reserved). Bits 2-31: reserved (must be 0). Omitted if no optional features are requested. |
+| **SourceTaskID** | `"src"` | `str` | Yes | Identifier of the upstream task opening this stream. Format: `"{operator_name}-{subtask_index}"` (e.g., `"map-op-3"`). |
+| **TargetTaskID** | `"dst"` | `str` | Yes | Identifier of the downstream task this stream is addressed to. Format: `"{operator_name}-{subtask_index}"` (e.g., `"reduce-op-1"`). |
+| **PartitionIndex** | `"p"` | `uint16` | No | Output partition index. Used by the downstream to route the stream to the correct input channel. Omitted for non-partitioned streams. |
 
 **Go struct:**
 
 ```go
-type HandshakeMsg struct {
-    ProtocolVersion uint16 `codec:"v"`
-    MinVersion      uint16 `codec:"min_v"`
-    Features        uint32 `codec:"f,omitempty"`
+type StreamHeaderMsg struct {
+    SourceTaskID   string `codec:"src"`
+    TargetTaskID   string `codec:"dst"`
+    PartitionIndex uint16 `codec:"p,omitempty"`
 }
-
-const (
-    FeatureCRC32C      uint32 = 1 << 0
-    FeatureCompression uint32 = 1 << 1
-)
 ```
 
-**Negotiation rules:**
+**Semantics:**
 
-1. The initiator (upstream/sender) sends a `Handshake` frame as the very first frame on a new stream.
-2. The receiver validates version compatibility: if `sender.ProtocolVersion < receiver.MinVersion` or `receiver.ProtocolVersion < sender.MinVersion`, the versions are incompatible. The receiver closes the stream with `EndOfPartition(Reason=Error)`.
-3. The effective protocol version is `min(sender.ProtocolVersion, receiver.ProtocolVersion)`.
-4. Feature flags are negotiated by bitwise AND: a feature is active only if both sides advertise it.
-5. A receiver that does not receive a `Handshake` frame within 5 seconds of stream open MUST close the stream.
-6. If the first frame on a stream has a `MsgType` other than `0x00`, the receiver MUST close the stream immediately (protocol violation).
+1. The upstream (sender) sends a `StreamHeader` frame as the very first frame on a new data stream.
+2. The downstream reads the `StreamHeader` and uses `TargetTaskID` and `PartitionIndex` to route the stream to the correct task's input channel.
+3. If the downstream does not recognize the `TargetTaskID` (e.g., the task has been rescheduled), it closes the stream with `EndOfPartition(Reason=Error)`.
+4. A receiver that does not receive a `StreamHeader` frame within 5 seconds of stream open MUST close the stream.
+5. If the first frame on a data stream has a `MsgType` other than `0x00`, the receiver MUST close the stream immediately (protocol violation).
+6. No response is sent. The data stream is strictly unidirectional after the `StreamHeader`.
 
 **Example frame (hex):**
 
 ```
 Frame:
-  Length:   00 00 00 0D              (13 bytes follow: 1 MsgType + 4 CRC32C + 8 payload)
-  MsgType:  00                       (Handshake)
+  Length:   00 00 00 1E              (30 bytes follow: 1 MsgType + 4 CRC32C + 25 payload)
+  MsgType:  00                       (StreamHeader)
   CRC32C:   xx xx xx xx              (CRC32C over MsgType + Payload)
-  Payload (8 bytes, msgpack map with 2 entries):
-    82                               (fixmap, 2 entries)
-    A1 76                            (fixstr "v")
-    CD 00 01                         (uint16: 1)
-    A5 6D 69 6E 5F 76               (fixstr "min_v")
-    CD 00 01                         (uint16: 1)
+  Payload (25 bytes, msgpack map with 3 entries):
+    83                               (fixmap, 3 entries)
+    A3 73 72 63                      (fixstr "src")
+    A9 6D 61 70 2D 6F 70 2D 33     (fixstr "map-op-3")
+    A3 64 73 74                      (fixstr "dst")
+    AC 72 65 64 75 63 65 2D 6F 70 2D 31  (fixstr "reduce-op-1")
+    A1 70                            (fixstr "p")
+    CD 00 02                         (uint16: 2)
 ```
 
 ### 3.9 Message Type: RecordBatch (0x06) -- Reserved
@@ -455,6 +464,81 @@ type RecordBatchMsg struct {
 - Ordering semantics: records within a batch are ordered by their array index. A batch is atomic for framing purposes but individual records are processed sequentially.
 - Checkpoint barriers MUST NOT appear inside a batch. A barrier must be its own frame, ensuring clean epoch boundaries.
 - Implementation is deferred to a future WIP. Receivers encountering `MsgType=0x06` before that WIP is ratified MUST skip the frame per the unknown-type rule in Section 3.2.
+
+### 3.10 Message Type: SessionHandshake (0x07)
+
+A session-level version and feature negotiation message exchanged on the **dedicated control stream** when a Yamux session is first established. Both sides send a `SessionHandshake` frame; the negotiated result applies to all data streams on that session.
+
+This design follows the industry pattern established by Kafka (`ApiVersionsRequest`/`Response` per connection), HTTP/2 (`SETTINGS` frames on stream 0), and HTTP/3 (`SETTINGS` on a dedicated unidirectional control stream). Version and feature negotiation is a property of the communication channel between two nodes, not of individual data flows.
+
+**Payload structure (msgpack map):**
+
+| Field | msgpack Key | Type | Required | Description |
+|-------|-------------|------|----------|-------------|
+| **ProtocolVersion** | `"v"` | `uint16` | Yes | Protocol version offered by the sender. Current version: `1`. |
+| **MinVersion** | `"min_v"` | `uint16` | Yes | Minimum protocol version the sender supports. Current: `1`. |
+| **Features** | `"f"` | `uint32` | Yes | Bitmask of supported feature flags. Bit 0: CRC32C checksums. Bit 1: LZ4 compression (reserved). Bits 2-31: reserved (must be 0). |
+| **NodeID** | `"n"` | `str` | Yes | Identifier of the sending node. Used for logging, debugging, and session tracking. |
+
+**Go struct:**
+
+```go
+type SessionHandshakeMsg struct {
+    ProtocolVersion uint16 `codec:"v"`
+    MinVersion      uint16 `codec:"min_v"`
+    Features        uint32 `codec:"f"`
+    NodeID          string `codec:"n"`
+}
+
+const (
+    FeatureCRC32C      uint32 = 1 << 0
+    FeatureCompression uint32 = 1 << 1
+)
+```
+
+**Negotiation protocol:**
+
+1. When a new Yamux session is established, the initiator (dialer) opens the control stream and immediately sends a `SessionHandshake` frame.
+2. The acceptor (listener) reads the `SessionHandshake`, then sends its own `SessionHandshake` frame back on the same control stream.
+3. Both sides compute the negotiated result:
+   - **Effective protocol version** = `min(local.ProtocolVersion, remote.ProtocolVersion)`
+   - **Active features** = `local.Features & remote.Features` (bitwise AND)
+4. Both sides validate compatibility: if `effectiveVersion < local.MinVersion` or `effectiveVersion < remote.MinVersion`, the versions are incompatible. The session is torn down (TCP connection closed). No data streams are opened.
+5. The negotiated version and feature set are stored on the session object. All data streams opened on this session inherit these settings.
+6. **Timeout:** If either side does not receive the peer's `SessionHandshake` within 5 seconds of session establishment, the session is torn down.
+7. After the `SessionHandshake` exchange completes, the control stream remains open for `Backpressure (0x05)` messages (see Section 3.7).
+
+**Session establishment sequence:**
+
+```
+Initiator (Worker A)                      Acceptor (Worker B)
+       |                                         |
+       |--- TCP connect ----------------------->|
+       |<-- TCP accept -------------------------|
+       |                                         |
+       |=== Yamux session established ===========|
+       |                                         |
+       |--- SessionHandshake(v=1,f=CRC32C) ---->|  (on control stream)
+       |<-- SessionHandshake(v=1,f=CRC32C) -----|  (on control stream)
+       |                                         |
+       |    [negotiate: v=1, features=CRC32C]    |
+       |                                         |
+       |--- StreamHeader(src,dst,p) ----------->|  (data stream 1)
+       |--- DataRecord ----------------------->|
+       |--- DataRecord ----------------------->|
+       |    ...                                  |
+```
+
+**Rolling upgrade support:**
+
+During a rolling upgrade, old nodes may advertise `v=1, min_v=1` while new nodes advertise `v=2, min_v=1`. The negotiation yields `effectiveVersion = min(1, 2) = 1`, and both nodes operate at protocol version 1. Once all nodes are upgraded, they negotiate `effectiveVersion = 2` and can use new features.
+
+**Feature flag semantics:**
+
+| Bit | Feature | When Active | When Inactive |
+|-----|---------|-------------|---------------|
+| 0 | CRC32C | All frames on data streams include a valid CRC32C checksum. Receivers MUST verify. | The CRC32C field in the frame header is set to `0x00000000`. Receivers MUST NOT verify (skip the field). |
+| 1 | LZ4 Compression | *Reserved for future use.* | N/A |
 
 ---
 
@@ -521,7 +605,7 @@ Messages on a single Yamux stream obey **strict total order**. The following ord
 
 ```
 Stream timeline:
-  Handshake → DataRecord → DataRecord → Watermark(100) → DataRecord → CheckpointBarrier(1)
+  StreamHeader → DataRecord → DataRecord → Watermark(100) → DataRecord → CheckpointBarrier(1)
   → DataRecord → DataRecord → Watermark(200) → CheckpointBarrier(2)
   → DataRecord → EndOfPartition
 ```
@@ -576,6 +660,18 @@ Stream timeline:
 | **Rationale** | 256 possible message types is far more than Wire will ever need. A fixed-size field means the CRC32C always starts at byte offset 5 and the payload always starts at byte offset 9, enabling constant-time access without varint decoding. |
 | **Trade-offs Accepted** | Cannot exceed 256 message types. This is not a realistic concern. |
 
+### Decision 5: Session-level negotiation on control stream (not per-stream)
+
+|  |  |
+| -- | -- |
+| **Context** | The protocol needs version and feature negotiation to support forward compatibility and rolling upgrades. Data streams are strictly unidirectional (upstream writes, downstream reads), so the downstream cannot send a negotiation reply on a data stream. |
+| **Options Considered** | (A) Per-stream sender-only declaration (no response), (B) Session-level negotiation on the existing control stream + lightweight per-stream StreamHeader, (C) Allow one bidirectional handshake reply on the data stream before it becomes unidirectional |
+| **Decision** | Option B: Session-level negotiation on control stream + per-stream StreamHeader |
+| **Rationale** | (1) Matches universal industry precedent: Kafka negotiates `ApiVersions` once per TCP connection; HTTP/2 exchanges `SETTINGS` frames once per connection (stream 0); HTTP/3 sends `SETTINGS` on a dedicated unidirectional control stream. No production distributed system negotiates features per-stream. (2) Wire already has a dedicated control stream for Backpressure (Section 3.7), providing the bidirectional infrastructure needed for true negotiation (bitwise AND for features, min for version). (3) One negotiation per session vs N redundant handshakes. With dozens of data streams per session, this eliminates significant overhead. (4) Supports rolling upgrades: old nodes (v=1) and new nodes (v=2, min_v=1) negotiate down to v=1. (5) Preserves the strict unidirectional invariant on data streams, which the goroutine model (WIP-02) depends on. |
+| **Options Rejected** | Option A: Sender cannot learn receiver capabilities without a response. "Accept or close" provides no negotiation, only rejection. Does not support feature intersection (bitwise AND). Option C: Breaks the unidirectional invariant. Creates a stream that is bidirectional for one frame, then unidirectional forever — a novel lifecycle with no industry precedent. Complicates the goroutine model and creates ordering hazards (sender must block until reply arrives). |
+| **Trade-offs Accepted** | Session handshake adds latency to the first connection between two workers (~1 RTT). All streams on a session share the same negotiated features (no per-stream feature variance). The control stream becomes a critical path for session establishment — if it fails, no data streams can open. |
+| **Revisit Trigger** | If Wire needs per-stream feature variance (e.g., some streams compressed, others not), per-stream flags in the `StreamHeader` could be added as declarations constrained to the session-negotiated feature set. |
+
 ---
 
 ## 6. Edge Cases & Failure Modes
@@ -616,7 +712,8 @@ Stream timeline:
 | 12 | DataRecord sent after EndOfPartition | Receiver drops the record and logs a protocol violation warning. | Record silently dropped | Low |
 | 13 | Watermark goes backward (timestamp < previous watermark) | Receiver drops the watermark and logs a warning. Watermark state is not regressed. | Stale watermark ignored | Low |
 | 14 | CheckpointBarrier with ID <= last completed checkpoint | Receiver drops the barrier. This can happen during recovery when old messages are replayed. | Duplicate barrier ignored | Low |
-| 15 | Handshake (0x00) missing on new stream | Receiver waits up to 5 seconds for a `Handshake` frame. If the first frame is not `MsgType=0x00`, or no frame arrives within 5 seconds, the receiver closes the stream. | Stream rejected | Medium |
+| 15 | StreamHeader (0x00) missing on new data stream | Receiver waits up to 5 seconds for a `StreamHeader` frame. If the first frame is not `MsgType=0x00`, or no frame arrives within 5 seconds, the receiver closes the stream. | Stream rejected | Medium |
+| 16 | SessionHandshake (0x07) missing or failed on new session | Both sides wait up to 5 seconds for the peer's `SessionHandshake` on the control stream. If no `SessionHandshake` arrives, or if version negotiation fails (incompatible versions), the entire Yamux session is torn down. No data streams are opened. | Session rejected; tasks reconnect | High |
 
 ---
 
@@ -683,12 +780,17 @@ The wire protocol itself does not include authentication fields (e.g., tokens, s
 9. **Watermark monotonicity:** Send `Watermark(100)`, then `Watermark(50)`. Verify the second is dropped.
 10. **EndOfPartition terminates stream:** Send `EndOfPartition`, then `DataRecord`. Verify the second is dropped.
 11. **Backpressure pause/resume:** Send `Backpressure(Pause)`, verify upstream reduces rate. Send `Backpressure(Resume)`, verify upstream resumes.
-12. **Handshake negotiation:** Open a stream, send a `Handshake(0x00)` frame with `ProtocolVersion=1, MinVersion=1`. Verify the receiver accepts it. Send a handshake with `ProtocolVersion=99, MinVersion=99`. Verify the receiver rejects it with `EndOfPartition(Error)`. Verify that sending a `DataRecord` as the first frame (no handshake) causes the stream to be closed.
+12. **StreamHeader routing:** Open a data stream, send a `StreamHeader(0x00)` with valid `SourceTaskID` and `TargetTaskID`. Verify the downstream routes the stream to the correct task. Send a `StreamHeader` with an unknown `TargetTaskID`. Verify the downstream closes the stream with `EndOfPartition(Error)`. Verify that sending a `DataRecord` as the first frame (no StreamHeader) causes the stream to be closed.
 13. **Concurrent streams:** Open 100 Yamux streams, send mixed message types on each concurrently. Verify no data corruption or deadlock.
 14. **TLS interop:** Run the full test suite over TLS-wrapped Yamux to verify the protocol is TLS-transparent.
 15. **CRC32C validation:** Encode a valid `DataRecord`, verify the CRC32C in the header matches a manually computed CRC32C over MsgType + Payload.
 16. **CRC32C corruption detection:** Flip a single bit in the payload of an encoded frame, without updating the CRC32C. Verify the reader detects the mismatch and drops the frame.
 17. **CRC32C hardware acceleration:** Benchmark CRC32C computation with and without SSE4.2/ARM CRC instructions to verify hardware acceleration is active.
+18. **Session handshake — compatible versions:** Establish a Yamux session. Both sides send `SessionHandshake(v=1, min_v=1, features=CRC32C)`. Verify negotiation succeeds with `effectiveVersion=1, activeFeatures=CRC32C`. Open a data stream and verify data flows.
+19. **Session handshake — incompatible versions:** One side sends `SessionHandshake(v=2, min_v=2)`, the other sends `SessionHandshake(v=1, min_v=1)`. Verify `effectiveVersion=1 < min_v=2` triggers session teardown.
+20. **Session handshake — feature intersection:** One side sends `features=CRC32C|Compression`, the other sends `features=CRC32C`. Verify active features = `CRC32C` only (bitwise AND).
+21. **Session handshake — timeout:** Establish a Yamux session but do not send `SessionHandshake` from one side. Verify the other side tears down the session after 5 seconds.
+22. **Session handshake — rolling upgrade:** Simulate old node (v=1) and new node (v=2, min_v=1). Verify negotiation yields v=1 and both nodes operate correctly.
 
 ### 8.2 Fuzz Testing Strategy
 
@@ -719,7 +821,7 @@ func FuzzFrameDecode(f *testing.F) {
 | 2 | Should the `Backpressure` message carry a `Credit` field (number of bytes the receiver is willing to accept) instead of binary pause/resume, to enable credit-based flow control? | Tarun | Open |
 | 3 | ~~Should we support frame batching?~~ **Resolved (type reserved):** `RecordBatch (0x06)` reserved in the message type table. Structure documented in Section 3.9. Full specification deferred to a future WIP. | Tarun | Resolved |
 | 4 | The `max_frame_size` default of 16 MB may be too large for memory-constrained workers. Should this be auto-tuned based on available memory? | Tarun | Open |
-| 5 | ~~Should the version handshake be a separate message type?~~ **Resolved:** Adopted `Handshake (0x00)` as a dedicated message type with feature negotiation support. See Section 3.8. | Tarun | Resolved |
+| 5 | ~~Should the version handshake be a separate message type?~~ **Resolved (v0.2, refined v0.3):** Split into two concerns: `StreamHeader (0x00)` for per-stream routing metadata (sender-only declaration, Section 3.8) and `SessionHandshake (0x07)` for session-level version/feature negotiation on the control stream (Section 3.10). Follows Kafka `ApiVersions` / HTTP/2 `SETTINGS` pattern. See Decision 5. | Tarun | Resolved |
 | 6 | Risk: msgpack's lack of a schema means field additions/removals are invisible at compile time. A codec tag typo could cause silent data loss. Mitigation: exhaustive roundtrip tests. | -- | Acknowledged |
 | 7 | Risk: the protocol currently has no support for compression. At high throughput with compressible payloads (JSON events), this could waste significant bandwidth. Compression (LZ4/Snappy per-frame or per-batch) should be considered in a future protocol version. | -- | Acknowledged |
 | 8 | How should the protocol handle Yamux session-level failures (as distinct from stream-level failures)? If the entire TCP connection drops, all streams on that session are lost simultaneously. The task manager needs a clear contract for this. | Tarun | Open |
