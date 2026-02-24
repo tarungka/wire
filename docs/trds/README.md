@@ -68,6 +68,7 @@ Ordered by build dependency: engine core first, then runtime infrastructure, the
 | [WIP-04](WIP-04/README.md) | Watermark Generation Algorithm | Draft |
 | [WIP-05](WIP-05/README.md) | Barrier Alignment Timeout & Failure Handling | Draft |
 | [WIP-06](WIP-06/README.md) | Checkpoint Metadata Schema | Draft |
+| [WIP-18](WIP-18/README.md) | Multiple State Backends | Draft |
 
 ### Runtime Infrastructure
 
