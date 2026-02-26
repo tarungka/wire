@@ -15,6 +15,24 @@ type Config struct {
 
 	// DebugMode enables additional logs and other metadata to be printed.
 	DebugMode bool
+
+	// ListenAddr is the wire protocol listen address.
+	ListenAddr string
+
+	// NodeCert is the path to the TLS certificate file.
+	NodeCert string
+
+	// NodeKey is the path to the TLS private key file.
+	NodeKey string
+
+	// NodeCA is the path to the CA certificate for peer verification.
+	NodeCA string
+
+	// NodeVerifyClient enables mutual TLS (require client certificates).
+	NodeVerifyClient bool
+
+	// MaxFrameSize is the maximum wire protocol frame size in bytes.
+	MaxFrameSize uint32
 }
 
 // BuildInfo holds version metadata populated at build time.
@@ -43,6 +61,14 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, error) {
 
 	// Misc configs
 	f.BoolVar(&config.DebugMode, "debug", false, "run in debug mode - better logs")
+
+	// Transport flags
+	f.StringVar(&config.ListenAddr, "listen", ":4002", "wire protocol listen address")
+	f.StringVar(&config.NodeCert, "node-cert", "", "TLS certificate file")
+	f.StringVar(&config.NodeKey, "node-key", "", "TLS private key file")
+	f.StringVar(&config.NodeCA, "node-ca", "", "CA certificate for peer verification")
+	f.BoolVar(&config.NodeVerifyClient, "node-verify-client", false, "require mutual TLS")
+	f.Uint32Var(&config.MaxFrameSize, "max-frame-size", 16777216, "max wire protocol frame size")
 
 	f.Usage = func() {
 		fmt.Fprintf(os.Stderr, "\n%s\n\n", desc)
