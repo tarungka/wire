@@ -59,6 +59,23 @@ Is T >= CurrentWatermark?
                           └── No → Event is TOO LATE → route to side output
 ```
 
+```mermaid
+flowchart TD
+    A["Event arrives<br/>EventTime = T"] --> B{"T >= CurrentWatermark?"}
+    B -- Yes --> C[Normal processing]
+    B -- No --> D["Event is LATE"]
+    D --> E{"AllowedLateness<br/>configured?"}
+    E -- No --> F["Drop event<br/>(increment late-dropped metric)"]
+    E -- Yes --> G{"T >= WindowEnd −<br/>AllowedLateness?"}
+    G -- Yes --> H["Re-open window<br/>Update result<br/>(IsUpdate=true)"]
+    G -- No --> I["TOO LATE<br/>Route to side output"]
+
+    style C fill:#c8e6c9
+    style F fill:#ffcdd2
+    style H fill:#fff3e0
+    style I fill:#fff9c4
+```
+
 ### 2.2 Window State Retention
 
 Without allowed lateness:
@@ -145,6 +162,18 @@ type WindowResult struct {
 | Open | `W < WindowEnd` | Active | Events assigned, aggregation updated |
 | Closed but retained | `WindowEnd <= W < WindowEnd + AllowedLateness` | Retained | Late events re-trigger, updated results emitted |
 | Purged | `W >= WindowEnd + AllowedLateness` | Deleted | State purged from Pebble. Events are too-late. |
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open : first event assigned to window
+    Open --> Open : events arrive (accumulate)
+    Open --> ClosedRetained : Watermark > WindowEnd
+    ClosedRetained --> ClosedRetained : late event within AllowedLateness<br/>(re-trigger, emit updated result)
+    ClosedRetained --> Purged : Watermark > WindowEnd + AllowedLateness
+    Purged --> [*] : state deleted
+
+    note right of ClosedRetained : Late events re-trigger\nwindow function with\nIsUpdate=true
+```
 
 ### 4.2 Storage Impact
 

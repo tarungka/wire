@@ -86,6 +86,34 @@ Coordinator                     Worker (Sink Task)               External System
     │                               │                               │
 ```
 
+```mermaid
+sequenceDiagram
+    participant C as Coordinator
+    participant S as Sink Task
+    participant E as External System
+
+    Note over C: Trigger Checkpoint N
+    C->>S: CheckpointBarrier(N)
+
+    rect rgb(232, 245, 233)
+        Note over S,E: Phase 1: Pre-Commit
+        S->>E: PreCommit(N) — flush buffered writes
+        E->>S: Prepared
+    end
+
+    S->>C: AcknowledgeCheckpoint(N)
+    Note over C: All ACKs collected
+    C->>S: NotifyCheckpointComplete(N)
+
+    rect rgb(227, 242, 253)
+        Note over S,E: Phase 2: Commit
+        S->>E: Commit(N) — make writes visible
+        E->>S: Committed
+    end
+
+    S->>S: BeginTransaction() for next epoch
+```
+
 ### 2.2 Component Breakdown
 
 **Component 1:** Checkpoint Coordinator
@@ -195,6 +223,20 @@ The Coordinator tracks per-sink-task transaction state:
 | current_checkpoint | int64 | Checkpoint currently in PreCommit |
 | last_committed_checkpoint | int64 | Last successfully committed checkpoint |
 | transaction_state | enum | ACTIVE / PRE_COMMITTED / COMMITTED |
+
+```mermaid
+stateDiagram-v2
+    [*] --> ACTIVE : BeginTransaction()
+    ACTIVE --> ACTIVE : WriteBatch()
+    ACTIVE --> PRE_COMMITTED : PreCommit(N)
+    PRE_COMMITTED --> COMMITTED : Commit(N)<br/>(global checkpoint complete)
+    COMMITTED --> ACTIVE : BeginTransaction()<br/>(next epoch)
+    COMMITTED --> [*] : job finished
+
+    ACTIVE --> ABORTED : failure
+    PRE_COMMITTED --> ABORTED : failure / timeout
+    ABORTED --> [*] : recovery from checkpoint
+```
 
 ### 4.2 Recovery Metadata
 

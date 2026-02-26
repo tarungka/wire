@@ -128,6 +128,31 @@ Document Wire's layered security model: (1) TLS encryption for the HTTP API, (2)
 6. Clients authenticate via Basic Auth or API key (from auth file).
 7. Coordinator validates role and authorizes the request.
 
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as Coordinator HTTP<br/>(port 4001)
+    participant A as Auth Middleware
+    participant R as RBAC Check
+    participant Handler
+
+    C->>H: HTTPS request + Authorization header
+    Note over C,H: TLS handshake (optional mTLS)
+    H->>A: Extract credentials
+    A->>A: Validate (bcrypt compare<br/>or API key lookup)
+    alt Invalid credentials
+        A->>C: 401 Unauthorized
+    else Valid credentials
+        A->>R: Check role permissions
+        alt Insufficient permissions
+            R->>C: 403 Forbidden
+        else Authorized
+            R->>Handler: Forward request
+            Handler->>C: Response
+        end
+    end
+```
+
 ---
 
 ## 3. API Design

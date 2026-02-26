@@ -52,6 +52,23 @@ Source B ──(W=95)───▶ │ Min(A,B) │
                       └──────────┘
 ```
 
+```mermaid
+flowchart LR
+    subgraph Sources
+        SA["Source A<br/>W=100<br/>(maxObserved=105, OOO=5s)"]
+        SB["Source B<br/>W=95<br/>(maxObserved=100, OOO=5s)"]
+        SC["Source C<br/>(idle — excluded)"]
+    end
+    SA --> JOIN["Join Operator<br/>OutputW = min(100, 95) = 95"]
+    SB --> JOIN
+    SC -.->|idle, excluded| JOIN
+    JOIN --> WIN["Window Operator<br/>fires windows where<br/>WindowEnd ≤ 95"]
+
+    style Sources fill:#e3f2fd
+    style JOIN fill:#fff3e0
+    style WIN fill:#e8f5e9
+```
+
 **Propagation rule:** Each operator outputs `Watermark = Min(all input watermarks)`.
 
 ### 2.2 Strategies

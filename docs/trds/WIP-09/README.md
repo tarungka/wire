@@ -123,6 +123,17 @@ Port 4002: Raft consensus + Yamux internode transport
 * **Technology:** Same Coordinator binary, but control loops are gated behind a leadership check.
 * **Interactions:** Applies FSM updates passively. Redirects any client HTTP requests to the current Leader. Can serve read-only status queries (e.g., `GET /api/v1/cluster`) from its local FSM if stale reads are acceptable.
 
+```mermaid
+stateDiagram-v2
+    [*] --> Follower
+    Follower --> Candidate : election timeout
+    Candidate --> Leader : receives majority votes
+    Candidate --> Candidate : election timeout, no majority
+    Candidate --> Follower : discovers higher term
+    Leader --> Follower : discovers higher term
+    Leader --> Follower : lease expires / stepdown
+```
+
 ### 2.3 Data Flow
 
 **Normal Operation (Leader healthy):**
@@ -145,6 +156,27 @@ Port 4002: Raft consensus + Yamux internode transport
 6. Workers detect Leader loss (heartbeat/RPC failures), query known Coordinator addresses for new Leader, re-register.
 7. New Leader reconciles: any in-flight checkpoint that was not marked `Completed` in the FSM is aborted. A new checkpoint is triggered to establish a clean recovery point.
 8. Jobs continue from the last completed checkpoint without resubmission.
+
+```mermaid
+sequenceDiagram
+    participant L as Leader (old)
+    participant F1 as Follower 1
+    participant F2 as Follower 2
+    participant W as Worker
+
+    Note over L: Leader crashes
+    destroy L
+    L-xF1: heartbeat stops
+
+    Note over F1: Election timeout fires
+    F1->>F2: RequestVote(term=2)
+    F2->>F1: VoteGranted
+    Note over F1: Becomes new Leader
+
+    W->>F1: RegisterWorker (re-register)
+    F1->>W: Assign tasks (reconcile from FSM)
+    Note over F1,W: Normal operation resumes
+```
 
 ---
 

@@ -10,7 +10,7 @@
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-24`
+> **Last Updated:** `2026-02-25`
 
 ### Revision History
 
@@ -19,6 +19,7 @@
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
 | 0.2 | 2026-02-24 | Tarun Ashok | Add Handshake (0x00), CRC32C checksums, RecordBatch (0x06) reservation, StreamID clarification, message type range partitioning. Resolves open questions #1, #3, #5. |
 | 0.3 | 2026-02-24 | Tarun Ashok | Split handshake into session-level negotiation (SessionHandshake 0x07 on control stream) and per-stream declaration (StreamHeader 0x00). Based on Kafka/HTTP/2/HTTP/3 industry precedent. Resolves unidirectional stream contradiction. |
+| 0.4 | 2026-02-25 | Tarun Ashok | Add mermaid diagrams: frame reading state machine, data stream lifecycle state machine, session establishment sequence, backpressure flow sequence, message flow by stream type. |
 
 ---
 
@@ -98,6 +99,22 @@ Wire establishes **one TCP connection per worker pair**, managed by the `Mux` st
 2. **StreamHeader:** The first frame on a new data stream MUST be a `StreamHeader (0x00)` frame declaring the source task, target task, and partition (see Section 3.8). This is a sender-only declaration — no response is needed.
 3. **Data flow:** Frames are written sequentially. The wire protocol is strictly unidirectional per data stream (upstream writes, downstream reads). Control messages (barriers, watermarks) flow inline with data.
 4. **Close:** The upstream task closes the stream by sending an `EndOfPartition` frame, then calling `stream.Close()`. The downstream reader observes EOF after processing the final frame.
+
+**Data stream lifecycle state machine:**
+
+```mermaid
+stateDiagram-v2
+    [*] --> StreamOpened : session.Open()
+    StreamOpened --> HeaderSent : send StreamHeader (0x00)
+    HeaderSent --> Active : downstream accepts routing
+    Active --> Active : DataRecord / CheckpointBarrier / Watermark
+    Active --> EndOfPartitionSent : send EndOfPartition (0x04)
+    EndOfPartitionSent --> Closed : stream.Close()
+    Closed --> [*]
+
+    StreamOpened --> Closed : timeout (no StreamHeader within 5s)
+    StreamOpened --> Closed : first frame not 0x00 (protocol violation)
+```
 
 **Stream assignment:**
 
@@ -181,6 +198,28 @@ Every message transmitted on a Yamux stream is wrapped in a frame with the follo
 9. Dispatch on msgType, decode payload via DecodeMsgPack(payload, &msg)
 ```
 
+**Frame reading state machine:**
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> ReadingLength : bytes available
+    ReadingLength --> ValidatingLength : 4 bytes read
+    ValidatingLength --> ProtocolError : frameLen < 5 or > MAX
+    ValidatingLength --> ReadingBody : valid length
+    ReadingBody --> ExtractMsgType : frameLen bytes read
+    ExtractMsgType --> ExtractCRC
+    ExtractCRC --> ExtractPayload
+    ExtractPayload --> ValidatingCRC
+    ValidatingCRC --> CRCError : mismatch
+    ValidatingCRC --> Dispatching : match
+    Dispatching --> Idle : dispatch complete
+
+    ProtocolError --> [*] : close stream
+    CRCError --> Idle : drop frame, increment counter
+    note right of CRCError : After 10 consecutive\nCRC mismatches,\nclose stream
+```
+
 ### 3.2 Message Types
 
 | MsgType | Value | Direction | Description |
@@ -205,6 +244,34 @@ Every message transmitted on a Yamux stream is wrapped in a frame with the follo
 | `0x08`-`0x3F` | Reserved for future core protocol extensions |
 | `0x40`-`0x7F` | Reserved for user-defined / experimental extensions |
 | `0x80`-`0xFF` | Reserved (must not be used) |
+
+**Message flow by stream type:**
+
+```mermaid
+flowchart LR
+    subgraph Upstream["Upstream Worker"]
+        U[Tasks]
+    end
+    subgraph Downstream["Downstream Worker"]
+        D[Tasks]
+    end
+
+    U -- "SessionHandshake (0x07)" --> D
+    D -- "SessionHandshake (0x07)" --> U
+    D -- "Backpressure (0x05)" --> U
+
+    U -- "StreamHeader (0x00)" --> D
+    U -- "DataRecord (0x01)" --> D
+    U -- "CheckpointBarrier (0x02)" --> D
+    U -- "Watermark (0x03)" --> D
+    U -- "EndOfPartition (0x04)" --> D
+    U -. "RecordBatch (0x06) [reserved]" .-> D
+
+    style Upstream fill:#e1f5fe
+    style Downstream fill:#fff3e0
+```
+
+> **Control stream** (bidirectional): `SessionHandshake`, `Backpressure`. **Data streams** (unidirectional, upstream → downstream): all other message types.
 
 A receiver encountering an unknown message type MUST skip the frame (it already knows the length from the Length field) and log a warning, rather than terminating the connection. This enables forward compatibility: older receivers gracefully ignore message types added in newer protocol versions.
 
@@ -389,6 +456,30 @@ const (
 - `Backpressure` messages travel on a **dedicated control stream** (Yamux stream opened specifically for control traffic on each session), not on the data streams themselves. This prevents head-of-line blocking where a backpressure signal would be stuck behind a queue of data frames.
 - The control stream also carries `SessionHandshake (0x07)` frames during session establishment (see Section 3.10). The `SessionHandshake` is always the first message on the control stream; `Backpressure` messages flow after the session handshake completes.
 
+**Backpressure flow:**
+
+```mermaid
+sequenceDiagram
+    participant U as Upstream Task
+    participant CS as Control Stream
+    participant D as Downstream Task
+
+    U->>D: DataRecord (data stream)
+    U->>D: DataRecord (data stream)
+    U->>D: DataRecord (data stream)
+    Note over D: Buffer reaches 80%
+    D->>CS: Backpressure(Pause, streamID, bufferUsage=0.8)
+    CS->>U: Backpressure(Pause)
+    Note over U: Reduces send rate / pauses
+    Note over D: Buffer drains to 20%
+    D->>CS: Backpressure(Resume, streamID, bufferUsage=0.2)
+    CS->>U: Backpressure(Resume)
+    Note over U: Resumes full-speed sending
+    U->>D: DataRecord (data stream)
+    U->>D: DataRecord (data stream)
+    Note over U,D: If upstream ignores Backpressure,<br/>Yamux window closes as hard backstop
+```
+
 ### 3.8 Message Type: StreamHeader (0x00)
 
 The first frame sent on any newly opened data stream MUST be a `StreamHeader` frame. This is a **sender-only declaration** — no response is expected or permitted on the data stream, which remains strictly unidirectional. The StreamHeader provides routing metadata so the downstream node can dispatch the stream to the correct task.
@@ -510,23 +601,31 @@ const (
 
 **Session establishment sequence:**
 
-```
-Initiator (Worker A)                      Acceptor (Worker B)
-       |                                         |
-       |--- TCP connect ----------------------->|
-       |<-- TCP accept -------------------------|
-       |                                         |
-       |=== Yamux session established ===========|
-       |                                         |
-       |--- SessionHandshake(v=1,f=CRC32C) ---->|  (on control stream)
-       |<-- SessionHandshake(v=1,f=CRC32C) -----|  (on control stream)
-       |                                         |
-       |    [negotiate: v=1, features=CRC32C]    |
-       |                                         |
-       |--- StreamHeader(src,dst,p) ----------->|  (data stream 1)
-       |--- DataRecord ----------------------->|
-       |--- DataRecord ----------------------->|
-       |    ...                                  |
+```mermaid
+sequenceDiagram
+    participant A as Initiator (Worker A)
+    participant B as Acceptor (Worker B)
+
+    A->>B: TCP connect
+    B->>A: TCP accept
+    Note over A,B: Yamux session established
+
+    rect rgb(232, 245, 233)
+        Note over A,B: Session Handshake (control stream)
+        A->>B: SessionHandshake(v=1, min_v=1, f=CRC32C, n="worker-a")
+        B->>A: SessionHandshake(v=1, min_v=1, f=CRC32C, n="worker-b")
+        Note over A,B: Negotiate: effectiveVersion=min(1,1)=1<br/>activeFeatures=CRC32C & CRC32C=CRC32C
+    end
+
+    rect rgb(227, 242, 253)
+        Note over A,B: Data Streams
+        A->>B: StreamHeader(src="map-op-0", dst="reduce-op-1", p=0)
+        A->>B: DataRecord
+        A->>B: DataRecord
+        A->>B: CheckpointBarrier(1)
+        A->>B: DataRecord
+        A->>B: EndOfPartition
+    end
 ```
 
 **Rolling upgrade support:**

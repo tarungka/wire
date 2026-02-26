@@ -72,6 +72,25 @@ Coordinator                      Operator (2 inputs)
     ├──────────────────────────────▶│
 ```
 
+**Barrier Alignment State Machine:**
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Aligning : barrier arrives on first input
+    Aligning --> WaitingForInputs : more inputs pending
+    Aligning --> FullyAligned : all barriers received
+    WaitingForInputs --> WaitingForInputs : barrier on next input
+    WaitingForInputs --> FullyAligned : all barriers received
+    FullyAligned --> SnapshotInProgress : begin state snapshot
+    SnapshotInProgress --> Idle : snapshot complete, forward barrier
+
+    Aligning --> TimedOut : alignment timeout expires
+    WaitingForInputs --> TimedOut : alignment timeout expires
+    TimedOut --> Aborted : AbortCheckpoint(N)
+    Aborted --> Idle : drain side buffers, resume processing
+```
+
 ### 2.2 Component Breakdown
 
 **Component 1:** Checkpoint Coordinator Timer

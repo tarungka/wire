@@ -127,6 +127,33 @@ Define the complete RPC interface between Coordinator and Workers as a set of pr
 5. Each task sends `AcknowledgeCheckpoint(CheckpointID, TaskID, StateHandle)` to Coordinator.
 6. When all tasks ACK, Coordinator marks checkpoint globally complete.
 
+**Checkpoint Coordination Sequence Diagram:**
+
+```mermaid
+sequenceDiagram
+    participant C as Coordinator
+    participant W1 as Worker 1 (Source)
+    participant W2 as Worker 2 (Operator)
+    participant W3 as Worker 3 (Sink)
+
+    C->>W1: TriggerCheckpoint(N)
+    Note over W1: Inject barriers into<br/>output data streams
+    W1->>W2: CheckpointBarrier(N)
+    Note over W2: Barrier alignment across inputs
+    W2->>W3: CheckpointBarrier(N)
+    Note over W3: Pre-commit to external system
+
+    W1->>C: AcknowledgeCheckpoint(N)
+    W2->>C: AcknowledgeCheckpoint(N)
+    W3->>C: AcknowledgeCheckpoint(N)
+
+    Note over C: All ACKs received
+    C->>C: Checkpoint N COMPLETE
+
+    C->>W3: NotifyCheckpointComplete(N)
+    Note over W3: Commit to external system
+```
+
 **Heartbeat Loop (Worker-initiated):**
 1. Worker sends `Heartbeat(WorkerID, load_metrics)` every 5 seconds.
 2. Coordinator responds with `HeartbeatResponse(commands)`.

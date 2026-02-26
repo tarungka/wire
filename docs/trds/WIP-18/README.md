@@ -96,6 +96,24 @@ User Code / Operator
 +-----------------------------------+
 ```
 
+```mermaid
+flowchart TD
+    OP["User Code / Operator"] --> SBI["StateBackend Interface"]
+    SBI --> DEC{"config.Type?"}
+    DEC -->|"hashmap"| HM["HashMapStateBackend<br/>(in-memory B-tree)"]
+    DEC -->|"pebble"| PB["PebbleStateBackend<br/>(disk-based LSM)"]
+    HM --> CP1["Checkpoint: Full snapshot<br/>(state.bin)"]
+    PB --> CP2["Checkpoint: Hard-link SSTs"]
+    CP1 --> DS["Durable Store<br/>(S3 / GCS / local)"]
+    CP2 --> DS
+
+    style OP fill:#e3f2fd
+    style SBI fill:#f3e5f5
+    style HM fill:#e8f5e9
+    style PB fill:#fff3e0
+    style DS fill:#fafafa
+```
+
 ### 2.2 Component Breakdown
 
 **Component 1:** StateBackendFactory
