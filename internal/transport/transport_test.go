@@ -666,7 +666,7 @@ func writeCorruptedFrame(w *yamux.Stream, msgType uint8, payload []byte) {
 }
 
 // msgTypeOf returns the protocol message type for a decoded message.
-func msgTypeOf(msg interface{}) uint8 {
+func msgTypeOf(msg any) uint8 {
 	switch msg.(type) {
 	case *protocol.HandshakeMsg:
 		return protocol.MsgTypeHandshake

@@ -75,7 +75,7 @@ func ReadFrame(r io.Reader, maxFrameSize uint32) (Frame, error) {
 }
 
 // WriteFrame encodes a message and writes a complete frame to the writer.
-func WriteFrame(w io.Writer, msgType uint8, msg interface{}) error {
+func WriteFrame(w io.Writer, msgType uint8, msg any) error {
 	payload, err := EncodeMsgPack(msg)
 	if err != nil {
 		return err
@@ -112,7 +112,7 @@ func WriteFrameRaw(w io.Writer, msgType uint8, payload []byte) error {
 }
 
 // DecodePayload decodes the raw payload of a Frame into the appropriate message struct.
-func DecodePayload(f Frame) (interface{}, error) {
+func DecodePayload(f Frame) (any, error) {
 	switch f.MsgType {
 	case MsgTypeHandshake:
 		var msg HandshakeMsg
@@ -162,7 +162,7 @@ func DecodePayload(f Frame) (interface{}, error) {
 }
 
 // EncodeAndWriteFrame determines the MsgType from the concrete message type and writes the frame.
-func EncodeAndWriteFrame(w io.Writer, msg interface{}) error {
+func EncodeAndWriteFrame(w io.Writer, msg any) error {
 	var msgType uint8
 	switch msg.(type) {
 	case *HandshakeMsg:

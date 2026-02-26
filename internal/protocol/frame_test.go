@@ -8,7 +8,7 @@ import (
 )
 
 // helper to write and read back a frame
-func roundtrip(t *testing.T, msgType uint8, msg interface{}) (Frame, interface{}) {
+func roundtrip(t *testing.T, msgType uint8, msg any) (Frame, any) {
 	t.Helper()
 	var buf bytes.Buffer
 	if err := WriteFrame(&buf, msgType, msg); err != nil {
@@ -32,14 +32,14 @@ func TestWriteReadFrame_Roundtrip(t *testing.T) {
 	tests := []struct {
 		name    string
 		msgType uint8
-		msg     interface{}
-		check   func(t *testing.T, decoded interface{})
+		msg     any
+		check   func(t *testing.T, decoded any)
 	}{
 		{
 			name:    "Handshake",
 			msgType: MsgTypeHandshake,
 			msg:     &HandshakeMsg{ProtocolVersion: 1, MinVersion: 1, Features: FeatureCRC32C},
-			check: func(t *testing.T, decoded interface{}) {
+			check: func(t *testing.T, decoded any) {
 				m := decoded.(*HandshakeMsg)
 				if m.ProtocolVersion != 1 || m.MinVersion != 1 || m.Features != FeatureCRC32C {
 					t.Errorf("Handshake mismatch: %+v", m)
@@ -55,7 +55,7 @@ func TestWriteReadFrame_Roundtrip(t *testing.T) {
 				EventTime: 1708819200000,
 				Headers:   map[string][]byte{"source": []byte("test")},
 			},
-			check: func(t *testing.T, decoded interface{}) {
+			check: func(t *testing.T, decoded any) {
 				m := decoded.(*DataRecordMsg)
 				if string(m.Key) != "key1" {
 					t.Errorf("Key: got %q", m.Key)
@@ -75,7 +75,7 @@ func TestWriteReadFrame_Roundtrip(t *testing.T) {
 			name:    "CheckpointBarrier",
 			msgType: MsgTypeCheckpointBarrier,
 			msg:     &CheckpointBarrierMsg{CheckpointID: 42, EpochID: 42, Timestamp: 1708819200000},
-			check: func(t *testing.T, decoded interface{}) {
+			check: func(t *testing.T, decoded any) {
 				m := decoded.(*CheckpointBarrierMsg)
 				if m.CheckpointID != 42 || m.EpochID != 42 || m.Timestamp != 1708819200000 {
 					t.Errorf("CheckpointBarrier mismatch: %+v", m)
@@ -86,7 +86,7 @@ func TestWriteReadFrame_Roundtrip(t *testing.T) {
 			name:    "Watermark",
 			msgType: MsgTypeWatermark,
 			msg:     &WatermarkMsg{Timestamp: 1708819200000, SourceID: "api-source-0"},
-			check: func(t *testing.T, decoded interface{}) {
+			check: func(t *testing.T, decoded any) {
 				m := decoded.(*WatermarkMsg)
 				if m.Timestamp != 1708819200000 || m.SourceID != "api-source-0" {
 					t.Errorf("Watermark mismatch: %+v", m)
@@ -97,7 +97,7 @@ func TestWriteReadFrame_Roundtrip(t *testing.T) {
 			name:    "EndOfPartition",
 			msgType: MsgTypeEndOfPartition,
 			msg:     &EndOfPartitionMsg{SourceID: "s-0", Reason: EndReasonExhausted},
-			check: func(t *testing.T, decoded interface{}) {
+			check: func(t *testing.T, decoded any) {
 				m := decoded.(*EndOfPartitionMsg)
 				if m.SourceID != "s-0" || m.Reason != EndReasonExhausted {
 					t.Errorf("EndOfPartition mismatch: %+v", m)
@@ -108,7 +108,7 @@ func TestWriteReadFrame_Roundtrip(t *testing.T) {
 			name:    "Backpressure",
 			msgType: MsgTypeBackpressure,
 			msg:     &BackpressureMsg{StreamID: 7, State: BackpressurePause, BufferUsage: 0.8},
-			check: func(t *testing.T, decoded interface{}) {
+			check: func(t *testing.T, decoded any) {
 				m := decoded.(*BackpressureMsg)
 				if m.StreamID != 7 || m.State != BackpressurePause || m.BufferUsage != 0.8 {
 					t.Errorf("Backpressure mismatch: %+v", m)
@@ -317,7 +317,7 @@ func TestDecodePayload_AllTypes(t *testing.T) {
 	tests := []struct {
 		name    string
 		msgType uint8
-		msg     interface{}
+		msg     any
 	}{
 		{"Handshake", MsgTypeHandshake, &HandshakeMsg{ProtocolVersion: 1, MinVersion: 1}},
 		{"DataRecord", MsgTypeDataRecord, &DataRecordMsg{Value: []byte("v"), EventTime: 1}},
@@ -350,7 +350,7 @@ func TestMultipleFrames_Sequential(t *testing.T) {
 
 	messages := []struct {
 		msgType uint8
-		msg     interface{}
+		msg     any
 	}{
 		{MsgTypeHandshake, &HandshakeMsg{ProtocolVersion: 1, MinVersion: 1}},
 		{MsgTypeDataRecord, &DataRecordMsg{Value: []byte("v1"), EventTime: 1}},
@@ -406,7 +406,7 @@ func TestEmptyPayload(t *testing.T) {
 }
 
 func TestEncodeAndWriteFrame(t *testing.T) {
-	messages := []interface{}{
+	messages := []any{
 		&HandshakeMsg{ProtocolVersion: 1, MinVersion: 1},
 		&DataRecordMsg{Value: []byte("v"), EventTime: 1},
 		&CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1},

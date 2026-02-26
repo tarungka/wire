@@ -258,7 +258,7 @@ func TestTLS_AllMessageTypes(t *testing.T) {
 	ss.ReceiveHandshake()
 
 	// Send all message types (except Handshake which was already sent).
-	messages := []interface{}{
+	messages := []any{
 		&protocol.DataRecordMsg{Key: []byte("k"), Value: []byte("v"), EventTime: 1},
 		&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000},
 		&protocol.WatermarkMsg{Timestamp: 500, SourceID: "s-0"},

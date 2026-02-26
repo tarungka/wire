@@ -9,7 +9,7 @@ func FuzzReadFrame(f *testing.F) {
 	// Seed with valid encoded frames for all 6 active message types.
 	seeds := []struct {
 		msgType uint8
-		msg     interface{}
+		msg     any
 	}{
 		{MsgTypeHandshake, &HandshakeMsg{ProtocolVersion: 1, MinVersion: 1, Features: FeatureCRC32C}},
 		{MsgTypeDataRecord, &DataRecordMsg{Key: []byte("k"), Value: []byte("v"), EventTime: 100}},
@@ -49,7 +49,7 @@ func FuzzDecodePayload(f *testing.F) {
 	// Seed with valid payloads for all 6 active message types.
 	seeds := []struct {
 		msgType uint8
-		msg     interface{}
+		msg     any
 	}{
 		{MsgTypeHandshake, &HandshakeMsg{ProtocolVersion: 1, MinVersion: 1}},
 		{MsgTypeDataRecord, &DataRecordMsg{Value: []byte("v"), EventTime: 1}},

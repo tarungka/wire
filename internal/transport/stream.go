@@ -104,7 +104,7 @@ func (fs *FrameStream) ReceiveHandshake() (*NegotiatedParams, error) {
 }
 
 // WriteMessage encodes and writes a message to the stream.
-func (fs *FrameStream) WriteMessage(msg interface{}) error {
+func (fs *FrameStream) WriteMessage(msg any) error {
 	fs.mu.Lock()
 	ended := fs.ended
 	fs.mu.Unlock()
@@ -117,7 +117,7 @@ func (fs *FrameStream) WriteMessage(msg interface{}) error {
 // ReadMessage reads the next frame from the stream and returns the decoded message.
 // It implements error counting, unknown type skipping, watermark monotonicity,
 // and end-of-partition detection per WIP-01 Section 6.
-func (fs *FrameStream) ReadMessage() (interface{}, error) {
+func (fs *FrameStream) ReadMessage() (any, error) {
 	for {
 		frame, err := protocol.ReadFrame(fs.raw, fs.cfg.MaxFrameSize)
 		if err != nil {

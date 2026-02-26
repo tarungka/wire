@@ -11,7 +11,7 @@ import (
 var msgpackHandle codec.MsgpackHandle
 
 // EncodeMsgPack encodes a value to msgpack bytes.
-func EncodeMsgPack(v interface{}) ([]byte, error) {
+func EncodeMsgPack(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := codec.NewEncoder(&buf, &msgpackHandle)
 	if err := enc.Encode(v); err != nil {
@@ -21,7 +21,7 @@ func EncodeMsgPack(v interface{}) ([]byte, error) {
 }
 
 // DecodeMsgPack decodes msgpack bytes into the provided value.
-func DecodeMsgPack(data []byte, v interface{}) error {
+func DecodeMsgPack(data []byte, v any) error {
 	dec := codec.NewDecoderBytes(data, &msgpackHandle)
 	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("%w: %v", ErrDecodePayload, err)
