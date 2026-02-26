@@ -75,6 +75,36 @@ Implement a three-tier error handling model: (1) **Retry** — transient errors 
                     Retry the operation
 ```
 
+```mermaid
+flowchart TD
+    A[Operator processes event] --> B{Success?}
+    B -- Yes --> C[Continue processing]
+    B -- No --> D[Error raised]
+    D --> E{Classify error}
+    E --> F[Fatal]
+    E --> G[Transient]
+    E --> H[Poison]
+
+    F --> FAIL[FAIL JOB]
+
+    G --> I[Retry with backoff]
+    I --> J{Retries exhausted?}
+    J -- No --> I
+    J -- Yes --> K{on_exhausted config}
+
+    H --> K
+
+    K --> DLQ[Route to DLQ<br/>side output]
+    K --> DROP[Drop with metric]
+    K --> FAIL2[Fail Job]
+
+    style FAIL fill:#ffcdd2
+    style FAIL2 fill:#ffcdd2
+    style DLQ fill:#fff3e0
+    style DROP fill:#fff9c4
+    style C fill:#c8e6c9
+```
+
 ### 2.2 Error Classification
 
 | Category | Examples | Default Handling |
