@@ -28,10 +28,10 @@ func FuzzReadFrame(f *testing.F) {
 	}
 
 	// Edge case seeds.
-	f.Add([]byte{})                             // Empty input.
-	f.Add([]byte{0x00})                         // 1 byte.
-	f.Add([]byte{0x00, 0x00, 0x00, 0x05})      // Min length, no body.
-	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF})       // Max length field.
+	f.Add([]byte{})                       // Empty input.
+	f.Add([]byte{0x00})                   // 1 byte.
+	f.Add([]byte{0x00, 0x00, 0x00, 0x05}) // Min length, no body.
+	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF}) // Max length field.
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r := bytes.NewReader(data)
@@ -68,7 +68,7 @@ func FuzzDecodePayload(f *testing.F) {
 	}
 
 	// Edge cases.
-	f.Add(uint8(0xFF), []byte{0x80})      // Unknown type, valid msgpack.
+	f.Add(uint8(0xFF), []byte{0x80})       // Unknown type, valid msgpack.
 	f.Add(MsgTypeDataRecord, []byte{})     // Empty payload.
 	f.Add(MsgTypeDataRecord, []byte{0xC1}) // Invalid msgpack.
 

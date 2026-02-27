@@ -13,7 +13,7 @@ const (
 	MsgTypeFieldSize = 1
 	CRCFieldSize     = 4
 	HeaderSize       = LengthFieldSize + MsgTypeFieldSize + CRCFieldSize // 9
-	MinFrameLength   = MsgTypeFieldSize + CRCFieldSize                  // 5
+	MinFrameLength   = MsgTypeFieldSize + CRCFieldSize                   // 5
 	// DefaultMaxFrameSize is the default maximum frame size (16 MB).
 	DefaultMaxFrameSize uint32 = 16 * 1024 * 1024
 )

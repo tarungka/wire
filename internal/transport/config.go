@@ -15,8 +15,8 @@ const (
 	DefaultConnectionWriteTimeout = 10 * time.Second
 	DefaultMaxStreamWindowSize    = 1024 * 1024 // 1 MB
 	DefaultHandshakeTimeout       = 5 * time.Second
-	MaxConsecutiveCRCErrors        = 10
-	MaxConsecutiveDecodeErrors     = 10
+	MaxConsecutiveCRCErrors       = 10
+	MaxConsecutiveDecodeErrors    = 10
 )
 
 // Config holds transport-level configuration.

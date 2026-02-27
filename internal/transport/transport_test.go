@@ -309,7 +309,7 @@ func TestWatermarkMonotonicity(t *testing.T) {
 
 	// Send Watermark(100), then Watermark(50) (backward), then Watermark(200).
 	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s"})
-	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 50, SourceID: "s"})  // Should be dropped.
+	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 50, SourceID: "s"}) // Should be dropped.
 	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 200, SourceID: "s"})
 
 	// First watermark: 100.
