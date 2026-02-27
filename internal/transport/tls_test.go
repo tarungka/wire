@@ -224,6 +224,59 @@ func TestTLS_InvalidCert(t *testing.T) {
 	}
 }
 
+func TestTLS_ServerNameAutoInference(t *testing.T) {
+	// Verify that if TLSConfig.ServerName is empty, NewClientSession
+	// automatically infers it from the dial address.
+	certs := generateTestCerts(t)
+
+	// Server without mutual auth (so we don't need client certs for this test).
+	serverTLS, err := LoadTLSConfig(certs.ServerCertFile, certs.ServerKeyFile, false, "")
+	if err != nil {
+		t.Fatalf("LoadTLSConfig: %v", err)
+	}
+
+	sCfg := DefaultConfig()
+	sCfg.ListenAddr = "127.0.0.1:0"
+	sCfg.TLSConfig = serverTLS
+	server := NewMux(sCfg)
+
+	ctx := context.Background()
+	if err := server.Listen(ctx); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer server.Close()
+
+	// Client TLS config with ServerName intentionally empty.
+	clientTLS, err := NewTLSClientConfig(certs.ClientCertFile, certs.ClientKeyFile, certs.CACertFile)
+	if err != nil {
+		t.Fatalf("NewTLSClientConfig: %v", err)
+	}
+	clientTLS.ServerName = "" // Clear to test auto-inference.
+
+	cCfg := DefaultConfig()
+	cCfg.TLSConfig = clientTLS
+	clientMux := NewMux(cCfg)
+	defer clientMux.Close()
+
+	// Dial should succeed — ServerName should be auto-populated from the address.
+	cs, err := clientMux.Dial(ctx, server.ListenAddr())
+	if err != nil {
+		t.Fatalf("Dial with empty ServerName should auto-infer: %v", err)
+	}
+	defer cs.Close()
+
+	// Verify the stream actually works.
+	ss, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer ss.Close()
+	_, err = ss.ReceiveHandshake()
+	if err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
+}
+
 func TestTLS_AllMessageTypes(t *testing.T) {
 	certs := generateTestCerts(t)
 

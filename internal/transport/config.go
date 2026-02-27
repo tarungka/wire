@@ -15,6 +15,7 @@ const (
 	DefaultConnectionWriteTimeout = 10 * time.Second
 	DefaultMaxStreamWindowSize    = 1024 * 1024 // 1 MB
 	DefaultHandshakeTimeout       = 5 * time.Second
+	DefaultDialTimeout            = 10 * time.Second
 	MaxConsecutiveCRCErrors       = 10
 	MaxConsecutiveDecodeErrors    = 10
 )
@@ -25,6 +26,7 @@ type Config struct {
 	TLSConfig              *tls.Config
 	MaxFrameSize           uint32
 	HandshakeTimeout       time.Duration
+	DialTimeout            time.Duration
 	KeepAliveInterval      time.Duration
 	ConnectionWriteTimeout time.Duration
 	MaxStreamWindowSize    uint32
@@ -39,6 +41,7 @@ func DefaultConfig() Config {
 		ListenAddr:             ":4002",
 		MaxFrameSize:           16 * 1024 * 1024,
 		HandshakeTimeout:       DefaultHandshakeTimeout,
+		DialTimeout:            DefaultDialTimeout,
 		KeepAliveInterval:      DefaultKeepAliveInterval,
 		ConnectionWriteTimeout: DefaultConnectionWriteTimeout,
 		MaxStreamWindowSize:    uint32(DefaultMaxStreamWindowSize),

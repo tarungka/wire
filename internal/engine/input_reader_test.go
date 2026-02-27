@@ -255,3 +255,78 @@ func TestInputReader_ContextCancellation(t *testing.T) {
 		t.Fatalf("expected nil or context.Canceled, got: %v", err)
 	}
 }
+
+func TestInputReader_WatermarkDoesNotRegress(t *testing.T) {
+	writer, reader := newTestStreamPair(t)
+	defer writer.Close()
+	defer reader.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+	var wm atomic.Int64
+	wm.Store(200) // Pre-set to a higher value.
+
+	go func() {
+		// Send a stale watermark (100 < 200).
+		writer.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s"})
+		writer.WriteMessage(&protocol.EndOfPartitionMsg{
+			SourceID: "test",
+			Reason:   protocol.EndReasonExhausted,
+		})
+	}()
+
+	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, &wm, testLogger())
+	if err != nil {
+		t.Fatalf("runInputReader: %v", err)
+	}
+
+	// Watermark should NOT have regressed.
+	if wm.Load() != 200 {
+		t.Errorf("watermark regressed: got %d, want 200", wm.Load())
+	}
+}
+
+func TestInputReader_EventChannelFull_UnblocksOnContextCancel(t *testing.T) {
+	writer, reader := newTestStreamPair(t)
+	defer reader.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	eventCh := make(chan Event, 1) // Tiny channel.
+	controlCh := make(chan ControlMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+	var wm atomic.Int64
+
+	go func() {
+		// Send enough data to fill eventCh and block the reader.
+		for i := 0; i < 10; i++ {
+			writer.WriteMessage(&protocol.DataRecordMsg{
+				Value:     []byte{byte(i)},
+				EventTime: int64(i),
+			})
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, &wm, testLogger())
+	}()
+
+	// Let the reader block on the full channel, then cancel.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	writer.Close() // Unblock the inner read goroutine.
+
+	select {
+	case err := <-done:
+		if err != nil && err != context.Canceled {
+			t.Fatalf("expected nil or context.Canceled, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("input reader did not unblock on context cancel")
+	}
+}

@@ -2,7 +2,9 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -353,8 +355,6 @@ func TestEndOfPartition_TerminatesStream(t *testing.T) {
 	// Send EoP, then a DataRecord (should be dropped).
 	cs.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s", Reason: protocol.EndReasonExhausted})
 	cs.WriteMessage(&protocol.DataRecordMsg{Value: []byte("after-eop"), EventTime: 1})
-	// Send another EoP as a sentinel to unblock the reader.
-	cs.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s2", Reason: protocol.EndReasonExhausted})
 
 	// First read: EndOfPartition.
 	m1, err := ss.ReadMessage()
@@ -365,15 +365,14 @@ func TestEndOfPartition_TerminatesStream(t *testing.T) {
 		t.Fatalf("expected EndOfPartitionMsg, got %T", m1)
 	}
 
-	// Close the client stream so server's ReadMessage gets EOF instead of
-	// waiting forever for more frames that would be dropped.
-	cs.Close()
-
-	// The next read should return an error (EOF or similar) since subsequent
-	// frames are dropped and the stream is closed.
+	// Subsequent reads after EOP should return io.EOF immediately
+	// instead of spinning in a read loop.
 	_, err = ss.ReadMessage()
 	if err == nil {
-		t.Log("ReadMessage after EoP returned nil error — frame was dropped as expected")
+		t.Fatal("expected io.EOF after EndOfPartition, got nil")
+	}
+	if err.Error() != "EOF" {
+		t.Errorf("expected io.EOF, got %v", err)
 	}
 }
 
@@ -663,6 +662,580 @@ func writeCorruptedFrame(w *yamux.Stream, msgType uint8, payload []byte) {
 	buf[8] = 0
 	copy(buf[9:], payload)
 	w.Write(buf)
+}
+
+func TestMuxClose_ConcurrentAccept(t *testing.T) {
+	// Verify that Mux.Close() with concurrent accepts does not panic
+	// (send on closed channel race).
+	sCfg := DefaultConfig()
+	sCfg.ListenAddr = "127.0.0.1:0"
+	server := NewMux(sCfg)
+
+	ctx := context.Background()
+	if err := server.Listen(ctx); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	serverAddr := server.ListenAddr()
+
+	cCfg := DefaultConfig()
+	client := NewMux(cCfg)
+
+	// Start multiple concurrent dialers to create sessions/streams.
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cs, err := client.Dial(ctx, serverAddr)
+			if err != nil {
+				return // Connection may fail during close, that's fine.
+			}
+			cs.Close()
+		}()
+	}
+
+	// Start concurrent acceptors.
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ss, err := server.Accept(ctx)
+			if err != nil {
+				return
+			}
+			ss.Close()
+		}()
+	}
+
+	// Give goroutines a moment to start, then close server.
+	time.Sleep(50 * time.Millisecond)
+	server.Close()
+	client.Close()
+	wg.Wait()
+}
+
+func TestHandshakeTimeout_VsNonTimeout(t *testing.T) {
+	// Verify that ReceiveHandshake correctly distinguishes timeout from
+	// non-timeout errors (e.g., EOF from a closed connection).
+	sCfg := DefaultConfig()
+	sCfg.ListenAddr = "127.0.0.1:0"
+	sCfg.HandshakeTimeout = 200 * time.Millisecond
+	server := NewMux(sCfg)
+
+	ctx := context.Background()
+	if err := server.Listen(ctx); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	serverAddr := server.ListenAddr()
+	t.Cleanup(func() { server.Close() })
+
+	// Case 1: Client closes stream immediately → should NOT get ErrHandshakeTimeout.
+	sess, err := NewClientSession(serverAddr, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewClientSession: %v", err)
+	}
+	raw, err := sess.OpenStream()
+	if err != nil {
+		t.Fatalf("OpenStream: %v", err)
+	}
+	raw.Close() // Close immediately without sending handshake.
+
+	ss, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	_, err = ss.ReceiveHandshake()
+	if err == nil {
+		t.Fatal("expected error on closed stream, got nil")
+	}
+	if errors.Is(err, protocol.ErrHandshakeTimeout) {
+		t.Errorf("EOF should not be wrapped as ErrHandshakeTimeout, got: %v", err)
+	}
+	ss.Close()
+	sess.Close()
+
+	// Case 2: No data sent, should timeout → should get ErrHandshakeTimeout.
+	sess2, err := NewClientSession(serverAddr, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewClientSession: %v", err)
+	}
+	raw2, err := sess2.OpenStream()
+	if err != nil {
+		t.Fatalf("OpenStream: %v", err)
+	}
+	defer raw2.Close()
+	defer sess2.Close()
+
+	ss2, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer ss2.Close()
+
+	_, err = ss2.ReceiveHandshake()
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !errors.Is(err, protocol.ErrHandshakeTimeout) {
+		t.Errorf("expected ErrHandshakeTimeout, got: %v", err)
+	}
+}
+
+func TestPostEOP_ReturnsEOF(t *testing.T) {
+	server, client, addr := newTestMuxPair(t)
+	ctx := context.Background()
+
+	cs, err := client.Dial(ctx, addr)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer cs.Close()
+
+	ss, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer ss.Close()
+	ss.ReceiveHandshake()
+
+	// Send EndOfPartition.
+	cs.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s", Reason: protocol.EndReasonExhausted})
+
+	// Read the EOP message.
+	m1, err := ss.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	if _, ok := m1.(*protocol.EndOfPartitionMsg); !ok {
+		t.Fatalf("expected EndOfPartitionMsg, got %T", m1)
+	}
+
+	// All subsequent reads should return io.EOF.
+	for i := 0; i < 3; i++ {
+		_, err = ss.ReadMessage()
+		if !errors.Is(err, io.EOF) {
+			t.Errorf("ReadMessage[%d] after EOP: expected io.EOF, got %v", i, err)
+		}
+	}
+}
+
+func TestWatermarkMonotonicity_MultipleSourceIDs(t *testing.T) {
+	server, client, addr := newTestMuxPair(t)
+	ctx := context.Background()
+
+	cs, err := client.Dial(ctx, addr)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer cs.Close()
+
+	ss, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer ss.Close()
+	ss.ReceiveHandshake()
+
+	// Send watermarks from two different sources with independent timelines.
+	// Source "a": 100, then 50 (backward — should drop), then 200
+	// Source "b": 10, then 20 (forward — should pass)
+	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "a"})
+	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 10, SourceID: "b"})
+	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 50, SourceID: "a"})  // backward for "a", drop
+	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 20, SourceID: "b"})  // forward for "b", pass
+	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 200, SourceID: "a"}) // forward for "a", pass
+
+	// Expected: a:100, b:10, b:20, a:200 (a:50 dropped)
+	expected := []struct {
+		sourceID  string
+		timestamp int64
+	}{
+		{"a", 100},
+		{"b", 10},
+		{"b", 20},
+		{"a", 200},
+	}
+
+	for i, want := range expected {
+		m, err := ss.ReadMessage()
+		if err != nil {
+			t.Fatalf("ReadMessage[%d]: %v", i, err)
+		}
+		wm := m.(*protocol.WatermarkMsg)
+		if wm.SourceID != want.sourceID || wm.Timestamp != want.timestamp {
+			t.Errorf("[%d]: got {%s, %d}, want {%s, %d}",
+				i, wm.SourceID, wm.Timestamp, want.sourceID, want.timestamp)
+		}
+	}
+}
+
+func TestDialTimeout_Config(t *testing.T) {
+	// Verify that DialTimeout is respected by trying to connect
+	// to a non-routable address with a very short timeout.
+	cfg := DefaultConfig()
+	cfg.DialTimeout = 100 * time.Millisecond
+
+	start := time.Now()
+	_, err := NewClientSession("198.51.100.1:4002", cfg) // RFC 5737 TEST-NET-2, non-routable
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected dial error, got nil")
+	}
+	// Should fail within a reasonable time (not the OS default 2+ minutes).
+	if elapsed > 5*time.Second {
+		t.Errorf("dial took %v, expected ~100ms timeout", elapsed)
+	}
+}
+
+func TestErrorCounterResetAfterSuccess_CRC(t *testing.T) {
+	// Verify that consecutive CRC error count resets after a valid frame.
+	// This ensures intermittent CRC errors don't accumulate across successes
+	// and prematurely close the stream.
+	server, _, addr := newTestMuxPair(t)
+	ctx := context.Background()
+
+	sess, err := NewClientSession(addr, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewClientSession: %v", err)
+	}
+	defer sess.Close()
+
+	raw, err := sess.OpenStream()
+	if err != nil {
+		t.Fatalf("OpenStream: %v", err)
+	}
+	defer raw.Close()
+
+	// Send handshake.
+	protocol.WriteFrame(raw, protocol.MsgTypeHandshake, &protocol.HandshakeMsg{ProtocolVersion: 1, MinVersion: 1})
+
+	// Send (MaxConsecutiveCRCErrors - 1) bad CRC frames.
+	payload, _ := protocol.EncodeMsgPack(&protocol.DataRecordMsg{Value: []byte("x"), EventTime: 1})
+	for i := 0; i < MaxConsecutiveCRCErrors-1; i++ {
+		writeCorruptedFrame(raw, protocol.MsgTypeDataRecord, payload)
+	}
+
+	// Send one valid frame — this should reset the counter.
+	protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, &protocol.DataRecordMsg{Value: []byte("ok"), EventTime: 2})
+
+	// Send (MaxConsecutiveCRCErrors - 1) more bad CRC frames.
+	for i := 0; i < MaxConsecutiveCRCErrors-1; i++ {
+		writeCorruptedFrame(raw, protocol.MsgTypeDataRecord, payload)
+	}
+
+	// Send another valid frame.
+	protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, &protocol.DataRecordMsg{Value: []byte("ok2"), EventTime: 3})
+
+	ss, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer ss.Close()
+	ss.ReceiveHandshake()
+
+	// First read: should skip 9 bad CRC frames and return "ok".
+	m1, err := ss.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage[0]: %v", err)
+	}
+	if string(m1.(*protocol.DataRecordMsg).Value) != "ok" {
+		t.Errorf("got %q, want %q", m1.(*protocol.DataRecordMsg).Value, "ok")
+	}
+
+	// Second read: should skip another 9 bad CRC frames and return "ok2".
+	// If counters weren't reset, the stream would have closed.
+	m2, err := ss.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage[1]: counter was not reset, stream closed prematurely: %v", err)
+	}
+	if string(m2.(*protocol.DataRecordMsg).Value) != "ok2" {
+		t.Errorf("got %q, want %q", m2.(*protocol.DataRecordMsg).Value, "ok2")
+	}
+}
+
+func TestErrorCounterResetAfterSuccess_Decode(t *testing.T) {
+	// Same as CRC test but for decode errors.
+	server, _, addr := newTestMuxPair(t)
+	ctx := context.Background()
+
+	sess, err := NewClientSession(addr, DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewClientSession: %v", err)
+	}
+	defer sess.Close()
+
+	raw, err := sess.OpenStream()
+	if err != nil {
+		t.Fatalf("OpenStream: %v", err)
+	}
+	defer raw.Close()
+
+	protocol.WriteFrame(raw, protocol.MsgTypeHandshake, &protocol.HandshakeMsg{ProtocolVersion: 1, MinVersion: 1})
+
+	// Send bad decode frame, then good frame.
+	protocol.WriteFrameRaw(raw, protocol.MsgTypeDataRecord, []byte{0xC1}) // invalid msgpack
+	protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, &protocol.DataRecordMsg{Value: []byte("ok"), EventTime: 1})
+
+	ss, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer ss.Close()
+	ss.ReceiveHandshake()
+
+	m, err := ss.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: counter not reset after decode error: %v", err)
+	}
+	if string(m.(*protocol.DataRecordMsg).Value) != "ok" {
+		t.Errorf("got %q, want %q", m.(*protocol.DataRecordMsg).Value, "ok")
+	}
+}
+
+func TestHandshake_RejectSendsEOPToClient(t *testing.T) {
+	// Verify that when server rejects a handshake, it sends an EndOfPartition
+	// message with HandshakeSourceID and EndReasonError to the client.
+	sCfg := DefaultConfig()
+	sCfg.ListenAddr = "127.0.0.1:0"
+	sCfg.LocalProtocolVersion = 1
+	sCfg.LocalMinVersion = 1
+	server := NewMux(sCfg)
+
+	ctx := context.Background()
+	if err := server.Listen(ctx); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { server.Close() })
+
+	// Raw client to control the handshake content.
+	sess, err := NewClientSession(server.ListenAddr(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewClientSession: %v", err)
+	}
+	defer sess.Close()
+
+	raw, err := sess.OpenStream()
+	if err != nil {
+		t.Fatalf("OpenStream: %v", err)
+	}
+	defer raw.Close()
+
+	// Send incompatible handshake.
+	protocol.WriteFrame(raw, protocol.MsgTypeHandshake, &protocol.HandshakeMsg{ProtocolVersion: 99, MinVersion: 99})
+
+	ss, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer ss.Close()
+
+	_, err = ss.ReceiveHandshake()
+	if !errors.Is(err, protocol.ErrVersionIncompatible) {
+		t.Fatalf("expected ErrVersionIncompatible, got: %v", err)
+	}
+
+	// Client should receive the EOP(Error) frame.
+	frame, err := protocol.ReadFrame(raw, DefaultConfig().MaxFrameSize)
+	if err != nil {
+		t.Fatalf("client read after rejection: %v", err)
+	}
+	if frame.MsgType != protocol.MsgTypeEndOfPartition {
+		t.Fatalf("expected MsgTypeEndOfPartition, got 0x%02X", frame.MsgType)
+	}
+	decoded, err := protocol.DecodePayload(frame)
+	if err != nil {
+		t.Fatalf("DecodePayload: %v", err)
+	}
+	eop := decoded.(*protocol.EndOfPartitionMsg)
+	if eop.SourceID != protocol.HandshakeSourceID {
+		t.Errorf("SourceID: got %q, want %q", eop.SourceID, protocol.HandshakeSourceID)
+	}
+	if eop.Reason != protocol.EndReasonError {
+		t.Errorf("Reason: got %d, want EndReasonError (%d)", eop.Reason, protocol.EndReasonError)
+	}
+}
+
+func TestMuxClose_UnblocksPendingAccept(t *testing.T) {
+	// Verify that a goroutine blocked on Accept() unblocks when Close() is called.
+	sCfg := DefaultConfig()
+	sCfg.ListenAddr = "127.0.0.1:0"
+	server := NewMux(sCfg)
+
+	if err := server.Listen(context.Background()); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := server.Accept(context.Background())
+		errCh <- err
+	}()
+
+	// Give the goroutine time to block on channel read.
+	time.Sleep(50 * time.Millisecond)
+	server.Close()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Accept returned nil error after Close")
+		}
+		// Should get "mux closed" from the channel close.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Accept did not unblock after Mux.Close()")
+	}
+}
+
+func TestWriteMessage_AfterEOP_ReturnsError(t *testing.T) {
+	// Verify the write-side guard: WriteMessage should fail after EOP is observed.
+	server, client, addr := newTestMuxPair(t)
+	ctx := context.Background()
+
+	cs, err := client.Dial(ctx, addr)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer cs.Close()
+
+	ss, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer ss.Close()
+	ss.ReceiveHandshake()
+
+	// Client sends EOP.
+	cs.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s", Reason: protocol.EndReasonExhausted})
+
+	// Server reads the EOP (sets ended=true on server stream).
+	_, err = ss.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+
+	// Server-side WriteMessage should now fail since the stream is ended.
+	err = ss.WriteMessage(&protocol.DataRecordMsg{Value: []byte("nope"), EventTime: 1})
+	if err == nil {
+		t.Fatal("expected error writing after EOP, got nil")
+	}
+}
+
+func TestMuxDial_RetryOnDeadSession(t *testing.T) {
+	// Verify that Dial automatically recreates a session when the cached one is dead.
+	server, client, addr := newTestMuxPair(t)
+	ctx := context.Background()
+
+	// First dial to create and cache a session.
+	cs1, err := client.Dial(ctx, addr)
+	if err != nil {
+		t.Fatalf("Dial[0]: %v", err)
+	}
+	// Accept + handshake on server side.
+	ss1, _ := server.Accept(ctx)
+	ss1.ReceiveHandshake()
+	cs1.Close()
+	ss1.Close()
+
+	// Force-close the cached session to simulate a dead connection.
+	client.mu.RLock()
+	cachedSess := client.peers[addr]
+	client.mu.RUnlock()
+	if cachedSess == nil {
+		t.Fatal("expected cached session, got nil")
+	}
+	cachedSess.Close()
+
+	// Dial again — should detect dead session and recreate.
+	cs2, err := client.Dial(ctx, addr)
+	if err != nil {
+		t.Fatalf("Dial[1] retry failed: %v", err)
+	}
+	defer cs2.Close()
+
+	// Accept on server side to verify the new stream works.
+	ss2, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept[1]: %v", err)
+	}
+	defer ss2.Close()
+	ss2.ReceiveHandshake()
+
+	// Verify data flows on the new stream.
+	cs2.WriteMessage(&protocol.DataRecordMsg{Value: []byte("recovered"), EventTime: 1})
+	m, err := ss2.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	if string(m.(*protocol.DataRecordMsg).Value) != "recovered" {
+		t.Errorf("got %q, want %q", m.(*protocol.DataRecordMsg).Value, "recovered")
+	}
+}
+
+func TestReceiveHandshake_DeadlineClearedAfterSuccess(t *testing.T) {
+	// Verify that the read deadline set during handshake is cleared afterward,
+	// so a delayed message doesn't hit the old deadline.
+	sCfg := DefaultConfig()
+	sCfg.ListenAddr = "127.0.0.1:0"
+	sCfg.HandshakeTimeout = 50 * time.Millisecond
+	server := NewMux(sCfg)
+
+	ctx := context.Background()
+	if err := server.Listen(ctx); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { server.Close() })
+
+	cCfg := DefaultConfig()
+	client := NewMux(cCfg)
+	t.Cleanup(func() { client.Close() })
+
+	cs, err := client.Dial(ctx, server.ListenAddr())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer cs.Close()
+
+	ss, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer ss.Close()
+
+	_, err = ss.ReceiveHandshake()
+	if err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
+
+	// Wait longer than the handshake timeout. If the deadline leaked,
+	// the next read would fail with a timeout error.
+	time.Sleep(100 * time.Millisecond)
+
+	cs.WriteMessage(&protocol.DataRecordMsg{Value: []byte("delayed"), EventTime: 1})
+	m, err := ss.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage after delay should succeed (deadline should be cleared): %v", err)
+	}
+	if string(m.(*protocol.DataRecordMsg).Value) != "delayed" {
+		t.Errorf("got %q, want %q", m.(*protocol.DataRecordMsg).Value, "delayed")
+	}
+}
+
+func TestMuxAccept_AfterClose_ReturnsError(t *testing.T) {
+	// Verify the Accept() API contract: returns error after Close.
+	sCfg := DefaultConfig()
+	sCfg.ListenAddr = "127.0.0.1:0"
+	server := NewMux(sCfg)
+
+	if err := server.Listen(context.Background()); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	server.Close()
+
+	_, err := server.Accept(context.Background())
+	if err == nil {
+		t.Fatal("Accept after Close should return error")
+	}
 }
 
 // msgTypeOf returns the protocol message type for a decoded message.

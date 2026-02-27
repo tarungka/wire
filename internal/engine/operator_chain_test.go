@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -344,5 +345,411 @@ func TestOperatorChain_CheckpointBarrier(t *testing.T) {
 	}
 	if !foundBarrier {
 		t.Fatal("expected OutputBarrier message")
+	}
+}
+
+// -- Additional mock operators for lifecycle tests --
+
+// lifecycleOp records Open/Close calls with ordering.
+type lifecycleOp struct {
+	name     string
+	log      *[]string
+	openErr  error
+	closeErr error
+}
+
+func (o *lifecycleOp) Open(ctx context.Context) error {
+	*o.log = append(*o.log, fmt.Sprintf("open:%s", o.name))
+	return o.openErr
+}
+func (o *lifecycleOp) Close() error {
+	*o.log = append(*o.log, fmt.Sprintf("close:%s", o.name))
+	return o.closeErr
+}
+func (o *lifecycleOp) Checkpoint(id uint64) ([]byte, error) { return nil, nil }
+func (o *lifecycleOp) Map(ctx context.Context, e Event) (Event, error) {
+	return e, nil
+}
+
+// errorMap returns an error on the first Map call.
+type errorMap struct {
+	err error
+}
+
+func (e *errorMap) Open(ctx context.Context) error                    { return nil }
+func (e *errorMap) Close() error                                      { return nil }
+func (e *errorMap) Checkpoint(id uint64) ([]byte, error)              { return nil, nil }
+func (e *errorMap) Map(ctx context.Context, ev Event) (Event, error)  { return Event{}, e.err }
+
+// errorFlatMap returns an error on the first FlatMap call.
+type errorFlatMap struct {
+	err error
+}
+
+func (e *errorFlatMap) Open(ctx context.Context) error       { return nil }
+func (e *errorFlatMap) Close() error                         { return nil }
+func (e *errorFlatMap) Checkpoint(id uint64) ([]byte, error) { return nil, nil }
+func (e *errorFlatMap) FlatMap(ctx context.Context, ev Event, emit func(Event)) error {
+	return e.err
+}
+
+// errorSink returns an error on the first Write call.
+type errorSink struct {
+	err error
+}
+
+func (e *errorSink) Open(ctx context.Context) error       { return nil }
+func (e *errorSink) Close() error                         { return nil }
+func (e *errorSink) Checkpoint(id uint64) ([]byte, error) { return nil, nil }
+func (e *errorSink) Write(ctx context.Context, ev Event) error {
+	return e.err
+}
+
+// -- Lifecycle tests --
+
+func TestOperatorChain_OpenError_ClosesPreviouslyOpenedInReverse(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var log []string
+	op1 := &lifecycleOp{name: "op1", log: &log}
+	op2 := &lifecycleOp{name: "op2", log: &log, openErr: errors.New("op2 open failed")}
+	op3 := &lifecycleOp{name: "op3", log: &log}
+
+	inputCh := make(chan Event, 1)
+	close(inputCh)
+	controlCh := make(chan ControlMsg, 1)
+	outputCh := make(chan OutputMsg, 1)
+	aligner := NewBarrierAligner(1, 100)
+
+	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	if err == nil || !errors.Is(err, op2.openErr) {
+		t.Fatalf("expected op2 open error, got: %v", err)
+	}
+
+	// op1 should have been opened then closed. op3 should never have been opened.
+	expected := []string{"open:op1", "open:op2", "close:op1"}
+	if len(log) != len(expected) {
+		t.Fatalf("lifecycle log: got %v, want %v", log, expected)
+	}
+	for i, e := range expected {
+		if log[i] != e {
+			t.Errorf("log[%d]: got %q, want %q", i, log[i], e)
+		}
+	}
+}
+
+func TestOperatorChain_CloseCalledInReverseOrder(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var log []string
+	op1 := &lifecycleOp{name: "op1", log: &log}
+	op2 := &lifecycleOp{name: "op2", log: &log}
+	op3 := &lifecycleOp{name: "op3", log: &log}
+
+	inputCh := make(chan Event, 1)
+	close(inputCh) // Closes immediately to end chain.
+	controlCh := make(chan ControlMsg, 1)
+	outputCh := make(chan OutputMsg, 1)
+	aligner := NewBarrierAligner(1, 100)
+
+	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	if err != nil {
+		t.Fatalf("runOperatorChain: %v", err)
+	}
+
+	// Close order should be reverse: op3, op2, op1.
+	expected := []string{"open:op1", "open:op2", "open:op3", "close:op3", "close:op2", "close:op1"}
+	if len(log) != len(expected) {
+		t.Fatalf("lifecycle log: got %v, want %v", log, expected)
+	}
+	for i, e := range expected {
+		if log[i] != e {
+			t.Errorf("log[%d]: got %q, want %q", i, log[i], e)
+		}
+	}
+}
+
+// -- Abort checkpoint test --
+
+func TestOperatorChain_AbortCheckpoint_DrainsSideBufferNoBarrier(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(2, 100)
+
+	// Simulate input 0 has sent a barrier and buffered events.
+	aligner.OnBarrier(0, 1, 1)
+	aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-buffered")})
+
+	// Send abort for this checkpoint.
+	controlCh <- ControlMsg{Type: CtrlAbortCheckpoint, CheckpointID: 1}
+	close(inputCh)
+
+	ops := []Operator{&noopMap{}}
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, testLogger())
+	if err != nil {
+		t.Fatalf("runOperatorChain: %v", err)
+	}
+
+	close(outputCh)
+	var dataCount int
+	var barrierCount int
+	for msg := range outputCh {
+		switch msg.Type {
+		case OutputData:
+			dataCount++
+			if string(msg.Event.Value) != "side-buffered" {
+				t.Errorf("expected side-buffered event, got %q", msg.Event.Value)
+			}
+		case OutputBarrier:
+			barrierCount++
+		}
+	}
+
+	if dataCount != 1 {
+		t.Errorf("expected 1 drained event, got %d", dataCount)
+	}
+	if barrierCount != 0 {
+		t.Errorf("expected no barrier on abort, got %d", barrierCount)
+	}
+	if aligner.ActiveCheckpointID() != 0 {
+		t.Errorf("aligner should be reset, got active checkpoint %d", aligner.ActiveCheckpointID())
+	}
+}
+
+// -- Checkpoint barrier: side buffer drained before barrier --
+
+func TestOperatorChain_CheckpointBarrier_SideBufferDrainedBeforeBarrier(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(2, 100)
+
+	// Simulate: input 0 barrier arrived, events side-buffered.
+	aligner.OnBarrier(0, 1, 1)
+	aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-1")})
+	aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-2")})
+
+	// Input 1 barrier arrives — alignment complete.
+	aligner.OnBarrier(1, 1, 1)
+
+	controlCh <- ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 1, EpochID: 1}
+	close(inputCh)
+
+	ops := []Operator{&noopMap{}}
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, testLogger())
+	if err != nil {
+		t.Fatalf("runOperatorChain: %v", err)
+	}
+
+	close(outputCh)
+	var msgs []OutputMsg
+	for msg := range outputCh {
+		msgs = append(msgs, msg)
+	}
+
+	// Expect: OutputData("side-1"), OutputData("side-2"), OutputBarrier.
+	if len(msgs) < 3 {
+		t.Fatalf("expected at least 3 output messages, got %d", len(msgs))
+	}
+
+	// First messages should be the drained side-buffer data.
+	for i := 0; i < 2; i++ {
+		if msgs[i].Type != OutputData {
+			t.Errorf("msgs[%d]: expected OutputData, got %v", i, msgs[i].Type)
+		}
+	}
+	if string(msgs[0].Event.Value) != "side-1" {
+		t.Errorf("msgs[0]: got %q, want side-1", msgs[0].Event.Value)
+	}
+	if string(msgs[1].Event.Value) != "side-2" {
+		t.Errorf("msgs[1]: got %q, want side-2", msgs[1].Event.Value)
+	}
+
+	// Barrier should come AFTER the drained data.
+	if msgs[2].Type != OutputBarrier {
+		t.Errorf("msgs[2]: expected OutputBarrier, got %v", msgs[2].Type)
+	}
+	if msgs[2].Barrier.CheckpointID != 1 {
+		t.Errorf("barrier checkpoint ID: got %d, want 1", msgs[2].Barrier.CheckpointID)
+	}
+}
+
+// -- Error propagation tests --
+
+func TestOperatorChain_MapErrorPropagation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	mapErr := errors.New("map failed")
+	inputCh <- Event{Value: []byte("trigger")}
+	close(inputCh)
+
+	ops := []Operator{&errorMap{err: mapErr}}
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, mapErr) {
+		t.Fatalf("expected map error, got: %v", err)
+	}
+}
+
+func TestOperatorChain_FlatMapErrorPropagation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	fmErr := errors.New("flatmap failed")
+	inputCh <- Event{Value: []byte("trigger")}
+	close(inputCh)
+
+	ops := []Operator{&errorFlatMap{err: fmErr}}
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, fmErr) {
+		t.Fatalf("expected flatmap error, got: %v", err)
+	}
+}
+
+func TestOperatorChain_SinkErrorPropagation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	sinkErr := errors.New("sink failed")
+	inputCh <- Event{Value: []byte("trigger")}
+	close(inputCh)
+
+	ops := []Operator{&errorSink{err: sinkErr}}
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, sinkErr) {
+		t.Fatalf("expected sink error, got: %v", err)
+	}
+}
+
+// -- EoP drains in-flight events from inputCh --
+
+func TestOperatorChain_FinalEoPDrainsInputChannel(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	// Pre-fill input channel with events.
+	inputCh <- Event{Value: []byte("a")}
+	inputCh <- Event{Value: []byte("b")}
+
+	// Send the final EoP.
+	controlCh <- ControlMsg{Type: CtrlEndOfPartition, InputIndex: 0}
+
+	ops := []Operator{&noopMap{}}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runOperatorChain: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("operator chain did not finish")
+	}
+
+	close(outputCh)
+	var msgs []OutputMsg
+	for msg := range outputCh {
+		msgs = append(msgs, msg)
+	}
+
+	// Should have at least the two data events and the OutputEnd.
+	if len(msgs) < 3 {
+		t.Fatalf("expected at least 3 output messages, got %d", len(msgs))
+	}
+
+	// Last message should be OutputEnd.
+	last := msgs[len(msgs)-1]
+	if last.Type != OutputEnd {
+		t.Errorf("last message should be OutputEnd, got %v", last.Type)
+	}
+
+	// Data events should appear before OutputEnd.
+	var dataValues []string
+	for _, m := range msgs {
+		if m.Type == OutputData {
+			dataValues = append(dataValues, string(m.Event.Value))
+		}
+	}
+	if len(dataValues) < 2 {
+		t.Errorf("expected at least 2 data events before EoP, got %d", len(dataValues))
+	}
+}
+
+// -- Output backpressure + ctx cancel --
+
+func TestOperatorChain_OutputBackpressure_UnblocksOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 1) // Tiny output channel.
+	aligner := NewBarrierAligner(1, 100)
+
+	// Pre-fill outputCh so next send blocks.
+	outputCh <- OutputMsg{Type: OutputData}
+
+	// Send an event that will try to write to the full outputCh.
+	inputCh <- Event{Value: []byte("block")}
+
+	ops := []Operator{&noopMap{}}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	}()
+
+	// Let the chain block on output, then cancel.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("operator chain did not unblock on context cancel")
 	}
 }

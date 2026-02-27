@@ -24,19 +24,25 @@ type Session struct {
 // NewClientSession dials the given address, optionally wraps in TLS,
 // and creates a Yamux client session.
 func NewClientSession(addr string, cfg Config) (*Session, error) {
-	conn, err := net.Dial("tcp", addr)
+	dialTimeout := cfg.DialTimeout
+	if dialTimeout == 0 {
+		dialTimeout = DefaultDialTimeout
+	}
+	conn, err := net.DialTimeout("tcp", addr, dialTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("transport: dial %s: %w", addr, err)
 	}
 
 	if cfg.TLSConfig != nil {
 		host, _, _ := net.SplitHostPort(addr)
-		tlsConn := tls.Client(conn, &tls.Config{
-			Certificates: cfg.TLSConfig.Certificates,
-			RootCAs:      cfg.TLSConfig.RootCAs,
-			MinVersion:   tls.VersionTLS13,
-			ServerName:   host,
-		})
+		tlsCfg := cfg.TLSConfig.Clone()
+		if tlsCfg.ServerName == "" {
+			tlsCfg.ServerName = host
+		}
+		if tlsCfg.MinVersion < tls.VersionTLS13 {
+			tlsCfg.MinVersion = tls.VersionTLS13
+		}
+		tlsConn := tls.Client(conn, tlsCfg)
 		if err := tlsConn.Handshake(); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("transport: TLS handshake with %s: %w", addr, err)
@@ -62,7 +68,11 @@ func NewClientSession(addr string, cfg Config) (*Session, error) {
 // and creates a Yamux server session.
 func NewServerSession(conn net.Conn, cfg Config) (*Session, error) {
 	if cfg.TLSConfig != nil {
-		tlsConn := tls.Server(conn, cfg.TLSConfig)
+		tlsCfg := cfg.TLSConfig.Clone()
+		if tlsCfg.MinVersion < tls.VersionTLS13 {
+			tlsCfg.MinVersion = tls.VersionTLS13
+		}
+		tlsConn := tls.Server(conn, tlsCfg)
 		if err := tlsConn.Handshake(); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("transport: TLS server handshake: %w", err)

@@ -96,3 +96,16 @@ func (a *atomicCountingSink) Write(ctx context.Context, e Event) error {
 	a.count.Add(1)
 	return nil
 }
+
+// errorSource returns an error on the first ReadBatch call.
+type errorSource struct {
+	err error
+}
+
+func (e *errorSource) Open(ctx context.Context) error       { return nil }
+func (e *errorSource) Close() error                         { return nil }
+func (e *errorSource) Checkpoint(id uint64) ([]byte, error) { return nil, nil }
+func (e *errorSource) ReadBatch(ctx context.Context) ([]Event, error) {
+	return nil, e.err
+}
+func (e *errorSource) GenerateWatermark() int64 { return 0 }

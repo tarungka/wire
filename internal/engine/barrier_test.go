@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 )
 
@@ -234,5 +236,92 @@ func TestBarrierAlignment_CapacityReuse(t *testing.T) {
 	drained := ba.DrainAll(2)
 	if len(drained) != 1 || string(drained[0].Value) != "b" {
 		t.Fatalf("unexpected drain result: %v", drained)
+	}
+}
+
+func TestBarrierAlignment_DuplicateBarrierSameInput(t *testing.T) {
+	// Sending the same barrier twice from the same input should not cause
+	// alignment to complete for a 2-input aligner.
+	ba := NewBarrierAligner(2, 100)
+
+	ba.OnBarrier(0, 1, 1)
+	aligned := ba.OnBarrier(0, 1, 1) // duplicate
+	if aligned {
+		t.Fatal("duplicate barrier from same input should not complete alignment")
+	}
+	if ba.AllAligned(1) {
+		t.Fatal("AllAligned should be false with only one unique input")
+	}
+	// Input 1 still hasn't arrived.
+	if ba.IsAligning(1) {
+		t.Fatal("input 1 should not be aligning")
+	}
+}
+
+func TestBarrierAlignment_ConcurrentAccess(t *testing.T) {
+	// Designed to be run with -race to verify mutex protection.
+	ba := NewBarrierAligner(4, 1000)
+	ctx := context.Background()
+	var wg sync.WaitGroup
+
+	// Simulate 4 input readers concurrently calling OnBarrier and BufferEvent.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			ba.OnBarrier(idx, 1, 1)
+			for j := 0; j < 50; j++ {
+				_ = ba.BufferEvent(ctx, idx, Event{Value: []byte{byte(j)}})
+				_ = ba.IsAligning(idx)
+				_ = ba.ActiveCheckpointID()
+			}
+		}(i)
+	}
+
+	// Simulate operator chain checking alignment and draining.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			if ba.AllAligned(1) {
+				_ = ba.DrainAll(1)
+				ba.Reset(1)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	// Test passes if no race detected.
+}
+
+func TestBarrierAlignment_BufferEventErrorWrapsErrSideBufferFull(t *testing.T) {
+	ba := NewBarrierAligner(1, 1)
+	ctx := context.Background()
+
+	ba.OnBarrier(0, 1, 1)
+	ba.BufferEvent(ctx, 0, Event{Value: []byte("fill")})
+
+	err := ba.BufferEvent(ctx, 0, Event{Value: []byte("overflow")})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrSideBufferFull) {
+		t.Fatalf("expected errors.Is(err, ErrSideBufferFull), got: %v", err)
+	}
+}
+
+func TestBarrierAlignment_ActiveEpochSetOnFirstBarrierOnly(t *testing.T) {
+	ba := NewBarrierAligner(2, 100)
+
+	ba.OnBarrier(0, 1, 10)
+	if ba.ActiveEpochID() != 10 {
+		t.Fatalf("expected epoch 10, got %d", ba.ActiveEpochID())
+	}
+
+	// Second barrier arrives — epoch should remain as set by first.
+	ba.OnBarrier(1, 1, 11)
+	if ba.ActiveEpochID() != 10 {
+		t.Fatalf("epoch should remain 10 (set by first barrier), got %d", ba.ActiveEpochID())
 	}
 }

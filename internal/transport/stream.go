@@ -3,6 +3,8 @@ package transport
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"sync"
 	"time"
 
@@ -27,7 +29,7 @@ type FrameStream struct {
 	negotiated           *NegotiatedParams
 	consecutiveCRCErrors int
 	consecutiveDecErrors int
-	lastWatermark        int64
+	lastWatermarks       map[string]int64 // per-SourceID watermark tracking
 	ended                bool
 	log                  zerolog.Logger
 }
@@ -61,7 +63,11 @@ func (fs *FrameStream) ReceiveHandshake() (*NegotiatedParams, error) {
 
 	frame, err := protocol.ReadFrame(fs.raw, fs.cfg.MaxFrameSize)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", protocol.ErrHandshakeTimeout, err)
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			return nil, fmt.Errorf("%w: %v", protocol.ErrHandshakeTimeout, err)
+		}
+		return nil, fmt.Errorf("transport: handshake read failed: %w", err)
 	}
 
 	if frame.MsgType != protocol.MsgTypeHandshake {
@@ -79,7 +85,7 @@ func (fs *FrameStream) ReceiveHandshake() (*NegotiatedParams, error) {
 	if hs.ProtocolVersion < fs.cfg.LocalMinVersion || fs.cfg.LocalProtocolVersion < hs.MinVersion {
 		// Send EndOfPartition with Error reason before closing.
 		eop := &protocol.EndOfPartitionMsg{
-			SourceID: "handshake",
+			SourceID: protocol.HandshakeSourceID,
 			Reason:   protocol.EndReasonError,
 		}
 		protocol.WriteFrame(fs.raw, protocol.MsgTypeEndOfPartition, eop)
@@ -118,7 +124,17 @@ func (fs *FrameStream) WriteMessage(msg any) error {
 // ReadMessage reads the next frame from the stream and returns the decoded message.
 // It implements error counting, unknown type skipping, watermark monotonicity,
 // and end-of-partition detection per WIP-01 Section 6.
+// After EndOfPartition has been delivered, subsequent calls return io.EOF.
 func (fs *FrameStream) ReadMessage() (any, error) {
+	// Fast path: if stream already ended, return EOF immediately
+	// instead of spinning in a read loop.
+	fs.mu.Lock()
+	ended := fs.ended
+	fs.mu.Unlock()
+	if ended {
+		return nil, io.EOF
+	}
+
 	for {
 		frame, err := protocol.ReadFrame(fs.raw, fs.cfg.MaxFrameSize)
 		if err != nil {
@@ -164,27 +180,32 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 		fs.consecutiveDecErrors = 0
 		fs.mu.Unlock()
 
-		// Check stream-ended state.
+		// Check stream-ended state — drop frames received after EOP was delivered.
 		fs.mu.Lock()
-		ended := fs.ended
+		alreadyEnded := fs.ended
 		fs.mu.Unlock()
-		if ended {
+		if alreadyEnded {
 			fs.log.Warn().Str("type", protocol.MsgTypeName(frame.MsgType)).Msg("frame after EndOfPartition, dropping")
-			continue
+			return nil, io.EOF
 		}
 
-		// Watermark monotonicity check.
+		// Watermark monotonicity check (per-SourceID).
 		if wm, ok := decoded.(*protocol.WatermarkMsg); ok {
 			fs.mu.Lock()
-			if wm.Timestamp < fs.lastWatermark {
+			if fs.lastWatermarks == nil {
+				fs.lastWatermarks = make(map[string]int64)
+			}
+			last, exists := fs.lastWatermarks[wm.SourceID]
+			if exists && wm.Timestamp < last {
 				fs.mu.Unlock()
 				fs.log.Warn().
 					Int64("received", wm.Timestamp).
-					Int64("last", fs.lastWatermark).
+					Int64("last", last).
+					Str("source_id", wm.SourceID).
 					Msg("backward watermark, dropping")
 				continue
 			}
-			fs.lastWatermark = wm.Timestamp
+			fs.lastWatermarks[wm.SourceID] = wm.Timestamp
 			fs.mu.Unlock()
 		}
 

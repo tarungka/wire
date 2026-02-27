@@ -21,6 +21,7 @@ type Mux struct {
 	log      zerolog.Logger
 	ctx      context.Context
 	cancel   context.CancelFunc
+	wg       sync.WaitGroup // tracks acceptLoop and sessionAcceptLoop goroutines
 }
 
 // NewMux creates a new Mux with the given configuration.
@@ -50,6 +51,7 @@ func (m *Mux) Listen(ctx context.Context) error {
 
 	m.log.Info().Str("addr", ln.Addr().String()).Msg("listening")
 
+	m.wg.Add(1)
 	go m.acceptLoop(ctx)
 	return nil
 }
@@ -115,17 +117,18 @@ func (m *Mux) Close() error {
 	m.cancel()
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.listener != nil {
 		m.listener.Close()
 	}
-
 	for addr, sess := range m.peers {
 		sess.Close()
 		delete(m.peers, addr)
 	}
+	m.mu.Unlock()
 
+	// Wait for all accept goroutines to exit before closing the channel
+	// to prevent send-on-closed-channel panics.
+	m.wg.Wait()
 	close(m.streamCh)
 	return nil
 }
@@ -141,6 +144,7 @@ func (m *Mux) ListenAddr() string {
 }
 
 func (m *Mux) acceptLoop(ctx context.Context) {
+	defer m.wg.Done()
 	for {
 		conn, err := m.listener.Accept()
 		if err != nil {
@@ -155,7 +159,9 @@ func (m *Mux) acceptLoop(ctx context.Context) {
 			}
 		}
 
+		m.wg.Add(1)
 		go func(c net.Conn) {
+			defer m.wg.Done()
 			sess, err := NewServerSession(c, m.cfg)
 			if err != nil {
 				m.log.Error().Err(err).Msg("server session creation failed")
