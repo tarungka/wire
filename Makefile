@@ -89,7 +89,8 @@ lint-fast:
 	@echo "Running linter on changed files..."
 	@CHANGED_FILES=$$(git diff --name-only --cached | grep "\.go$$" || true); \
 	if [ -n "$$CHANGED_FILES" ]; then \
-		golangci-lint run $$CHANGED_FILES; \
+		PACKAGES=$$(echo "$$CHANGED_FILES" | xargs -I{} dirname {} | sort -u | sed 's|^|./|'); \
+		golangci-lint run $$PACKAGES; \
 	else \
 		echo "No Go files to lint"; \
 	fi
