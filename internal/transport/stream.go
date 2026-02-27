@@ -1,13 +1,14 @@
 package transport
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/yamux"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/protocol"
 )
 
@@ -36,7 +37,7 @@ func NewFrameStream(raw *yamux.Stream, cfg Config) *FrameStream {
 	return &FrameStream{
 		raw: raw,
 		cfg: cfg,
-		log: log.With().Uint32("stream_id", raw.StreamID()).Logger(),
+		log: logger.GetLogger("stream").With().Uint32("stream_id", raw.StreamID()).Logger(),
 	}
 }
 
@@ -140,7 +141,7 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 		// Decode payload.
 		decoded, err := protocol.DecodePayload(frame)
 		if err != nil {
-			if err == protocol.ErrUnknownMsgType || isUnknownMsgType(err) {
+			if errors.Is(err, protocol.ErrUnknownMsgType) {
 				fs.log.Warn().Uint8("msg_type", frame.MsgType).Msg("unknown message type, skipping frame")
 				continue
 			}
@@ -208,21 +209,3 @@ func (fs *FrameStream) Close() error {
 	return fs.raw.Close()
 }
 
-// isUnknownMsgType checks if an error wraps ErrUnknownMsgType.
-func isUnknownMsgType(err error) bool {
-	return err != nil && len(err.Error()) > 0 &&
-		contains(err.Error(), protocol.ErrUnknownMsgType.Error())
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}

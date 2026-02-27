@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"github.com/tarungka/wire/internal/logger"
 )
 
 // Mux is the top-level multiplexer that manages TCP/TLS connections,
@@ -30,7 +30,7 @@ func NewMux(cfg Config) *Mux {
 		cfg:      cfg,
 		peers:    make(map[string]*Session),
 		streamCh: make(chan *FrameStream, 64),
-		log:      log.With().Str("component", "mux").Logger(),
+		log:      logger.GetLogger("mux"),
 		ctx:      ctx,
 		cancel:   cancel,
 	}

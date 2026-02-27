@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/hashicorp/yamux"
+	"github.com/rs/zerolog"
+	"github.com/tarungka/wire/internal/logger"
 )
 
 // Session wraps a yamux.Session and its underlying net.Conn.
@@ -16,6 +18,7 @@ type Session struct {
 	conn   net.Conn
 	addr   string
 	closed bool
+	log    zerolog.Logger
 }
 
 // NewClientSession dials the given address, optionally wraps in TLS,
@@ -51,6 +54,7 @@ func NewClientSession(addr string, cfg Config) (*Session, error) {
 		yamux: ymux,
 		conn:  conn,
 		addr:  addr,
+		log:   logger.GetLogger("session"),
 	}, nil
 }
 
@@ -76,6 +80,7 @@ func NewServerSession(conn net.Conn, cfg Config) (*Session, error) {
 		yamux: ymux,
 		conn:  conn,
 		addr:  conn.RemoteAddr().String(),
+		log:   logger.GetLogger("session"),
 	}, nil
 }
 
