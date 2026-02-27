@@ -208,4 +208,3 @@ func (fs *FrameStream) StreamID() uint32 {
 func (fs *FrameStream) Close() error {
 	return fs.raw.Close()
 }
-
