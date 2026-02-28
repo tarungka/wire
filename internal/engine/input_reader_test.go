@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,6 +49,11 @@ func newTestStreamPair(t *testing.T) (*transport.FrameStream, *transport.FrameSt
 	return writer, reader
 }
 
+// testTracker creates a single-input InputWatermarkTracker for testing.
+func testTracker(numInputs int) *InputWatermarkTracker {
+	return NewInputWatermarkTracker(numInputs)
+}
+
 func TestInputReader_DataRecordRouting(t *testing.T) {
 	writer, reader := newTestStreamPair(t)
 	defer writer.Close()
@@ -61,7 +65,7 @@ func TestInputReader_DataRecordRouting(t *testing.T) {
 	eventCh := make(chan Event, 10)
 	controlCh := make(chan ControlMsg, 10)
 	aligner := NewBarrierAligner(1, 100)
-	var wm atomic.Int64
+	tracker := testTracker(1)
 
 	// Write 3 data records then EoP.
 	go func() {
@@ -78,7 +82,7 @@ func TestInputReader_DataRecordRouting(t *testing.T) {
 		})
 	}()
 
-	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, &wm, testLogger())
+	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
 	if err != nil {
 		t.Fatalf("runInputReader: %v", err)
 	}
@@ -118,7 +122,7 @@ func TestInputReader_BarrierDetection(t *testing.T) {
 	eventCh := make(chan Event, 10)
 	controlCh := make(chan ControlMsg, 10)
 	aligner := NewBarrierAligner(1, 100)
-	var wm atomic.Int64
+	tracker := testTracker(1)
 
 	go func() {
 		writer.WriteMessage(&protocol.CheckpointBarrierMsg{
@@ -132,7 +136,7 @@ func TestInputReader_BarrierDetection(t *testing.T) {
 		})
 	}()
 
-	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, &wm, testLogger())
+	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
 	if err != nil {
 		t.Fatalf("runInputReader: %v", err)
 	}
@@ -163,7 +167,7 @@ func TestInputReader_WatermarkCASUpdate(t *testing.T) {
 	eventCh := make(chan Event, 10)
 	controlCh := make(chan ControlMsg, 10)
 	aligner := NewBarrierAligner(1, 100)
-	var wm atomic.Int64
+	tracker := testTracker(1)
 
 	go func() {
 		writer.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s"})
@@ -174,13 +178,13 @@ func TestInputReader_WatermarkCASUpdate(t *testing.T) {
 		})
 	}()
 
-	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, &wm, testLogger())
+	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
 	if err != nil {
 		t.Fatalf("runInputReader: %v", err)
 	}
 
-	if wm.Load() != 200 {
-		t.Errorf("watermark: got %d, want 200", wm.Load())
+	if tracker.watermarks[0].Load() != 200 {
+		t.Errorf("watermark: got %d, want 200", tracker.watermarks[0].Load())
 	}
 }
 
@@ -195,7 +199,7 @@ func TestInputReader_SideBufferRouting(t *testing.T) {
 	eventCh := make(chan Event, 10)
 	controlCh := make(chan ControlMsg, 10)
 	aligner := NewBarrierAligner(2, 100) // 2 inputs for alignment.
-	var wm atomic.Int64
+	tracker := testTracker(2)
 
 	go func() {
 		// Send some data, then a barrier (this is input 0 with 2-input aligner).
@@ -206,7 +210,7 @@ func TestInputReader_SideBufferRouting(t *testing.T) {
 		writer.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "test", Reason: protocol.EndReasonExhausted})
 	}()
 
-	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, &wm, testLogger())
+	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
 	if err != nil {
 		t.Fatalf("runInputReader: %v", err)
 	}
@@ -239,7 +243,7 @@ func TestInputReader_ContextCancellation(t *testing.T) {
 	eventCh := make(chan Event, 10)
 	controlCh := make(chan ControlMsg, 10)
 	aligner := NewBarrierAligner(1, 100)
-	var wm atomic.Int64
+	tracker := testTracker(1)
 
 	// Cancel context after a short delay and close the writer to produce
 	// an EOF on the reader side, unblocking ReadMessage.
@@ -249,7 +253,7 @@ func TestInputReader_ContextCancellation(t *testing.T) {
 		writer.Close() // Causes EOF on reader, unblocking ReadMessage.
 	}()
 
-	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, &wm, testLogger())
+	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
 	// Should exit cleanly (nil) due to EOF / context cancellation.
 	if err != nil && err != context.Canceled {
 		t.Fatalf("expected nil or context.Canceled, got: %v", err)
@@ -267,8 +271,8 @@ func TestInputReader_WatermarkDoesNotRegress(t *testing.T) {
 	eventCh := make(chan Event, 10)
 	controlCh := make(chan ControlMsg, 10)
 	aligner := NewBarrierAligner(1, 100)
-	var wm atomic.Int64
-	wm.Store(200) // Pre-set to a higher value.
+	tracker := testTracker(1)
+	tracker.watermarks[0].Store(200) // Pre-set to a higher value.
 
 	go func() {
 		// Send a stale watermark (100 < 200).
@@ -279,14 +283,14 @@ func TestInputReader_WatermarkDoesNotRegress(t *testing.T) {
 		})
 	}()
 
-	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, &wm, testLogger())
+	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
 	if err != nil {
 		t.Fatalf("runInputReader: %v", err)
 	}
 
 	// Watermark should NOT have regressed.
-	if wm.Load() != 200 {
-		t.Errorf("watermark regressed: got %d, want 200", wm.Load())
+	if tracker.watermarks[0].Load() != 200 {
+		t.Errorf("watermark regressed: got %d, want 200", tracker.watermarks[0].Load())
 	}
 }
 
@@ -299,7 +303,7 @@ func TestInputReader_EventChannelFull_UnblocksOnContextCancel(t *testing.T) {
 	eventCh := make(chan Event, 1) // Tiny channel.
 	controlCh := make(chan ControlMsg, 10)
 	aligner := NewBarrierAligner(1, 100)
-	var wm atomic.Int64
+	tracker := testTracker(1)
 
 	go func() {
 		// Send enough data to fill eventCh and block the reader.
@@ -313,7 +317,7 @@ func TestInputReader_EventChannelFull_UnblocksOnContextCancel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, &wm, testLogger())
+		done <- runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
 	}()
 
 	// Let the reader block on the full channel, then cancel.
@@ -328,5 +332,45 @@ func TestInputReader_EventChannelFull_UnblocksOnContextCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("input reader did not unblock on context cancel")
+	}
+}
+
+func TestInputReader_ActivityRecording(t *testing.T) {
+	writer, reader := newTestStreamPair(t)
+	defer writer.Close()
+	defer reader.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+	tracker := testTracker(1)
+
+	// Verify no activity initially.
+	if tracker.lastActivityNs[0].Load() != 0 {
+		t.Fatal("expected no initial activity")
+	}
+
+	go func() {
+		writer.WriteMessage(&protocol.DataRecordMsg{
+			Value:     []byte("data"),
+			EventTime: 1000,
+		})
+		writer.WriteMessage(&protocol.EndOfPartitionMsg{
+			SourceID: "test",
+			Reason:   protocol.EndReasonExhausted,
+		})
+	}()
+
+	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
+	if err != nil {
+		t.Fatalf("runInputReader: %v", err)
+	}
+
+	// Activity should have been recorded.
+	if tracker.lastActivityNs[0].Load() == 0 {
+		t.Error("expected activity to be recorded after data record")
 	}
 }

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -458,7 +459,7 @@ func TestWatermarkEmitter_MonotonicAdvance(t *testing.T) {
 		source.SetWatermark(200)
 	}()
 
-	_ = runWatermarkEmitter(ctx, source, &wm, outputCh, 50*time.Millisecond, testLogger())
+	_ = runWatermarkEmitter(ctx, newLegacySourceStrategy(source), &wm, outputCh, 50*time.Millisecond, testLogger())
 
 	close(outputCh)
 
@@ -499,7 +500,7 @@ func TestWatermarkEmitter_ConcurrentAccess(t *testing.T) {
 		}(int64(i * 1000))
 	}
 
-	_ = runWatermarkEmitter(ctx, source, &wm, outputCh, 10*time.Millisecond, testLogger())
+	_ = runWatermarkEmitter(ctx, newLegacySourceStrategy(source), &wm, outputCh, 10*time.Millisecond, testLogger())
 	// No panic or race condition = success.
 }
 
@@ -515,7 +516,7 @@ func TestWatermarkEmitter_OutputChannelFull_UnblocksOnCancel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runWatermarkEmitter(ctx, source, &wm, outputCh, 10*time.Millisecond, testLogger())
+		done <- runWatermarkEmitter(ctx, newLegacySourceStrategy(source), &wm, outputCh, 10*time.Millisecond, testLogger())
 	}()
 
 	// Let it try to send a couple of times, then cancel.
@@ -804,3 +805,292 @@ func TestDefaultTaskSlotConfig_MatchesDefaults(t *testing.T) {
 		t.Errorf("WatermarkInterval: got %v, want %v", cfg.WatermarkInterval, DefaultWatermarkInterval)
 	}
 }
+
+func TestTaskSlot_BoundedOOOStrategy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	batches := [][]Event{
+		{{Value: []byte("a"), EventTime: 10000}},
+		{{Value: []byte("b"), EventTime: 20000}},
+	}
+	source := newMockSource(batches)
+
+	cfg := DefaultTaskSlotConfig()
+	cfg.WatermarkInterval = 50 * time.Millisecond
+	cfg.Watermark.Strategy = StrategyBoundedOOO
+	cfg.Watermark.MaxOOO = 5 * time.Second
+
+	ow, or := newTestStreamPair(t)
+	outputs := []*transport.FrameStream{ow}
+
+	ts := NewTaskSlot(cfg, nil, outputs, []Operator{&noopMap{}}, source)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ts.Run(ctx)
+	}()
+
+	// Read output — should get data + watermarks + EoP.
+	var watermarks []int64
+	var gotEnd bool
+	for i := 0; i < 50; i++ {
+		msg, err := or.ReadMessage()
+		if err != nil {
+			break
+		}
+		switch m := msg.(type) {
+		case *protocol.WatermarkMsg:
+			watermarks = append(watermarks, m.Timestamp)
+		case *protocol.EndOfPartitionMsg:
+			gotEnd = true
+		}
+		if gotEnd {
+			break
+		}
+	}
+
+	if !gotEnd {
+		t.Error("expected EndOfPartition")
+	}
+
+	// Watermarks should be monotonically non-decreasing.
+	for i := 1; i < len(watermarks); i++ {
+		if watermarks[i] < watermarks[i-1] {
+			t.Errorf("non-monotonic watermark at index %d: %d < %d", i, watermarks[i], watermarks[i-1])
+		}
+	}
+
+	// Final watermark should be max(0, 20000-5000) = 15000.
+	if len(watermarks) > 0 {
+		last := watermarks[len(watermarks)-1]
+		if last > 15000 {
+			t.Errorf("final watermark too high: got %d, want <= 15000", last)
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+func TestTaskSlot_MonotonicStrategy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	batches := [][]Event{
+		{{Value: []byte("a"), EventTime: 1000}},
+		{{Value: []byte("b"), EventTime: 2000}},
+	}
+	source := newMockSource(batches)
+
+	cfg := DefaultTaskSlotConfig()
+	cfg.WatermarkInterval = 50 * time.Millisecond
+	cfg.Watermark.Strategy = StrategyMonotonic
+
+	ow, or := newTestStreamPair(t)
+	outputs := []*transport.FrameStream{ow}
+
+	ts := NewTaskSlot(cfg, nil, outputs, []Operator{&noopMap{}}, source)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ts.Run(ctx)
+	}()
+
+	var watermarks []int64
+	var gotEnd bool
+	for i := 0; i < 50; i++ {
+		msg, err := or.ReadMessage()
+		if err != nil {
+			break
+		}
+		switch m := msg.(type) {
+		case *protocol.WatermarkMsg:
+			watermarks = append(watermarks, m.Timestamp)
+		case *protocol.EndOfPartitionMsg:
+			gotEnd = true
+		}
+		if gotEnd {
+			break
+		}
+	}
+
+	if !gotEnd {
+		t.Error("expected EndOfPartition")
+	}
+
+	// Monotonic: watermark = maxObserved, so final should reach 2000.
+	if len(watermarks) > 0 {
+		last := watermarks[len(watermarks)-1]
+		if last < 2000 {
+			t.Errorf("final watermark: got %d, want >= 2000", last)
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+func TestTaskSlot_WatermarkPropagation_TwoInputs(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cfg := DefaultTaskSlotConfig()
+	cfg.Watermark.EmitInterval = 50 * time.Millisecond
+	cfg.Watermark.IdleTimeout = 0 // Disable idle detection.
+
+	// Create two input stream pairs.
+	iw0, ir0 := newTestStreamPair(t)
+	iw1, ir1 := newTestStreamPair(t)
+	ow, or := newTestStreamPair(t)
+
+	inputs := []*transport.FrameStream{ir0, ir1}
+	outputs := []*transport.FrameStream{ow}
+
+	ts := NewTaskSlot(cfg, inputs, outputs, []Operator{&noopMap{}}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ts.Run(ctx)
+	}()
+
+	// Send watermarks on both inputs.
+	iw0.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s0"})
+	iw1.WriteMessage(&protocol.WatermarkMsg{Timestamp: 200, SourceID: "s1"})
+
+	// Send data to trigger activity recording.
+	iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("d0"), EventTime: 1})
+	iw1.WriteMessage(&protocol.DataRecordMsg{Value: []byte("d1"), EventTime: 2})
+
+	// Wait for propagation.
+	time.Sleep(200 * time.Millisecond)
+
+	// Send EoPs to terminate.
+	iw0.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s0", Reason: protocol.EndReasonExhausted})
+	iw1.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s1", Reason: protocol.EndReasonExhausted})
+
+	// Read output — should get watermarks with min value.
+	var watermarks []int64
+	var gotEnd bool
+	for i := 0; i < 50; i++ {
+		msg, err := or.ReadMessage()
+		if err != nil {
+			break
+		}
+		switch m := msg.(type) {
+		case *protocol.WatermarkMsg:
+			watermarks = append(watermarks, m.Timestamp)
+		case *protocol.EndOfPartitionMsg:
+			gotEnd = true
+		}
+		if gotEnd {
+			break
+		}
+	}
+
+	if !gotEnd {
+		t.Error("expected EndOfPartition")
+	}
+
+	// Propagated watermark should be min(100, 200) = 100.
+	if len(watermarks) == 0 {
+		t.Error("expected at least one watermark")
+	} else {
+		for _, wm := range watermarks {
+			if wm > 200 {
+				t.Errorf("watermark too high: got %d, want <= 200", wm)
+			}
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+func TestTaskSlot_LegacySourceBackwardCompat(t *testing.T) {
+	// Verify that existing sources with GenerateWatermark() still work
+	// when no explicit strategy is configured.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sink := &atomicCountingSink{}
+	batches := [][]Event{
+		{{Value: []byte("a"), EventTime: 1}},
+	}
+	source := newMockSource(batches)
+	source.SetWatermark(500)
+
+	cfg := DefaultTaskSlotConfig()
+	cfg.WatermarkInterval = 50 * time.Millisecond
+	// No Watermark.Strategy set — should use legacy.
+
+	ts := NewTaskSlot(cfg, nil, nil, []Operator{&noopMap{}, sink}, source)
+
+	err := ts.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if sink.count.Load() != 1 {
+		t.Fatalf("sink count: got %d, want 1", sink.count.Load())
+	}
+}
+
+func TestTaskSlot_ResolveStrategy(t *testing.T) {
+	source := newMockSource(nil)
+
+	tests := []struct {
+		name     string
+		config   WatermarkConfig
+		strategy WatermarkStrategy // pre-set on TaskSlot
+		wantType string
+	}{
+		{
+			name:     "default/legacy",
+			config:   WatermarkConfig{},
+			wantType: "*engine.legacySourceStrategy",
+		},
+		{
+			name:     "bounded-ooo",
+			config:   WatermarkConfig{Strategy: StrategyBoundedOOO, MaxOOO: 3 * time.Second},
+			wantType: "*engine.BoundedOutOfOrdernessStrategy",
+		},
+		{
+			name:     "monotonic",
+			config:   WatermarkConfig{Strategy: StrategyMonotonic},
+			wantType: "*engine.MonotonicTimestampsStrategy",
+		},
+		{
+			name:     "ingestion-time",
+			config:   WatermarkConfig{Strategy: StrategyIngestionTime},
+			wantType: "*engine.IngestionTimeStrategy",
+		},
+		{
+			name:     "explicit-strategy-overrides-config",
+			config:   WatermarkConfig{Strategy: StrategyMonotonic},
+			strategy: NewBoundedOutOfOrdernessStrategy(1 * time.Second),
+			wantType: "*engine.BoundedOutOfOrdernessStrategy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultTaskSlotConfig()
+			cfg.Watermark = tt.config
+
+			ts := NewTaskSlot(cfg, nil, nil, nil, source)
+			ts.Strategy = tt.strategy
+
+			s := ts.resolveStrategy()
+			gotType := typeString(s)
+			if gotType != tt.wantType {
+				t.Errorf("strategy type: got %s, want %s", gotType, tt.wantType)
+			}
+		})
+	}
+}
+
+func typeString(v interface{}) string {
+	return fmt.Sprintf("%T", v)
+}
+

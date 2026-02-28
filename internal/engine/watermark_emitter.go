@@ -6,17 +6,18 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/protocol"
 )
 
-// runWatermarkEmitter periodically generates watermarks from a SourceOperator
+// runWatermarkEmitter periodically generates watermarks from a WatermarkStrategy
 // and sends them to outputCh. It runs only for source tasks.
 //
 // The watermark is maintained as an atomic.Int64 shared with input readers.
 // This goroutine CAS-advances the watermark and emits OutputWatermark messages.
 func runWatermarkEmitter(
 	ctx context.Context,
-	source SourceOperator,
+	strategy WatermarkStrategy,
 	watermark *atomic.Int64,
 	outputCh chan<- OutputMsg,
 	interval time.Duration,
@@ -30,7 +31,7 @@ func runWatermarkEmitter(
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			ts := source.GenerateWatermark()
+			ts := strategy.GenerateWatermark()
 			// CAS loop: only advance.
 			for {
 				cur := watermark.Load()

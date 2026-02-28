@@ -4,11 +4,13 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/transport"
-	"golang.org/x/sync/errgroup"
 )
 
 // TaskSlot represents a single execution slot in the stream processing
@@ -20,6 +22,7 @@ type TaskSlot struct {
 	Outputs   []*transport.FrameStream // Downstream output streams.
 	Operators []Operator               // Fused operator chain.
 	Source    SourceOperator           // Non-nil for source tasks.
+	Strategy  WatermarkStrategy        // Resolved watermark strategy (source tasks only).
 	log       zerolog.Logger
 }
 
@@ -58,8 +61,11 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// Create barrier aligner.
 	aligner := NewBarrierAligner(numInputs, ts.Config.AlignmentBufferSize)
 
-	// Shared watermark.
+	// Shared watermark (used by source tasks).
 	var watermark atomic.Int64
+
+	// Create per-input watermark tracker (used by non-source tasks).
+	tracker := NewInputWatermarkTracker(numInputs)
 
 	// Track output channel producers so we can close outputCh when all are done.
 	var producerWg sync.WaitGroup
@@ -78,15 +84,39 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	for i, stream := range ts.Inputs {
 		i, stream := i, stream
 		g.Go(func() error {
-			return runInputReader(gctx, i, stream, eventCh, controlCh, aligner, &watermark,
+			return runInputReader(gctx, i, stream, eventCh, controlCh, aligner, tracker,
 				ts.log.With().Int("input", i).Logger())
 		})
 	}
 
-	// For source tasks, launch source reader.
+	// For source tasks, resolve strategy and launch source reader.
 	if ts.Source != nil {
+		strategy := ts.resolveStrategy()
+
 		g.Go(func() error {
-			return runSourceReader(gctx, ts.Source, eventCh, controlCh, ts.log.With().Str("component", "source_reader").Logger())
+			return runSourceReader(gctx, ts.Source, strategy, eventCh, controlCh, ts.log.With().Str("component", "source_reader").Logger())
+		})
+
+		// Launch watermark emitter for source tasks.
+		emitInterval := ts.resolveEmitInterval()
+		producerWg.Add(1)
+		g.Go(func() error {
+			defer producerWg.Done()
+			return runWatermarkEmitter(gctx, strategy, &watermark, outputCh, emitInterval,
+				ts.log.With().Str("component", "watermark_emitter").Logger())
+		})
+	} else if numInputs > 0 {
+		// For non-source tasks, launch watermark propagator.
+		emitInterval := ts.resolveEmitInterval()
+		idleTimeout := ts.Config.Watermark.IdleTimeout
+		if idleTimeout == 0 {
+			idleTimeout = DefaultIdleTimeout
+		}
+		producerWg.Add(1)
+		g.Go(func() error {
+			defer producerWg.Done()
+			return runWatermarkPropagator(gctx, tracker, outputCh, emitInterval, idleTimeout,
+				ts.log.With().Str("component", "watermark_propagator").Logger())
 		})
 	}
 
@@ -98,16 +128,6 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		defer runCancel() // Signal all goroutines to stop when chain exits.
 		return runOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, ts.log.With().Str("component", "operator_chain").Logger())
 	})
-
-	// For source tasks, launch watermark emitter.
-	if ts.Source != nil {
-		producerWg.Add(1)
-		g.Go(func() error {
-			defer producerWg.Done()
-			return runWatermarkEmitter(gctx, ts.Source, &watermark, outputCh, ts.Config.WatermarkInterval,
-				ts.log.With().Str("component", "watermark_emitter").Logger())
-		})
-	}
 
 	// Goroutine to close outputCh when all producers are done.
 	go func() {
@@ -133,9 +153,46 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	return err
 }
 
+// resolveStrategy creates the appropriate WatermarkStrategy based on config.
+// Falls back to legacySourceStrategy wrapping Source.GenerateWatermark().
+func (ts *TaskSlot) resolveStrategy() WatermarkStrategy {
+	if ts.Strategy != nil {
+		return ts.Strategy
+	}
+
+	switch ts.Config.Watermark.Strategy {
+	case StrategyBoundedOOO:
+		maxOOO := ts.Config.Watermark.MaxOOO
+		if maxOOO <= 0 {
+			maxOOO = DefaultMaxOOO
+		}
+		return NewBoundedOutOfOrdernessStrategy(maxOOO)
+	case StrategyMonotonic:
+		return NewMonotonicTimestampsStrategy()
+	case StrategyIngestionTime:
+		return NewIngestionTimeStrategy()
+	default:
+		// Legacy: wrap the source's GenerateWatermark() method.
+		return newLegacySourceStrategy(ts.Source)
+	}
+}
+
+// resolveEmitInterval returns the watermark emission interval, preferring
+// Watermark.EmitInterval over the legacy WatermarkInterval.
+func (ts *TaskSlot) resolveEmitInterval() time.Duration {
+	if ts.Config.Watermark.EmitInterval > 0 {
+		return ts.Config.Watermark.EmitInterval
+	}
+	if ts.Config.WatermarkInterval > 0 {
+		return ts.Config.WatermarkInterval
+	}
+	return DefaultWatermarkInterval
+}
+
 // runSourceReader reads batches from a SourceOperator and feeds events into
 // the eventCh. For source tasks, this replaces the input readers.
-func runSourceReader(ctx context.Context, source SourceOperator, eventCh chan<- Event, controlCh chan<- ControlMsg, log zerolog.Logger) error {
+// If a WatermarkStrategy is provided, ObserveEventTime is called for each event.
+func runSourceReader(ctx context.Context, source SourceOperator, strategy WatermarkStrategy, eventCh chan<- Event, controlCh chan<- ControlMsg, log zerolog.Logger) error {
 	for {
 		batch, err := source.ReadBatch(ctx)
 		if err != nil {
@@ -161,6 +218,9 @@ func runSourceReader(ctx context.Context, source SourceOperator, eventCh chan<- 
 		}
 
 		for _, event := range batch {
+			if strategy != nil {
+				strategy.ObserveEventTime(event.EventTime)
+			}
 			select {
 			case eventCh <- event:
 			case <-ctx.Done():
