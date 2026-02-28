@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestBarrierAlignment_SingleInput(t *testing.T) {
@@ -323,5 +324,69 @@ func TestBarrierAlignment_ActiveEpochSetOnFirstBarrierOnly(t *testing.T) {
 	ba.OnBarrier(1, 1, 11)
 	if ba.ActiveEpochID() != 10 {
 		t.Fatalf("epoch should remain 10 (set by first barrier), got %d", ba.ActiveEpochID())
+	}
+}
+
+func TestBarrierAligner_AlignmentStartTime(t *testing.T) {
+	ba := NewBarrierAligner(2, 100)
+
+	// No alignment active — should be zero.
+	if !ba.AlignmentStartTime().IsZero() {
+		t.Fatal("expected zero time before any barrier")
+	}
+
+	before := time.Now()
+	ba.OnBarrier(0, 1, 1)
+	after := time.Now()
+
+	st := ba.AlignmentStartTime()
+	if st.IsZero() {
+		t.Fatal("expected non-zero time after first barrier")
+	}
+	if st.Before(before) || st.After(after) {
+		t.Errorf("start time %v not between %v and %v", st, before, after)
+	}
+
+	// Second barrier should not change start time.
+	ba.OnBarrier(1, 1, 1)
+	if ba.AlignmentStartTime() != st {
+		t.Error("start time changed after second barrier")
+	}
+
+	// Reset should clear it.
+	ba.Reset(1)
+	if !ba.AlignmentStartTime().IsZero() {
+		t.Fatal("expected zero time after reset")
+	}
+}
+
+func TestBarrierAligner_BufferedEventCount(t *testing.T) {
+	ba := NewBarrierAligner(3, 100)
+	ctx := context.Background()
+
+	if ba.BufferedEventCount() != 0 {
+		t.Fatal("expected 0 buffered events initially")
+	}
+
+	ba.OnBarrier(0, 1, 1)
+	ba.BufferEvent(ctx, 0, Event{Value: []byte("a")})
+	ba.BufferEvent(ctx, 0, Event{Value: []byte("b")})
+
+	if ba.BufferedEventCount() != 2 {
+		t.Fatalf("expected 2 buffered events, got %d", ba.BufferedEventCount())
+	}
+
+	ba.OnBarrier(1, 1, 1)
+	ba.BufferEvent(ctx, 1, Event{Value: []byte("c")})
+
+	if ba.BufferedEventCount() != 3 {
+		t.Fatalf("expected 3 buffered events across inputs, got %d", ba.BufferedEventCount())
+	}
+
+	// Drain clears buffers.
+	ba.OnBarrier(2, 1, 1)
+	ba.DrainAll(1)
+	if ba.BufferedEventCount() != 0 {
+		t.Fatalf("expected 0 buffered events after drain, got %d", ba.BufferedEventCount())
 	}
 }

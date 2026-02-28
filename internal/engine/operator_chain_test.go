@@ -97,7 +97,7 @@ func TestOperatorChain_MapPassthrough(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestOperatorChain_Filter(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&filterMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestOperatorChain_FlatMapOneToMany(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&doublerFlatMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestOperatorChain_Sink(t *testing.T) {
 
 	sink := &countingSink{}
 	ops := []Operator{sink}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestOperatorChain_PanicRecovery(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&panicMap{limit: 2}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 
 	if !errors.Is(err, ErrOperatorPanic) {
 		t.Fatalf("expected ErrOperatorPanic, got: %v", err)
@@ -250,7 +250,7 @@ func TestOperatorChain_ControlPriority(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	}()
 
 	// Let the chain start and process a few events.
@@ -289,7 +289,7 @@ func TestOperatorChain_AllInputsEoP(t *testing.T) {
 	close(inputCh) // Close input to not block the operator chain.
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestOperatorChain_CheckpointBarrier(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestOperatorChain_OpenError_ClosesPreviouslyOpenedInReverse(t *testing.T) {
 	outputCh := make(chan OutputMsg, 1)
 	aligner := NewBarrierAligner(1, 100)
 
-	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	if err == nil || !errors.Is(err, op2.openErr) {
 		t.Fatalf("expected op2 open error, got: %v", err)
 	}
@@ -454,7 +454,7 @@ func TestOperatorChain_CloseCalledInReverseOrder(t *testing.T) {
 	outputCh := make(chan OutputMsg, 1)
 	aligner := NewBarrierAligner(1, 100)
 
-	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestOperatorChain_AbortCheckpoint_DrainsSideBufferNoBarrier(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestOperatorChain_CheckpointBarrier_SideBufferDrainedBeforeBarrier(t *testi
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -599,7 +599,7 @@ func TestOperatorChain_MapErrorPropagation(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&errorMap{err: mapErr}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -622,7 +622,7 @@ func TestOperatorChain_FlatMapErrorPropagation(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&errorFlatMap{err: fmErr}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -645,7 +645,7 @@ func TestOperatorChain_SinkErrorPropagation(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&errorSink{err: sinkErr}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -676,7 +676,7 @@ func TestOperatorChain_FinalEoPDrainsInputChannel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	}()
 
 	select {
@@ -737,7 +737,7 @@ func TestOperatorChain_OutputBackpressure_UnblocksOnContextCancel(t *testing.T) 
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	}()
 
 	// Let the chain block on output, then cancel.

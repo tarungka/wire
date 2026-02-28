@@ -20,4 +20,11 @@ var (
 
 	// ErrShutdownTimeout indicates the shutdown drain timeout was exceeded.
 	ErrShutdownTimeout = errors.New("engine: shutdown drain timeout exceeded")
+
+	// ErrMaxConsecutiveCheckpointFailures indicates the consecutive checkpoint
+	// failure threshold was exceeded.
+	ErrMaxConsecutiveCheckpointFailures = errors.New("engine: max consecutive checkpoint failures exceeded")
+
+	// ErrCheckpointAborted indicates a checkpoint was aborted (e.g. due to timeout).
+	ErrCheckpointAborted = errors.New("engine: checkpoint aborted")
 )

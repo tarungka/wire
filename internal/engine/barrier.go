@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // BarrierAligner implements Chandy-Lamport style barrier alignment across
@@ -11,13 +12,14 @@ import (
 // data events from that input are side-buffered until barriers arrive on all
 // inputs. Once aligned, buffered events are drained in input order.
 type BarrierAligner struct {
-	mu            sync.Mutex
-	numInputs     int
-	maxBufferSize int
-	activeID      uint64          // 0 = no active alignment.
-	activeEpoch   uint64          // Epoch of the active checkpoint.
-	arrived       map[int]bool    // Which inputs have reported the barrier.
-	sideBuffers   map[int][]Event // Per-input side buffers, lazily allocated.
+	mu             sync.Mutex
+	numInputs      int
+	maxBufferSize  int
+	activeID       uint64          // 0 = no active alignment.
+	activeEpoch    uint64          // Epoch of the active checkpoint.
+	arrived        map[int]bool    // Which inputs have reported the barrier.
+	sideBuffers    map[int][]Event // Per-input side buffers, lazily allocated.
+	alignStartTime time.Time       // When alignment started (first barrier arrived).
 }
 
 // NewBarrierAligner creates a new BarrierAligner for the given number of inputs.
@@ -40,6 +42,7 @@ func (ba *BarrierAligner) OnBarrier(inputIndex int, checkpointID, epochID uint64
 		// First barrier for this checkpoint — start alignment.
 		ba.activeID = checkpointID
 		ba.activeEpoch = epochID
+		ba.alignStartTime = time.Now()
 	}
 
 	ba.arrived[inputIndex] = true
@@ -117,6 +120,7 @@ func (ba *BarrierAligner) Reset(checkpointID uint64) {
 
 	ba.activeID = 0
 	ba.activeEpoch = 0
+	ba.alignStartTime = time.Time{}
 	ba.arrived = make(map[int]bool)
 	// Keep sideBuffers allocated but empty.
 	for i := range ba.sideBuffers {
@@ -136,4 +140,23 @@ func (ba *BarrierAligner) ActiveEpochID() uint64 {
 	ba.mu.Lock()
 	defer ba.mu.Unlock()
 	return ba.activeEpoch
+}
+
+// AlignmentStartTime returns the time when alignment started (first barrier arrived).
+// Returns zero time if no alignment is active.
+func (ba *BarrierAligner) AlignmentStartTime() time.Time {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	return ba.alignStartTime
+}
+
+// BufferedEventCount returns the total number of events across all side buffers.
+func (ba *BarrierAligner) BufferedEventCount() int {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	var count int
+	for _, buf := range ba.sideBuffers {
+		count += len(buf)
+	}
+	return count
 }

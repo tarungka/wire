@@ -31,6 +31,7 @@ func runOperatorChain(
 	outputCh chan<- OutputMsg,
 	aligner *BarrierAligner,
 	numInputs int,
+	metrics CheckpointMetrics,
 	log zerolog.Logger,
 ) (retErr error) {
 	// Panic recovery.
@@ -72,7 +73,7 @@ func runOperatorChain(
 				if !ok {
 					return nil
 				}
-				if err := handleControl(ctx, ctrl, operators, aligner, inputCh, outputCh, numInputs, &eofCount, log); err != nil {
+				if err := handleControl(ctx, ctrl, operators, aligner, inputCh, outputCh, numInputs, &eofCount, metrics, log); err != nil {
 					if err == errChainDone {
 						return nil
 					}
@@ -91,7 +92,7 @@ func runOperatorChain(
 			if !ok {
 				return nil
 			}
-			if err := handleControl(ctx, ctrl, operators, aligner, inputCh, outputCh, numInputs, &eofCount, log); err != nil {
+			if err := handleControl(ctx, ctrl, operators, aligner, inputCh, outputCh, numInputs, &eofCount, metrics, log); err != nil {
 				if err == errChainDone {
 					return nil
 				}
@@ -185,6 +186,7 @@ func handleControl(
 	outputCh chan<- OutputMsg,
 	numInputs int,
 	eofCount *int,
+	metrics CheckpointMetrics,
 	log zerolog.Logger,
 ) error {
 	switch ctrl.Type {
@@ -194,6 +196,11 @@ func handleControl(
 		}
 
 		log.Debug().Uint64("checkpoint", ctrl.CheckpointID).Msg("all barriers aligned, checkpointing")
+
+		// Record alignment time metric.
+		if startTime := aligner.AlignmentStartTime(); !startTime.IsZero() {
+			metrics.ObserveAlignmentTime(time.Since(startTime))
+		}
 
 		// Snapshot all operators.
 		for i, op := range operators {

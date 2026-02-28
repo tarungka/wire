@@ -16,13 +16,15 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
-	Config    TaskSlotConfig
-	Inputs    []*transport.FrameStream // Upstream input streams.
-	Outputs   []*transport.FrameStream // Downstream output streams.
-	Operators []Operator               // Fused operator chain.
-	Source    SourceOperator           // Non-nil for source tasks.
-	Strategy  WatermarkStrategy        // Resolved watermark strategy (source tasks only).
-	log       zerolog.Logger
+	Config      TaskSlotConfig
+	Inputs      []*transport.FrameStream // Upstream input streams.
+	Outputs     []*transport.FrameStream // Downstream output streams.
+	Operators   []Operator               // Fused operator chain.
+	Source      SourceOperator           // Non-nil for source tasks.
+	Strategy    WatermarkStrategy        // Resolved watermark strategy (source tasks only).
+	Coordinator *CheckpointCoordinator   // Optional checkpoint coordinator (WIP-05).
+	Metrics     CheckpointMetrics        // Optional checkpoint metrics collector.
+	log         zerolog.Logger
 }
 
 // NewTaskSlot creates a new TaskSlot with the given configuration.
@@ -119,13 +121,26 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		})
 	}
 
+	// Resolve checkpoint metrics.
+	metrics := ts.Metrics
+	if metrics == nil {
+		metrics = NoopCheckpointMetrics()
+	}
+
+	// Launch checkpoint coordinator if configured.
+	if ts.Coordinator != nil {
+		g.Go(func() error {
+			return ts.Coordinator.Run(gctx)
+		})
+	}
+
 	// Launch operator chain (the main processing goroutine).
 	// When it finishes, cancel the run context to shut down all other goroutines.
 	producerWg.Add(1)
 	g.Go(func() error {
 		defer producerWg.Done()
 		defer runCancel() // Signal all goroutines to stop when chain exits.
-		return runOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, ts.log.With().Str("component", "operator_chain").Logger())
+		return runOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger())
 	})
 
 	// Goroutine to close outputCh when all producers are done.

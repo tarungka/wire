@@ -28,7 +28,7 @@ func BenchmarkOperatorChain_MapPassthrough(b *testing.B) {
 	}()
 
 	b.ResetTimer()
-	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	close(outputCh)
 }
 
@@ -54,7 +54,7 @@ func BenchmarkOperatorChain_FlatMap(b *testing.B) {
 	}()
 
 	b.ResetTimer()
-	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	close(outputCh)
 }
 
@@ -81,7 +81,7 @@ func BenchmarkOperatorChain_Sink(b *testing.B) {
 	}()
 
 	b.ResetTimer()
-	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, testLogger())
+	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
 	close(outputCh)
 }
 
