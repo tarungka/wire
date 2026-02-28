@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -292,8 +293,8 @@ func TestEmptyTasks(t *testing.T) {
 	if !strings.Contains(raw, `"tasks": []`) {
 		t.Errorf("expected tasks: [], got:\n%s", raw)
 	}
-	if !strings.Contains(raw, `"sink_txns": []`) {
-		t.Errorf("expected sink_txns: [], got:\n%s", raw)
+	if !strings.Contains(raw, `"sink_transactions": []`) {
+		t.Errorf("expected sink_transactions: [], got:\n%s", raw)
 	}
 }
 
@@ -311,5 +312,249 @@ func TestPrettyPrinted(t *testing.T) {
 	}
 	if !strings.Contains(raw, "  ") {
 		t.Error("expected 2-space indentation in pretty-printed output")
+	}
+}
+
+func TestValidate_ValidMetadata(t *testing.T) {
+	meta := testCheckpointMetadata()
+	if err := meta.Validate(); err != nil {
+		t.Errorf("expected valid metadata, got: %v", err)
+	}
+}
+
+func TestValidate_InvalidType(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.Type = "invalid"
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid type")
+	}
+	if !errors.Is(err, ErrInvalidCheckpointMetadata) {
+		t.Errorf("expected ErrInvalidCheckpointMetadata, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "invalid type") {
+		t.Errorf("error should mention invalid type: %v", err)
+	}
+}
+
+func TestValidate_EmptyJobID(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.JobID = ""
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty job_id")
+	}
+	if !strings.Contains(err.Error(), "job_id must not be empty") {
+		t.Errorf("error should mention job_id: %v", err)
+	}
+}
+
+func TestValidate_ZeroNumKeyGroups(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.JobGraph.NumKeyGroups = 0
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected error for zero num_key_groups")
+	}
+	if !strings.Contains(err.Error(), "num_key_groups must be positive") {
+		t.Errorf("error should mention num_key_groups: %v", err)
+	}
+}
+
+func TestValidate_ZeroParallelism(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.JobGraph.Operators[0].Parallelism = 0
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected error for zero parallelism")
+	}
+	if !strings.Contains(err.Error(), "parallelism must be positive") {
+		t.Errorf("error should mention parallelism: %v", err)
+	}
+}
+
+func TestValidate_EmptyOperatorID(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.JobGraph.Operators[0].OperatorID = ""
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty operator_id")
+	}
+	if !strings.Contains(err.Error(), "operator_id must not be empty") {
+		t.Errorf("error should mention operator_id: %v", err)
+	}
+}
+
+func TestValidate_DuplicateOperatorID(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.JobGraph.Operators[1].OperatorID = meta.JobGraph.Operators[0].OperatorID
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected error for duplicate operator_id")
+	}
+	if !strings.Contains(err.Error(), "duplicate operator_id") {
+		t.Errorf("error should mention duplicate: %v", err)
+	}
+}
+
+func TestValidate_EmptyTaskID(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.Tasks[0].TaskID = ""
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty task_id")
+	}
+	if !strings.Contains(err.Error(), "task_id must not be empty") {
+		t.Errorf("error should mention task_id: %v", err)
+	}
+}
+
+func TestValidate_DuplicateTaskID(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.Tasks[1].TaskID = meta.Tasks[0].TaskID
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected error for duplicate task_id")
+	}
+	if !strings.Contains(err.Error(), "duplicate task_id") {
+		t.Errorf("error should mention duplicate: %v", err)
+	}
+}
+
+func TestValidate_TaskReferencesUnknownOperator(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.Tasks[0].OperatorID = "nonexistent-op"
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected error for unknown operator reference")
+	}
+	if !strings.Contains(err.Error(), "references unknown operator_id") {
+		t.Errorf("error should mention unknown operator: %v", err)
+	}
+}
+
+func TestValidate_InvalidKeyGroupRange_StartGEEnd(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.Tasks[0].KeyGroupRange = KeyGroupRangeMeta{Start: 64, End: 64}
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected error for start >= end")
+	}
+	if !strings.Contains(err.Error(), "start (64) must be < end (64)") {
+		t.Errorf("error should mention start >= end: %v", err)
+	}
+}
+
+func TestValidate_InvalidKeyGroupRange_NegativeStart(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.Tasks[0].KeyGroupRange = KeyGroupRangeMeta{Start: -1, End: 64}
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative start")
+	}
+	if !strings.Contains(err.Error(), "start must be >= 0") {
+		t.Errorf("error should mention negative start: %v", err)
+	}
+}
+
+func TestValidate_InvalidKeyGroupRange_EndExceedsNumKeyGroups(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.Tasks[0].KeyGroupRange = KeyGroupRangeMeta{Start: 0, End: 256}
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected error for end > num_key_groups")
+	}
+	if !strings.Contains(err.Error(), "exceeds num_key_groups") {
+		t.Errorf("error should mention exceeds num_key_groups: %v", err)
+	}
+}
+
+func TestValidate_EmptyOperatorList(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.JobGraph.Operators = []OperatorMeta{}
+	meta.Tasks = []TaskMeta{}
+
+	// Empty operator list is valid (all tasks must also be empty).
+	if err := meta.Validate(); err != nil {
+		t.Errorf("empty operators with empty tasks should be valid, got: %v", err)
+	}
+}
+
+func TestValidate_MultipleErrors(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.Type = "invalid"
+	meta.JobID = ""
+	meta.JobGraph.NumKeyGroups = 0
+
+	err := meta.Validate()
+	if err == nil {
+		t.Fatal("expected multiple errors")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "invalid type") {
+		t.Errorf("error should mention invalid type: %v", err)
+	}
+	if !strings.Contains(errMsg, "job_id") {
+		t.Errorf("error should mention job_id: %v", err)
+	}
+	if !strings.Contains(errMsg, "num_key_groups") {
+		t.Errorf("error should mention num_key_groups: %v", err)
+	}
+}
+
+func TestValidate_LargeMetadataRoundTrip(t *testing.T) {
+	meta := testCheckpointMetadata()
+	// Build many operators and tasks.
+	meta.JobGraph.NumKeyGroups = 1024
+	meta.JobGraph.Operators = make([]OperatorMeta, 50)
+	for i := range meta.JobGraph.Operators {
+		meta.JobGraph.Operators[i] = OperatorMeta{
+			OperatorID:  fmt.Sprintf("op-%d", i),
+			Type:        "map",
+			Parallelism: i + 1,
+		}
+	}
+	meta.Tasks = make([]TaskMeta, 100)
+	for i := range meta.Tasks {
+		opIdx := i % len(meta.JobGraph.Operators)
+		meta.Tasks[i] = TaskMeta{
+			TaskID:         fmt.Sprintf("task-%d", i),
+			OperatorID:     meta.JobGraph.Operators[opIdx].OperatorID,
+			SubtaskIndex:   i,
+			KeyGroupRange:  KeyGroupRangeMeta{Start: 0, End: 1024},
+			StatePath:      fmt.Sprintf("task-%d-state/", i),
+			StateSizeBytes: int64(i * 100),
+			StateFiles:     []string{"data.bin"},
+		}
+	}
+	meta.SinkTxns = nil
+
+	data, err := MarshalCheckpointMetadata(meta)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	got, err := UnmarshalCheckpointMetadata(data)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(got.JobGraph.Operators) != 50 {
+		t.Errorf("operators = %d, want 50", len(got.JobGraph.Operators))
+	}
+	if len(got.Tasks) != 100 {
+		t.Errorf("tasks = %d, want 100", len(got.Tasks))
 	}
 }

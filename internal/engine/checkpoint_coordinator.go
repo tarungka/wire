@@ -63,7 +63,7 @@ func NewCheckpointCoordinator(
 		log:             log,
 		controlChannels: controlChannels,
 		pendingACKs:     make(map[int]bool),
-		ackCh:           make(chan ackMsg, len(controlChannels)),
+		ackCh:           make(chan ackMsg, 2*len(controlChannels)),
 		triggerCh:       make(chan struct{}, 1),
 	}
 }
@@ -83,7 +83,7 @@ func (cc *CheckpointCoordinator) TriggerCheckpoint(ctx context.Context, checkpoi
 
 	if cc.activeCheckpointID != 0 {
 		cc.mu.Unlock()
-		return fmt.Errorf("%w: checkpoint %d still active", ErrCheckpointAborted, cc.activeCheckpointID)
+		return fmt.Errorf("%w: checkpoint %d still active", ErrCheckpointAlreadyActive, cc.activeCheckpointID)
 	}
 
 	// MinPause enforcement.

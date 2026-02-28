@@ -12,6 +12,8 @@ func TestCheckpointPath(t *testing.T) {
 		{"basic", "job-001", 1, "jobs/job-001/checkpoints/chk-1/metadata.json"},
 		{"large ID", "my-job", 999999, "jobs/my-job/checkpoints/chk-999999/metadata.json"},
 		{"zero ID", "j", 0, "jobs/j/checkpoints/chk-0/metadata.json"},
+		{"empty job ID", "", 1, "jobs//checkpoints/chk-1/metadata.json"},
+		{"negative ID", "job-001", -1, "jobs/job-001/checkpoints/chk--1/metadata.json"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

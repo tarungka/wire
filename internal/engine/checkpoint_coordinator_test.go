@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -17,6 +18,39 @@ func newTestCoordinator(cfg CheckpointConfig, numTasks int) (*CheckpointCoordina
 	}
 	cc := NewCheckpointCoordinator(cfg, sendChannels, NoopCheckpointMetrics(), testLogger())
 	return cc, channels
+}
+
+// waitForNoActiveCheckpoint polls until the coordinator has no active checkpoint.
+func waitForNoActiveCheckpoint(t *testing.T, cc *CheckpointCoordinator, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		cc.mu.Lock()
+		active := cc.activeCheckpointID
+		cc.mu.Unlock()
+		if active == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for checkpoint to complete")
+}
+
+// waitForActiveCheckpoint polls until the coordinator's activeCheckpointID becomes 0
+// (i.e., the checkpoint was aborted/completed), using a generous timeout.
+func waitForCheckpointAborted(t *testing.T, cc *CheckpointCoordinator, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		cc.mu.Lock()
+		active := cc.activeCheckpointID
+		cc.mu.Unlock()
+		if active == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for checkpoint abort")
 }
 
 func TestCheckpointCoordinator_NormalCompletion(t *testing.T) {
@@ -38,14 +72,10 @@ func TestCheckpointCoordinator_NormalCompletion(t *testing.T) {
 	cc.AckCheckpoint(0, 1)
 	cc.AckCheckpoint(1, 1)
 
-	// Give coordinator time to process.
-	time.Sleep(50 * time.Millisecond)
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
 
 	// Verify state: no active checkpoint, consecutive failures reset.
 	cc.mu.Lock()
-	if cc.activeCheckpointID != 0 {
-		t.Errorf("expected no active checkpoint, got %d", cc.activeCheckpointID)
-	}
 	if cc.consecutiveFailures != 0 {
 		t.Errorf("expected 0 consecutive failures, got %d", cc.consecutiveFailures)
 	}
@@ -71,7 +101,7 @@ func TestCheckpointCoordinator_TimeoutAbort(t *testing.T) {
 	}
 
 	// Wait for timeout and abort.
-	time.Sleep(300 * time.Millisecond)
+	waitForCheckpointAborted(t, cc, 2*time.Second)
 
 	// Verify abort messages sent to both channels.
 	for i, ch := range channels {
@@ -117,8 +147,7 @@ func TestCheckpointCoordinator_ConsecutiveFailuresExceedThreshold(t *testing.T) 
 		if err := cc.TriggerCheckpoint(ctx, i, i); err != nil {
 			t.Fatalf("TriggerCheckpoint(%d): %v", i, err)
 		}
-		// Wait for timeout.
-		time.Sleep(200 * time.Millisecond)
+		waitForCheckpointAborted(t, cc, 2*time.Second)
 	}
 
 	// The third timeout should cause a fatal error.
@@ -150,7 +179,7 @@ func TestCheckpointCoordinator_ConsecutiveFailuresResetOnSuccess(t *testing.T) {
 		if err := cc.TriggerCheckpoint(ctx, i, i); err != nil {
 			t.Fatalf("TriggerCheckpoint(%d): %v", i, err)
 		}
-		time.Sleep(200 * time.Millisecond)
+		waitForCheckpointAborted(t, cc, 2*time.Second)
 	}
 
 	// 1 success — resets consecutive counter.
@@ -158,14 +187,14 @@ func TestCheckpointCoordinator_ConsecutiveFailuresResetOnSuccess(t *testing.T) {
 		t.Fatalf("TriggerCheckpoint(3): %v", err)
 	}
 	cc.AckCheckpoint(0, 3)
-	time.Sleep(50 * time.Millisecond)
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
 
 	// 2 more failures — should still be under threshold (2 < 3).
 	for i := uint64(4); i <= 5; i++ {
 		if err := cc.TriggerCheckpoint(ctx, i, i); err != nil {
 			t.Fatalf("TriggerCheckpoint(%d): %v", i, err)
 		}
-		time.Sleep(200 * time.Millisecond)
+		waitForCheckpointAborted(t, cc, 2*time.Second)
 	}
 
 	cc.mu.Lock()
@@ -202,7 +231,7 @@ func TestCheckpointCoordinator_MinPauseEnforcement(t *testing.T) {
 		t.Fatalf("TriggerCheckpoint(1): %v", err)
 	}
 	cc.AckCheckpoint(0, 1)
-	time.Sleep(50 * time.Millisecond)
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
 
 	// Second checkpoint — should be delayed by MinPause.
 	start := time.Now()
@@ -211,13 +240,13 @@ func TestCheckpointCoordinator_MinPauseEnforcement(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	// Should have waited at least ~150ms (MinPause minus the 50ms already elapsed).
+	// Should have waited at least ~100ms (MinPause minus processing time).
 	if elapsed < 100*time.Millisecond {
 		t.Errorf("MinPause not enforced: elapsed %v, expected >= 100ms", elapsed)
 	}
 
 	cc.AckCheckpoint(0, 2)
-	time.Sleep(50 * time.Millisecond)
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
 
 	cancel()
 	<-done
@@ -240,7 +269,16 @@ func TestCheckpointCoordinator_StaleACKIgnored(t *testing.T) {
 
 	// Send stale ACK for checkpoint 1 — should be ignored.
 	cc.AckCheckpoint(0, 1)
-	time.Sleep(50 * time.Millisecond)
+
+	// Give coordinator time to process the stale ACK.
+	// We poll until the ACK channel is drained (coordinator processed it).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(cc.ackCh) == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	cc.mu.Lock()
 	if cc.activeCheckpointID != 2 {
@@ -255,7 +293,7 @@ func TestCheckpointCoordinator_StaleACKIgnored(t *testing.T) {
 
 	// Complete properly.
 	cc.AckCheckpoint(0, 2)
-	time.Sleep(50 * time.Millisecond)
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
 
 	cancel()
 	<-done
@@ -277,9 +315,9 @@ func TestCheckpointCoordinator_AbortAfterCompletion(t *testing.T) {
 		t.Fatalf("TriggerCheckpoint: %v", err)
 	}
 	cc.AckCheckpoint(0, 1)
-	time.Sleep(50 * time.Millisecond) // Complete before timer.
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
 
-	// Wait past the timeout.
+	// Wait past the timeout to ensure no abort is sent.
 	time.Sleep(200 * time.Millisecond)
 
 	// No abort should have been sent.
@@ -312,26 +350,26 @@ func TestCheckpointCoordinator_TolerableFailureRate(t *testing.T) {
 		t.Fatalf("TriggerCheckpoint(1): %v", err)
 	}
 	cc.AckCheckpoint(0, 1)
-	time.Sleep(50 * time.Millisecond)
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
 
 	// Checkpoint 2: success.
 	if err := cc.TriggerCheckpoint(ctx, 2, 2); err != nil {
 		t.Fatalf("TriggerCheckpoint(2): %v", err)
 	}
 	cc.AckCheckpoint(0, 2)
-	time.Sleep(50 * time.Millisecond)
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
 
 	// Checkpoint 3: failure (timeout).
 	if err := cc.TriggerCheckpoint(ctx, 3, 3); err != nil {
 		t.Fatalf("TriggerCheckpoint(3): %v", err)
 	}
-	time.Sleep(200 * time.Millisecond) // Rate: 1/3 = 0.33, OK.
+	waitForCheckpointAborted(t, cc, 2*time.Second) // Rate: 1/3 = 0.33, OK.
 
 	// Checkpoint 4: failure (timeout).
 	if err := cc.TriggerCheckpoint(ctx, 4, 4); err != nil {
 		t.Fatalf("TriggerCheckpoint(4): %v", err)
 	}
-	time.Sleep(200 * time.Millisecond) // Rate: 2/4 = 0.50, OK (not exceeded).
+	waitForCheckpointAborted(t, cc, 2*time.Second) // Rate: 2/4 = 0.50, OK (not exceeded).
 
 	// Checkpoint 5: failure — rate becomes 3/5 = 0.60 > 0.50.
 	if err := cc.TriggerCheckpoint(ctx, 5, 5); err != nil {
@@ -367,14 +405,7 @@ func TestCheckpointCoordinator_DuplicateACK(t *testing.T) {
 	cc.AckCheckpoint(0, 1)
 	cc.AckCheckpoint(0, 1)
 
-	time.Sleep(50 * time.Millisecond)
-
-	// Verify completed without panic.
-	cc.mu.Lock()
-	if cc.activeCheckpointID != 0 {
-		t.Errorf("expected no active checkpoint, got %d", cc.activeCheckpointID)
-	}
-	cc.mu.Unlock()
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
 
 	cancel()
 	<-done
@@ -395,15 +426,15 @@ func TestCheckpointCoordinator_TriggerWhileActive(t *testing.T) {
 		t.Fatalf("TriggerCheckpoint(1): %v", err)
 	}
 
-	// Trigger second checkpoint while first is active — should get ErrCheckpointAborted.
+	// Trigger second checkpoint while first is active — should get ErrCheckpointAlreadyActive.
 	err := cc.TriggerCheckpoint(ctx, 2, 2)
-	if !errors.Is(err, ErrCheckpointAborted) {
-		t.Fatalf("expected ErrCheckpointAborted, got: %v", err)
+	if !errors.Is(err, ErrCheckpointAlreadyActive) {
+		t.Fatalf("expected ErrCheckpointAlreadyActive, got: %v", err)
 	}
 
 	// Complete first checkpoint normally.
 	cc.AckCheckpoint(0, 1)
-	time.Sleep(50 * time.Millisecond)
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
 
 	cancel()
 	<-done
@@ -434,4 +465,55 @@ func TestCheckpointCoordinator_ContextCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("coordinator did not shut down on context cancel")
 	}
+}
+
+func TestCheckpointCoordinator_ConcurrentTrigger(t *testing.T) {
+	cfg := CheckpointConfig{Timeout: 5 * time.Second}
+	cc, _ := newTestCoordinator(cfg, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- cc.Run(ctx) }()
+
+	// Trigger first checkpoint.
+	if err := cc.TriggerCheckpoint(ctx, 1, 1); err != nil {
+		t.Fatalf("TriggerCheckpoint(1): %v", err)
+	}
+
+	// Concurrently try to trigger more checkpoints — all should fail.
+	const goroutines = 10
+	var wg sync.WaitGroup
+	errCount := make(chan int, 1)
+	var mu sync.Mutex
+	count := 0
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(id uint64) {
+			defer wg.Done()
+			err := cc.TriggerCheckpoint(ctx, id, id)
+			if errors.Is(err, ErrCheckpointAlreadyActive) {
+				mu.Lock()
+				count++
+				mu.Unlock()
+			}
+		}(uint64(100 + i))
+	}
+
+	wg.Wait()
+	errCount <- count
+
+	got := <-errCount
+	if got != goroutines {
+		t.Errorf("expected %d ErrCheckpointAlreadyActive errors, got %d", goroutines, got)
+	}
+
+	// Complete original checkpoint.
+	cc.AckCheckpoint(0, 1)
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
+
+	cancel()
+	<-done
 }

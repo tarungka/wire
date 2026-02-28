@@ -39,4 +39,12 @@ var (
 	// ErrSavepointIncompatible indicates the savepoint is incompatible with
 	// the current job graph (e.g. missing stateful operators, key group mismatch).
 	ErrSavepointIncompatible = errors.New("engine: savepoint incompatible with job graph")
+
+	// ErrInvalidCheckpointMetadata indicates the checkpoint metadata fails
+	// structural validation (e.g. missing fields, invalid ranges).
+	ErrInvalidCheckpointMetadata = errors.New("engine: invalid checkpoint metadata")
+
+	// ErrCheckpointAlreadyActive indicates a new checkpoint was rejected
+	// because another checkpoint is currently in progress.
+	ErrCheckpointAlreadyActive = errors.New("engine: checkpoint already active")
 )
