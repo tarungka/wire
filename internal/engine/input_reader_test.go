@@ -49,11 +49,6 @@ func newTestStreamPair(t *testing.T) (*transport.FrameStream, *transport.FrameSt
 	return writer, reader
 }
 
-// testTracker creates a single-input InputWatermarkTracker for testing.
-func testTracker(numInputs int) *InputWatermarkTracker {
-	return NewInputWatermarkTracker(numInputs)
-}
-
 func TestInputReader_DataRecordRouting(t *testing.T) {
 	writer, reader := newTestStreamPair(t)
 	defer writer.Close()

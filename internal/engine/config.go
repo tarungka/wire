@@ -30,9 +30,9 @@ const (
 // WatermarkConfig holds watermark-specific configuration.
 type WatermarkConfig struct {
 	Strategy     WatermarkStrategyType // Watermark generation strategy.
-	MaxOOO       time.Duration         // Max out-of-orderness (BoundedOOO only). Default: 5s.
-	EmitInterval time.Duration         // Watermark emission interval. Default: 200ms.
-	IdleTimeout  time.Duration         // Idle source detection timeout. Default: 1m.
+	MaxOOO       time.Duration         // Max out-of-orderness (BoundedOOO only). 0 → DefaultMaxOOO (5s).
+	EmitInterval time.Duration         // Watermark emission interval. 0 → DefaultWatermarkInterval (200ms).
+	IdleTimeout  time.Duration         // Idle input detection timeout. 0 → DefaultIdleTimeout (1m).
 }
 
 // TaskSlotConfig holds configuration for a single TaskSlot execution.

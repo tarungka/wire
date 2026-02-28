@@ -55,6 +55,28 @@ func (m *mockSource) SetWatermark(ts int64) {
 	m.watermark = ts
 }
 
+// slowMockSource produces predefined batches with a delay between each ReadBatch call.
+type slowMockSource struct {
+	mockSource
+	delay time.Duration
+}
+
+func newSlowMockSource(batches [][]Event, delay time.Duration) *slowMockSource {
+	return &slowMockSource{
+		mockSource: mockSource{batches: batches},
+		delay:      delay,
+	}
+}
+
+func (m *slowMockSource) ReadBatch(ctx context.Context) ([]Event, error) {
+	select {
+	case <-time.After(m.delay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return m.mockSource.ReadBatch(ctx)
+}
+
 // slowSink sleeps on each Write call for backpressure testing.
 type slowSink struct {
 	mu    sync.Mutex
@@ -109,3 +131,8 @@ func (e *errorSource) ReadBatch(ctx context.Context) ([]Event, error) {
 	return nil, e.err
 }
 func (e *errorSource) GenerateWatermark() int64 { return 0 }
+
+// testTracker creates an InputWatermarkTracker for testing.
+func testTracker(numInputs int) *InputWatermarkTracker {
+	return NewInputWatermarkTracker(numInputs)
+}

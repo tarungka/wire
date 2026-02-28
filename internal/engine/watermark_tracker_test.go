@@ -183,3 +183,56 @@ func TestInputWatermarkTracker_ConcurrentCAS(t *testing.T) {
 		t.Errorf("concurrent watermark too low: got %d, want >= 9099", wm)
 	}
 }
+
+func TestInputWatermarkTracker_ConcurrentStress(t *testing.T) {
+	// Stress test: concurrent RecordActivity + AdvanceWatermark + MinWatermark
+	// across multiple inputs. Designed to be run with -race.
+	const numInputs = 4
+	tracker := NewInputWatermarkTracker(numInputs)
+
+	var wg sync.WaitGroup
+
+	// Goroutines advancing watermarks on each input.
+	for i := 0; i < numInputs; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for j := int64(1); j <= 500; j++ {
+				tracker.AdvanceWatermark(idx, j*int64(idx+1))
+			}
+		}(i)
+	}
+
+	// Goroutines recording activity on each input.
+	for i := 0; i < numInputs; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for j := 0; j < 500; j++ {
+				tracker.RecordActivity(idx)
+			}
+		}(i)
+	}
+
+	// Goroutines reading MinWatermark concurrently.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 500; j++ {
+				_, _ = tracker.MinWatermark(time.Minute)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// Verify final state is consistent: each input's watermark should be
+	// at its maximum written value.
+	for i := 0; i < numInputs; i++ {
+		expected := int64(500 * (i + 1))
+		if wm := tracker.watermarks[i].Load(); wm != expected {
+			t.Errorf("input %d watermark: got %d, want %d", i, wm, expected)
+		}
+	}
+}

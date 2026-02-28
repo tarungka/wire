@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -61,12 +60,6 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// Create barrier aligner.
 	aligner := NewBarrierAligner(numInputs, ts.Config.AlignmentBufferSize)
 
-	// Shared watermark (used by source tasks).
-	var watermark atomic.Int64
-
-	// Create per-input watermark tracker (used by non-source tasks).
-	tracker := NewInputWatermarkTracker(numInputs)
-
 	// Track output channel producers so we can close outputCh when all are done.
 	var producerWg sync.WaitGroup
 
@@ -79,15 +72,6 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 			s.Close()
 		}
 	}()
-
-	// Launch input readers (one per upstream stream).
-	for i, stream := range ts.Inputs {
-		i, stream := i, stream
-		g.Go(func() error {
-			return runInputReader(gctx, i, stream, eventCh, controlCh, aligner, tracker,
-				ts.log.With().Int("input", i).Logger())
-		})
-	}
 
 	// For source tasks, resolve strategy and launch source reader.
 	if ts.Source != nil {
@@ -102,12 +86,27 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		producerWg.Add(1)
 		g.Go(func() error {
 			defer producerWg.Done()
-			return runWatermarkEmitter(gctx, strategy, &watermark, outputCh, emitInterval,
+			return runWatermarkEmitter(gctx, strategy, outputCh, emitInterval,
 				ts.log.With().Str("component", "watermark_emitter").Logger())
 		})
 	} else if numInputs > 0 {
-		// For non-source tasks, launch watermark propagator.
+		// Create per-input watermark tracker (only for non-source tasks).
+		tracker := NewInputWatermarkTracker(numInputs)
+
+		// Launch input readers (one per upstream stream).
+		for i, stream := range ts.Inputs {
+			i, stream := i, stream
+			g.Go(func() error {
+				return runInputReader(gctx, i, stream, eventCh, controlCh, aligner, tracker,
+					ts.log.With().Int("input", i).Logger())
+			})
+		}
+
+		// Launch watermark propagator for non-source tasks.
 		emitInterval := ts.resolveEmitInterval()
+		// IdleTimeout=0 means "use default". Users who want to disable idle
+		// detection should leave it unconfigured and rely on the zero-timeout
+		// semantics in InputWatermarkTracker.MinWatermark (all inputs participate).
 		idleTimeout := ts.Config.Watermark.IdleTimeout
 		if idleTimeout == 0 {
 			idleTimeout = DefaultIdleTimeout

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -442,7 +441,6 @@ func TestWatermarkEmitter_MonotonicAdvance(t *testing.T) {
 	defer cancel()
 
 	source := newMockSource(nil)
-	var wm atomic.Int64
 	outputCh := make(chan OutputMsg, 100)
 
 	source.SetWatermark(100)
@@ -459,12 +457,13 @@ func TestWatermarkEmitter_MonotonicAdvance(t *testing.T) {
 		source.SetWatermark(200)
 	}()
 
-	_ = runWatermarkEmitter(ctx, newLegacySourceStrategy(source), &wm, outputCh, 50*time.Millisecond, testLogger())
+	_ = runWatermarkEmitter(ctx, newLegacySourceStrategy(source), outputCh, 50*time.Millisecond, testLogger())
 
 	close(outputCh)
 
 	// Verify monotonic watermark values.
 	var prev int64
+	var last int64
 	for msg := range outputCh {
 		if msg.Type != OutputWatermark {
 			continue
@@ -474,10 +473,11 @@ func TestWatermarkEmitter_MonotonicAdvance(t *testing.T) {
 			t.Errorf("non-monotonic watermark: %d after %d", ts, prev)
 		}
 		prev = ts
+		last = ts
 	}
 
-	if wm.Load() < 200 {
-		t.Errorf("final watermark: got %d, want >= 200", wm.Load())
+	if last < 200 {
+		t.Errorf("final emitted watermark: got %d, want >= 200", last)
 	}
 }
 
@@ -487,7 +487,6 @@ func TestWatermarkEmitter_ConcurrentAccess(t *testing.T) {
 	defer cancel()
 
 	source := newMockSource(nil)
-	var wm atomic.Int64
 	outputCh := make(chan OutputMsg, 1000)
 
 	// Concurrent watermark updates from multiple goroutines.
@@ -500,7 +499,7 @@ func TestWatermarkEmitter_ConcurrentAccess(t *testing.T) {
 		}(int64(i * 1000))
 	}
 
-	_ = runWatermarkEmitter(ctx, newLegacySourceStrategy(source), &wm, outputCh, 10*time.Millisecond, testLogger())
+	_ = runWatermarkEmitter(ctx, newLegacySourceStrategy(source), outputCh, 10*time.Millisecond, testLogger())
 	// No panic or race condition = success.
 }
 
@@ -509,14 +508,13 @@ func TestWatermarkEmitter_OutputChannelFull_UnblocksOnCancel(t *testing.T) {
 
 	source := newMockSource(nil)
 	source.SetWatermark(100)
-	var wm atomic.Int64
 	outputCh := make(chan OutputMsg, 1)
 	// Fill the channel so sends block.
 	outputCh <- OutputMsg{Type: OutputData}
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runWatermarkEmitter(ctx, newLegacySourceStrategy(source), &wm, outputCh, 10*time.Millisecond, testLogger())
+		done <- runWatermarkEmitter(ctx, newLegacySourceStrategy(source), outputCh, 10*time.Millisecond, testLogger())
 	}()
 
 	// Let it try to send a couple of times, then cancel.
@@ -931,6 +929,71 @@ func TestTaskSlot_MonotonicStrategy(t *testing.T) {
 	<-done
 }
 
+func TestTaskSlot_IngestionTimeStrategy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Use a slow source so the emitter has time to fire before the
+	// operator chain finishes.
+	batches := [][]Event{
+		{{Value: []byte("a"), EventTime: 1}},
+		{{Value: []byte("b"), EventTime: 2}},
+	}
+	source := newSlowMockSource(batches, 30*time.Millisecond)
+
+	cfg := DefaultTaskSlotConfig()
+	cfg.WatermarkInterval = 10 * time.Millisecond // Fast interval so we get watermarks quickly.
+	cfg.Watermark.Strategy = StrategyIngestionTime
+
+	ow, or := newTestStreamPair(t)
+	outputs := []*transport.FrameStream{ow}
+
+	ts := NewTaskSlot(cfg, nil, outputs, []Operator{&noopMap{}}, source)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ts.Run(ctx)
+	}()
+
+	var watermarks []int64
+	var gotEnd bool
+	for i := 0; i < 100; i++ {
+		msg, err := or.ReadMessage()
+		if err != nil {
+			break
+		}
+		switch m := msg.(type) {
+		case *protocol.WatermarkMsg:
+			watermarks = append(watermarks, m.Timestamp)
+		case *protocol.EndOfPartitionMsg:
+			gotEnd = true
+		}
+		if gotEnd {
+			break
+		}
+	}
+
+	if !gotEnd {
+		t.Error("expected EndOfPartition")
+	}
+
+	// Ingestion time watermarks should be wall-clock values (non-zero, monotonic).
+	if len(watermarks) == 0 {
+		t.Fatal("expected at least one watermark emission")
+	}
+	for i, wm := range watermarks {
+		if wm <= 0 {
+			t.Errorf("watermark[%d] should be positive wall-clock value, got %d", i, wm)
+		}
+		if i > 0 && wm < watermarks[i-1] {
+			t.Errorf("non-monotonic watermark at index %d: %d < %d", i, wm, watermarks[i-1])
+		}
+	}
+
+	cancel()
+	<-done
+}
+
 func TestTaskSlot_WatermarkPropagation_TwoInputs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1058,7 +1121,7 @@ func TestTaskSlot_ResolveStrategy(t *testing.T) {
 		{
 			name:     "monotonic",
 			config:   WatermarkConfig{Strategy: StrategyMonotonic},
-			wantType: "*engine.MonotonicTimestampsStrategy",
+			wantType: "*engine.BoundedOutOfOrdernessStrategy",
 		},
 		{
 			name:     "ingestion-time",
@@ -1093,4 +1156,3 @@ func TestTaskSlot_ResolveStrategy(t *testing.T) {
 func typeString(v interface{}) string {
 	return fmt.Sprintf("%T", v)
 }
-

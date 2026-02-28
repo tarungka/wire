@@ -52,30 +52,10 @@ func (s *BoundedOutOfOrdernessStrategy) ObserveEventTime(eventTime int64) {
 	}
 }
 
-// MonotonicTimestampsStrategy assumes events arrive in order.
-// Equivalent to BoundedOutOfOrderness with maxOOO=0.
-type MonotonicTimestampsStrategy struct {
-	maxObservedTimestamp atomic.Int64
-}
-
-func NewMonotonicTimestampsStrategy() *MonotonicTimestampsStrategy {
-	return &MonotonicTimestampsStrategy{}
-}
-
-func (s *MonotonicTimestampsStrategy) GenerateWatermark() int64 {
-	return s.maxObservedTimestamp.Load()
-}
-
-func (s *MonotonicTimestampsStrategy) ObserveEventTime(eventTime int64) {
-	for {
-		cur := s.maxObservedTimestamp.Load()
-		if eventTime <= cur {
-			return
-		}
-		if s.maxObservedTimestamp.CompareAndSwap(cur, eventTime) {
-			return
-		}
-	}
+// NewMonotonicTimestampsStrategy creates a strategy equivalent to
+// BoundedOutOfOrderness with maxOOO=0 (events assumed in order).
+func NewMonotonicTimestampsStrategy() *BoundedOutOfOrdernessStrategy {
+	return &BoundedOutOfOrdernessStrategy{maxOutOfOrderness: 0}
 }
 
 // IngestionTimeStrategy uses the current wall clock as the watermark.

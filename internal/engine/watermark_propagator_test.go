@@ -30,14 +30,17 @@ func TestWatermarkPropagator_BasicEmission(t *testing.T) {
 	_ = runWatermarkPropagator(ctx, tracker, outputCh, 50*time.Millisecond, 0, testLogger())
 	close(outputCh)
 
-	// Should have emitted at least one watermark with value 100 (min of inputs).
+	// Should have emitted at least one watermark with value exactly 100 (min of 100, 200).
 	var foundWM bool
 	for msg := range outputCh {
 		if msg.Type == OutputWatermark {
-			foundWM = true
-			if msg.Watermark.Timestamp > 200 {
-				t.Errorf("watermark too high: got %d", msg.Watermark.Timestamp)
+			if !foundWM {
+				// First emission must be exactly min(100, 200) = 100.
+				if msg.Watermark.Timestamp != 100 {
+					t.Errorf("first watermark: got %d, want 100", msg.Watermark.Timestamp)
+				}
 			}
+			foundWM = true
 		}
 	}
 	if !foundWM {
@@ -154,5 +157,47 @@ func TestWatermarkPropagator_NoAdvanceSkipsEmission(t *testing.T) {
 	// Should have exactly 1 emission (the initial one at 100).
 	if count != 1 {
 		t.Errorf("expected 1 watermark emission (no advance), got %d", count)
+	}
+}
+
+func TestWatermarkPropagator_DynamicAdvance(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tracker := NewInputWatermarkTracker(1)
+	tracker.RecordActivity(0)
+	tracker.AdvanceWatermark(0, 100)
+	outputCh := make(chan OutputMsg, 100)
+
+	// Start the propagator, then advance the watermark mid-run.
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		tracker.RecordActivity(0)
+		tracker.AdvanceWatermark(0, 500)
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	_ = runWatermarkPropagator(ctx, tracker, outputCh, 50*time.Millisecond, 0, testLogger())
+	close(outputCh)
+
+	// Collect emitted watermarks.
+	var watermarks []int64
+	for msg := range outputCh {
+		if msg.Type == OutputWatermark {
+			watermarks = append(watermarks, msg.Watermark.Timestamp)
+		}
+	}
+
+	if len(watermarks) < 2 {
+		t.Fatalf("expected at least 2 watermark emissions, got %d", len(watermarks))
+	}
+
+	// First emission should be 100, a later one should reflect the advance to 500.
+	if watermarks[0] != 100 {
+		t.Errorf("first watermark: got %d, want 100", watermarks[0])
+	}
+	if watermarks[len(watermarks)-1] < 500 {
+		t.Errorf("last watermark: got %d, want >= 500", watermarks[len(watermarks)-1])
 	}
 }
