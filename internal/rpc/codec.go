@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/tarungka/wire/internal/protocol"
 )
@@ -24,6 +25,14 @@ const (
 	RPCMinFrameLength     = RPCHeaderSize                                // 8 (header only, no payload)
 	RPCRequestIDMask      = (1 << 48) - 1                                // lower 48 bits
 )
+
+// rpcFramePool reuses frame body buffers to reduce GC pressure.
+var rpcFramePool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 4096)
+		return &b
+	},
+}
 
 // MethodID identifies an RPC method.
 type MethodID uint16
@@ -64,26 +73,28 @@ func ReadRPCFrame(r io.Reader, maxPayloadSize int) (RPCFrame, error) {
 		return RPCFrame{}, fmt.Errorf("%w: payload size %d exceeds maximum %d", ErrRPCPayloadTooLarge, payloadLen, maxPayloadSize)
 	}
 
-	// 3. Read the frame body (header + payload).
-	body := make([]byte, frameLen)
-	if _, err := io.ReadFull(r, body); err != nil {
+	// 3. Read header (8 bytes) directly.
+	var header [RPCHeaderSize]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
 		return RPCFrame{}, err
 	}
 
 	// 4. Extract header fields.
-	methodID := MethodID(binary.BigEndian.Uint16(body[0:2]))
+	methodID := MethodID(binary.BigEndian.Uint16(header[0:2]))
 
 	// RequestID: 6 bytes, big-endian uint48. Read into a uint64.
 	var reqID uint64
 	for i := 0; i < RPCRequestIDFieldSize; i++ {
-		reqID = (reqID << 8) | uint64(body[2+i])
+		reqID = (reqID << 8) | uint64(header[2+i])
 	}
 
-	// 5. Extract payload.
+	// 5. Read payload directly into final slice (no intermediate copy).
 	var payload []byte
 	if payloadLen > 0 {
 		payload = make([]byte, payloadLen)
-		copy(payload, body[RPCHeaderSize:])
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return RPCFrame{}, err
+		}
 	}
 
 	return RPCFrame{
@@ -97,40 +108,44 @@ func ReadRPCFrame(r io.Reader, maxPayloadSize int) (RPCFrame, error) {
 func WriteRPCFrame(w io.Writer, frame RPCFrame) error {
 	payloadLen := len(frame.Payload)
 	frameLen := uint32(RPCHeaderSize + payloadLen)
+	totalSize := RPCLengthFieldSize + int(frameLen)
+
+	// Get a pooled buffer for the entire write.
+	bp := rpcFramePool.Get().(*[]byte)
+	buf := *bp
+	if cap(buf) < totalSize {
+		buf = make([]byte, totalSize)
+	} else {
+		buf = buf[:totalSize]
+	}
 
 	// Build length prefix.
-	var lenBuf [RPCLengthFieldSize]byte
-	binary.BigEndian.PutUint32(lenBuf[:], frameLen)
+	binary.BigEndian.PutUint32(buf[0:RPCLengthFieldSize], frameLen)
 
 	// Build header: MethodID (2B) + RequestID (6B).
-	var header [RPCHeaderSize]byte
-	binary.BigEndian.PutUint16(header[0:2], uint16(frame.MethodID))
+	offset := RPCLengthFieldSize
+	binary.BigEndian.PutUint16(buf[offset:offset+2], uint16(frame.MethodID))
 
 	// Encode RequestID as 6 bytes big-endian (lower 48 bits).
 	reqID := frame.RequestID & uint64(RPCRequestIDMask)
 	for i := RPCRequestIDFieldSize - 1; i >= 0; i-- {
-		header[2+i] = byte(reqID & 0xFF)
+		buf[offset+2+i] = byte(reqID & 0xFF)
 		reqID >>= 8
 	}
 
-	// Write length prefix.
-	if _, err := w.Write(lenBuf[:]); err != nil {
-		return err
-	}
-
-	// Write header.
-	if _, err := w.Write(header[:]); err != nil {
-		return err
-	}
-
-	// Write payload.
+	// Copy payload.
 	if payloadLen > 0 {
-		if _, err := w.Write(frame.Payload); err != nil {
-			return err
-		}
+		copy(buf[offset+RPCHeaderSize:], frame.Payload)
 	}
 
-	return nil
+	// Single write call.
+	_, err := w.Write(buf)
+
+	// Return buffer to pool.
+	*bp = buf
+	rpcFramePool.Put(bp)
+
+	return err
 }
 
 // EncodeRPCRequest encodes a request message and writes it as an RPC frame.

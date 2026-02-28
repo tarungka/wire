@@ -183,6 +183,41 @@ func TestMethodName(t *testing.T) {
 	}
 }
 
+func TestLargePayloadNearMax(t *testing.T) {
+	// Test a payload near the maximum allowed size.
+	maxPayload := 64 * 1024 // 64KB for test (not full 16MB to keep tests fast)
+	payload := make([]byte, maxPayload-RPCHeaderSize)
+	for i := range payload {
+		payload[i] = byte(i % 256)
+	}
+
+	frame := RPCFrame{
+		MethodID:  MethodSubmitJob,
+		RequestID: 12345,
+		Payload:   payload,
+	}
+
+	var buf bytes.Buffer
+	if err := WriteRPCFrame(&buf, frame); err != nil {
+		t.Fatalf("WriteRPCFrame: %v", err)
+	}
+
+	decoded, err := ReadRPCFrame(&buf, maxPayload)
+	if err != nil {
+		t.Fatalf("ReadRPCFrame: %v", err)
+	}
+
+	if decoded.MethodID != frame.MethodID {
+		t.Errorf("MethodID = %d, want %d", decoded.MethodID, frame.MethodID)
+	}
+	if decoded.RequestID != frame.RequestID {
+		t.Errorf("RequestID = %d, want %d", decoded.RequestID, frame.RequestID)
+	}
+	if !bytes.Equal(decoded.Payload, frame.Payload) {
+		t.Errorf("payload mismatch: got %d bytes, want %d bytes", len(decoded.Payload), len(frame.Payload))
+	}
+}
+
 func TestEncodeDecodeRPCRequest(t *testing.T) {
 	type testMsg struct {
 		Name  string `codec:"n"`

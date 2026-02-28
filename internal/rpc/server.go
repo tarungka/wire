@@ -26,6 +26,7 @@ type Server struct {
 	mu       sync.RWMutex
 	wg       sync.WaitGroup
 	cancel   context.CancelFunc
+	session  *yamux.Session
 }
 
 // NewServer creates a new RPC server with the given configuration.
@@ -56,7 +57,10 @@ func (s *Server) getHandler(method MethodID) Handler {
 func (s *Server) ServeSession(ctx context.Context, session *yamux.Session) {
 	ctx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
+	s.session = session
 	defer cancel()
+
+	sem := make(chan struct{}, s.cfg.MaxConcurrentRPCs)
 
 	for {
 		stream, err := session.AcceptStream()
@@ -71,8 +75,10 @@ func (s *Server) ServeSession(ctx context.Context, session *yamux.Session) {
 			return
 		}
 
+		sem <- struct{}{}
 		s.wg.Add(1)
 		go func(stream *yamux.Stream) {
+			defer func() { <-sem }()
 			defer s.wg.Done()
 			s.serveStream(ctx, stream)
 		}(stream)
@@ -82,6 +88,14 @@ func (s *Server) ServeSession(ctx context.Context, session *yamux.Session) {
 // serveStream handles a single RPC stream lifecycle.
 func (s *Server) serveStream(ctx context.Context, stream *yamux.Stream) {
 	defer func() { _ = stream.Close() }()
+
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error().Interface("panic", r).Msg("handler panic recovered")
+			rpcErr := NewRPCError(ErrCodeInternalError, fmt.Sprintf("handler panic: %v", r))
+			s.writeErrorResponse(stream, 0, rpcErr)
+		}
+	}()
 
 	// 1. Read the request frame.
 	frame, err := ReadRPCFrame(stream, s.cfg.MaxPayloadSize)
@@ -154,10 +168,14 @@ func (s *Server) writeSuccessResponse(w net.Conn, method MethodID, requestID uin
 	}
 }
 
-// Stop cancels the server context and waits for all in-flight RPCs to complete.
+// Stop cancels the server context, closes the session to unblock AcceptStream,
+// and waits for all in-flight RPCs to complete.
 func (s *Server) Stop() {
 	if s.cancel != nil {
 		s.cancel()
+	}
+	if s.session != nil {
+		_ = s.session.Close()
 	}
 	s.wg.Wait()
 }

@@ -2,8 +2,11 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"math/rand/v2"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -71,7 +74,10 @@ func (c *Client) Call(ctx context.Context, method MethodID, request any, respons
 	// Read response frame.
 	respFrame, err := ReadRPCFrame(stream, c.cfg.MaxPayloadSize)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrRPCTimeout, err)
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return fmt.Errorf("%w: %v", ErrRPCTimeout, err)
+		}
+		return fmt.Errorf("%w: %v", ErrRPCClosed, err)
 	}
 
 	// Check for error response.
@@ -123,6 +129,10 @@ func (c *Client) CallWithRetry(ctx context.Context, method MethodID, request any
 		if rpcErr.RetryAfterMs > 0 {
 			backoff = time.Duration(rpcErr.RetryAfterMs) * time.Millisecond
 		}
+
+		// Add jitter: ±25% of computed backoff.
+		jitter := time.Duration(rand.Int64N(int64(backoff)/2)) - backoff/4
+		backoff += jitter
 
 		c.log.Debug().
 			Str("method", MethodName(method)).

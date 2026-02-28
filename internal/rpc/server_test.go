@@ -133,6 +133,61 @@ func TestServerErrorResponse(t *testing.T) {
 	}
 }
 
+func TestServerHandlerPanic(t *testing.T) {
+	client, server := testYamuxPair(t)
+
+	cfg := DefaultConfig()
+	srv := &Server{
+		cfg:      cfg,
+		handlers: make(map[MethodID]Handler),
+		log:      testLogger(),
+	}
+
+	// Register a handler that panics.
+	srv.Register(MethodSubmitJob, func(ctx context.Context, reqID uint64, payload []byte) (any, *RPCError) {
+		panic("boom")
+	})
+
+	// Register a normal handler to verify the server survives.
+	srv.Register(MethodHeartbeat, func(ctx context.Context, reqID uint64, payload []byte) (any, *RPCError) {
+		return &HeartbeatResponse{Accepted: true, EpochID: 1}, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go srv.ServeSession(ctx, server)
+
+	rpcClient := &Client{
+		session: client,
+		cfg:     cfg,
+		log:     testLogger(),
+	}
+
+	// Call the panicking handler — should return an INTERNAL_ERROR, not crash.
+	_, err := rpcClient.SubmitJob(ctx, &SubmitJobRequest{JobID: "panic-test"})
+	if err == nil {
+		t.Fatal("expected error from panicking handler")
+	}
+
+	rpcErr, ok := err.(*RPCError)
+	if !ok {
+		t.Fatalf("expected *RPCError, got %T: %v", err, err)
+	}
+	if rpcErr.Code != ErrCodeInternalError {
+		t.Errorf("Code = %d, want %d (INTERNAL_ERROR)", rpcErr.Code, ErrCodeInternalError)
+	}
+
+	// Verify the server is still alive by making a normal call.
+	resp, err := rpcClient.Heartbeat(ctx, &HeartbeatRequest{WorkerID: "w-1", EpochID: 1})
+	if err != nil {
+		t.Fatalf("server should survive panic, but got: %v", err)
+	}
+	if !resp.Accepted {
+		t.Error("expected Accepted=true")
+	}
+}
+
 func TestServerConcurrentRPCs(t *testing.T) {
 	client, server := testYamuxPair(t)
 

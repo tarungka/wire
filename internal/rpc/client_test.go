@@ -80,6 +80,45 @@ func TestClientCallTimeout(t *testing.T) {
 	}
 }
 
+func TestClientContextCancellation(t *testing.T) {
+	client, server := testYamuxPair(t)
+
+	cfg := DefaultConfig()
+	cfg.HeartbeatTimeout = 5 * time.Second
+
+	srv := &Server{
+		cfg:      cfg,
+		handlers: make(map[MethodID]Handler),
+		log:      testLogger(),
+	}
+
+	// Register a handler that blocks until context is done.
+	srv.Register(MethodHeartbeat, func(ctx context.Context, reqID uint64, payload []byte) (any, *RPCError) {
+		<-ctx.Done()
+		return &HeartbeatResponse{Accepted: true}, nil
+	})
+
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	defer srvCancel()
+
+	go srv.ServeSession(srvCtx, server)
+
+	rpcClient := &Client{
+		session: client,
+		cfg:     cfg,
+		log:     testLogger(),
+	}
+
+	// Use a short deadline context so the stream times out quickly.
+	callCtx, callCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer callCancel()
+
+	_, err := rpcClient.Heartbeat(callCtx, &HeartbeatRequest{WorkerID: "w-1"})
+	if err == nil {
+		t.Fatal("expected error from deadline-exceeded context")
+	}
+}
+
 func TestClientRetryLogic(t *testing.T) {
 	client, server := testYamuxPair(t)
 
