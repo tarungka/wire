@@ -376,10 +376,10 @@ type errorMap struct {
 	err error
 }
 
-func (e *errorMap) Open(ctx context.Context) error                    { return nil }
-func (e *errorMap) Close() error                                      { return nil }
-func (e *errorMap) Checkpoint(id uint64) ([]byte, error)              { return nil, nil }
-func (e *errorMap) Map(ctx context.Context, ev Event) (Event, error)  { return Event{}, e.err }
+func (e *errorMap) Open(ctx context.Context) error                   { return nil }
+func (e *errorMap) Close() error                                     { return nil }
+func (e *errorMap) Checkpoint(id uint64) ([]byte, error)             { return nil, nil }
+func (e *errorMap) Map(ctx context.Context, ev Event) (Event, error) { return Event{}, e.err }
 
 // errorFlatMap returns an error on the first FlatMap call.
 type errorFlatMap struct {
