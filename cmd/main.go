@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/cmd"
 	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/internal/pipeline"
 )
 
 // Need to make up my mind on some of these:
@@ -65,7 +66,35 @@ func main() {
 
 	log.Info().Msg("Starting wire...")
 
-	// Block until context is canceled by signal.
-	<-mainCtx.Done()
-	log.Info().Msg("Shutting down.")
+	var pl *pipeline.Pipeline
+	if cfg.InputFile != "" {
+		info, err := os.Stat(cfg.InputFile)
+		if err != nil {
+			log.Fatal().Str("path", cfg.InputFile).Msg("--input file does not exist")
+		}
+		if info.IsDir() {
+			log.Fatal().Str("path", cfg.InputFile).Msg("--input path is a directory, expected a JSONL file")
+		}
+		fmt.Printf("Starting JSONL pipeline: %s → TumblingWindowSink (window=%s)\n", cfg.InputFile, cfg.WindowSize)
+		fmt.Println("---")
+		pl, err = pipeline.BuildJSONLPipeline(mainCtx, pipeline.JSONLPipelineConfig{
+			InputPath:  cfg.InputFile,
+			OutputPath: cfg.OutputFile,
+			WindowSize: cfg.WindowSize,
+		})
+	} else {
+		fmt.Println("Starting demo pipeline: GeneratorSource → ToUpperMap → StdoutSink")
+		fmt.Println("---")
+		pl, err = pipeline.BuildDemoPipeline(mainCtx, cfg.EventCount)
+	}
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to build pipeline")
+	}
+
+	if err := pl.Run(mainCtx); err != nil {
+		log.Fatal().Err(err).Msg("pipeline failed")
+	}
+
+	fmt.Println("---")
+	fmt.Println("Pipeline complete.")
 }

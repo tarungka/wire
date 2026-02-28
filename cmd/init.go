@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/spf13/pflag"
 )
@@ -33,6 +34,18 @@ type Config struct {
 
 	// MaxFrameSize is the maximum wire protocol frame size in bytes.
 	MaxFrameSize uint32
+
+	// EventCount is the number of events the demo pipeline generates.
+	EventCount int
+
+	// InputFile is the JSONL input file path. If set, the JSONL pipeline is used.
+	InputFile string
+
+	// OutputFile is the JSONL output file path for aggregation results.
+	OutputFile string
+
+	// WindowSize is the tumbling window duration for the JSONL pipeline.
+	WindowSize time.Duration
 }
 
 // BuildInfo holds version metadata populated at build time.
@@ -69,6 +82,10 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, error) {
 	f.StringVar(&config.NodeCA, "node-ca", "", "CA certificate for peer verification")
 	f.BoolVar(&config.NodeVerifyClient, "node-verify-client", false, "require mutual TLS")
 	f.Uint32Var(&config.MaxFrameSize, "max-frame-size", 16777216, "max wire protocol frame size")
+	f.IntVar(&config.EventCount, "events", 100, "number of events for demo pipeline")
+	f.StringVar(&config.InputFile, "input", "", "JSONL input file (if set, runs JSONL pipeline)")
+	f.StringVar(&config.OutputFile, "output", "output.jsonl", "JSONL output file for aggregation results")
+	f.DurationVar(&config.WindowSize, "window", 5*time.Minute, "tumbling window size for JSONL pipeline")
 
 	f.Usage = func() {
 		fmt.Fprintf(os.Stderr, "\n%s\n\n", desc)

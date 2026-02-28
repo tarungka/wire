@@ -8,6 +8,7 @@ VERSION=$(shell git describe --tags --always --dirty)
 help:
 	@echo "Available commands:"
 	@echo "  build -               Build the project"
+	@echo "  gendata -             Build test data generator"
 	@echo "  format -              Format the code"
 	@echo "  run -                 Run the project"
 	@echo "  test -                Run the integration tests (alias for test-full)"
@@ -34,6 +35,11 @@ build:
 		-X github.com/tarungka/wire/internal/cmd.Commit=$(COMMIT) \
 		-X github.com/tarungka/wire/internal/cmd.Buildtime=$(DATE)" ./cmd/.
 
+# Build the test data generator
+gendata:
+	@echo "Building gendata..."
+	go build -o gendata ./cmd/gendata/.
+
 GOLANGCI_LINT_VERSION := 2.5.0
 
 lint: check-golangci-lint
@@ -56,7 +62,7 @@ build-docker:
 # Target to clean the project build
 clean:
 	@echo "Cleaning build..."
-	rm -f wire
+	rm -f wire gendata
 
 # Quick test for pre-commit hooks
 test-fast:
