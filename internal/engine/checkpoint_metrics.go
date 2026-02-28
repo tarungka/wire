@@ -7,7 +7,6 @@ import "time"
 type CheckpointMetrics interface {
 	IncTimeoutTotal()
 	ObserveAlignmentTime(d time.Duration)
-	SetAlignmentBufferedBytes(bytes int64)
 }
 
 // noopCheckpointMetrics is a no-op implementation for use when no metrics
@@ -16,7 +15,6 @@ type noopCheckpointMetrics struct{}
 
 func (noopCheckpointMetrics) IncTimeoutTotal()                     {}
 func (noopCheckpointMetrics) ObserveAlignmentTime(_ time.Duration) {}
-func (noopCheckpointMetrics) SetAlignmentBufferedBytes(_ int64)    {}
 
 // NoopCheckpointMetrics returns a CheckpointMetrics that discards all observations.
 func NoopCheckpointMetrics() CheckpointMetrics {

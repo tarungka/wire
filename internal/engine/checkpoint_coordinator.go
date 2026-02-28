@@ -43,9 +43,8 @@ type CheckpointCoordinator struct {
 	lastCompletionTime time.Time
 
 	// Internal communication.
-	ackCh      chan ackMsg
-	completeCh chan struct{} // signals a checkpoint completed
-	triggerCh  chan struct{} // signals a new checkpoint was triggered
+	ackCh     chan ackMsg
+	triggerCh chan struct{} // signals a new checkpoint was triggered
 }
 
 // NewCheckpointCoordinator creates a new coordinator.
@@ -65,7 +64,6 @@ func NewCheckpointCoordinator(
 		controlChannels: controlChannels,
 		pendingACKs:     make(map[int]bool),
 		ackCh:           make(chan ackMsg, len(controlChannels)),
-		completeCh:      make(chan struct{}, 1),
 		triggerCh:       make(chan struct{}, 1),
 	}
 }
@@ -82,9 +80,9 @@ func (cc *CheckpointCoordinator) resolveTimeout() time.Duration {
 // It initializes tracking state and starts the timeout timer.
 func (cc *CheckpointCoordinator) TriggerCheckpoint(ctx context.Context, checkpointID, epochID uint64) error {
 	cc.mu.Lock()
-	defer cc.mu.Unlock()
 
 	if cc.activeCheckpointID != 0 {
+		cc.mu.Unlock()
 		return fmt.Errorf("%w: checkpoint %d still active", ErrCheckpointAborted, cc.activeCheckpointID)
 	}
 
@@ -97,10 +95,14 @@ func (cc *CheckpointCoordinator) TriggerCheckpoint(ctx context.Context, checkpoi
 			select {
 			case <-time.After(wait):
 			case <-ctx.Done():
-				cc.mu.Lock()
 				return ctx.Err()
 			}
 			cc.mu.Lock()
+			// Re-check: another goroutine may have triggered a checkpoint while we slept.
+			if cc.activeCheckpointID != 0 {
+				cc.mu.Unlock()
+				return fmt.Errorf("%w: checkpoint %d started during MinPause wait", ErrCheckpointAborted, cc.activeCheckpointID)
+			}
 		}
 	}
 
@@ -126,6 +128,8 @@ func (cc *CheckpointCoordinator) TriggerCheckpoint(ctx context.Context, checkpoi
 		Dur("timeout", timeout).
 		Msg("checkpoint triggered")
 
+	cc.mu.Unlock()
+
 	// Wake up Run loop to pick up the new timer.
 	select {
 	case cc.triggerCh <- struct{}{}:
@@ -137,7 +141,14 @@ func (cc *CheckpointCoordinator) TriggerCheckpoint(ctx context.Context, checkpoi
 
 // AckCheckpoint records an ACK from the given task index for the given checkpoint.
 func (cc *CheckpointCoordinator) AckCheckpoint(taskIndex int, checkpointID uint64) {
-	cc.ackCh <- ackMsg{TaskIndex: taskIndex, CheckpointID: checkpointID}
+	select {
+	case cc.ackCh <- ackMsg{TaskIndex: taskIndex, CheckpointID: checkpointID}:
+	default:
+		cc.log.Warn().
+			Int("task_index", taskIndex).
+			Uint64("checkpoint_id", checkpointID).
+			Msg("ack channel full, dropping ACK")
+	}
 }
 
 // Run is the main coordinator loop. It listens for timer expiry, ACKs,
@@ -234,7 +245,7 @@ func (cc *CheckpointCoordinator) abortCheckpoint(ctx context.Context) error {
 			cc.activeCheckpointID = 0
 			cc.mu.Unlock()
 			return fmt.Errorf("%w: failure rate %.2f exceeds tolerance %.2f",
-				ErrMaxConsecutiveCheckpointFailures, rate, cc.config.TolerableFailureRate)
+				ErrCheckpointFailureRateExceeded, rate, cc.config.TolerableFailureRate)
 		}
 	}
 
@@ -278,10 +289,4 @@ func (cc *CheckpointCoordinator) completeCheckpoint() {
 	cc.activeEpochID = 0
 	cc.consecutiveFailures = 0
 	cc.lastCompletionTime = time.Now()
-
-	// Non-blocking signal.
-	select {
-	case cc.completeCh <- struct{}{}:
-	default:
-	}
 }

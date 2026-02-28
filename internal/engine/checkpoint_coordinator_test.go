@@ -340,12 +340,73 @@ func TestCheckpointCoordinator_TolerableFailureRate(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, ErrMaxConsecutiveCheckpointFailures) {
-			t.Fatalf("expected ErrMaxConsecutiveCheckpointFailures (rate exceeded), got: %v", err)
+		if !errors.Is(err, ErrCheckpointFailureRateExceeded) {
+			t.Fatalf("expected ErrCheckpointFailureRateExceeded, got: %v", err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("coordinator did not return error for exceeded failure rate")
 	}
+}
+
+func TestCheckpointCoordinator_DuplicateACK(t *testing.T) {
+	cfg := CheckpointConfig{Timeout: 5 * time.Second}
+	cc, _ := newTestCoordinator(cfg, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- cc.Run(ctx) }()
+
+	// Trigger checkpoint.
+	if err := cc.TriggerCheckpoint(ctx, 1, 1); err != nil {
+		t.Fatalf("TriggerCheckpoint: %v", err)
+	}
+
+	// Send ACK twice for same task — second should be ignored (stale).
+	cc.AckCheckpoint(0, 1)
+	cc.AckCheckpoint(0, 1)
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify completed without panic.
+	cc.mu.Lock()
+	if cc.activeCheckpointID != 0 {
+		t.Errorf("expected no active checkpoint, got %d", cc.activeCheckpointID)
+	}
+	cc.mu.Unlock()
+
+	cancel()
+	<-done
+}
+
+func TestCheckpointCoordinator_TriggerWhileActive(t *testing.T) {
+	cfg := CheckpointConfig{Timeout: 5 * time.Second}
+	cc, _ := newTestCoordinator(cfg, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- cc.Run(ctx) }()
+
+	// Trigger first checkpoint.
+	if err := cc.TriggerCheckpoint(ctx, 1, 1); err != nil {
+		t.Fatalf("TriggerCheckpoint(1): %v", err)
+	}
+
+	// Trigger second checkpoint while first is active — should get ErrCheckpointAborted.
+	err := cc.TriggerCheckpoint(ctx, 2, 2)
+	if !errors.Is(err, ErrCheckpointAborted) {
+		t.Fatalf("expected ErrCheckpointAborted, got: %v", err)
+	}
+
+	// Complete first checkpoint normally.
+	cc.AckCheckpoint(0, 1)
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+	<-done
 }
 
 func TestCheckpointCoordinator_ContextCancel(t *testing.T) {

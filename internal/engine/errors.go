@@ -28,6 +28,10 @@ var (
 	// ErrCheckpointAborted indicates a checkpoint was aborted (e.g. due to timeout).
 	ErrCheckpointAborted = errors.New("engine: checkpoint aborted")
 
+	// ErrCheckpointFailureRateExceeded indicates the tolerable checkpoint
+	// failure rate was exceeded.
+	ErrCheckpointFailureRateExceeded = errors.New("engine: checkpoint failure rate exceeded")
+
 	// ErrUnsupportedSchemaVersion indicates the checkpoint metadata uses an
 	// unrecognized or unsupported schema version.
 	ErrUnsupportedSchemaVersion = errors.New("engine: unsupported checkpoint schema version")
