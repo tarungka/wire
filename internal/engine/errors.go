@@ -27,4 +27,12 @@ var (
 
 	// ErrCheckpointAborted indicates a checkpoint was aborted (e.g. due to timeout).
 	ErrCheckpointAborted = errors.New("engine: checkpoint aborted")
+
+	// ErrUnsupportedSchemaVersion indicates the checkpoint metadata uses an
+	// unrecognized or unsupported schema version.
+	ErrUnsupportedSchemaVersion = errors.New("engine: unsupported checkpoint schema version")
+
+	// ErrSavepointIncompatible indicates the savepoint is incompatible with
+	// the current job graph (e.g. missing stateful operators, key group mismatch).
+	ErrSavepointIncompatible = errors.New("engine: savepoint incompatible with job graph")
 )
