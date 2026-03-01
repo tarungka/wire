@@ -133,6 +133,11 @@ func (ht *HeartbeatTracker) RecordHeartbeat(id string, load *WorkerLoad, resourc
 	ht.mu.Lock()
 	w, ok := ht.workers[id]
 	if ok {
+		if w.State == WorkerDead {
+			// Dead workers must re-register; ignore stale heartbeats.
+			ht.mu.Unlock()
+			return
+		}
 		w.MissedCount = 0
 		w.LastHeartbeat = time.Now()
 		w.Load = load
@@ -237,7 +242,7 @@ func (ht *HeartbeatTracker) checkWorkers() {
 				lostEvt: &WorkerLostEvent{
 					WorkerID:      id,
 					LastHeartbeat: w.LastHeartbeat,
-					RunningTasks:  w.LastTasks,
+					RunningTasks:  append([]RunningTaskSummary(nil), w.LastTasks...),
 					MissedCount:   w.MissedCount,
 				},
 			})
@@ -285,7 +290,23 @@ type HeartbeatSender struct {
 	metrics             HeartbeatMetrics
 	mu                  sync.Mutex
 	consecutiveFailures int
+	contactLostFired    bool
 	log                 zerolog.Logger
+}
+
+// HeartbeatSenderOption configures optional HeartbeatSender behavior.
+type HeartbeatSenderOption func(*HeartbeatSender)
+
+// WithSenderMetrics attaches a metrics collector to the sender.
+func WithSenderMetrics(m HeartbeatMetrics) HeartbeatSenderOption {
+	return func(hs *HeartbeatSender) { hs.metrics = m }
+}
+
+// WithContactLostCallback registers a callback that fires once when the
+// coordinator becomes unreachable (consecutive failures >= threshold).
+// The callback re-arms after a successful heartbeat.
+func WithContactLostCallback(fn func()) HeartbeatSenderOption {
+	return func(hs *HeartbeatSender) { hs.onContactLost = fn }
 }
 
 // NewHeartbeatSender creates a sender that periodically sends heartbeats via the client.
@@ -294,17 +315,20 @@ func NewHeartbeatSender(
 	cfg Config,
 	buildRequestFn func() *HeartbeatRequest,
 	handleCommandsFn func([]WorkerCommand),
-	onContactLost func(),
+	opts ...HeartbeatSenderOption,
 ) *HeartbeatSender {
-	return &HeartbeatSender{
+	hs := &HeartbeatSender{
 		client:           client,
 		cfg:              cfg,
 		buildRequestFn:   buildRequestFn,
 		handleCommandsFn: handleCommandsFn,
-		onContactLost:    onContactLost,
 		metrics:          NoopHeartbeatMetrics(),
 		log:              logger.GetLogger("heartbeat-sender"),
 	}
+	for _, opt := range opts {
+		opt(hs)
+	}
+	return hs
 }
 
 // Run starts the heartbeat send loop. It blocks until ctx is canceled.
@@ -335,9 +359,13 @@ func (hs *HeartbeatSender) sendHeartbeat(ctx context.Context) {
 		hs.mu.Lock()
 		hs.consecutiveFailures++
 		failures := hs.consecutiveFailures
+		fired := hs.contactLostFired
 		hs.mu.Unlock()
 
-		if failures >= hs.cfg.MaxConsecutiveHeartbeatFailures && hs.onContactLost != nil {
+		if failures >= hs.cfg.MaxConsecutiveHeartbeatFailures && !fired && hs.onContactLost != nil {
+			hs.mu.Lock()
+			hs.contactLostFired = true
+			hs.mu.Unlock()
 			hs.onContactLost()
 		}
 		return
@@ -347,6 +375,7 @@ func (hs *HeartbeatSender) sendHeartbeat(ctx context.Context) {
 
 	hs.mu.Lock()
 	hs.consecutiveFailures = 0
+	hs.contactLostFired = false
 	hs.mu.Unlock()
 
 	if len(resp.Commands) > 0 && hs.handleCommandsFn != nil {
