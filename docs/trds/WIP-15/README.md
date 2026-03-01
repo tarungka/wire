@@ -88,6 +88,35 @@ Define the complete job lifecycle state machine with all transitions, a REST API
                     +------------+
 ```
 
+The same state machine rendered in Mermaid for maintainability:
+
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED : Job submitted
+
+    CREATED --> DEPLOYING : SubmitJob()
+
+    DEPLOYING --> RUNNING : All tasks RUNNING
+    DEPLOYING --> FAILING : Deploy error
+
+    RUNNING --> FINISHING : Bounded sources exhausted
+    RUNNING --> PAUSED : User pause (savepoint triggered)
+    RUNNING --> FAILING : Failure detected
+    RUNNING --> CANCELING : User cancel
+
+    FINISHING --> FINISHED : All sinks flushed
+
+    PAUSED --> DEPLOYING : User resume (restore from savepoint)
+
+    FAILING --> DEPLOYING : Restart from checkpoint (budget remains)
+    FAILING --> CANCELED : Restart budget exhausted
+
+    CANCELING --> CANCELED : All tasks stopped
+
+    FINISHED --> [*]
+    CANCELED --> [*]
+```
+
 ### 2.2 State Definitions
 
 | State | Description | Automatic Transition |

@@ -69,6 +69,67 @@ Define the `metadata.json` schema for checkpoints and savepoints. The file conta
 4. Coordinator schedules new tasks (potentially with different parallelism).
 5. Each new task downloads its assigned Key Group ranges from the checkpoint.
 
+### 2.3 Checkpoint Write Path
+
+The following sequence shows how metadata flows during a checkpoint — from the Coordinator trigger through operator snapshots to the final metadata.json write.
+
+```mermaid
+sequenceDiagram
+    participant C as Coordinator
+    participant Src as Source Tasks
+    participant Op as Downstream Operators
+    participant P as Pebble State
+    participant DS as Durable Store
+
+    C->>Src: TriggerCheckpoint(N)
+    activate Src
+    Src->>P: Snapshot local state (hard-link SSTables)
+    Src->>Op: Forward Barrier(N) in data stream
+    Src->>C: AcknowledgeCheckpoint(N, state_handle)
+    deactivate Src
+
+    activate Op
+    Note over Op: Barrier alignment on all inputs
+    Op->>P: Snapshot local state (hard-link SSTables)
+    Op->>C: AcknowledgeCheckpoint(N, state_handle)
+    deactivate Op
+
+    P-->>DS: Async replicate SSTable files
+
+    Note over C: All tasks ACK'd
+    C->>C: Build metadata.json from ACKs
+    Note over C: Records: job_graph, tasks,<br/>key_group_ranges, source_offsets,<br/>state_paths, sink_transactions
+    C->>DS: Write chk-N/metadata.json
+    C->>C: Checkpoint N globally complete
+```
+
+### 2.4 Recovery Decision Flowchart
+
+When the Coordinator restarts or fails over, it must select a valid checkpoint and restore all task states. The decision points below govern recovery correctness.
+
+```mermaid
+flowchart TD
+    A[Coordinator starts recovery] --> B[Discover checkpoint directories]
+    B --> C{Any checkpoints found?}
+    C -->|No| D[Cold start: no state to restore]
+    C -->|Yes| E[Sort by checkpoint ID descending]
+    E --> F[Select latest checkpoint]
+    F --> G[Read metadata.json]
+    G --> H{metadata.json valid?}
+    H -->|No: corrupt or missing| I[Skip to previous checkpoint]
+    I --> C
+    H -->|Yes| J{schema_version supported?}
+    J -->|No| K[Error: upgrade Wire]
+    J -->|Yes| L[Validate task state files exist]
+    L --> M{All state files present?}
+    M -->|No: incomplete checkpoint| I
+    M -->|Yes| N[Load job_graph and task assignments]
+    N --> O[Assign Key Group ranges to new tasks]
+    O --> P[Restore source offsets from metadata]
+    P --> Q[Workers download state shards from durable store]
+    Q --> R[Resume processing from Checkpoint N]
+```
+
 ---
 
 ## 3. API Design

@@ -119,6 +119,38 @@ Define the complete RPC interface between Coordinator and Workers as a set of pr
 4. Coordinator calls `SubmitJob` to each Worker with its assigned task descriptors.
 5. Workers deploy tasks, begin processing, and send `UpdateTaskStatus(RUNNING)`.
 
+```mermaid
+sequenceDiagram
+    participant Client
+    participant C as Coordinator
+    participant W1 as Worker 1
+    participant W2 as Worker 2
+    participant DS as Durable Store
+
+    Client->>C: POST /api/v1/jobs (pipeline YAML)
+    C->>C: Validate config, build JobGraph
+    C->>C: Optimize StreamGraph to ExecutionGraph
+
+    C->>W1: RequestTaskSlots(2 slots)
+    C->>W2: RequestTaskSlots(2 slots)
+    W1-->>C: Granted 2 slots
+    W2-->>C: Granted 2 slots
+
+    C->>W1: SubmitJob(tasks [T0, T1], restore_info)
+    C->>W2: SubmitJob(tasks [T2, T3], restore_info)
+
+    W1->>DS: Download state shards (if restoring)
+    W2->>DS: Download state shards (if restoring)
+
+    W1-->>C: UpdateTaskStatus(T0, RUNNING)
+    W1-->>C: UpdateTaskStatus(T1, RUNNING)
+    W2-->>C: UpdateTaskStatus(T2, RUNNING)
+    W2-->>C: UpdateTaskStatus(T3, RUNNING)
+
+    C->>C: All tasks RUNNING, Job = RUNNING
+    C-->>Client: 201 Created {job_id, status: RUNNING}
+```
+
 **Checkpoint Cycle (Coordinator-initiated):**
 1. Checkpoint timer fires. Coordinator assigns `CheckpointID = epoch + 1`.
 2. Coordinator sends `TriggerCheckpoint(CheckpointID)` to all Workers running source tasks.
@@ -127,11 +159,65 @@ Define the complete RPC interface between Coordinator and Workers as a set of pr
 5. Each task sends `AcknowledgeCheckpoint(CheckpointID, TaskID, StateHandle)` to Coordinator.
 6. When all tasks ACK, Coordinator marks checkpoint globally complete.
 
+```mermaid
+sequenceDiagram
+    participant C as Coordinator
+    participant W1 as Worker 1 (Source)
+    participant W2 as Worker 2 (Downstream)
+    participant P as Pebble State
+    participant DS as Durable Store
+
+    C->>C: Checkpoint timer fires (N)
+    C->>W1: TriggerCheckpoint(N)
+    activate W1
+    W1->>W1: Inject Barrier(N) into source streams
+    W1->>P: Snapshot source task state
+    P-->>DS: Async replicate SSTables
+    W1-->>C: AcknowledgeCheckpoint(N, source_task, state_handle)
+    deactivate W1
+
+    Note over W2: Barrier(N) arrives via data stream
+    activate W2
+    Note over W2: Barrier alignment across all inputs
+    W2->>P: Snapshot operator state
+    P-->>DS: Async replicate SSTables
+    W2-->>C: AcknowledgeCheckpoint(N, op_task, state_handle)
+    deactivate W2
+
+    C->>C: All tasks ACK'd
+    C->>C: Write checkpoint metadata
+    C->>C: Checkpoint N globally complete
+    C->>W2: Notify sinks: Commit(N)
+```
+
 **Heartbeat Loop (Worker-initiated):**
 1. Worker sends `Heartbeat(WorkerID, load_metrics)` every 5 seconds.
 2. Coordinator responds with `HeartbeatResponse(commands)`.
 3. Commands may include: no-op, cancel specific tasks, or initiate graceful shutdown.
 4. If Coordinator receives no heartbeat for 15s, Worker is marked dead, triggering job failover.
+
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant C as Coordinator
+
+    loop Every 5 seconds
+        W->>C: Heartbeat(worker_id, load, running_tasks)
+        C->>C: Reset dead timer for Worker
+        C-->>W: HeartbeatResponse(commands=[])
+    end
+
+    Note over W: Worker crashes or network partition
+
+    C->>C: No heartbeat for 15s
+    C->>C: Worker state: ALIVE to SUSPECT
+
+    C->>C: No heartbeat for 25s total
+    C->>C: Worker state: SUSPECT to DEAD
+    C->>C: Cancel all tasks on dead Worker
+    C->>C: Jobs with affected tasks enter FAILING
+    C->>C: Trigger recovery from latest checkpoint
+```
 
 ---
 

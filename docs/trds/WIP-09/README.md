@@ -114,6 +114,34 @@ Phase B+C: Leader Election + Standby with Recovery
 Port 4001: HTTP API (REST, health checks, metrics)
 ```
 
+### 2.1.1 Coordinator HA State Machine
+
+The Coordinator transitions through the following states during its lifecycle. Epoch (fencing token) increments on every leadership change to prevent split-brain.
+
+```mermaid
+stateDiagram-v2
+    [*] --> STANDBY : Process starts
+
+    STANDBY --> CANDIDATE : Campaign() called
+    CANDIDATE --> LEADER : Election won (epoch N)
+    CANDIDATE --> STANDBY : Election lost / timeout
+
+    LEADER --> STANDBY : Leadership revoked (lease expired)
+    LEADER --> RECOVERING : Process crash + restart
+
+    RECOVERING --> STANDBY : PebbleDB state reconstructed
+    Note right of RECOVERING : WAL replay, prefix scans,\nmark workers stale
+
+    STANDBY --> CANDIDATE : Leader failure detected
+
+    state LEADER {
+        [*] --> Reconstructing : Open PebbleDB
+        Reconstructing --> Serving : In-memory state rebuilt
+        Serving --> Checkpointing : Checkpoint timer fires
+        Checkpointing --> Serving : Checkpoint complete/aborted
+    }
+```
+
 ### 2.2 Component Breakdown
 
 **Component 1:** Metadata Store (PebbleDB)
@@ -175,6 +203,45 @@ Port 4001: HTTP API (REST, health checks, metrics)
 6. Begins accepting worker heartbeats, rejecting any with epoch < 43.
 7. Workers detect leader loss, discover new leader, re-register.
 8. New leader reconciles task assignments and aborts any in-flight checkpoint not marked complete.
+
+```mermaid
+sequenceDiagram
+    participant OL as Old Leader (epoch 42)
+    participant LE as Leader Election
+    participant NL as New Leader (Standby)
+    participant W as Workers
+    participant DB as PebbleDB
+
+    Note over OL: Process crashes
+    OL--xLE: Lease expires / heartbeat lost
+
+    LE->>NL: Election won (epoch 43)
+    activate NL
+    NL->>DB: Open PebbleDB (shared storage or synced copy)
+    NL->>NL: Reconstruct in-memory state via prefix scans
+    NL->>NL: Increment epoch to 43, persist to PebbleDB
+    NL->>NL: Abort any in-flight checkpoints
+    deactivate NL
+
+    W->>W: Detect heartbeat timeout to old leader
+    W->>NL: GET /api/v1/cluster/leader
+    NL-->>W: leader_id, epoch 43
+
+    W->>NL: RegisterWorker(worker_id, running_tasks, highest_seen_epoch)
+    NL->>NL: Validate epoch, reconcile tasks vs PebbleDB
+
+    alt Task matches PebbleDB
+        NL->>NL: No action, task continues
+    else Orphaned task (not in PebbleDB)
+        NL->>W: Cancel orphaned task
+    else Missing task (in PebbleDB, not on worker)
+        NL->>NL: Mark task FAILED, trigger recovery
+    end
+
+    Note over OL: Zombie leader attempts command
+    OL->>W: Command(epoch 42)
+    W-->>OL: ErrStaleEpoch (42 < 43)
+```
 
 ---
 
