@@ -248,8 +248,8 @@ How watermarks flow through multi-input operators using the min-watermark rule.
 
 ```mermaid
 sequenceDiagram
-    participant SA as Source A<br/>(HTTP Src 1)
-    participant SB as Source B<br/>(HTTP Src 2)
+    participant SA as Source A (HTTP Src 1)
+    participant SB as Source B (HTTP Src 2)
     participant J as Join Operator
     participant W as Window Operator
 
@@ -320,12 +320,12 @@ stateDiagram-v2
     [*] --> CREATED
     CREATED --> DEPLOYING : Schedule on Worker
 
-    DEPLOYING --> RUNNING : Binary deployed,<br/>state restored
+    DEPLOYING --> RUNNING : Binary deployed, state restored
     DEPLOYING --> FAILED : Deploy error
 
     RUNNING --> FINISHED : Stream ends
     RUNNING --> FAILED : Exception / OOM
-    RUNNING --> CANCELED : User cancel /<br/>Job failure
+    RUNNING --> CANCELED : User cancel / Job failure
     RUNNING --> PAUSED : Debug / Rescale
 
     PAUSED --> RUNNING : Resume
