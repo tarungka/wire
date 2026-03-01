@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"syscall"
 
 	"github.com/rs/zerolog/log"
 	"github.com/tarungka/wire/internal/cmd"
+	"github.com/tarungka/wire/internal/coordinator"
 	"github.com/tarungka/wire/internal/logger"
+	"golang.org/x/sync/errgroup"
 )
 
 // Need to make up my mind on some of these:
@@ -34,7 +38,8 @@ func main() {
 	// Handle signals first, so signal handling is established before anything else.
 	sigCh := HandleSignals(syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	// Main context
-	mainCtx, _ := CreateContext(sigCh)
+	mainCtx, mainCancel := CreateContext(sigCh)
+	defer mainCancel()
 
 	// Setup logging
 	// logs will be written to both server.log and stdout
@@ -65,7 +70,70 @@ func main() {
 
 	log.Info().Msg("Starting wire...")
 
-	// Block until context is canceled by signal.
-	<-mainCtx.Done()
+	// Resolve coordinator node ID.
+	nodeID := cfg.CoordinatorNodeID
+	if nodeID == "" {
+		nodeID, _ = os.Hostname()
+		if nodeID == "" {
+			nodeID = "wire-node-1"
+		}
+	}
+
+	// Create metadata store (PebbleDB).
+	store, err := coordinator.NewPebbleStore(cfg.CoordinatorDataDir)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to open coordinator metadata store")
+	}
+	defer store.Close()
+
+	// Create leader election backend.
+	var election coordinator.LeaderElection
+	switch cfg.ElectionBackend {
+	case "filelock":
+		election = coordinator.NewFileLockElection(cfg.ElectionLockPath, cfg.HTTPListenAddr)
+	case "noop", "":
+		// Single-node mode: no election needed.
+	default:
+		log.Fatal().Str("backend", cfg.ElectionBackend).Msg("unknown election backend")
+	}
+
+	// Create coordinator.
+	coordCfg := coordinator.CoordinatorConfig{
+		DataDir:    cfg.CoordinatorDataDir,
+		NodeID:     nodeID,
+		ListenAddr: cfg.HTTPListenAddr,
+	}
+	coord := coordinator.New(coordCfg, store, election, log.Logger)
+
+	// Create HTTP server.
+	httpSrv := coordinator.NewHTTPServer(coord, cfg.HTTPListenAddr, log.Logger)
+
+	// Start everything in an errgroup.
+	g, gCtx := errgroup.WithContext(mainCtx)
+
+	g.Go(func() error {
+		return coord.Run(gCtx)
+	})
+
+	g.Go(func() error {
+		err := httpSrv.ListenAndServe()
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
+	})
+
+	g.Go(func() error {
+		<-gCtx.Done()
+		log.Info().Msg("Shutting down...")
+		coord.Shutdown(context.Background())
+		httpSrv.Shutdown(context.Background())
+		return nil
+	})
+
+	if err := g.Wait(); err != nil && err != context.Canceled {
+		log.Fatal().Err(err).Msg("wire exited with error")
+	}
+
 	log.Info().Msg("Shutting down.")
 }
