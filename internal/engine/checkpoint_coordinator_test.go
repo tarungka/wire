@@ -517,3 +517,183 @@ func TestCheckpointCoordinator_ConcurrentTrigger(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// -- Transactional sink coordinator tests (WIP-10) --
+
+func TestCheckpointCoordinator_CommitNotification(t *testing.T) {
+	cfg := CheckpointConfig{Timeout: 5 * time.Second}
+	cc, channels := newTestCoordinator(cfg, 2)
+
+	// Register both tasks as transactional sinks.
+	cc.RegisterTransactionalSink(0, "sink-0")
+	cc.RegisterTransactionalSink(1, "sink-1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- cc.Run(ctx) }()
+
+	// Trigger checkpoint.
+	if err := cc.TriggerCheckpoint(ctx, 1, 1); err != nil {
+		t.Fatalf("TriggerCheckpoint: %v", err)
+	}
+
+	// ACK from both tasks.
+	cc.AckCheckpoint(0, 1)
+	cc.AckCheckpoint(1, 1)
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
+
+	// Both channels should receive CtrlCommitCheckpoint.
+	for i, ch := range channels {
+		select {
+		case msg := <-ch:
+			if msg.Type != CtrlCommitCheckpoint {
+				t.Errorf("channel[%d]: expected CtrlCommitCheckpoint, got %v", i, msg.Type)
+			}
+			if msg.CheckpointID != 1 {
+				t.Errorf("channel[%d]: checkpoint ID: got %d, want 1", i, msg.CheckpointID)
+			}
+		case <-time.After(2 * time.Second):
+			t.Errorf("channel[%d]: no commit notification received", i)
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+func TestCheckpointCoordinator_CommitNotification_OnlyToRegisteredSinks(t *testing.T) {
+	cfg := CheckpointConfig{Timeout: 5 * time.Second}
+	cc, channels := newTestCoordinator(cfg, 3)
+
+	// Only register task 1 as transactional sink.
+	cc.RegisterTransactionalSink(1, "sink-1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- cc.Run(ctx) }()
+
+	// Trigger and complete checkpoint.
+	if err := cc.TriggerCheckpoint(ctx, 1, 1); err != nil {
+		t.Fatalf("TriggerCheckpoint: %v", err)
+	}
+	cc.AckCheckpoint(0, 1)
+	cc.AckCheckpoint(1, 1)
+	cc.AckCheckpoint(2, 1)
+	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
+
+	// Only channel[1] should receive CtrlCommitCheckpoint.
+	select {
+	case msg := <-channels[1]:
+		if msg.Type != CtrlCommitCheckpoint {
+			t.Errorf("channel[1]: expected CtrlCommitCheckpoint, got %v", msg.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("channel[1]: no commit notification received")
+	}
+
+	// Channels 0 and 2 should not have received CtrlCommitCheckpoint.
+	for _, idx := range []int{0, 2} {
+		select {
+		case msg := <-channels[idx]:
+			if msg.Type == CtrlCommitCheckpoint {
+				t.Errorf("channel[%d]: unexpected CtrlCommitCheckpoint", idx)
+			}
+		default:
+			// Good — no message.
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+func TestCheckpointCoordinator_AbortSendsTransactionAbort(t *testing.T) {
+	cfg := CheckpointConfig{Timeout: 100 * time.Millisecond}
+	cc, channels := newTestCoordinator(cfg, 2)
+
+	// Register both as transactional sinks.
+	cc.RegisterTransactionalSink(0, "sink-0")
+	cc.RegisterTransactionalSink(1, "sink-1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- cc.Run(ctx) }()
+
+	// Trigger checkpoint but don't ACK — let it time out.
+	if err := cc.TriggerCheckpoint(ctx, 1, 1); err != nil {
+		t.Fatalf("TriggerCheckpoint: %v", err)
+	}
+	waitForCheckpointAborted(t, cc, 2*time.Second)
+
+	// Each channel should receive both CtrlAbortCheckpoint and CtrlAbortTransaction.
+	for i, ch := range channels {
+		var gotAbortCheckpoint, gotAbortTransaction bool
+		// Drain up to 2 messages per channel.
+		for j := 0; j < 2; j++ {
+			select {
+			case msg := <-ch:
+				switch msg.Type {
+				case CtrlAbortCheckpoint:
+					gotAbortCheckpoint = true
+				case CtrlAbortTransaction:
+					gotAbortTransaction = true
+				}
+			case <-time.After(2 * time.Second):
+				t.Errorf("channel[%d]: timed out waiting for message %d", i, j)
+			}
+		}
+		if !gotAbortCheckpoint {
+			t.Errorf("channel[%d]: missing CtrlAbortCheckpoint", i)
+		}
+		if !gotAbortTransaction {
+			t.Errorf("channel[%d]: missing CtrlAbortTransaction", i)
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+func TestCheckpointCoordinator_PendingCommits_Recovery(t *testing.T) {
+	cfg := CheckpointConfig{Timeout: 5 * time.Second}
+	cc, _ := newTestCoordinator(cfg, 2)
+
+	// Register both as transactional sinks.
+	cc.RegisterTransactionalSink(0, "sink-0")
+	cc.RegisterTransactionalSink(1, "sink-1")
+
+	// Verify: with no committed checkpoints, both should be pending.
+	pending := cc.PendingCommits(5)
+	if len(pending) != 2 {
+		t.Errorf("expected 2 pending commits, got %d", len(pending))
+	}
+
+	// Simulate sink-0 committed up to checkpoint 5.
+	cc.mu.Lock()
+	cc.sinkTxnStates[0].LastCommittedCheckpoint = 5
+	cc.mu.Unlock()
+
+	pending = cc.PendingCommits(5)
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending commit, got %d", len(pending))
+	}
+	if pending[0] != 1 {
+		t.Errorf("expected pending task index 1, got %d", pending[0])
+	}
+
+	// Both committed.
+	cc.mu.Lock()
+	cc.sinkTxnStates[1].LastCommittedCheckpoint = 5
+	cc.mu.Unlock()
+
+	pending = cc.PendingCommits(5)
+	if len(pending) != 0 {
+		t.Errorf("expected 0 pending commits, got %d", len(pending))
+	}
+}

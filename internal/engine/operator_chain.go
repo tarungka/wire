@@ -23,6 +23,8 @@ var errChainDone = errors.New("operator chain done")
 //   - Two-phase select for control mailbox priority
 //   - Opens operators at start, closes in reverse order on exit
 //   - DrainAll events processed inline (not re-injected into inputCh)
+//   - TransactionalSink detection: if last operator implements TransactionalSink,
+//     BeginTransaction is called at startup and 2PC protocol is used for checkpoints
 func runOperatorChain(
 	ctx context.Context,
 	operators []Operator,
@@ -33,6 +35,8 @@ func runOperatorChain(
 	numInputs int,
 	metrics CheckpointMetrics,
 	log zerolog.Logger,
+	txnSink TransactionalSink,
+	ackFn func(checkpointID uint64),
 ) (retErr error) {
 	// Panic recovery.
 	defer func() {
@@ -62,6 +66,13 @@ func runOperatorChain(
 		}
 	}()
 
+	// If the last operator is a TransactionalSink, begin the initial transaction.
+	if txnSink != nil {
+		if err := txnSink.BeginTransaction(ctx); err != nil {
+			return fmt.Errorf("%w: %v", ErrBeginTransactionFailed, err)
+		}
+	}
+
 	eofCount := 0
 
 	for {
@@ -73,7 +84,7 @@ func runOperatorChain(
 				if !ok {
 					return nil
 				}
-				if err := handleControl(ctx, ctrl, operators, aligner, inputCh, outputCh, numInputs, &eofCount, metrics, log); err != nil {
+				if err := handleControl(ctx, ctrl, operators, aligner, inputCh, outputCh, numInputs, &eofCount, metrics, log, txnSink, ackFn); err != nil {
 					if err == errChainDone {
 						return nil
 					}
@@ -92,7 +103,7 @@ func runOperatorChain(
 			if !ok {
 				return nil
 			}
-			if err := handleControl(ctx, ctrl, operators, aligner, inputCh, outputCh, numInputs, &eofCount, metrics, log); err != nil {
+			if err := handleControl(ctx, ctrl, operators, aligner, inputCh, outputCh, numInputs, &eofCount, metrics, log, txnSink, ackFn); err != nil {
 				if err == errChainDone {
 					return nil
 				}
@@ -188,6 +199,8 @@ func handleControl(
 	eofCount *int,
 	metrics CheckpointMetrics,
 	log zerolog.Logger,
+	txnSink TransactionalSink,
+	ackFn func(checkpointID uint64),
 ) error {
 	switch ctrl.Type {
 	case CtrlBarrierReceived:
@@ -217,19 +230,54 @@ func handleControl(
 			}
 		}
 
-		// Forward barrier downstream.
-		barrier := &protocol.CheckpointBarrierMsg{
-			CheckpointID: ctrl.CheckpointID,
-			EpochID:      ctrl.EpochID,
-			Timestamp:    time.Now().UnixMilli(),
-		}
-		select {
-		case outputCh <- OutputMsg{Type: OutputBarrier, Barrier: barrier}:
-		case <-ctx.Done():
-			return ctx.Err()
+		if txnSink != nil {
+			// Transactional sink: PreCommit and ACK to coordinator.
+			// Do NOT forward barrier downstream (sink is terminal).
+			if err := txnSink.PreCommit(ctx, ctrl.CheckpointID); err != nil {
+				return fmt.Errorf("%w: %v", ErrPreCommitFailed, err)
+			}
+			if ackFn != nil {
+				ackFn(ctrl.CheckpointID)
+			}
+		} else {
+			// Non-transactional: forward barrier downstream (existing behavior).
+			barrier := &protocol.CheckpointBarrierMsg{
+				CheckpointID: ctrl.CheckpointID,
+				EpochID:      ctrl.EpochID,
+				Timestamp:    time.Now().UnixMilli(),
+			}
+			select {
+			case outputCh <- OutputMsg{Type: OutputBarrier, Barrier: barrier}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 
 		aligner.Reset(ctrl.CheckpointID)
+
+	case CtrlCommitCheckpoint:
+		if txnSink == nil {
+			break // Ignore for non-transactional sinks.
+		}
+		log.Debug().Uint64("checkpoint", ctrl.CheckpointID).Msg("committing transaction")
+		if err := txnSink.Commit(ctx, ctrl.CheckpointID); err != nil {
+			return fmt.Errorf("%w: %v", ErrCommitFailed, err)
+		}
+		if err := txnSink.BeginTransaction(ctx); err != nil {
+			return fmt.Errorf("%w: %v", ErrBeginTransactionFailed, err)
+		}
+
+	case CtrlAbortTransaction:
+		if txnSink == nil {
+			break // Ignore for non-transactional sinks.
+		}
+		log.Warn().Msg("aborting transaction")
+		if err := txnSink.Abort(ctx); err != nil {
+			return fmt.Errorf("%w: %v", ErrAbortFailed, err)
+		}
+		if err := txnSink.BeginTransaction(ctx); err != nil {
+			return fmt.Errorf("%w: %v", ErrBeginTransactionFailed, err)
+		}
 
 	case CtrlAbortCheckpoint:
 		log.Warn().Uint64("checkpoint", ctrl.CheckpointID).Msg("aborting checkpoint")

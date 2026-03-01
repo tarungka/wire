@@ -24,6 +24,8 @@ type TaskSlot struct {
 	Strategy    WatermarkStrategy        // Resolved watermark strategy (source tasks only).
 	Coordinator *CheckpointCoordinator   // Optional checkpoint coordinator (WIP-05).
 	Metrics     CheckpointMetrics        // Optional checkpoint metrics collector.
+	TaskIndex   int                      // Index of this task within the parallel subtasks.
+	TaskID      string                   // Unique identifier for this task.
 	log         zerolog.Logger
 }
 
@@ -127,6 +129,26 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		metrics = NoopCheckpointMetrics()
 	}
 
+	// Detect if the last operator is a TransactionalSink.
+	var txnSink TransactionalSink
+	if len(ts.Operators) > 0 {
+		txnSink, _ = ts.Operators[len(ts.Operators)-1].(TransactionalSink)
+	}
+
+	// Register transactional sink with coordinator if applicable.
+	if txnSink != nil && ts.Coordinator != nil {
+		ts.Coordinator.RegisterTransactionalSink(ts.TaskIndex, ts.TaskID)
+	}
+
+	// Build ackFn closure for transactional sinks.
+	var ackFn func(checkpointID uint64)
+	if txnSink != nil && ts.Coordinator != nil {
+		taskIndex := ts.TaskIndex
+		ackFn = func(checkpointID uint64) {
+			ts.Coordinator.AckCheckpoint(taskIndex, checkpointID)
+		}
+	}
+
 	// Launch checkpoint coordinator if configured.
 	if ts.Coordinator != nil {
 		g.Go(func() error {
@@ -140,7 +162,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	g.Go(func() error {
 		defer producerWg.Done()
 		defer runCancel() // Signal all goroutines to stop when chain exits.
-		return runOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger())
+		return runOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn)
 	})
 
 	// Goroutine to close outputCh when all producers are done.

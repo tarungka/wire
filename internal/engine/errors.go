@@ -47,4 +47,16 @@ var (
 	// ErrCheckpointAlreadyActive indicates a new checkpoint was rejected
 	// because another checkpoint is currently in progress.
 	ErrCheckpointAlreadyActive = errors.New("engine: checkpoint already active")
+
+	// ErrBeginTransactionFailed indicates a transactional sink failed to begin a new transaction.
+	ErrBeginTransactionFailed = errors.New("engine: transactional sink begin transaction failed")
+
+	// ErrPreCommitFailed indicates a transactional sink failed during pre-commit.
+	ErrPreCommitFailed = errors.New("engine: transactional sink pre-commit failed")
+
+	// ErrCommitFailed indicates a transactional sink failed to commit a transaction.
+	ErrCommitFailed = errors.New("engine: transactional sink commit failed")
+
+	// ErrAbortFailed indicates a transactional sink failed to abort a transaction.
+	ErrAbortFailed = errors.New("engine: transactional sink abort failed")
 )

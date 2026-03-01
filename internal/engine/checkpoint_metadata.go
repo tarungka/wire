@@ -72,6 +72,7 @@ type SinkTransaction struct {
 	OperatorID          string  `json:"operator_id"`
 	CommittedCheckpoint int64   `json:"committed_checkpoint"`
 	TransactionID       *string `json:"transaction_id"`
+	TransactionState    string  `json:"transaction_state,omitempty"` // "ACTIVE", "PRE_COMMITTED", "COMMITTED"
 }
 
 // Validate checks structural invariants on the checkpoint metadata. It

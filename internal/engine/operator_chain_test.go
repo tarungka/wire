@@ -97,7 +97,7 @@ func TestOperatorChain_MapPassthrough(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestOperatorChain_Filter(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&filterMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestOperatorChain_FlatMapOneToMany(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&doublerFlatMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestOperatorChain_Sink(t *testing.T) {
 
 	sink := &countingSink{}
 	ops := []Operator{sink}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestOperatorChain_PanicRecovery(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&panicMap{limit: 2}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 
 	if !errors.Is(err, ErrOperatorPanic) {
 		t.Fatalf("expected ErrOperatorPanic, got: %v", err)
@@ -250,7 +250,7 @@ func TestOperatorChain_ControlPriority(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	}()
 
 	// Let the chain start and process a few events.
@@ -289,7 +289,7 @@ func TestOperatorChain_AllInputsEoP(t *testing.T) {
 	close(inputCh) // Close input to not block the operator chain.
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestOperatorChain_CheckpointBarrier(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestOperatorChain_OpenError_ClosesPreviouslyOpenedInReverse(t *testing.T) {
 	outputCh := make(chan OutputMsg, 1)
 	aligner := NewBarrierAligner(1, 100)
 
-	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err == nil || !errors.Is(err, op2.openErr) {
 		t.Fatalf("expected op2 open error, got: %v", err)
 	}
@@ -454,7 +454,7 @@ func TestOperatorChain_CloseCalledInReverseOrder(t *testing.T) {
 	outputCh := make(chan OutputMsg, 1)
 	aligner := NewBarrierAligner(1, 100)
 
-	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestOperatorChain_AbortCheckpoint_DrainsSideBufferNoBarrier(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestOperatorChain_CheckpointBarrier_SideBufferDrainedBeforeBarrier(t *testi
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -599,7 +599,7 @@ func TestOperatorChain_MapErrorPropagation(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&errorMap{err: mapErr}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -622,7 +622,7 @@ func TestOperatorChain_FlatMapErrorPropagation(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&errorFlatMap{err: fmErr}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -645,7 +645,7 @@ func TestOperatorChain_SinkErrorPropagation(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&errorSink{err: sinkErr}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -676,7 +676,7 @@ func TestOperatorChain_FinalEoPDrainsInputChannel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	}()
 
 	select {
@@ -737,7 +737,7 @@ func TestOperatorChain_OutputBackpressure_UnblocksOnContextCancel(t *testing.T) 
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger())
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
 	}()
 
 	// Let the chain block on output, then cancel.
@@ -751,5 +751,299 @@ func TestOperatorChain_OutputBackpressure_UnblocksOnContextCancel(t *testing.T) 
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("operator chain did not unblock on context cancel")
+	}
+}
+
+// -- Transactional sink tests (WIP-10) --
+
+func TestOperatorChain_TransactionalSink_NormalCycle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	sink := &mockTransactionalSink{}
+
+	var acked []uint64
+	var ackedMu sync.Mutex
+	ackFn := func(checkpointID uint64) {
+		ackedMu.Lock()
+		acked = append(acked, checkpointID)
+		ackedMu.Unlock()
+	}
+
+	ops := []Operator{sink}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, ackFn)
+	}()
+
+	// Send events first and let them be processed.
+	inputCh <- Event{Value: []byte("a")}
+	inputCh <- Event{Value: []byte("b")}
+	time.Sleep(50 * time.Millisecond)
+
+	// Now send barrier (pre-register with aligner first).
+	aligner.OnBarrier(0, 1, 1)
+	controlCh <- ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 1, EpochID: 1}
+	time.Sleep(50 * time.Millisecond)
+
+	// Send commit.
+	controlCh <- ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 1, EpochID: 1}
+	time.Sleep(50 * time.Millisecond)
+
+	// Shutdown.
+	controlCh <- ControlMsg{Type: CtrlShutdown}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runOperatorChain: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("operator chain did not finish")
+	}
+
+	// Verify writes.
+	written := sink.Written()
+	if len(written) != 2 {
+		t.Fatalf("written: got %d, want 2", len(written))
+	}
+
+	// Verify BeginTransaction called at startup + after Commit.
+	if sink.BeginTxnCalls() != 2 {
+		t.Errorf("BeginTransaction calls: got %d, want 2", sink.BeginTxnCalls())
+	}
+
+	// Verify PreCommit called.
+	precommits := sink.PreCommitCallIDs()
+	if len(precommits) != 1 || precommits[0] != 1 {
+		t.Errorf("PreCommit calls: got %v, want [1]", precommits)
+	}
+
+	// Verify ackFn called.
+	ackedMu.Lock()
+	if len(acked) != 1 || acked[0] != 1 {
+		t.Errorf("ackFn calls: got %v, want [1]", acked)
+	}
+	ackedMu.Unlock()
+
+	// Verify Commit called.
+	commits := sink.CommitCallIDs()
+	if len(commits) != 1 || commits[0] != 1 {
+		t.Errorf("Commit calls: got %v, want [1]", commits)
+	}
+
+	// Verify no barrier forwarded to outputCh (sink is terminal + transactional).
+	close(outputCh)
+	for msg := range outputCh {
+		if msg.Type == OutputBarrier {
+			t.Error("unexpected barrier in output — transactional sink should not forward barriers")
+		}
+	}
+}
+
+func TestOperatorChain_TransactionalSink_PreCommitError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	sink := &mockTransactionalSink{preCommitErr: errors.New("disk full")}
+
+	aligner.OnBarrier(0, 1, 1)
+	controlCh <- ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 1, EpochID: 1}
+	close(inputCh)
+
+	ops := []Operator{sink}
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil)
+	if !errors.Is(err, ErrPreCommitFailed) {
+		t.Fatalf("expected ErrPreCommitFailed, got: %v", err)
+	}
+}
+
+func TestOperatorChain_TransactionalSink_CommitError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	sink := &mockTransactionalSink{commitErr: errors.New("commit timeout")}
+
+	controlCh <- ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 1, EpochID: 1}
+	close(inputCh)
+
+	ops := []Operator{sink}
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil)
+	if !errors.Is(err, ErrCommitFailed) {
+		t.Fatalf("expected ErrCommitFailed, got: %v", err)
+	}
+}
+
+func TestOperatorChain_TransactionalSink_AbortThenRestart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	sink := &mockTransactionalSink{}
+
+	controlCh <- ControlMsg{Type: CtrlAbortTransaction}
+	controlCh <- ControlMsg{Type: CtrlShutdown}
+
+	ops := []Operator{sink}
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil)
+	if err != nil {
+		t.Fatalf("runOperatorChain: %v", err)
+	}
+
+	// BeginTransaction at startup + after Abort.
+	if sink.BeginTxnCalls() != 2 {
+		t.Errorf("BeginTransaction calls: got %d, want 2", sink.BeginTxnCalls())
+	}
+	if sink.AbortCallCount() != 1 {
+		t.Errorf("Abort calls: got %d, want 1", sink.AbortCallCount())
+	}
+}
+
+func TestOperatorChain_TransactionalSink_AbortError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	sink := &mockTransactionalSink{abortErr: errors.New("abort failed")}
+
+	controlCh <- ControlMsg{Type: CtrlAbortTransaction}
+	close(inputCh)
+
+	ops := []Operator{sink}
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil)
+	if !errors.Is(err, ErrAbortFailed) {
+		t.Fatalf("expected ErrAbortFailed, got: %v", err)
+	}
+}
+
+func TestOperatorChain_NonTransactionalSink_Unchanged(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	// Use regular (non-transactional) sink.
+	sink := &countingSink{}
+	ops := []Operator{sink}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	}()
+
+	// Send event and let it be processed.
+	inputCh <- Event{Value: []byte("x")}
+	time.Sleep(50 * time.Millisecond)
+
+	// Send barrier — should be forwarded to outputCh for non-transactional sink.
+	aligner.OnBarrier(0, 1, 1)
+	controlCh <- ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 1, EpochID: 1}
+	time.Sleep(50 * time.Millisecond)
+
+	// Shutdown.
+	controlCh <- ControlMsg{Type: CtrlShutdown}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runOperatorChain: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("operator chain did not finish")
+	}
+
+	if sink.Count() != 1 {
+		t.Errorf("sink count: got %d, want 1", sink.Count())
+	}
+
+	// Barrier should have been forwarded.
+	close(outputCh)
+	var foundBarrier bool
+	for msg := range outputCh {
+		if msg.Type == OutputBarrier {
+			foundBarrier = true
+		}
+	}
+	if !foundBarrier {
+		t.Error("expected barrier forwarded for non-transactional sink")
+	}
+}
+
+func TestOperatorChain_TransactionalSink_IdempotentCommit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	sink := &mockTransactionalSink{}
+
+	// Send commit twice.
+	controlCh <- ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 1, EpochID: 1}
+	controlCh <- ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 1, EpochID: 1}
+	controlCh <- ControlMsg{Type: CtrlShutdown}
+
+	ops := []Operator{sink}
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil)
+	if err != nil {
+		t.Fatalf("runOperatorChain: %v", err)
+	}
+
+	commits := sink.CommitCallIDs()
+	if len(commits) != 2 {
+		t.Errorf("Commit calls: got %d, want 2", len(commits))
+	}
+
+	// BeginTransaction: 1 at startup + 2 after each commit = 3
+	if sink.BeginTxnCalls() != 3 {
+		t.Errorf("BeginTransaction calls: got %d, want 3", sink.BeginTxnCalls())
+	}
+}
+
+func TestOperatorChain_TransactionalSink_BeginTransactionErrorAtStartup(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+	close(inputCh)
+
+	sink := &mockTransactionalSink{beginTxnErr: errors.New("connection refused")}
+
+	ops := []Operator{sink}
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil)
+	if !errors.Is(err, ErrBeginTransactionFailed) {
+		t.Fatalf("expected ErrBeginTransactionFailed, got: %v", err)
 	}
 }
