@@ -127,8 +127,8 @@ Side-by-side comparison identifying where Wire mirrors Flink, where it diverges,
 - No unaligned checkpointing
 - Only exactly-once (no configurable at-least-once mode)
 - No mention of concurrent snapshots
-- Checkpoint storage: S3/MinIO
-- Directory structure: `s3://bucket/jobs/<job-id>/checkpoints/chk-N/`
+- Checkpoint storage: Replicated PebbleDB (peer-to-peer via wire protocol)
+- Directory structure: `<data-dir>/jobs/<job-id>/checkpoints/chk-N/`
 
 ### Key Differences
 
@@ -138,7 +138,7 @@ Side-by-side comparison identifying where Wire mirrors Flink, where it diverges,
 | Unaligned checkpoints | Yes | No |
 | Exactly-once vs at-least-once | Configurable | Exactly-once only |
 | Concurrent snapshots | Yes | Not documented |
-| Local checkpoint storage | Yes (JobManager heap) | No (always remote S3/MinIO) |
+| Local checkpoint storage | Yes (JobManager heap) | Yes (PebbleDB, replicated to peers) |
 
 **Wire's simplification:** Only supporting exactly-once is a design choice that reduces complexity. Flink added at-least-once mode for latency-sensitive jobs — Wire may need this later.
 

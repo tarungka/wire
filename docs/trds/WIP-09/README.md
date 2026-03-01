@@ -10,13 +10,14 @@
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-22`
+> **Last Updated:** `2026-03-01`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
+| 0.2 | 2026-03-01 | Tarun Ashok | Reworked: removed Raft, adopted Flink-inspired phased HA strategy with PebbleDB persistence |
 
 ---
 
@@ -26,39 +27,49 @@
 
 Wire's architecture document describes the Coordinator as "lightweight and generally stateless (relying on an external metadata store or leader election for HA)" but the HA mechanism itself is entirely unspecified. The operations document states that when the Coordinator crashes, "Workers lose heartbeat. Workers self-terminate. External Supervisor (K8s/Systemd) restarts Coordinator. Workers rejoin." This is a single-point-of-failure model: the Coordinator is the sole control plane node, and its loss halts all running jobs until an external process restarts it.
 
-Wire's vision document declares the system must have "zero external dependencies (no ZooKeeper, no Etcd)." Yet the codebase already includes `hashicorp/raft` v1.7.1 and `hashicorp/yamux` v0.1.2 in `go.mod`, `cmd/init.go` contains 20+ Raft-specific configuration flags (heartbeat timeout, election timeout, leader lease, snapshot threshold, non-voter mode, node reaping, bootstrap-expect), and the TCP mux on port 4002 is already wired up for inter-node communication. The infrastructure for embedded Raft consensus exists in the dependency tree and configuration surface, but the actual Raft integration, the FSM, the failover protocol, and the metadata replication are undocumented and unimplemented.
+Without Coordinator HA, Wire cannot claim production readiness. A single Coordinator crash during a checkpoint coordination window can leave jobs in an inconsistent state. A crash during task deployment can leave workers with orphaned tasks. There is no mechanism for metadata to survive a Coordinator restart, and no defined behavior for failover scenarios.
 
-Without Coordinator HA, Wire cannot claim production readiness. A single Coordinator crash during a checkpoint coordination window can leave jobs in an inconsistent state. A crash during task deployment can leave workers with orphaned tasks. There is no protocol for workers to discover a new leader, no mechanism for metadata to survive a Coordinator restart, and no defined behavior for split-brain scenarios.
+**Current state of the Coordinator:** The Coordinator is minimally implemented. `cmd/main.go` parses flags, sets up logging, prints the logo, and blocks on a signal. There is no RPC server, no job submission path, no task scheduling, and no worker orchestration. The `CheckpointCoordinator` in `internal/engine/` handles local barrier alignment and timeout management for a single node, but it has no persistence layer, no replication, and no recovery logic. Building HA for a Coordinator that does not yet exist as a functioning control plane would be premature.
 
 ### 1.2 Proposed Solution (Technical Summary)
 
-Implement Coordinator High Availability using an embedded HashiCorp Raft consensus group. A cluster of 3 or 5 Coordinator nodes forms a Raft group where exactly one is elected Leader. The Leader Coordinator is the active control plane: it accepts job submissions, triggers checkpoints, manages task assignments, and coordinates failure recovery. Follower Coordinators are hot standbys that replicate all metadata via the Raft log but do not act on control plane decisions. If the Leader fails, Raft elects a new Leader from the followers, and the new Leader resumes all Coordinator responsibilities using the replicated metadata in its local FSM.
+Implement Coordinator High Availability using a phased approach inspired by Apache Flink's HA architecture. Instead of embedding a full Raft consensus group into a not-yet-built Coordinator, Wire will follow Flink's proven pattern: **persist metadata durably, make failover a recovery problem, and keep the HA backend pluggable.**
 
-All Coordinator metadata -- job graphs, task assignments, checkpoint completion records, worker registrations, and cluster topology -- is stored as entries in the Raft log and materialized into a local finite state machine (FSM) backed by BoltDB (default) or BadgerDB (via `--store-db`). This FSM is the Coordinator's source of truth. Because it is replicated across all nodes in the Raft group, no external metadata store is required. The HA mechanism is fully embedded, consistent with Wire's zero-external-dependency philosophy.
+The strategy has four phases, sequenced so each builds on the previous:
 
-Workers connect to all known Coordinator addresses and discover the current Leader via an HTTP redirect or a Raft leader-address query. On leader change, workers detect the new leader through heartbeat failures followed by re-discovery, and re-register with the new Leader. In-flight jobs survive failover because their metadata (job state, task assignments, latest completed checkpoint) is already replicated to the new Leader's FSM.
+1. **Phase A (Prerequisite, separate WIP):** Single-node Coordinator with PebbleDB persistence and crash recovery. All Coordinator metadata (job graphs, task assignments, checkpoint records, worker registrations) is persisted to a local PebbleDB instance. On restart, the Coordinator reconstructs its in-memory state from PebbleDB. This is the foundation — you cannot replicate state that does not exist.
+
+2. **Phase B: Leader election and fencing.** A pluggable `LeaderElection` interface allows Wire to support multiple election backends: Kubernetes lease, file-based lock, or a future embedded election protocol. The elected leader holds an epoch (fencing token). All commands from the Coordinator carry the current epoch. Workers and storage systems reject commands with stale epochs, preventing split-brain.
+
+3. **Phase C: Standby Coordinator with recovery-from-storage.** A standby Coordinator watches for leader failure. On failover, the new leader reads the persisted PebbleDB metadata (from shared storage or a replicated copy) and reconstructs in-memory state. This follows Flink's model: the new JobManager reads persisted job metadata from the filesystem and rebuilds its view of the world.
+
+4. **Phase D (Future): Re-evaluate embedded consensus.** Once the Coordinator is fully implemented and deployment requirements are clear, evaluate whether embedded Raft is needed. Wire's zero-dependency constraint may eventually make embedded Raft the right choice, but the clean `MetadataStore` and `LeaderElection` interfaces make this a drop-in replacement, not a rewrite.
+
+**Why PebbleDB, not BoltDB:** Wire already uses Pebble (CockroachDB's pure-Go LSM engine) for worker-side state backends (`docs/state-backend.md`). Using the same engine for Coordinator metadata means one engine everywhere — reducing cognitive load, debug tooling, and dependency surface. Unlike BoltDB's single-writer lock, Pebble handles concurrent writes (heartbeat summaries, checkpoint completions, task status updates) via MemTables + WAL without lock contention. Pebble also supports near-zero-cost hard-link snapshots (milliseconds), simplifying backup and future HA snapshot transfer.
+
+**Why not Raft now:** Raft replicates state machine commands across a consensus group. Wire's Coordinator state machine does not exist yet — there is no FSM to replicate. Additionally, Apache Flink, the system Wire is most closely modeled after, does not use Raft. Flink uses ZooKeeper (or Kubernetes leases) for leader election only, with job metadata persisted to a filesystem (HDFS/S3). Failover is a recovery problem: the new leader reconstructs state from persisted metadata. This is simpler, proven at scale, and a better fit for Wire's current maturity level. Raft is not rejected — it is explicitly deferred as a future option once the Coordinator is mature enough to benefit from it.
 
 ### 1.3 Goals & Non-Goals
 
 | Goals (In Scope) | Non-Goals (Explicitly Out) |
 | -- | -- |
-| Define embedded Raft consensus for Coordinator HA | Multi-region or geo-distributed HA |
-| Specify metadata stored in the Raft FSM | Worker-side HA (workers are stateless executors) |
-| Define failover protocol (leader change, worker re-registration) | Automatic Coordinator scaling (adding nodes to live cluster without downtime) |
-| Define bootstrap process for new clusters | Data plane replication (Raft is control plane only) |
-| Define node join/leave protocol | Hot standby that can serve read queries |
-| Document split-brain and partition handling | External consensus system integration (etcd, ZooKeeper) |
-| Specify non-voter (read-only) Coordinator nodes | Raft-based data stream replication |
+| Define persistent metadata store for Coordinator state (PebbleDB) | Multi-region or geo-distributed HA |
+| Specify crash recovery protocol (reconstruct from PebbleDB) | Worker-side HA (workers are stateless executors) |
+| Define pluggable HA interfaces (`MetadataStore`, `LeaderElection`) | Automatic Coordinator scaling without downtime |
+| Define failover protocol (leader change, worker re-registration) | Data plane replication |
+| Specify fencing token / epoch protocol for split-brain prevention | External consensus system integration (etcd, ZooKeeper) |
+| Document phased HA roadmap from single-node to multi-node | Embedded Raft consensus (deferred to Phase D) |
 
 ### 1.4 Success Metrics
 
 | Metric | Current Baseline | Target | Measurement |
 | -- | -- | -- | -- |
-| Coordinator failover time | Infinite (manual restart) | < 5 seconds (Raft election) | Automated failover test |
-| Job survival across failover | 0% (all jobs lost) | 100% of RUNNING jobs resume | Integration test |
-| Metadata durability | None (in-memory only) | Survives any single-node failure | Chaos test |
-| Zero external dependencies for HA | Violated (requires K8s/Systemd) | Fully embedded | Architecture review |
-| Cluster bootstrap time (3 nodes) | N/A | < 30 seconds | Automated test |
+| Metadata durability | None (in-memory only) | Survives Coordinator restart | Crash recovery test |
+| Job survival across restart | 0% (all jobs lost) | 100% of RUNNING jobs resume after restart | Integration test |
+| Coordinator restart time | Infinite (manual re-submission) | < 10 seconds (PebbleDB state reconstruction) | Automated test |
+| Failover time (Phase B) | Infinite (manual restart) | < 15 seconds (election + recovery) | Automated failover test |
+| Zero external dependencies for HA | Violated (requires K8s/Systemd) | Fully embedded (Phase D) | Architecture review |
+| Fencing correctness | N/A | Stale-epoch commands rejected 100% | Fencing validation test |
 
 ---
 
@@ -67,107 +78,226 @@ Workers connect to all known Coordinator addresses and discover the current Lead
 ### 2.1 High-Level Architecture
 
 ```
-                    ┌──────────────────────────────────────────┐
-                    │           Raft Consensus Group            │
-                    │                                          │
-  ┌─────────────┐   │  ┌─────────────┐    ┌─────────────┐     │
-  │   Worker 1  │───┼─>│ Coordinator │<──>│ Coordinator │     │
-  └─────────────┘   │  │  (LEADER)   │    │ (FOLLOWER)  │     │
-                    │  │             │    │             │     │
-  ┌─────────────┐   │  │  Raft FSM   │    │  Raft FSM   │     │
-  │   Worker 2  │───┼─>│  (BoltDB)   │    │  (BoltDB)   │     │
-  └─────────────┘   │  └──────┬──────┘    └─────────────┘     │
-                    │         │                                │
-  ┌─────────────┐   │         │           ┌─────────────┐     │
-  │   Worker 3  │───┼─>       │           │ Coordinator │     │
-  └─────────────┘   │         │           │ (FOLLOWER)  │     │
-                    │         │           │             │     │
-                    │    Raft Log         │  Raft FSM   │     │
-                    │    Replication ────>│  (BoltDB)   │     │
-                    │                     └─────────────┘     │
-                    └──────────────────────────────────────────┘
+Phase A: Single-Node Coordinator with Persistence
+
+  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+  │   Worker 1   │────>│              │<────│   Worker 3   │
+  └──────────────┘     │  Coordinator │     └──────────────┘
+                       │   (Active)   │
+  ┌──────────────┐     │              │
+  │   Worker 2   │────>│  ┌────────┐  │
+  └──────────────┘     │  │PebbleDB│  │
+                       │  │metadata│  │
+                       │  └────────┘  │
+                       └──────────────┘
+
+Phase B+C: Leader Election + Standby with Recovery
+
+  ┌──────────────┐     ┌──────────────┐          ┌──────────────┐
+  │   Worker 1   │────>│ Coordinator  │          │ Coordinator  │
+  └──────────────┘     │  (LEADER)    │          │  (STANDBY)   │
+                       │  epoch: 42   │          │              │
+  ┌──────────────┐     │              │          │              │
+  │   Worker 2   │────>│  ┌────────┐  │          │  ┌────────┐  │
+  └──────────────┘     │  │PebbleDB│  │──copy──> │  │PebbleDB│  │
+                       │  │metadata│  │  or      │  │metadata│  │
+  ┌──────────────┐     │  └────────┘  │  shared  │  └────────┘  │
+  │   Worker 3   │────>│              │  storage │              │
+  └──────────────┘     └──────┬───────┘          └──────────────┘
+                              │
+                       ┌──────┴───────┐
+                       │    Leader    │
+                       │   Election   │
+                       │  (pluggable) │
+                       └──────────────┘
 
 Port 4001: HTTP API (REST, health checks, metrics)
-Port 4002: Raft consensus + Yamux internode transport
 ```
 
 ### 2.2 Component Breakdown
 
-**Component 1:** Raft Consensus Engine
+**Component 1:** Metadata Store (PebbleDB)
 
-* **Responsibility:** Leader election, log replication, membership management, snapshotting.
-* **Technology:** `hashicorp/raft` v1.7.1, embedded in the Coordinator process.
-* **Interactions:** Communicates with peer Coordinators over TCP port 4002 via Yamux-multiplexed streams. Uses BoltDB or BadgerDB as the stable store and log store (configured via `--store-db`). Produces leadership change notifications consumed by the Coordinator's control loop.
+* **Responsibility:** Durable persistence of all Coordinator metadata: job graphs, task assignments, checkpoint completion records, worker registrations, and cluster configuration. Source of truth for crash recovery.
+* **Technology:** PebbleDB (`github.com/cockroachdb/pebble`), the same LSM engine used for worker-side state backends. Coordinator instance uses tuned-down configuration (smaller MemTable, smaller block cache) since metadata volume is much smaller than worker state.
+* **Interactions:** Written by the Coordinator's control loops on every state mutation. Read on startup for state reconstruction. Snapshotted via Pebble's hard-link checkpoint for backup and future HA snapshot transfer.
 
-**Component 2:** Coordinator FSM (Finite State Machine)
+**Component 2:** Coordinator State Machine
 
-* **Responsibility:** Materializes Raft log entries into queryable metadata state. Serves as the single source of truth for all Coordinator decisions.
-* **Technology:** Go struct implementing `hashicorp/raft.FSM` interface (`Apply`, `Snapshot`, `Restore`). Backed by BoltDB or BadgerDB on disk.
-* **Interactions:** Receives committed log entries from the Raft engine. Queried by the Coordinator's job manager, checkpoint coordinator, and resource manager. Serialized to snapshots for new node catch-up.
+* **Responsibility:** In-memory representation of the Coordinator's control plane state. Drives all decisions: job scheduling, task assignment, checkpoint coordination, failure recovery. Reconstructed from PebbleDB on startup.
+* **Technology:** Go structs. Loaded from PebbleDB via prefix scans on startup. Updated in-memory and persisted to PebbleDB atomically (using Pebble's `Batch` for multi-key writes).
+* **Interactions:** Queried by the job manager, checkpoint coordinator, and resource manager. Mutations are applied to both the in-memory state and PebbleDB in a single code path.
 
-**Component 3:** Raft Transport Layer
+**Component 3:** Leader Election (Phase B)
 
-* **Responsibility:** Carries Raft RPCs (AppendEntries, RequestVote, InstallSnapshot) between Coordinator nodes.
-* **Technology:** `hashicorp/raft.NetworkTransport` over TCP connections multiplexed by `hashicorp/yamux` on port 4002. The existing TCP mux (`internal/tcp/mux.go`) manages Yamux sessions, with Raft traffic carried on dedicated logical streams.
-* **Interactions:** Listens on `--raft-addr` (default `localhost:4002`). Advertises `--raft-adv-addr` for NAT/container environments. Supports TLS via `--node-cert`, `--node-key`, `--node-ca-cert`.
+* **Responsibility:** Ensures exactly one Coordinator is the active leader at any time. Provides epoch (fencing token) that increments on every leadership change.
+* **Technology:** Pluggable via `LeaderElection` interface. Implementations: Kubernetes lease (production), file-based lock (development/single-host), future embedded election.
+* **Interactions:** The Coordinator starts in standby mode and calls `LeaderElection.Campaign()`. On winning, it receives a `LeaderContext` with the current epoch and a cancellation signal. On losing leadership (context cancelled), the Coordinator stops processing and re-enters standby.
 
-**Component 4:** Leader Coordinator (Active Control Plane)
+**Component 4:** Fencing (Phase B)
 
-* **Responsibility:** The sole node that executes control plane logic: accepting job submissions, scheduling tasks, triggering checkpoints, detecting worker failures, orchestrating recovery.
-* **Technology:** Standard Coordinator logic, activated only when `raft.State() == Leader`.
-* **Interactions:** Receives worker heartbeats and RPC calls. Writes all state mutations (job state transitions, task assignments, checkpoint completions) as Raft log entries. Only proceeds after the entry is committed (majority replicated).
-
-**Component 5:** Follower Coordinator (Hot Standby)
-
-* **Responsibility:** Replicates all metadata from the Leader via Raft log application. Remains idle (no control plane actions) until promoted to Leader.
-* **Technology:** Same Coordinator binary, but control loops are gated behind a leadership check.
-* **Interactions:** Applies FSM updates passively. Redirects any client HTTP requests to the current Leader. Can serve read-only status queries (e.g., `GET /api/v1/cluster`) from its local FSM if stale reads are acceptable.
+* **Responsibility:** Prevents split-brain by ensuring stale leaders cannot issue commands that are acted upon. Every command from the Coordinator carries the current epoch. Workers and storage systems reject commands with epochs older than the last seen epoch.
+* **Technology:** Monotonically increasing `uint64` epoch, persisted in PebbleDB under `cluster/epoch`. Workers track the highest epoch seen and reject lower epochs.
+* **Interactions:** Embedded in all Coordinator-to-worker RPCs and checkpoint coordination messages.
 
 ### 2.3 Data Flow
 
-**Normal Operation (Leader healthy):**
+**Normal Operation (Single-Node, Phase A):**
 
-1. Worker sends heartbeat to Leader Coordinator (HTTP or RPC on port 4001).
-2. Leader processes heartbeat, updates worker last-seen timestamp in FSM via Raft log entry.
-3. Raft replicates the log entry to Followers. Followers apply it to their local FSMs.
-4. Leader triggers checkpoint: writes `CheckpointTriggered{ID: N}` to Raft log.
-5. Workers complete checkpoint and ACK to Leader.
-6. Leader writes `CheckpointCompleted{ID: N, Offsets: [...]}` to Raft log.
-7. All FSMs now reflect the latest completed checkpoint.
+1. Worker sends heartbeat to Coordinator (HTTP or RPC on port 4001).
+2. Coordinator updates worker last-seen timestamp in-memory and writes to PebbleDB (`workers/{worker_id}/meta`).
+3. Coordinator triggers checkpoint: writes `CheckpointTriggered` to PebbleDB, sends barriers to workers.
+4. Workers complete checkpoint and ACK to Coordinator.
+5. Coordinator writes `CheckpointCompleted` record to PebbleDB with offsets and state paths.
+6. PebbleDB WAL ensures all writes survive a crash.
 
-**Failover (Leader crashes):**
+**Crash Recovery (Single-Node, Phase A):**
 
-1. Followers detect missing heartbeats from Leader (after `--raft-timeout`, default 1s).
-2. Followers transition to Candidate state after `--raft-election-timeout` (default 1s).
-3. A Candidate wins election with majority votes. Becomes new Leader.
-4. New Leader reads FSM to reconstruct full cluster state: all jobs, task assignments, worker registrations, latest completed checkpoints.
-5. New Leader begins accepting worker heartbeats.
-6. Workers detect Leader loss (heartbeat/RPC failures), query known Coordinator addresses for new Leader, re-register.
-7. New Leader reconciles: any in-flight checkpoint that was not marked `Completed` in the FSM is aborted. A new checkpoint is triggered to establish a clean recovery point.
-8. Jobs continue from the last completed checkpoint without resubmission.
+1. Coordinator process crashes or is killed.
+2. External supervisor (K8s/Systemd) restarts Coordinator.
+3. Coordinator opens PebbleDB directory. WAL replay recovers any writes not yet flushed to SSTables.
+4. Coordinator performs prefix scans to reconstruct in-memory state:
+   - `jobs/` prefix → all job metadata and checkpoint records
+   - `workers/` prefix → worker registrations (stale, but provides baseline)
+   - `cluster/` prefix → cluster configuration and epoch
+5. Coordinator marks all worker registrations as stale and waits for workers to re-register.
+6. Workers detect heartbeat timeout, reconnect, and re-register with their current running tasks.
+7. Coordinator reconciles: matches worker-reported tasks against persisted task assignments.
+8. Jobs resume from the last completed checkpoint recorded in PebbleDB.
+
+**Failover (Multi-Node, Phase B+C):**
+
+1. Active leader crashes.
+2. Leader election backend detects failure (lease expiry, lock release).
+3. Standby Coordinator wins election, receives new epoch (e.g., epoch 43).
+4. New leader opens its PebbleDB (populated via shared storage or prior sync).
+5. Reconstructs in-memory state from PebbleDB (same as crash recovery).
+6. Begins accepting worker heartbeats, rejecting any with epoch < 43.
+7. Workers detect leader loss, discover new leader, re-register.
+8. New leader reconciles task assignments and aborts any in-flight checkpoint not marked complete.
 
 ---
 
 ## 3. API Design
 
-### 3.1 Coordinator Failover Protocol
+### 3.1 HA Interfaces
 
-#### 3.1.1 Leader Discovery
+Inspired by Flink's `HighAvailabilityServices`, Wire defines two core interfaces that keep the HA backend swappable.
 
-Workers and external clients discover the current Leader through one of two mechanisms:
+#### 3.1.1 MetadataStore Interface
+
+```go
+// MetadataStore provides durable persistence for Coordinator metadata.
+// The default implementation uses PebbleDB. Future implementations could
+// use shared filesystems, object stores, or replicated storage.
+type MetadataStore interface {
+    // Get retrieves a value by key. Returns nil, nil if key does not exist.
+    Get(key []byte) ([]byte, error)
+
+    // Set persists a key-value pair durably.
+    Set(key, value []byte) error
+
+    // Delete removes a key.
+    Delete(key []byte) error
+
+    // WriteBatch atomically applies a batch of writes.
+    WriteBatch(batch []KVPair) error
+
+    // PrefixScan iterates over all keys with the given prefix.
+    // The callback receives each key-value pair. Return false to stop iteration.
+    PrefixScan(prefix []byte, fn func(key, value []byte) bool) error
+
+    // Snapshot creates a point-in-time snapshot of the store.
+    // Returns the path to the snapshot directory.
+    Snapshot(destDir string) error
+
+    // Close releases all resources.
+    Close() error
+}
+
+// KVPair represents a key-value pair for batch writes.
+type KVPair struct {
+    Key    []byte
+    Value  []byte
+    Delete bool // If true, this is a delete operation.
+}
+```
+
+#### 3.1.2 LeaderElection Interface
+
+```go
+// LeaderElection provides pluggable leader election for Coordinator HA.
+// Implementations: Kubernetes lease, file lock, future embedded election.
+type LeaderElection interface {
+    // Campaign blocks until this node becomes the leader or the context is cancelled.
+    // On success, returns a LeaderContext. The caller must stop acting as leader
+    // when LeaderContext.Done() is closed (leadership lost).
+    Campaign(ctx context.Context, nodeID string) (*LeaderContext, error)
+
+    // Resign voluntarily gives up leadership. Used for graceful shutdown.
+    Resign(ctx context.Context) error
+
+    // GetLeader returns the current leader's node ID and address.
+    // Returns ("", "", ErrNoLeader) if no leader is elected.
+    GetLeader(ctx context.Context) (nodeID string, addr string, err error)
+
+    // Close releases all resources.
+    Close() error
+}
+
+// LeaderContext is returned when a node wins an election.
+type LeaderContext struct {
+    // Epoch is the fencing token for this leadership term.
+    // Monotonically increasing. All commands carry this epoch.
+    Epoch uint64
+
+    // Ctx is cancelled when leadership is lost.
+    Ctx context.Context
+
+    // Cancel allows the leader to voluntarily stop (calls Resign internally).
+    Cancel context.CancelFunc
+}
+```
+
+#### 3.1.3 Fencing Token / Epoch Protocol
+
+Every RPC and control message from the Coordinator to workers includes the current epoch:
+
+```go
+type CoordinatorCommand struct {
+    Epoch   uint64 // Fencing token — current leadership term.
+    Type    CommandType
+    Payload []byte
+}
+```
+
+**Worker-side fencing logic:**
+
+1. Worker tracks `highestSeenEpoch uint64` (persisted to local disk on update).
+2. On receiving a command:
+   - If `command.Epoch < highestSeenEpoch`: reject the command, respond with `ErrStaleEpoch`.
+   - If `command.Epoch >= highestSeenEpoch`: update `highestSeenEpoch`, process the command.
+3. On re-registration with a new leader, the worker sends its `highestSeenEpoch`. The new leader must have an epoch >= the worker's highest seen epoch.
+
+This prevents a zombie leader (one that has lost its lease but hasn't realized it) from issuing commands that are acted upon. The epoch provides the same safety guarantee as Raft's term number, without requiring full consensus.
+
+### 3.2 Coordinator Failover Protocol
+
+#### 3.2.1 Leader Discovery
+
+Workers and external clients discover the current leader through one of two mechanisms:
 
 **Mechanism A: HTTP Redirect**
 
-Any Coordinator node (Leader or Follower) exposes the HTTP API on port 4001. If a Follower receives a write request (job submission, cancel, etc.), it responds with:
+Any Coordinator node (leader or standby) exposes the HTTP API on port 4001. If a standby receives a write request, it responds with:
 
 ```
-HTTP/1.1 301 Moved Permanently
+HTTP/1.1 307 Temporary Redirect
 Location: http://<leader-http-addr>/api/v1/jobs
 X-Wire-Leader-Id: node-1
 X-Wire-Leader-Addr: node1:4001
+X-Wire-Leader-Epoch: 42
 ```
-
-Read-only requests (`GET /api/v1/cluster`, `GET /healthz`) may be served locally by the Follower if `--allow-stale-reads` is enabled (not yet implemented; see Open Questions).
 
 **Mechanism B: Leader Address Query**
 
@@ -175,221 +305,162 @@ Read-only requests (`GET /api/v1/cluster`, `GET /healthz`) may be served locally
 GET /api/v1/cluster/leader
 ```
 
-**Response (200 OK) -- served by any node:**
+**Response (200 OK) — served by any node:**
 
 ```json
 {
   "leader_id": "node-1",
   "leader_http_addr": "node1:4001",
-  "leader_raft_addr": "node1:4002",
+  "leader_epoch": 42,
   "is_self": false
 }
 ```
 
-Workers cache the Leader address and use it for all subsequent RPCs. On connection failure, workers re-query any known Coordinator address.
+Workers cache the leader address and use it for all subsequent RPCs. On connection failure, workers re-query any known Coordinator address.
 
-#### 3.1.2 Worker Re-registration After Failover
+#### 3.2.2 Worker Re-registration After Failover
 
-When a worker detects that its heartbeat or RPC calls to the Leader are failing:
+When a worker detects that its heartbeat or RPC calls to the leader are failing:
 
-1. Worker enters a **leader-discovery loop**: iterates through its list of known Coordinator addresses (provided via `--join` or discovery), calling `GET /api/v1/cluster/leader` on each.
-2. Once a new Leader is found, the worker sends a `RegisterWorker` RPC containing:
+1. Worker enters a **leader-discovery loop**: iterates through its list of known Coordinator addresses, calling `GET /api/v1/cluster/leader` on each.
+2. Once a new leader is found, the worker sends a `RegisterWorker` RPC containing:
    - `worker_id`: Stable identifier for this worker.
    - `task_slots_total`: Number of task slots available.
    - `running_tasks`: List of task IDs currently executing on this worker.
-3. The new Leader compares the worker's reported running tasks against the FSM's task assignment records. Three outcomes:
-   - **Match:** Task is assigned to this worker in the FSM. No action needed.
-   - **Orphaned task:** Worker reports a task not in the FSM. Leader instructs worker to cancel it.
-   - **Missing task:** FSM shows a task assigned to this worker, but worker does not report it. Leader marks the task as FAILED and initiates recovery.
+   - `highest_seen_epoch`: The highest epoch the worker has seen (for fencing validation).
+3. The new leader compares the worker's reported running tasks against the persisted task assignment records in PebbleDB. Three outcomes:
+   - **Match:** Task is assigned to this worker in PebbleDB. No action needed.
+   - **Orphaned task:** Worker reports a task not in PebbleDB. Leader instructs worker to cancel it.
+   - **Missing task:** PebbleDB shows a task assigned to this worker, but worker does not report it. Leader marks the task as FAILED and initiates recovery.
 
-#### 3.1.3 Job Survival Across Failover
+#### 3.2.3 Job Survival Across Failover
 
-Jobs survive Coordinator failover because all job metadata is replicated in the Raft FSM:
+Jobs survive Coordinator failover because all job metadata is persisted in PebbleDB:
 
-- **RUNNING jobs:** The new Leader finds the job in RUNNING state in the FSM. It waits for workers to re-register and reconcile task assignments. If all tasks are accounted for, the job continues without interruption.
-- **DEPLOYING jobs:** The new Leader finds the job in DEPLOYING state. It re-issues task deployment commands to workers. If workers already received and started the tasks, the reconciliation in 3.1.2 handles the overlap.
-- **FAILING jobs:** The new Leader picks up the recovery workflow. It selects the latest completed checkpoint from the FSM and re-deploys tasks.
-- **In-flight checkpoints:** Any checkpoint that was triggered but not completed at the time of failover is aborted. The new Leader triggers a fresh checkpoint to establish a clean baseline.
-
-#### 3.1.4 Bootstrap Process for New Cluster
-
-A new Wire cluster is bootstrapped using the `--bootstrap-expect` flag:
-
-1. Start N Coordinator nodes (recommended: 3 or 5), each with `--bootstrap-expect=N` and `--join=<addr1>,<addr2>,...,<addrN>`.
-2. Each node attempts to join the addresses listed in `--join`. Join attempts repeat `--join-attempts` times (default 5) with `--join-interval` (default 3s) delay.
-3. Once a node has discovered `N` peers (including itself), it initiates the Raft bootstrap. The first node to achieve quorum becomes the initial Leader.
-4. The bootstrap process must complete within `--bootstrap-expect-timeout` (default 120s). If it does not, the node exits with an error.
-5. After bootstrap, the Raft cluster is fully formed. Workers can now connect to any Coordinator address and discover the Leader.
-
-**Single-node mode:** When `--bootstrap-expect` is 0 (default) and `--join` is empty, the Coordinator bootstraps as a single-node Raft cluster. It is immediately the Leader. This is suitable for development and testing but provides no HA.
-
-#### 3.1.5 Node Join Protocol
-
-**Adding a Coordinator to an existing cluster:**
-
-1. Start a new Coordinator node with `--join=<existing-leader-addr>`.
-2. The new node sends a join request to the Leader's HTTP API:
-   ```
-   POST /api/v1/cluster/nodes
-   {
-     "node_id": "node-4",
-     "raft_addr": "node4:4002",
-     "voter": true
-   }
-   ```
-3. The Leader adds the new node to the Raft configuration as a Voter (or NonVoter if `--raft-non-voter` is set).
-4. Raft replicates the current log and snapshots to the new node. Once caught up, the node becomes a full member.
-
-**Removing a Coordinator from an existing cluster:**
-
-1. Graceful removal: If `--raft-cluster-remove-shutdown` is true, the node removes itself from the Raft configuration before shutting down. If `--raft-shutdown-stepdown` is true and the node is the Leader, it steps down first, triggering a new election.
-2. Forced removal: An operator calls `DELETE /api/v1/cluster/nodes/{node_id}` on the Leader. The Leader removes the node from the Raft configuration.
-3. Automatic reaping: If `--raft-reap-node-timeout` is set (e.g., `72h`), any voting node that has been unreachable for that duration is automatically removed from the Raft configuration by the Leader. Non-voting nodes are reaped after `--raft-reap-read-only-node-timeout`.
-
-#### 3.1.6 Node Join Authentication
-
-Join requests can be authenticated using the `--join-as` flag, which specifies a username in the auth file (`--auth`). The joining node includes credentials in the join request. The Leader validates the credentials against the auth file before admitting the node. If `--join-as` is not set, joins are anonymous (suitable for trusted networks).
+- **RUNNING jobs:** The new leader finds the job in RUNNING state in PebbleDB. It waits for workers to re-register and reconcile task assignments. If all tasks are accounted for, the job continues without interruption.
+- **DEPLOYING jobs:** The new leader finds the job in DEPLOYING state. It re-issues task deployment commands to workers. If workers already received and started the tasks, the reconciliation in 3.2.2 handles the overlap.
+- **FAILING jobs:** The new leader picks up the recovery workflow. It selects the latest completed checkpoint from PebbleDB and re-deploys tasks.
+- **In-flight checkpoints:** Any checkpoint that was triggered but not completed at the time of failover is aborted. The new leader triggers a fresh checkpoint to establish a clean baseline.
 
 ---
 
 ## 4. Data Model & Storage
 
-### 4.1 Raft FSM Schema
+### 4.1 PebbleDB Keyspace
 
-The FSM is the materialized view of the Raft log. It stores all metadata needed for the Coordinator to operate. The FSM is backed by BoltDB (default) or BadgerDB, selected via `--store-db`.
+All Coordinator metadata is stored in a single PebbleDB instance with prefix-based namespaces. Keys are lexicographically ordered byte strings. Prefix scans replace BoltDB-style bucket iteration.
 
-**Bucket/Namespace: `jobs`**
+**Namespace: `jobs/`**
 
-| Key | Type | Description |
+| Key | Value Type | Description |
 | -- | -- | -- |
-| `jobs/{job_id}/meta` | JobMeta | Core job metadata (name, status, parallelism, config hash) |
+| `jobs/{job_id}/meta` | JobMeta (msgpack) | Core job metadata (name, status, parallelism, config hash) |
 | `jobs/{job_id}/graph` | []byte | Serialized optimized JobGraph (operator chain, shuffle edges) |
-| `jobs/{job_id}/assignments` | TaskAssignmentMap | Mapping of task_id to worker_id for all parallel task instances |
-| `jobs/{job_id}/checkpoints/latest` | int64 | ID of the latest completed checkpoint |
-| `jobs/{job_id}/checkpoints/{cp_id}` | CheckpointMeta | Metadata for a specific checkpoint (offsets, state paths, timestamp) |
-| `jobs/{job_id}/savepoints/{sp_id}` | SavepointMeta | Savepoint metadata (path, status, trigger time) |
+| `jobs/{job_id}/assignments` | TaskAssignmentMap (msgpack) | Mapping of task_id to worker_id for all parallel task instances |
+| `jobs/{job_id}/checkpoints/latest` | int64 (big-endian) | ID of the latest completed checkpoint |
+| `jobs/{job_id}/checkpoints/{cp_id}` | CheckpointMeta (msgpack) | Metadata for a specific checkpoint (offsets, state paths, timestamp) |
+| `jobs/{job_id}/savepoints/{sp_id}` | SavepointMeta (msgpack) | Savepoint metadata (path, status, trigger time) |
 
-**Bucket/Namespace: `workers`**
+**Namespace: `workers/`**
 
-| Key | Type | Description |
+| Key | Value Type | Description |
 | -- | -- | -- |
-| `workers/{worker_id}/meta` | WorkerMeta | Worker registration (address, task slots total/available, last heartbeat) |
-| `workers/{worker_id}/tasks` | []string | List of task IDs currently assigned to this worker |
+| `workers/{worker_id}/meta` | WorkerMeta (msgpack) | Worker registration (address, task slots total/available, last heartbeat) |
+| `workers/{worker_id}/tasks` | []string (msgpack) | List of task IDs currently assigned to this worker |
 
-**Bucket/Namespace: `cluster`**
+**Namespace: `cluster/`**
 
-| Key | Type | Description |
+| Key | Value Type | Description |
 | -- | -- | -- |
-| `cluster/config` | ClusterConfig | Global cluster configuration (checkpoint interval, default parallelism) |
-| `cluster/nodes` | []NodeInfo | Raft cluster membership (node ID, address, voter/non-voter status) |
+| `cluster/config` | ClusterConfig (msgpack) | Global cluster configuration (checkpoint interval, default parallelism) |
+| `cluster/epoch` | uint64 (big-endian) | Current leadership epoch (fencing token) |
+| `cluster/leader` | LeaderInfo (msgpack) | Current leader node ID and address |
 
-### 4.2 Raft Log Entry Types
+Serialization uses `hashicorp/go-msgpack` (already in `go.mod`) for structured values. Fixed-size integers (epoch, checkpoint ID) are stored as big-endian bytes for correct lexicographic ordering.
 
-All mutations to the FSM are submitted as Raft log entries. Each entry has a type discriminator and a msgpack-serialized payload (using `hashicorp/go-msgpack`).
+### 4.2 State Mutation Protocol
 
-```go
-type LogEntryType uint8
+All mutations to Coordinator state follow a write-through protocol:
 
-const (
-    LogJobSubmitted       LogEntryType = iota + 1  // Job created, graph stored
-    LogJobStateChanged                              // Status transition (DEPLOYING, RUNNING, etc.)
-    LogTaskAssigned                                 // Task assigned to worker
-    LogTaskStateChanged                             // Task status update
-    LogCheckpointTriggered                          // Checkpoint initiated
-    LogCheckpointCompleted                          // Checkpoint completed with offsets
-    LogCheckpointFailed                             // Checkpoint failed
-    LogWorkerRegistered                             // Worker joined cluster
-    LogWorkerDeregistered                           // Worker removed (graceful or reaped)
-    LogWorkerHeartbeat                              // Worker heartbeat (last-seen update)
-    LogSavepointTriggered                           // Savepoint initiated
-    LogSavepointCompleted                           // Savepoint completed
-    LogClusterConfigChanged                         // Global config update
-)
-```
+1. Compute the new state in memory.
+2. Write to PebbleDB (single key via `Set`, or multi-key via `WriteBatch` for atomic operations).
+3. PebbleDB WAL fsync ensures durability before the write returns.
+4. Update in-memory state.
+5. If PebbleDB write fails, do not update in-memory state. Return error to caller.
 
-### 4.3 Raft Snapshot Format
+For operations that require atomicity across multiple keys (e.g., job submission creates `jobs/{id}/meta`, `jobs/{id}/graph`, and `jobs/{id}/assignments` simultaneously), use Pebble's `Batch` with a single `Commit()` call.
 
-When the Raft log grows beyond `--raft-snap` entries (default 8192), the Leader creates a snapshot of the FSM. The snapshot is a full serialization of all buckets/namespaces in the FSM store.
+### 4.3 Storage Considerations
 
-The snapshot is written as a length-prefixed msgpack stream:
-
-```
-[4 bytes: version][4 bytes: bucket count]
-For each bucket:
-  [4 bytes: bucket name length][N bytes: bucket name]
-  [4 bytes: entry count]
-  For each entry:
-    [4 bytes: key length][N bytes: key]
-    [4 bytes: value length][N bytes: value]
-```
-
-The snapshot interval is checked every `--raft-snap-int` (default 10s). Snapshots are stored in the `snapshots/` subdirectory under `--raft-dir`.
-
-### 4.4 Storage Considerations
-
-* **Data volume:** FSM size is proportional to the number of active jobs, tasks, and retained checkpoints. For a cluster with 100 jobs, 1000 tasks, and 10 checkpoints per job, the FSM is approximately 10-50 MB.
-* **Log compaction:** Raft snapshots automatically compact the log. After a snapshot, all preceding log entries are discarded.
-* **Disk requirements:** Each Coordinator node needs storage for the Raft log (bounded by snapshot threshold), the latest snapshot, and the FSM database. Recommended minimum: 1 GB for the Raft directory.
-* **Write amplification:** BoltDB uses B+ tree with copy-on-write. BadgerDB uses an LSM tree. For write-heavy workloads (frequent heartbeats), BadgerDB may offer better write throughput. For read-heavy workloads (job status queries), BoltDB may be preferable.
+* **Data volume:** Metadata store size is proportional to the number of active jobs, tasks, and retained checkpoints. For a cluster with 100 jobs, 1000 tasks, and 10 checkpoints per job, the store is approximately 10–50 MB.
+* **Write patterns:** Coordinator writes are bursty (checkpoint completions, job submissions) with a steady background of heartbeat updates. Pebble's LSM architecture handles this well — writes go to the MemTable and WAL, with background compaction merging SSTables.
+* **Compaction:** Pebble's automatic compaction keeps the store size bounded. Deleted keys (old checkpoints, deregistered workers) are cleaned up during compaction cycles.
+* **Tuning for Coordinator:** The Coordinator's PebbleDB instance should use smaller settings than worker state backends:
+  - MemTable size: 4 MB (vs 64 MB for workers)
+  - L0 compaction threshold: 4 files
+  - Block cache: 8 MB (vs 256 MB for workers)
+  - WAL: enabled, fsync on commit (durability guarantee)
+* **Backup:** Pebble's `Checkpoint()` creates a directory of hard links to the current SSTables. This completes in milliseconds regardless of store size and produces a consistent snapshot for backup or HA replication.
+* **Disk requirements:** Recommended minimum: 512 MB for the metadata directory. Actual usage will be much smaller (tens of MB) but headroom accounts for WAL growth during bursty writes.
 
 ---
 
 ## 5. Design Decisions & Trade-offs
 
-### Decision 1: Embedded Raft (not external etcd or ZooKeeper)
+### Decision 1: Pluggable HA with local persistence as default (not embedded Raft)
 
 |  |  |
 | -- | -- |
-| **Context** | Wire's vision mandates "zero external dependencies (no ZooKeeper, no Etcd)." The Coordinator needs HA with consistent metadata replication. |
-| **Options Considered** | (A) Embedded HashiCorp Raft, (B) External etcd cluster, (C) External ZooKeeper ensemble, (D) Embedded etcd (via embed package) |
-| **Decision** | Option A: Embedded HashiCorp Raft |
-| **Rationale** | Raft is already a dependency (`hashicorp/raft` v1.7.1 in go.mod). Embedded Raft keeps the single-binary deployment model. No external process to operate, monitor, or version-manage. etcd's embed package pulls in a massive dependency tree and is designed for a different use case (general-purpose KV store). ZooKeeper requires a JVM. HashiCorp Raft is battle-tested in Consul, Nomad, and Vault. |
-| **Trade-offs Accepted** | Wire must implement its own FSM and snapshot logic. No external tooling for inspecting metadata (unlike etcd's `etcdctl`). Raft group size is limited to the Coordinator cluster (typically 3-5 nodes). |
-| **Revisit Trigger** | If metadata query patterns become complex enough to warrant a full KV store with watches and transactions. |
+| **Context** | Wire's vision mandates "zero external dependencies." The Coordinator needs HA with durable metadata. However, the Coordinator is minimally implemented — there is no state machine to replicate. Apache Flink, the closest comparable system, uses leader election + persistent storage for HA, not embedded consensus. |
+| **Options Considered** | (A) Embedded HashiCorp Raft, (B) Flink-inspired: persistent metadata + pluggable leader election, (C) External etcd cluster, (D) Leaderless with CRDTs |
+| **Decision** | Option B: Flink-inspired phased approach with pluggable interfaces |
+| **Rationale** | You cannot replicate state that does not exist. The Coordinator must first persist its metadata durably and implement crash recovery before any replication is meaningful. Flink has proven that leader election + persistent storage provides production HA without embedded consensus. Clean interfaces (`MetadataStore`, `LeaderElection`) allow Raft to be introduced later as a drop-in implementation if deployment requirements demand it. |
+| **Trade-offs Accepted** | Phase A (single-node persistence) does not provide multi-node HA — an external supervisor is still needed to restart the Coordinator. Full HA requires reaching Phase B+C. However, this phased approach is implementable incrementally, whereas Raft requires building everything at once. |
+| **Revisit Trigger** | When the Coordinator is fully implemented (job submission, task scheduling, worker orchestration) and deployment requirements demand sub-second failover without external supervisors. At that point, evaluate embedded Raft as a `LeaderElection` + `MetadataStore` implementation. |
 
-### Decision 2: BoltDB as default Raft store (with BadgerDB option)
+### Decision 2: PebbleDB for Coordinator metadata (not BoltDB)
 
 |  |  |
 | -- | -- |
-| **Context** | Raft needs a stable store (current term, voted-for) and a log store (committed entries). Both must survive process restarts. |
-| **Options Considered** | (A) BoltDB only, (B) BadgerDB only, (C) BoltDB default with BadgerDB option via `--store-db` |
-| **Decision** | Option C: BoltDB default, BadgerDB optional |
-| **Rationale** | BoltDB (`go.etcd.io/bbolt`) is the standard choice for HashiCorp Raft. It is simple, well-tested, and has low operational overhead. BadgerDB (`dgraph-io/badger`) offers better write throughput for high-frequency updates (e.g., worker heartbeats). Both are already in `go.mod`. The `--store-db` flag provides flexibility without committing to one. `rqlite/raft-boltdb` provides the BoltDB adapter for HashiCorp Raft's `LogStore` and `StableStore` interfaces. |
-| **Trade-offs Accepted** | Two code paths to maintain and test. BoltDB has higher write amplification under heavy write loads. BadgerDB has higher memory usage and more complex tuning. |
-| **Revisit Trigger** | If benchmarks show one backend is strictly superior for Wire's workload, eliminate the other. |
+| **Context** | Coordinator metadata must survive process restarts. An embedded key-value store is needed. |
+| **Options Considered** | (A) BoltDB (`go.etcd.io/bbolt`), (B) BadgerDB (`dgraph-io/badger`), (C) PebbleDB (`github.com/cockroachdb/pebble`) |
+| **Decision** | Option C: PebbleDB |
+| **Rationale** | **Consistency:** Wire already uses Pebble for worker-side state backends (`docs/state-backend.md`). One engine everywhere reduces cognitive load, debug tooling, and dependency surface. **Concurrency:** BoltDB has a single-writer lock. The Coordinator receives concurrent heartbeat updates, checkpoint completions, and task status changes. Pebble handles concurrent writes via MemTables + WAL without lock contention. **Snapshots:** Pebble supports near-zero-cost hard-link snapshots, simplifying backup and future HA snapshot transfer. **Industry precedent:** CockroachDB uses Pebble for both data and metadata storage. Unifying storage engines is modern best practice. |
+| **Trade-offs Accepted** | PebbleDB has higher baseline memory usage than BoltDB. The Coordinator instance must be tuned down (smaller MemTable, smaller block cache). Pebble is a more complex codebase than BoltDB, though Wire already depends on it conceptually via the state backend design. |
+| **Revisit Trigger** | If Coordinator metadata volume is so small that Pebble's LSM overhead is measurably wasteful. In practice, the metadata fits in a single MemTable and this is unlikely to matter. |
 
 ### Decision 3: Leader-only writes (no multi-leader)
 
 |  |  |
 | -- | -- |
 | **Context** | Control plane operations (job submissions, checkpoint coordination) must be consistent. |
-| **Options Considered** | (A) Leader-only writes with follower redirect, (B) Multi-leader with conflict resolution, (C) Leaderless with CRDTs |
+| **Options Considered** | (A) Leader-only writes with standby redirect, (B) Multi-leader with conflict resolution, (C) Leaderless with CRDTs |
 | **Decision** | Option A: Leader-only writes |
-| **Rationale** | Raft inherently provides linearizable writes through a single Leader. This is the simplest correct approach. Multi-leader adds conflict resolution complexity that is unnecessary for a control plane. The Coordinator's write rate is low (job submissions, checkpoint completions) -- a single Leader is not a bottleneck. |
-| **Trade-offs Accepted** | All writes must pass through the Leader, adding one network hop for clients that connect to a Follower. Leader becomes a bottleneck only if write rate exceeds Raft throughput (unlikely for metadata). |
+| **Rationale** | A single active Coordinator is the simplest correct approach. Multi-leader adds conflict resolution complexity that is unnecessary for a control plane. The Coordinator's write rate is low (job submissions, checkpoint completions) — a single leader is not a bottleneck. This decision is unchanged regardless of whether HA is implemented via Raft or via leader election + persistent storage. |
+| **Trade-offs Accepted** | All writes must pass through the leader. Leader becomes a bottleneck only if write rate is extremely high (unlikely for metadata). |
 | **Revisit Trigger** | If control plane write rate exceeds 10,000 ops/sec (extremely unlikely for metadata). |
 
-### Decision 4: Heartbeats in the Raft log (not out-of-band)
+### Decision 4: In-memory heartbeats with periodic persistence (not per-heartbeat writes)
 
 |  |  |
 | -- | -- |
-| **Context** | Worker heartbeats update the `last_seen` timestamp in the FSM. This could be done via Raft (replicated) or out-of-band (local only). |
-| **Options Considered** | (A) Heartbeats as Raft log entries, (B) Out-of-band heartbeats stored only on Leader, (C) Hybrid: periodic Raft summary + frequent out-of-band |
+| **Context** | Worker heartbeats update the `last_seen` timestamp. Writing every heartbeat to PebbleDB would generate unnecessary I/O. |
+| **Options Considered** | (A) Every heartbeat written to PebbleDB, (B) In-memory only, (C) Hybrid: in-memory with periodic PebbleDB flush |
 | **Decision** | Option C: Hybrid approach |
-| **Rationale** | Raw heartbeats (every 1-5 seconds per worker) would flood the Raft log. Instead, workers send heartbeats directly to the Leader over HTTP/RPC (out-of-band). The Leader maintains an in-memory `last_seen` map. Periodically (every 30s), the Leader writes a `WorkerHealthSummary` Raft log entry that snapshots the liveness state. On failover, the new Leader has a recent-enough view of worker health and can quickly re-establish liveness through worker re-registration. |
-| **Trade-offs Accepted** | Up to 30 seconds of heartbeat data can be lost on failover. The new Leader must wait for workers to re-register before it has full liveness information. |
-| **Revisit Trigger** | If 30 seconds of staleness causes incorrect failure detection after failover. |
+| **Rationale** | Workers send heartbeats every 1–5 seconds. Writing each to PebbleDB is wasteful. Instead, the Coordinator maintains an in-memory `last_seen` map and periodically (every 30s) flushes a heartbeat summary to PebbleDB. On crash recovery, the Coordinator has a recent-enough baseline and quickly re-establishes liveness through worker re-registration. |
+| **Trade-offs Accepted** | Up to 30 seconds of heartbeat data can be lost on crash. The recovering Coordinator must wait for workers to re-register before it has full liveness information. This is acceptable because workers self-terminate and reconnect after heartbeat timeout anyway. |
+| **Revisit Trigger** | If 30 seconds of staleness causes incorrect failure detection after recovery. Reduce the flush interval if needed. |
 
-### Decision 5: Yamux-multiplexed Raft transport (not separate TCP connections)
+### Decision 5: Flink-inspired recovery model (persist metadata, reconstruct on restart)
 
 |  |  |
 | -- | -- |
-| **Context** | Raft needs a reliable transport between Coordinator nodes. Wire already uses Yamux for inter-node communication on port 4002. |
-| **Options Considered** | (A) Yamux streams on port 4002 (shared with other internode traffic), (B) Dedicated TCP port for Raft, (C) gRPC transport for Raft |
-| **Decision** | Option A: Yamux streams on port 4002 |
-| **Rationale** | The TCP mux (`internal/tcp/mux.go`) already manages Yamux sessions between nodes. Raft traffic is low-bandwidth metadata. Sharing the port simplifies firewall rules and deployment. HashiCorp Raft's `NetworkTransport` accepts any `net.Listener`, so the Yamux mux's `Accept()` method can serve as the Raft listener. A byte prefix or stream type header distinguishes Raft streams from data streams. |
-| **Trade-offs Accepted** | Raft traffic shares bandwidth with other internode traffic. If data plane traffic saturates the connection, Raft heartbeats could be delayed, causing spurious elections. |
-| **Revisit Trigger** | If Raft election instability is observed under high internode data traffic. Mitigate by prioritizing Raft streams in the Yamux config or moving to a dedicated port. |
+| **Context** | After a Coordinator crash or failover, the new/restarted Coordinator must reconstruct its control plane state. |
+| **Options Considered** | (A) Raft FSM replay (replicate and replay log), (B) Recovery from persistent storage (Flink model), (C) Full state transfer from standby |
+| **Decision** | Option B: Recovery from persistent storage |
+| **Rationale** | This is exactly what Flink does. The JobManager persists job metadata to HDFS/S3. On failover, the new JobManager reads the persisted metadata and reconstructs its in-memory state. Wire's equivalent: PebbleDB is the persistent store, and prefix scans reconstruct the in-memory state. This approach is simpler than Raft FSM replay, does not require a consensus group, and is proven at scale. The `MetadataStore` interface abstracts the storage backend, so future implementations could use shared filesystems, object stores, or even a Raft-backed store. |
+| **Trade-offs Accepted** | Recovery time depends on the metadata volume and PebbleDB read speed. For typical metadata sizes (10–50 MB), reconstruction takes < 1 second. This is slower than Raft FSM (which is always up-to-date on followers) but fast enough for production use. |
+| **Revisit Trigger** | If recovery time exceeds acceptable thresholds due to metadata volume growth. Mitigation: pre-warm standby by periodically syncing PebbleDB snapshots. |
 
 ---
 
@@ -397,40 +468,35 @@ The snapshot interval is checked every `--raft-snap-int` (default 10s). Snapshot
 
 | # | Scenario | Handling | Impact | Severity |
 | -- | -- | -- | -- | -- |
-| 1 | **Split brain: network partition isolates Leader from majority** | The isolated Leader cannot commit new log entries (no majority). It steps down after `--raft-leader-lease-timeout` expires. The majority partition elects a new Leader. Workers on the minority side fail to reach either Leader and enter re-discovery. When the partition heals, the old Leader rejoins as a Follower, and its uncommitted log entries are discarded. | Brief control plane unavailability (seconds). No data loss for committed entries. | High |
-| 2 | **Network partition splits Coordinators 2-1 with Workers on the minority side** | The 2-node majority partition has a Leader but the workers cannot reach it. Workers on the minority side self-terminate after heartbeat timeout. When the partition heals, workers reconnect and re-register. The Leader redeploys tasks to available workers. | Jobs on partitioned workers fail and recover from checkpoint. | High |
-| 3 | **Leader election during in-flight checkpoint** | The old Leader triggered `CheckpointTriggered{ID: N}` but the entry may or may not have been committed. Case A: If committed, the new Leader sees it in the FSM and waits for worker ACKs. If ACKs never arrive (because workers lost the old Leader), the new Leader times out the checkpoint and triggers a new one. Case B: If not committed, the new Leader never sees it. Workers that started snapshotting will time out and discard the partial checkpoint. The new Leader triggers a fresh checkpoint. | One checkpoint lost. Next checkpoint succeeds normally. | Medium |
-| 4 | **Leader crashes while applying a job submission** | The Raft entry for `LogJobSubmitted` was either committed or not. If committed, the new Leader sees the job in CREATED state and can proceed. If not committed, the entry is lost. The client receives no response (connection reset) and must retry. The retry is safe because job submission is idempotent (keyed by job name). | Client must retry. No inconsistency. | Medium |
-| 5 | **All Coordinator nodes crash simultaneously** | Raft cannot elect a Leader. Jobs halt. On restart, each Coordinator loads its persisted Raft state (log + snapshots) from disk. The first to form a majority quorum elects a Leader. FSM is restored from the last snapshot + unapplied log entries. Workers that survived reconnect and re-register. | Full control plane outage until quorum restored. Job state preserved on disk. | Critical |
-| 6 | **New Coordinator joins with stale/corrupted data directory** | Raft detects log inconsistency during replication. The Leader sends a full snapshot via `InstallSnapshot` RPC. The joining node discards its stale FSM and rebuilds from the snapshot. | Brief delay while snapshot transfers. No data loss. | Low |
-| 7 | **Follower falls behind by more than snapshot threshold** | The Leader's log has been compacted (old entries removed after snapshot). The Follower cannot catch up via log replication alone. The Leader sends its latest snapshot to the Follower. The Follower rebuilds its FSM from the snapshot and continues normal replication. | Temporary increased network usage during snapshot transfer. | Low |
-| 8 | **Worker connects to Follower and sends a write request** | The Follower does not process the write. It returns an HTTP 301 redirect to the Leader's address. The worker retries at the Leader. | One additional round trip. | Low |
-| 9 | **Leader lease expires due to GC pause or CPU starvation** | The Leader steps down. A new election occurs. The old Leader (if still running) discovers it is no longer Leader and stops processing. Any writes it attempted during the lease gap were not committed (no majority ACK) and are discarded. | Brief election. No split-brain because lease prevents stale Leader from committing. | Medium |
-| 10 | **Bootstrap: fewer than `--bootstrap-expect` nodes start within timeout** | The bootstrap process fails. Each node logs an error and exits. Operator must investigate and restart. | Cluster does not form. No data loss (nothing was committed). | Medium |
+| 1 | **Coordinator crashes during checkpoint coordination** | On recovery, the Coordinator reads PebbleDB. If `CheckpointTriggered` was written but `CheckpointCompleted` was not, the checkpoint is aborted. Workers that started snapshotting will time out and discard the partial checkpoint. The recovered Coordinator triggers a fresh checkpoint. | One checkpoint lost. Next checkpoint succeeds normally. | Medium |
+| 2 | **Coordinator crashes during job submission** | The PebbleDB `WriteBatch` for job creation (meta + graph + assignments) either committed fully or not at all (atomic batch). If committed, the recovered Coordinator finds the job in CREATED state and proceeds. If not committed, the job does not exist. The client must retry (safe because job submission is idempotent by job name). | Client must retry. No inconsistency. | Medium |
+| 3 | **Worker re-registration after failover (Phase B+C)** | Workers detect leader loss via heartbeat timeout. They enter a leader-discovery loop, querying known Coordinator addresses. The new leader validates the worker's `highest_seen_epoch` against its own epoch. Workers reporting tasks are reconciled against PebbleDB records. | Brief task processing pause during re-registration (seconds). | Medium |
+| 4 | **Stale leader sends command with old epoch (split-brain prevention)** | Worker receives a command with `epoch < highestSeenEpoch`. Worker rejects the command with `ErrStaleEpoch`. The stale leader eventually discovers it is no longer the leader (election backend notification or repeated rejections) and stops processing. | Stale commands are safely rejected. No split-brain. | High |
+| 5 | **Coordinator crashes and PebbleDB WAL is corrupted** | PebbleDB's WAL replay detects corruption. The Coordinator fails to start. Operator must restore from the last PebbleDB snapshot (created by the periodic backup). If no snapshot exists, metadata is lost and jobs must be re-submitted. | Data loss proportional to time since last snapshot. | Critical |
+| 6 | **Network partition isolates leader from workers (Phase B+C)** | Workers cannot reach the leader. Workers self-terminate after heartbeat timeout. The leader election backend detects the leader is isolated and revokes its lease. A standby on the other side of the partition becomes the new leader. When the partition heals, workers reconnect and re-register with the new leader. | Jobs on partitioned workers fail and recover from checkpoint. | High |
+| 7 | **Standby Coordinator has stale PebbleDB snapshot** | The standby becomes leader and reconstructs state from a stale snapshot. Workers re-register and report their current tasks. The new leader reconciles: tasks reported by workers but not in PebbleDB are treated as valid (the snapshot missed them). Tasks in PebbleDB but not reported by any worker are marked FAILED. The reconciliation protocol self-heals the metadata gap. | Brief reconciliation period. Some tasks may be unnecessarily restarted. | Medium |
+| 8 | **Leader election backend fails (Phase B)** | If the election backend (e.g., Kubernetes API server) is unavailable, no election can occur. The current leader continues operating if it holds a valid lease. If the lease expires, the Coordinator enters standby and stops processing until the election backend recovers. | Control plane unavailable until election backend recovers. | High |
+| 9 | **Worker connects to standby and sends a write request** | The standby does not process the write. It returns an HTTP 307 redirect to the leader's address. The worker retries at the leader. | One additional round trip. | Low |
 
 ---
 
 ## 7. Security & Compliance
 
-### 7.1 Raft Transport Encryption
+### 7.1 Metadata Data Protection
 
-* **TLS for inter-Coordinator communication:** When `--node-cert` and `--node-key` are provided, all Raft traffic on port 4002 is encrypted using TLS 1.3 (enforced in `internal/tcp/mux.go`'s `NewTLSMux`). This covers AppendEntries, RequestVote, InstallSnapshot, and all other Raft RPCs.
-* **Mutual TLS:** When `--node-verify-client` is enabled, Coordinator nodes mutually authenticate each other using X.509 certificates. This prevents unauthorized nodes from joining the Raft group.
-* **Certificate verification:** The `--node-ca-cert` flag specifies the CA certificate for verifying peer certificates. The `--node-verify-server-name` flag specifies the expected hostname on peer certificates. If `--node-no-verify` is true, certificate verification is skipped (development only).
+* **Encryption at rest:** PebbleDB stores metadata in `--coordinator-data-dir`. Encryption at rest depends on the underlying filesystem or volume encryption (e.g., LUKS, dm-crypt, EBS encryption). Wire does not implement application-level encryption for the metadata store.
+* **Sensitive metadata:** Job configurations stored in PebbleDB may reference connector credentials via `${ENV_VAR}` substitution. The resolved values are never stored in PebbleDB — only the variable references. Actual credentials are resolved at runtime on the worker.
 
-### 7.2 Join Authentication
+### 7.2 Fencing Token Security
 
-* **Authenticated joins:** The `--join-as` flag enables authenticated cluster joins. The joining node must present valid credentials (username from the `--auth` file). The Leader validates credentials before adding the node to the Raft configuration.
-* **Unauthenticated joins:** When `--join-as` is not set, any node that can reach the Leader on the Raft port can join. This is acceptable in trusted networks but should be disabled in production by setting `--auth` and `--join-as`.
+* **Epoch integrity:** The epoch is persisted in PebbleDB and monotonically increasing. A newly elected leader reads the current epoch, increments it, and persists the new value before issuing any commands. This prevents epoch reuse even after a crash.
+* **Epoch validation:** Workers validate the epoch on every command. A compromised or buggy Coordinator cannot issue commands with a fabricated epoch because workers track the highest seen epoch and reject lower values.
 
-### 7.3 FSM Data Protection
+### 7.3 Leader Election Security (Phase B)
 
-* **Encryption at rest:** The Raft log and FSM database (BoltDB/BadgerDB) are stored in `--raft-dir`. Encryption at rest depends on the underlying filesystem or volume encryption (e.g., LUKS, dm-crypt, EBS encryption). Wire does not implement application-level encryption for the FSM.
-* **Sensitive metadata:** Job configurations stored in the FSM may reference connector credentials via `${ENV_VAR}` substitution. The resolved values are never stored in the FSM -- only the variable references. Actual credentials are resolved at runtime on the worker.
-
-### 7.4 Raft Log Integrity
-
-* Raft's own protocol guarantees log integrity: entries are committed only when a majority of nodes have persisted them. BoltDB and BadgerDB both use checksums on their data files. Corruption of a single node's log is detected and corrected via snapshot transfer from the Leader.
+* **Kubernetes lease:** Uses the Kubernetes API server's authentication and RBAC. Only Coordinator pods with the correct ServiceAccount can acquire the lease.
+* **File lock:** Suitable only for single-host development. No authentication — relies on filesystem permissions.
+* **Future embedded election:** Must include mutual authentication (mTLS) between Coordinator nodes. This is the same TLS infrastructure already planned for inter-node communication on port 4002.
 
 ---
 
@@ -438,24 +504,24 @@ The snapshot interval is checked every `--raft-snap-int` (default 10s). Snapshot
 
 | Test Type | Scope | Tools | Coverage Target |
 | -- | -- | -- | -- |
-| Unit Tests | FSM Apply/Snapshot/Restore, log entry serialization, leader discovery logic | Go `testing`, mock Raft | 100% of FSM operations |
-| Integration Tests | 3-node Raft cluster lifecycle: bootstrap, failover, re-election, node join/leave | Go `testing`, in-process Raft cluster | All state transitions |
-| Chaos Tests | Leader kill during checkpoint, network partition simulation, disk full | Docker Compose + `tc` (traffic control) | All edge cases in Section 6 |
-| Performance Tests | Raft throughput under sustained metadata writes, failover latency measurement | Go benchmarks, custom harness | Failover < 5s, throughput > 1000 ops/sec |
+| Unit Tests | MetadataStore operations (Get/Set/Delete/PrefixScan/Snapshot), state reconstruction, fencing logic | Go `testing`, temp PebbleDB | 100% of MetadataStore interface |
+| Integration Tests | Crash recovery round-trip: write state, kill process, restart, verify reconstruction | Go `testing`, in-process Coordinator | All job states (CREATED, DEPLOYING, RUNNING, FAILING) |
+| Fencing Tests | Epoch validation: stale leader rejected, new leader accepted, epoch monotonicity | Go `testing`, mock workers | All fencing scenarios |
+| Recovery Tests | Worker re-registration after Coordinator restart, task reconciliation | Go `testing`, mock workers | Match, orphaned, missing task cases |
+| Performance Tests | PebbleDB write throughput, recovery time from 10K jobs, snapshot creation time | Go benchmarks | Recovery < 5s for 10K jobs |
 
 ### 8.1 Key Test Scenarios
 
-1. **Bootstrap:** Start 3 Coordinator nodes with `--bootstrap-expect=3`. Verify one becomes Leader within 30s. Verify all FSMs are consistent.
-2. **Leader failover:** Kill the Leader process. Verify a new Leader is elected within 5s. Verify all job metadata is preserved in the new Leader's FSM.
-3. **Job survival:** Submit a job, start it running, kill the Leader. Verify the new Leader picks up the job in RUNNING state and workers re-register without job restart.
-4. **Checkpoint during failover:** Trigger a checkpoint, kill the Leader before `CheckpointCompleted` is written. Verify the new Leader aborts the in-flight checkpoint and triggers a new one.
-5. **Worker re-registration:** After failover, verify all workers re-discover the new Leader and re-register within 30s. Verify task assignment reconciliation produces correct results.
-6. **Node join:** Add a 4th Coordinator to a running 3-node cluster. Verify it receives the snapshot and catches up. Verify it can become Leader if the current Leader is killed.
-7. **Node removal:** Gracefully shut down a Coordinator with `--raft-cluster-remove-shutdown`. Verify the Raft configuration shrinks. Verify the cluster continues to operate with the remaining nodes.
-8. **Network partition:** Simulate a partition isolating the Leader. Verify the majority partition elects a new Leader. Verify the old Leader steps down. Verify cluster reconverges when the partition heals.
-9. **Split-brain safety:** During a partition, attempt writes on both sides. Verify only the majority-side Leader can commit writes. Verify no committed data is lost when the partition heals.
-10. **Snapshot and restore:** Fill the FSM with 1000 jobs. Trigger a snapshot. Add a new node. Verify it receives the snapshot and has all 1000 jobs in its FSM.
-11. **TLS verification:** Start a 3-node cluster with mutual TLS. Attempt to join a node with an invalid certificate. Verify the join is rejected.
+1. **PebbleDB round-trip:** Write job metadata, close PebbleDB, reopen, verify all metadata is intact.
+2. **Atomic batch:** Write a multi-key job submission batch. Kill the process mid-write (simulate with partial batch). Verify PebbleDB is consistent on reopen (all-or-nothing).
+3. **Crash recovery:** Submit 100 jobs, start 50 running, complete 10 checkpoints. Kill Coordinator. Restart. Verify all 100 jobs, 50 running states, and 10 checkpoints are recovered.
+4. **Worker reconciliation:** After recovery, simulate workers re-registering with various task states. Verify match, orphaned, and missing task handling.
+5. **Fencing validation:** Simulate a stale Coordinator sending commands with old epoch. Verify workers reject them. Simulate new leader with higher epoch. Verify workers accept commands.
+6. **Epoch persistence:** Start Coordinator (epoch 1). Crash. Restart. Verify epoch is 2 (incremented on recovery). New leader must not reuse epoch 1.
+7. **PebbleDB snapshot:** Write 1000 jobs. Create snapshot. Verify snapshot directory contains a consistent copy. Open snapshot as a separate PebbleDB instance and verify all data.
+8. **Heartbeat flush:** Write heartbeats in-memory. Trigger periodic flush. Kill Coordinator. Restart. Verify last heartbeat summary is available (up to 30s old).
+9. **Checkpoint during crash:** Trigger checkpoint, write `CheckpointTriggered` to PebbleDB, kill before `CheckpointCompleted`. Restart. Verify the in-flight checkpoint is detected and aborted.
+10. **LeaderElection interface:** Test with a mock election backend. Verify Campaign blocks until elected, returns correct epoch, and context is cancelled on leadership loss.
 
 ---
 
@@ -463,13 +529,11 @@ The snapshot interval is checked every `--raft-snap-int` (default 10s). Snapshot
 
 | # | Question / Risk | Owner | Status |
 | -- | -- | -- | -- |
-| 1 | Should Follower Coordinators serve read-only queries (e.g., job status, cluster info) from their local FSM, or should all reads go to the Leader? Stale reads improve availability but may return outdated data. | Tarun | Open |
-| 2 | What is the optimal frequency for the hybrid heartbeat summary (Decision 4)? 30 seconds may be too long if a failover occurs right before the summary. 5 seconds may add too much Raft log traffic. | Tarun | Open |
-| 3 | Should Wire support Raft observer nodes (non-voting, non-promoting) for monitoring or geographic read replicas? The `--raft-non-voter` flag exists but its use case is undefined. | Tarun | Open |
-| 4 | How should the Coordinator handle the transition from single-node mode (development) to a multi-node cluster? Is there a migration path, or must the user bootstrap a new cluster and re-submit jobs? | Tarun | Open |
-| 5 | Should the FSM store full job graphs or only references (hashes) to graphs stored in an external blob store? Large job graphs (hundreds of operators) could bloat the Raft log. | Tarun | Open |
-| 6 | Risk: The Yamux-shared port for Raft traffic (Decision 5) may cause election instability under heavy data plane load. Need benchmarks to validate. If problematic, a dedicated Raft port is the fallback. | Tarun | Acknowledged |
-| 7 | Risk: BoltDB's single-writer lock may become a bottleneck if worker heartbeat summaries and checkpoint completions are written frequently. BadgerDB's concurrent writes may help, but need benchmarks. | Tarun | Acknowledged |
-| 8 | How does the Coordinator HA interact with the discovery modes (`consul-kv`, `etcd-kv`, `dns`, `dns-srv`) currently commented out in `cmd/init.go`? Should Coordinators register themselves in a discovery service for worker bootstrapping? | Tarun | Open |
-| 9 | What is the maximum recommended cluster size for the Coordinator Raft group? HashiCorp recommends 3 or 5 nodes. Should Wire enforce a maximum? | Tarun | Open |
-| 10 | Risk: If all Coordinators are co-located in a single availability zone, a zone failure defeats HA. Should the documentation recommend cross-AZ deployment, or should Wire enforce it? | — | Acknowledged |
+| 1 | Should the FSM store full job graphs or only references (hashes) to graphs stored in an external blob store? Large job graphs (hundreds of operators) could bloat the metadata store. | Tarun | Open |
+| 2 | How does the Coordinator HA interact with the discovery modes (`consul-kv`, `etcd-kv`, `dns`, `dns-srv`) currently commented out in `cmd/init.go`? Should Coordinators register themselves in a discovery service for worker bootstrapping? | Tarun | Open |
+| 3 | When should Wire adopt embedded Raft? Evaluation criteria: (a) Coordinator is fully implemented with job submission, scheduling, and orchestration. (b) Deployment requirements demand sub-second failover without external supervisors. (c) PebbleDB snapshot replication latency is too high for acceptable recovery time. (d) The zero-dependency constraint eliminates external election backends. If all four criteria are met, implement Raft as a combined `LeaderElection` + `MetadataStore` backend. | Tarun | Open |
+| 4 | What PebbleDB tuning is needed for Coordinator metadata vs worker state? Worker state backends use large MemTables (64 MB) and block caches (256 MB) for streaming throughput. Coordinator metadata is orders of magnitude smaller. Proposed: 4 MB MemTable, 8 MB block cache. Needs benchmarking to validate. | Tarun | Open |
+| 5 | How should PebbleDB snapshots be transferred to standby Coordinators? Options: (a) Shared filesystem (NFS/EFS). (b) Direct transfer over the wire protocol (preferred — aligns with zero-dependency model). (c) Pebble's built-in checkpoint + rsync. Shared filesystem is simplest but adds an external dependency. | Tarun | Open |
+| 6 | Risk: In Phase A (single-node), the Coordinator still requires an external supervisor (K8s/Systemd) to restart after a crash. This does not provide true HA. Acceptable as a stepping stone, but must be communicated clearly. | — | Acknowledged |
+| 7 | Risk: PebbleDB WAL corruption after a crash could prevent recovery. Mitigation: periodic PebbleDB snapshots stored in a separate directory or remote storage. Snapshot frequency TBD. | — | Acknowledged |
+| 8 | Risk: Leader election backends introduce an external dependency (Kubernetes API server, ZooKeeper, etc.). The file-lock backend is zero-dependency but single-host only. Wire may eventually need an embedded election protocol to satisfy the zero-dependency constraint for multi-node deployments. This is exactly where Raft re-enters the picture (Phase D). | — | Acknowledged |

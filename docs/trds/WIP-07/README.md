@@ -253,7 +253,7 @@ message DownstreamChannelInfo {
 
 message CheckpointRestoreInfo {
   int64 checkpoint_id = 1;                   // Checkpoint to restore from
-  string base_path = 2;                      // Durable storage base path (e.g., "s3://bucket/jobs/...")
+  string base_path = 2;                      // Durable storage base path (e.g., "/var/lib/wire/jobs/...")
   map<string, StateHandle> task_state_handles = 3; // task_id -> state handle
 }
 

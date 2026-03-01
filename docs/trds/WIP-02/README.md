@@ -84,7 +84,7 @@ Define the goroutine model per Task Slot: one main processing goroutine per oper
 | **Operator Chain** | 1 per chain | Entire task lifetime | Execute fused operators sequentially. `select`s on input data channel and control mailbox. |
 | **Yamux Stream Reader** | 1 per input stream | Entire task lifetime | Read and deserialize frames from upstream tasks (WIP-01). Detect barriers and route to control mailbox. |
 | **Yamux Stream Writer** | 1 per output stream | Entire task lifetime | Serialize and write frames to downstream tasks |
-| **Checkpoint Uploader** | 0-1 | Created on checkpoint, exits on completion | Upload state snapshot to S3/MinIO |
+| **Checkpoint Replicator** | 0-1 | Created on checkpoint, exits on completion | Replicate state snapshot to peer nodes via wire protocol |
 | **Watermark Emitter** | 1 per source task | Entire task lifetime (sources only) | Periodically compute and publish watermark via `atomic.Int64` (WIP-04) |
 | **Pebble Compaction** | 1-2 | Managed by Pebble | Background LSM compaction |
 | **Pebble WAL Sync** | 1 | Managed by Pebble | Write-ahead log synchronization |
@@ -280,7 +280,7 @@ No persistent storage for goroutine model. All concurrency state is ephemeral.
 | -- | -- | -- | -- | -- |
 | 1 | Goroutine leak (e.g., Yamux reader not cleaned up on shutdown) | `errgroup` context cancellation propagated to all goroutines. `defer` cleanup in each. | Resource leak if buggy | Medium |
 | 2 | Pebble compaction goroutines compete with operator chain | Pebble compaction is bounded (max 2). Under cgroup CPU limits, compaction can cause noticeable latency spikes (~ms). Mitigated by Go 1.21+ cooperative preemption at function prologues. | Throughput reduction during compaction | Medium |
-| 3 | Checkpoint upload goroutine blocks on slow S3 | Upload is async — doesn't block the operator chain. If upload takes longer than checkpoint interval, next checkpoint may be delayed. | Checkpoint interval effectively increases | Medium |
+| 3 | Checkpoint replication goroutine blocks on slow peer | Replication is async — doesn't block the operator chain. If replication takes longer than checkpoint interval, next checkpoint may be delayed. | Checkpoint interval effectively increases | Medium |
 | 4 | Channel deadlock (circular dependency) | Wire's DAG structure prevents circular data flow. Control mailbox uses bounded buffer (16) — sufficient for infrequent control messages. | Should not occur by design | Low |
 | 5 | Operator user code panics | Recovered via `recover()` in operator chain goroutine. Task marked FAILED, restarted from last checkpoint. Stack trace logged. | Task restarts | Medium |
 | 6 | Alignment side buffer overflow during checkpoint | If side buffer reaches `alignment_buffer_size`, Yamux reader blocks. Backpressure propagates upstream. If alignment doesn't complete within `checkpoint.timeout` (WIP-05), checkpoint is aborted and buffers drained. | Checkpoint aborted | Medium |
@@ -323,6 +323,6 @@ No additional security considerations.
 | 1 | Should channel buffer sizes be auto-tuned based on throughput? | Tarun | Open |
 | 2 | ~~Should we use `uber/automaxprocs` for container-aware GOMAXPROCS?~~ **Resolved:** Adopted. See Section 3.2. | Tarun | Resolved |
 | 3 | Risk: Too many Task Slots per worker = too many goroutines = Go scheduler overhead | — | Acknowledged |
-| 4 | Should checkpoint uploads use a worker-wide bounded pool instead of per-task goroutines? If 10 tasks checkpoint simultaneously, 10 concurrent S3 uploads may contend. A shared pool (`worker.checkpoint_upload_concurrency`) would provide better resource control. | Tarun | Open |
+| 4 | Should checkpoint replications use a worker-wide bounded pool instead of per-task goroutines? If 10 tasks checkpoint simultaneously, 10 concurrent replications may contend. A shared pool (`worker.checkpoint_replication_concurrency`) would provide better resource control. | Tarun | Open |
 | 5 | Should timer delivery (event-time timers for windowed operators) use the control mailbox channel? This would unify all non-data signals into one path. Depends on window operator design (future TRD). | Tarun | Open |
 | 6 | Risk: Alignment side buffers add memory overhead during checkpoints. With 4 inputs × 4096 events × ~1 KB = ~16 MB per task during alignment. Should this be bounded by bytes rather than event count? | — | Acknowledged |

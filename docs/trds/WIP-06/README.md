@@ -24,7 +24,7 @@
 
 ### 1.1 Problem Statement
 
-Wire's state-backend.md references a `metadata.json` file in the S3 checkpoint layout but **its schema is never defined**. Without a specified format, checkpoint restoration, savepoint compatibility checks, and tooling (inspection, migration) cannot be implemented. The metadata file is the "table of contents" for a checkpoint — everything depends on its correctness.
+Wire's state-backend.md references a `metadata.json` file in the checkpoint layout but **its schema is never defined**. Without a specified format, checkpoint restoration, savepoint compatibility checks, and tooling (inspection, migration) cannot be implemented. The metadata file is the "table of contents" for a checkpoint — everything depends on its correctness.
 
 ### 1.2 Proposed Solution (Technical Summary)
 
@@ -37,7 +37,7 @@ Define the `metadata.json` schema for checkpoints and savepoints. The file conta
 ### 2.1 Checkpoint Storage Layout
 
 ```
-s3://bucket/wire/jobs/<job-id>/
+<data-dir>/jobs/<job-id>/
   checkpoints/
     chk-42/
       metadata.json               ← THIS TRD
@@ -247,8 +247,8 @@ Validation errors:
 
 | Type | Path Pattern |
 |------|-------------|
-| Automatic checkpoint | `s3://{bucket}/wire/jobs/{job_id}/checkpoints/chk-{id}/metadata.json` |
-| Savepoint | `s3://{bucket}/wire/jobs/{job_id}/savepoints/sp-{id}/metadata.json` |
+| Automatic checkpoint | `<data-dir>/jobs/{job_id}/checkpoints/chk-{id}/metadata.json` |
+| Savepoint | `<data-dir>/jobs/{job_id}/savepoints/sp-{id}/metadata.json` |
 | Local filesystem | `/var/lib/wire/checkpoints/{job_id}/chk-{id}/metadata.json` |
 
 ### 4.2 Size Estimate
@@ -289,7 +289,7 @@ For a job with 10 operators, parallelism 8, 80 tasks:
 
 | # | Scenario | Handling | Impact | Severity |
 | -- | -- | -- | -- | -- |
-| 1 | metadata.json corrupted in S3 | Checkpoint marked invalid. Coordinator falls back to previous checkpoint. | One checkpoint lost | Medium |
+| 1 | metadata.json corrupted in durable store | Checkpoint marked invalid. Coordinator falls back to previous checkpoint. | One checkpoint lost | Medium |
 | 2 | State files listed in metadata don't exist | Restore fails. Coordinator falls back to previous checkpoint. | One checkpoint lost | Medium |
 | 3 | metadata.json written but state upload incomplete (crash mid-checkpoint) | Coordinator detects incomplete checkpoint (missing ACK). Never marked complete. Not used for recovery. | No impact | Low |
 | 4 | Unknown `schema_version` in metadata | Error: "Unsupported checkpoint schema version 2. Upgrade Wire." | Cannot restore | High |
@@ -303,7 +303,7 @@ For a job with 10 operators, parallelism 8, 80 tasks:
 
 * metadata.json contains job configuration references and source offsets but **no event data or state data**.
 * Sensitive fields (connection strings, credentials) are **never** stored in metadata. Only operator IDs and structural information.
-* Inherits S3 server-side encryption (SSE-S3 or SSE-KMS).
+* Inherits storage-level encryption (filesystem or volume encryption).
 
 ---
 
@@ -312,7 +312,7 @@ For a job with 10 operators, parallelism 8, 80 tasks:
 | Test Type | Scope | Tools | Coverage Target |
 | -- | -- | -- | -- |
 | Unit Tests | Schema serialization, deserialization, validation | Go `testing` | 100% |
-| Integration Tests | Write checkpoint → read metadata → restore | MiniCluster + S3 mock | Happy path + corruption |
+| Integration Tests | Write checkpoint → read metadata → restore | MiniCluster + durable store mock | Happy path + corruption |
 | Compatibility Tests | Metadata from schema_version=1 readable by future versions | Version matrix | All supported versions |
 
 ### 8.1 Key Test Scenarios

@@ -23,7 +23,7 @@ graph TD
     end
 
     subgraph External Systems
-        S3[(S3 / MinIO<br/>Checkpoint Storage)]
+        DS[(Durable Store<br/>Replicated PebbleDB)]
         PROM[Prometheus<br/>Monitoring]
     end
 
@@ -40,9 +40,9 @@ graph TD
     TM2 <-->|Yamux TCP Mux :4001| TM3
     TM1 <-->|Yamux TCP Mux :4001| TM3
 
-    TM1 -->|Async Checkpoint Upload| S3
-    TM2 -->|Async Checkpoint Upload| S3
-    TM3 -->|Async Checkpoint Upload| S3
+    TM1 -->|Async Checkpoint Replication| DS
+    TM2 -->|Async Checkpoint Replication| DS
+    TM3 -->|Async Checkpoint Replication| DS
 
     TM1 -.->|/metrics| PROM
     TM2 -.->|/metrics| PROM
@@ -130,7 +130,7 @@ sequenceDiagram
     participant S as Source Tasks
     participant O as Downstream Operators
     participant P as Pebble State
-    participant S3 as S3 / MinIO
+    participant DS as Durable Store
 
     C->>S: TriggerCheckpoint(N)
     activate S
@@ -145,7 +145,7 @@ sequenceDiagram
     deactivate O
 
     P->>P: Hard-link SSTables (ms)
-    P-->>S3: Async upload checkpoint data
+    P-->>DS: Async replicate checkpoint data
 
     O->>C: AcknowledgeCheckpoint(N)
     S->>C: AcknowledgeCheckpoint(N)
@@ -162,7 +162,7 @@ The full recovery sequence when a Worker fails.
 sequenceDiagram
     participant TM as Worker (Failed)
     participant C as Coordinator
-    participant S3 as S3 / MinIO
+    participant DS as Durable Store
     participant NW as Worker (Replacement)
 
     Note over TM: Process crashes /<br/>Network partition
@@ -171,12 +171,12 @@ sequenceDiagram
     C->>C: Detect failure → Job = FAILING
 
     C->>C: Cancel ALL running tasks
-    C->>S3: Fetch latest Completed Checkpoint(N) metadata
+    C->>DS: Fetch latest Completed Checkpoint(N) metadata
 
     C->>NW: Deploy tasks (Recovery Mode)
     activate NW
-    NW->>S3: Download state shards for Checkpoint(N)
-    S3-->>NW: SSTable files restored into Pebble
+    NW->>DS: Restore state shards for Checkpoint(N)
+    DS-->>NW: SSTable files restored into Pebble
     NW->>C: Ready to process
     deactivate NW
 
@@ -212,7 +212,7 @@ flowchart LR
             direction TB
             RPC["Coordinator RPC:<br/>TriggerCheckpoint"] --> BAR["Barrier injected<br/>into stream"]
             BAR --> SNAP["Pebble Checkpoint<br/>hard-link snapshot"]
-            SNAP --> UPL["Background Goroutine:<br/>Upload SSTables to S3"]
+            SNAP --> UPL["Background Goroutine:<br/>Replicate SSTables to peers"]
             UPL --> ACK["AcknowledgeCheckpoint<br/>to Coordinator"]
         end
     end
@@ -283,7 +283,7 @@ flowchart TD
 
     subgraph Async Upload
         LINK --> BG[Background Goroutine]
-        BG --> UPLOAD[Upload new/changed<br/>SSTables to S3]
+        BG --> UPLOAD[Replicate new/changed<br/>SSTables to peers]
         UPLOAD --> ACK["AcknowledgeCheckpoint N<br/>to Coordinator"]
     end
 
@@ -293,9 +293,9 @@ flowchart TD
         CHECK -->|Yes| COMPLETE["Global Checkpoint N<br/>Complete"]
     end
 
-    subgraph S3 Layout
+    subgraph Checkpoint Layout
         direction TB
-        BUCKET["s3://bucket/jobs/&lt;job-id&gt;/checkpoints/"]
+        BUCKET["&lt;data-dir&gt;/jobs/&lt;job-id&gt;/checkpoints/"]
         CHK1["chk-1/"]
         CHK2["chk-2/"]
         META["metadata.json<br/>(Graph Topology)"]
