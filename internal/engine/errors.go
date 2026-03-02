@@ -59,4 +59,16 @@ var (
 
 	// ErrAbortFailed indicates a transactional sink failed to abort a transaction.
 	ErrAbortFailed = errors.New("engine: transactional sink abort failed")
+
+	// ErrTransient marks an error as transient (retryable). Wrap errors with
+	// this sentinel so the error classifier routes them for retry:
+	//   fmt.Errorf("connection reset: %w", ErrTransient)
+	ErrTransient = errors.New("engine: transient error")
+
+	// ErrFatal marks an error as fatal (should immediately fail the job).
+	ErrFatal = errors.New("engine: fatal error")
+
+	// ErrRetriesExhausted indicates the maximum retry count was reached
+	// without a successful invocation.
+	ErrRetriesExhausted = errors.New("engine: retries exhausted")
 )

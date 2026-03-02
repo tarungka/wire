@@ -28,7 +28,7 @@ func BenchmarkOperatorChain_MapPassthrough(b *testing.B) {
 	}()
 
 	b.ResetTimer()
-	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	close(outputCh)
 }
 
@@ -54,7 +54,7 @@ func BenchmarkOperatorChain_FlatMap(b *testing.B) {
 	}()
 
 	b.ResetTimer()
-	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	close(outputCh)
 }
 
@@ -81,7 +81,40 @@ func BenchmarkOperatorChain_Sink(b *testing.B) {
 	}()
 
 	b.ResetTimer()
-	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
+	close(outputCh)
+}
+
+func BenchmarkOperatorChain_MapPassthrough_WithErrorHandler(b *testing.B) {
+	ctx := context.Background()
+	inputCh := make(chan Event, 1024)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 1024)
+	aligner := NewBarrierAligner(1, 100)
+
+	ops := []Operator{&noopMap{}}
+
+	errorConfigs := []ErrorHandlerConfig{{
+		OperatorName: "bench-map",
+		MaxRetries:   3,
+		OnExhausted:  RouteToDLQ,
+	}}
+
+	go func() {
+		for range outputCh {
+		}
+	}()
+
+	go func() {
+		for i := 0; i < b.N; i++ {
+			inputCh <- Event{Value: []byte("bench"), EventTime: int64(i)}
+		}
+		close(inputCh)
+	}()
+
+	b.ResetTimer()
+	_ = runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1,
+		NoopCheckpointMetrics(), testLogger(), nil, nil, errorConfigs, nil, NoopErrorMetrics())
 	close(outputCh)
 }
 

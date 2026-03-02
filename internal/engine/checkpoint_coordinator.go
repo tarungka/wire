@@ -324,34 +324,24 @@ func (cc *CheckpointCoordinator) abortCheckpoint(ctx context.Context) error {
 		}
 	}
 
-	cc.activeCheckpointID = 0
-	cc.mu.Unlock()
-
-	// Collect transactional sink indices before sending (already unlocked).
-	cc.mu.Lock()
+	// Snapshot transactional sink indices and reset their state while still
+	// holding the lock. This avoids a second lock/unlock cycle and prevents
+	// a race with RegisterTransactionalSink between the two critical sections.
 	sinkIndices := make([]int, 0, len(cc.sinkTxnStates))
 	for idx := range cc.sinkTxnStates {
 		sinkIndices = append(sinkIndices, idx)
 		cc.sinkTxnStates[idx].State = TxnActive
 		cc.sinkTxnStates[idx].CurrentCheckpoint = 0
 	}
+
+	cc.activeCheckpointID = 0
 	cc.mu.Unlock()
 
-	// Send abort to all task slots.
-	abortMsg := ControlMsg{
-		Type:         CtrlAbortCheckpoint,
-		CheckpointID: checkpointID,
-		EpochID:      epochID,
-	}
-	for _, ch := range cc.controlChannels {
-		select {
-		case ch <- abortMsg:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-
-	// Additionally send CtrlAbortTransaction to registered transactional sinks.
+	// Send CtrlAbortTransaction to sink tasks FIRST so they rollback their
+	// external transaction before the barrier aligner is reset by
+	// CtrlAbortCheckpoint. This prevents a window where the sink processes
+	// CtrlAbortCheckpoint (resetting aligner/buffers) but continues writing
+	// into an open transaction.
 	if len(sinkIndices) > 0 {
 		txnAbortMsg := ControlMsg{
 			Type:         CtrlAbortTransaction,
@@ -366,6 +356,20 @@ func (cc *CheckpointCoordinator) abortCheckpoint(ctx context.Context) error {
 					return ctx.Err()
 				}
 			}
+		}
+	}
+
+	// Send CtrlAbortCheckpoint to all task slots.
+	abortMsg := ControlMsg{
+		Type:         CtrlAbortCheckpoint,
+		CheckpointID: checkpointID,
+		EpochID:      epochID,
+	}
+	for _, ch := range cc.controlChannels {
+		select {
+		case ch <- abortMsg:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 
