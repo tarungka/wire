@@ -105,26 +105,49 @@ func TestSafeInvoke_Panic(t *testing.T) {
 // -- trackingErrorMetrics for testing --
 
 type trackingErrorMetrics struct {
-	mu      sync.Mutex
-	errors  map[string]int
-	retries map[string]int
-	dlqs    map[string]int
-	drops   map[string]int
+	mu           sync.Mutex
+	errors       map[string]int
+	retries      map[string]int
+	dlqs         map[string]int
+	dlqOverflows map[string]int
+	drops        map[string]int
 }
 
 func newTrackingErrorMetrics() *trackingErrorMetrics {
 	return &trackingErrorMetrics{
-		errors:  make(map[string]int),
-		retries: make(map[string]int),
-		dlqs:    make(map[string]int),
-		drops:   make(map[string]int),
+		errors:       make(map[string]int),
+		retries:      make(map[string]int),
+		dlqs:         make(map[string]int),
+		dlqOverflows: make(map[string]int),
+		drops:        make(map[string]int),
 	}
 }
 
-func (m *trackingErrorMetrics) IncErrorTotal(op string) { m.mu.Lock(); m.errors[op]++; m.mu.Unlock() }
-func (m *trackingErrorMetrics) IncRetryTotal(op string) { m.mu.Lock(); m.retries[op]++; m.mu.Unlock() }
-func (m *trackingErrorMetrics) IncDLQTotal(op string)   { m.mu.Lock(); m.dlqs[op]++; m.mu.Unlock() }
-func (m *trackingErrorMetrics) IncDropTotal(op string)  { m.mu.Lock(); m.drops[op]++; m.mu.Unlock() }
+func (m *trackingErrorMetrics) IncErrorTotal(op string) {
+	m.mu.Lock()
+	m.errors[op]++
+	m.mu.Unlock()
+}
+func (m *trackingErrorMetrics) IncRetryTotal(op string) {
+	m.mu.Lock()
+	m.retries[op]++
+	m.mu.Unlock()
+}
+func (m *trackingErrorMetrics) IncDLQTotal(op string) {
+	m.mu.Lock()
+	m.dlqs[op]++
+	m.mu.Unlock()
+}
+func (m *trackingErrorMetrics) IncDLQOverflowTotal(op string) {
+	m.mu.Lock()
+	m.dlqOverflows[op]++
+	m.mu.Unlock()
+}
+func (m *trackingErrorMetrics) IncDropTotal(op string) {
+	m.mu.Lock()
+	m.drops[op]++
+	m.mu.Unlock()
+}
 
 func (m *trackingErrorMetrics) get(store map[string]int, op string) int {
 	m.mu.Lock()
@@ -469,7 +492,7 @@ func TestBuildChainLinks_NilConfigs(t *testing.T) {
 // -- handleExhausted tests --
 
 func TestHandleExhausted_DLQChannelFull(t *testing.T) {
-	// DLQ channel is full — should not block, just log.
+	// DLQ channel is full — should not block, just log and count overflow.
 	dlqCh := make(chan DLQEvent) // unbuffered
 	metrics := newTrackingErrorMetrics()
 
@@ -485,7 +508,38 @@ func TestHandleExhausted_DLQChannelFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil even with full DLQ, got %v", err)
 	}
-	if metrics.get(metrics.dlqs, "op") != 1 {
-		t.Error("DLQ metric should still be incremented")
+	if metrics.get(metrics.dlqs, "op") != 0 {
+		t.Error("DLQ metric should NOT be incremented when channel is full")
+	}
+	if metrics.get(metrics.dlqOverflows, "op") != 1 {
+		t.Error("DLQ overflow metric should be incremented when channel is full")
+	}
+}
+
+// T3: DLQ overflow — verify metrics accuracy vs actual enqueue count.
+func TestHandleExhausted_DLQOverflow_MetricsAccuracy(t *testing.T) {
+	// Buffered DLQ channel with capacity 2.
+	dlqCh := make(chan DLQEvent, 2)
+	metrics := newTrackingErrorMetrics()
+	cfg := ErrorHandlerConfig{OperatorName: "op", OnExhausted: RouteToDLQ}
+
+	// Send 5 events to the DLQ — only 2 should enqueue, 3 should overflow.
+	for i := 0; i < 5; i++ {
+		err := handleExhausted(cfg, Event{Key: []byte{byte(i)}}, errors.New("fail"), 0, dlqCh, metrics, testLogger())
+		if err != nil {
+			t.Fatalf("event %d: expected nil, got %v", i, err)
+		}
+	}
+
+	// Verify: DLQ metric matches actual channel contents.
+	actualEnqueued := len(dlqCh)
+	if actualEnqueued != 2 {
+		t.Fatalf("expected 2 events in DLQ channel, got %d", actualEnqueued)
+	}
+	if metrics.get(metrics.dlqs, "op") != 2 {
+		t.Errorf("DLQ metric: got %d, want 2 (must match actual enqueue count)", metrics.get(metrics.dlqs, "op"))
+	}
+	if metrics.get(metrics.dlqOverflows, "op") != 3 {
+		t.Errorf("DLQ overflow metric: got %d, want 3", metrics.get(metrics.dlqOverflows, "op"))
 	}
 }

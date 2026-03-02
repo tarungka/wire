@@ -224,7 +224,7 @@ func processEvent(cc *chainContext, event Event) error {
 // invokeMapWithRetry wraps a MapOperator call with error handling.
 // Returns nil Event pointer if the event was filtered or DLQ'd/dropped.
 func invokeMapWithRetry(cc *chainContext, link ChainLink, e Event, op MapOperator) (*Event, error) {
-	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob
+	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob || link.Config.Classifier != nil
 
 	if !hasErrorHandling {
 		// Legacy path: no error handling, fail on any error.
@@ -255,7 +255,7 @@ func invokeMapWithRetry(cc *chainContext, link ChainLink, e Event, op MapOperato
 
 // invokeFlatMapWithRetry wraps a FlatMapOperator call with error handling.
 func invokeFlatMapWithRetry(cc *chainContext, link ChainLink, e Event, op FlatMapOperator) ([]Event, error) {
-	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob
+	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob || link.Config.Classifier != nil
 
 	if !hasErrorHandling {
 		// Legacy path.
@@ -284,7 +284,7 @@ func invokeFlatMapWithRetry(cc *chainContext, link ChainLink, e Event, op FlatMa
 
 // invokeSinkWithRetry wraps a SinkOperator Write call with error handling.
 func invokeSinkWithRetry(cc *chainContext, link ChainLink, e Event, op SinkOperator) error {
-	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob
+	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob || link.Config.Classifier != nil
 
 	if !hasErrorHandling {
 		// Legacy path.
