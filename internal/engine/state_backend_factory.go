@@ -7,8 +7,9 @@ const (
 	// DefaultStateBackendType is PebbleDB for production workloads.
 	DefaultStateBackendType = StateBackendPebble
 
-	// DefaultHashMapMemLimit is the default memory limit for the HashMap
-	// state backend. 0 means unlimited (useful for testing).
+	// DefaultHashMapMemLimit is the default logical payload size limit for the
+	// HashMap state backend (sum of key + value bytes). 0 means unlimited
+	// (useful for testing). Does not account for Go runtime overhead.
 	DefaultHashMapMemLimit int64 = 0
 )
 
@@ -18,7 +19,8 @@ type StateBackendConfig struct {
 	// Defaults to StateBackendPebble if empty.
 	Type StateBackendType
 
-	// HashMapMemLimit sets the memory limit for the HashMap backend in bytes.
+	// HashMapMemLimit sets the logical payload size limit for the HashMap
+	// backend in bytes (sum of key + value bytes, excluding Go runtime overhead).
 	// 0 = unlimited. Ignored for other backend types.
 	HashMapMemLimit int64
 

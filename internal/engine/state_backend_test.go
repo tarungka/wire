@@ -2,8 +2,10 @@ package engine
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"sync"
 	"testing"
 )
@@ -400,7 +402,7 @@ func TestHashMapStateBackend_SnapshotTooShort(t *testing.T) {
 	b := NewHashMapStateBackend(0)
 	defer b.Close()
 
-	err := b.Restore(SnapshotHandle{Data: []byte{1, 2, 3}})
+	err := b.Restore(SnapshotHandle{BackendType: StateBackendHashMap, Data: []byte{1, 2, 3}})
 	if !errors.Is(err, ErrSnapshotCorrupt) {
 		t.Errorf("Restore too short: got %v, want ErrSnapshotCorrupt", err)
 	}
@@ -532,6 +534,120 @@ func TestNoopStateBackendMetrics(t *testing.T) {
 	m.ObserveStateSize("hashmap", 1024)
 	m.IncCheckpointTotal("hashmap")
 	m.IncRestoreTotal("hashmap")
+}
+
+// -- NewIterator after Close (T1) --
+
+func TestHashMapStateBackend_NewIteratorAfterClose(t *testing.T) {
+	b := NewHashMapStateBackend(0)
+	b.Put([]byte("k"), []byte("v"))
+	b.Close()
+
+	// NewIterator on a closed backend returns an empty iterator (no error signal).
+	it := b.NewIterator([]byte{})
+	if it.Next() {
+		t.Error("NewIterator on closed backend should return empty iterator")
+	}
+	it.Close()
+}
+
+// -- Restore with wrong BackendType (T2) --
+
+func TestHashMapStateBackend_RestoreWrongBackendType(t *testing.T) {
+	b := NewHashMapStateBackend(0)
+	defer b.Close()
+
+	b.Put([]byte("k"), []byte("v"))
+	handle, err := b.Checkpoint(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Tamper with the backend type.
+	handle.BackendType = StateBackendPebble
+
+	err = b.Restore(handle)
+	if !errors.Is(err, ErrSnapshotCorrupt) {
+		t.Errorf("Restore wrong backend type: got %v, want ErrSnapshotCorrupt", err)
+	}
+}
+
+// -- Get returns caller-owned bytes (T3) --
+
+func TestHashMapStateBackend_GetReturnsCopy(t *testing.T) {
+	b := NewHashMapStateBackend(0)
+	defer b.Close()
+
+	b.Put([]byte("key"), []byte("original"))
+
+	got, err := b.Get([]byte("key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mutate the returned slice.
+	copy(got, "XXXXXXXX")
+
+	// Backend value must be unaffected.
+	got2, err := b.Get([]byte("key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got2, []byte("original")) {
+		t.Errorf("Get returned non-copy: mutating result changed backend to %q", got2)
+	}
+}
+
+// -- Snapshot trailing garbage rejection (T4) --
+
+func TestHashMapStateBackend_SnapshotTrailingGarbage(t *testing.T) {
+	b := NewHashMapStateBackend(0)
+	defer b.Close()
+
+	b.Put([]byte("k"), []byte("v"))
+	handle, err := b.Checkpoint(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert garbage bytes before the CRC, then recompute CRC so integrity passes.
+	// The trailing garbage check should still catch the extra bytes.
+	payload := handle.Data[:len(handle.Data)-4] // strip CRC
+	payload = append(payload, 0xDE, 0xAD)       // trailing garbage
+
+	// Recompute CRC over the new payload.
+	var crcBuf [4]byte
+	binary.LittleEndian.PutUint32(crcBuf[:], crc32.ChecksumIEEE(payload))
+	corrupted := append(payload, crcBuf[:]...)
+
+	handle.Data = corrupted
+	err = b.Restore(handle)
+	if !errors.Is(err, ErrSnapshotCorrupt) {
+		t.Errorf("Restore with trailing garbage: got %v, want ErrSnapshotCorrupt", err)
+	}
+}
+
+// -- Snapshot huge numEntries rejection (T5) --
+
+func TestHashMapStateBackend_SnapshotHugeNumEntries(t *testing.T) {
+	b := NewHashMapStateBackend(0)
+	defer b.Close()
+
+	// Craft a minimal snapshot with an absurdly large numEntries.
+	// Format: [version:1B][numEntries:4B LE][CRC:4B LE]
+	var buf [9]byte
+	buf[0] = 1 // version
+	binary.LittleEndian.PutUint32(buf[1:5], 0xFFFFFFFF)
+	binary.LittleEndian.PutUint32(buf[5:9], crc32.ChecksumIEEE(buf[:5]))
+
+	handle := SnapshotHandle{
+		BackendType: StateBackendHashMap,
+		Data:        buf[:],
+	}
+	err := b.Restore(handle)
+	if !errors.Is(err, ErrSnapshotCorrupt) {
+		t.Errorf("Restore with huge numEntries: got %v, want ErrSnapshotCorrupt", err)
+	}
 }
 
 // -- Iterator isolation (mutations during iteration) --

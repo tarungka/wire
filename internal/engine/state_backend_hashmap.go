@@ -176,9 +176,13 @@ func (h *HashMapStateBackend) Checkpoint(checkpointID uint64) (SnapshotHandle, e
 
 // Restore replaces the backend state with the contents of a snapshot.
 func (h *HashMapStateBackend) Restore(handle SnapshotHandle) error {
+	if handle.BackendType != StateBackendHashMap {
+		return fmt.Errorf("%w: expected %q, got %q", ErrSnapshotCorrupt, StateBackendHashMap, handle.BackendType)
+	}
+
 	entries, err := deserializeHashMapSnapshot(handle.Data)
 	if err != nil {
-		return err
+		return fmt.Errorf("hashmap restore: %w", err)
 	}
 
 	h.mu.Lock()
@@ -336,6 +340,12 @@ func deserializeHashMapSnapshot(data []byte) ([]kvEntry, error) {
 	}
 
 	numEntries := binary.LittleEndian.Uint32(data[1:5])
+	// Guard against corrupt numEntries causing OOM: each entry needs at least
+	// 8 bytes (4B key_len + 4B val_len), so cap against payload capacity.
+	maxPossibleEntries := uint32(payloadLen / 8)
+	if numEntries > maxPossibleEntries {
+		return nil, fmt.Errorf("%w: numEntries %d exceeds payload capacity", ErrSnapshotCorrupt, numEntries)
+	}
 	pos := 5
 
 	entries := make([]kvEntry, 0, numEntries)
@@ -367,6 +377,10 @@ func deserializeHashMapSnapshot(data []byte) ([]kvEntry, error) {
 		pos += valLen
 
 		entries = append(entries, kvEntry{key: key, value: value})
+	}
+
+	if pos != payloadLen {
+		return nil, fmt.Errorf("%w: %d trailing bytes", ErrSnapshotCorrupt, payloadLen-pos)
 	}
 
 	return entries, nil
