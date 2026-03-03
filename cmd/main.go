@@ -66,7 +66,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
-	config.ApplyFlags(&wireCfg, flagSet)
+	if err := config.ApplyFlags(&wireCfg, flagSet); err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		os.Exit(1)
+	}
 	if err := wireCfg.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)

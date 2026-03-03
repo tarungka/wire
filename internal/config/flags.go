@@ -1,8 +1,9 @@
 package config
 
 import (
-	"encoding/json"
+	"fmt"
 
+	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/providers/posflag"
 	"github.com/knadh/koanf/v2"
 	"github.com/spf13/pflag"
@@ -25,9 +26,9 @@ var flagToKey = map[string]string{
 // ApplyFlags overlays CLI flag values onto cfg, but only for flags that
 // were explicitly set on the command line. Unchanged flags (still at their
 // pflag default) do not override config-file values.
-func ApplyFlags(cfg *WireConfig, flagSet *pflag.FlagSet) {
+func ApplyFlags(cfg *WireConfig, flagSet *pflag.FlagSet) error {
 	if flagSet == nil {
-		return
+		return nil
 	}
 
 	ko := koanf.New(".")
@@ -35,45 +36,25 @@ func ApplyFlags(cfg *WireConfig, flagSet *pflag.FlagSet) {
 	// Load current cfg state so koanf knows which keys already exist.
 	// This gives us Changed() semantics: unchanged flags with existing
 	// values in ko are skipped by the posflag provider.
-	ko.Load(confmapFromStruct(cfg), nil)
+	if err := ko.Load(confmap.Provider(structToMap(cfg), "."), nil); err != nil {
+		return fmt.Errorf("loading config state into koanf: %w", err)
+	}
 
 	// Load only changed flags (or flags whose keys don't exist yet).
-	ko.Load(posflag.ProviderWithFlag(flagSet, ".", ko, func(f *pflag.Flag) (string, any) {
+	if err := ko.Load(posflag.ProviderWithFlag(flagSet, ".", ko, func(f *pflag.Flag) (string, any) {
 		key, ok := flagToKey[f.Name]
 		if !ok {
 			return "", nil // skip unmapped flags
 		}
 		return key, posflag.FlagVal(flagSet, f)
-	}), nil)
+	}), nil); err != nil {
+		return fmt.Errorf("loading CLI flags into koanf: %w", err)
+	}
 
 	// Unmarshal back into cfg.
-	ko.UnmarshalWithConf("", cfg, unmarshalConf())
-}
+	if err := ko.UnmarshalWithConf("", cfg, unmarshalConf()); err != nil {
+		return fmt.Errorf("unmarshalling flags into config: %w", err)
+	}
 
-// confmapFromStruct converts a WireConfig pointer into a koanf confmap
-// provider using JSON round-trip, matching defaultsMap().
-func confmapFromStruct(cfg *WireConfig) *confmapProvider {
-	return &confmapProvider{cfg: cfg}
-}
-
-// confmapProvider implements koanf.Provider by marshalling a struct to
-// map[string]any via JSON. This avoids importing confmap a second time
-// and keeps the conversion logic in one place.
-type confmapProvider struct {
-	cfg *WireConfig
-}
-
-func (p *confmapProvider) ReadBytes() ([]byte, error) {
-	return nil, nil
-}
-
-func (p *confmapProvider) Read() (map[string]any, error) {
-	return structToMap(p.cfg), nil
-}
-
-func structToMap(cfg *WireConfig) map[string]any {
-	b, _ := json.Marshal(cfg)
-	var m map[string]any
-	json.Unmarshal(b, &m)
-	return m
+	return nil
 }

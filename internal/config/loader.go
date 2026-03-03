@@ -77,11 +77,23 @@ func parserForExt(path string) (koanf.Parser, error) {
 
 // defaultsMap converts DefaultConfig() to a map[string]any via JSON
 // round-trip. This reuses the existing json struct tags for a type-safe
-// conversion.
+// conversion. Panics on marshal/unmarshal failure since DefaultConfig()
+// is a compile-time-known struct.
 func defaultsMap() map[string]any {
-	b, _ := json.Marshal(DefaultConfig())
+	return structToMap(DefaultConfig())
+}
+
+// structToMap converts a struct to map[string]any via JSON round-trip.
+// Panics on failure since inputs are always known Go structs.
+func structToMap(v any) map[string]any {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("config: json.Marshal failed on known struct: %v", err))
+	}
 	var m map[string]any
-	json.Unmarshal(b, &m)
+	if err := json.Unmarshal(b, &m); err != nil {
+		panic(fmt.Sprintf("config: json.Unmarshal failed on known struct: %v", err))
+	}
 	return m
 }
 
@@ -114,6 +126,8 @@ func durationDecodeHook() mapstructure.DecodeHookFunc {
 				return nil, fmt.Errorf("invalid duration %q: %w", v, err)
 			}
 			return Duration{d}, nil
+		case float64, int, int64:
+			return nil, fmt.Errorf("duration must be a string like \"50ms\", got number %v", v)
 		default:
 			return data, nil
 		}
@@ -121,11 +135,8 @@ func durationDecodeHook() mapstructure.DecodeHookFunc {
 }
 
 // isNotExist checks whether err (or any wrapped error) is a file-not-found
-// error. koanf's file.Provider wraps the underlying os error, so we unwrap.
+// error. errors.Is handles all standard wrapping (PathError, LinkError,
+// fs.PathError, fmt.Errorf %w chains).
 func isNotExist(err error) bool {
-	var pathErr *os.PathError
-	if errors.As(err, &pathErr) {
-		return os.IsNotExist(pathErr)
-	}
-	return os.IsNotExist(err)
+	return errors.Is(err, os.ErrNotExist)
 }

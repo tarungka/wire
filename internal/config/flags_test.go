@@ -18,7 +18,9 @@ func TestApplyFlags_ChangedOverrides(t *testing.T) {
 	// Simulate: --http-listen :8080 --debug
 	fs.Parse([]string{"--http-listen", ":8080", "--debug"})
 
-	ApplyFlags(&cfg, fs)
+	if err := ApplyFlags(&cfg, fs); err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.HTTP.Addr != ":8080" {
 		t.Errorf("HTTP.Addr = %q, want :8080 (CLI should override config file)", cfg.HTTP.Addr)
@@ -41,7 +43,9 @@ func TestApplyFlags_UnchangedPreservesConfig(t *testing.T) {
 	// No flags passed on command line.
 	fs.Parse([]string{})
 
-	ApplyFlags(&cfg, fs)
+	if err := ApplyFlags(&cfg, fs); err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.HTTP.Addr != ":9001" {
 		t.Errorf("HTTP.Addr = %q, want :9001 (unchanged flag should not override config file)", cfg.HTTP.Addr)
@@ -79,7 +83,9 @@ func TestApplyFlags_AllFlags(t *testing.T) {
 		"--election-lock-path", "/tmp/leader.lock",
 	})
 
-	ApplyFlags(&cfg, fs)
+	if err := ApplyFlags(&cfg, fs); err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.Node.ID != "node-A" {
 		t.Errorf("Node.ID = %q", cfg.Node.ID)
@@ -115,7 +121,9 @@ func TestApplyFlags_AllFlags(t *testing.T) {
 
 func TestApplyFlags_NilFlagSet(t *testing.T) {
 	cfg := DefaultConfig()
-	ApplyFlags(&cfg, nil) // should not panic
+	if err := ApplyFlags(&cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	if cfg.HTTP.Addr != ":4001" {
 		t.Errorf("HTTP.Addr = %q, want :4001", cfg.HTTP.Addr)
 	}

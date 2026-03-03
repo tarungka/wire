@@ -180,6 +180,55 @@ func TestLoad_NoPaths(t *testing.T) {
 	}
 }
 
+func TestLoad_NestedMergePreservation(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "base.yaml")
+	os.WriteFile(base, []byte(`
+http:
+  addr: ":8000"
+  tls:
+    cert: /etc/ssl/cert.pem
+    key: /etc/ssl/key.pem
+`), 0644)
+
+	override := filepath.Join(dir, "override.yaml")
+	os.WriteFile(override, []byte(`
+http:
+  addr: ":9000"
+`), 0644)
+
+	cfg, err := Load([]string{base, override})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTP.Addr != ":9000" {
+		t.Errorf("HTTP.Addr = %q, want :9000", cfg.HTTP.Addr)
+	}
+	if cfg.HTTP.TLS.Cert != "/etc/ssl/cert.pem" {
+		t.Errorf("HTTP.TLS.Cert = %q, want /etc/ssl/cert.pem (should survive nested merge)", cfg.HTTP.TLS.Cert)
+	}
+	if cfg.HTTP.TLS.Key != "/etc/ssl/key.pem" {
+		t.Errorf("HTTP.TLS.Key = %q, want /etc/ssl/key.pem (should survive nested merge)", cfg.HTTP.TLS.Key)
+	}
+}
+
+func TestLoad_NumericDurationRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+write_queue:
+  timeout: 50
+`), 0644)
+
+	_, err := Load([]string{path})
+	if err == nil {
+		t.Fatal("expected error for numeric duration, got nil")
+	}
+	if !errors.Is(err, ErrConfigFileLoad) {
+		t.Errorf("expected ErrConfigFileLoad, got %v", err)
+	}
+}
+
 func TestLoad_ExampleConfig(t *testing.T) {
 	// Copy wire.yaml.example to a .yaml path so the loader recognizes it.
 	data, err := os.ReadFile("../../.config/wire.yaml.example")
