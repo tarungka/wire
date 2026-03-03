@@ -2,12 +2,21 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/go-viper/mapstructure/v2"
+	"github.com/knadh/koanf/v2"
+
+	jsonparser "github.com/knadh/koanf/parsers/json"
+	yamlparser "github.com/knadh/koanf/parsers/yaml"
+	"github.com/knadh/koanf/providers/confmap"
+	"github.com/knadh/koanf/providers/file"
 )
 
 // defaultConfigPath is the config path used by pflag's default value.
@@ -20,107 +29,103 @@ const defaultConfigPath = ".config/config.json"
 // A missing file at the default path (.config/config.json) is silently
 // skipped. Any other missing file returns an error.
 func Load(paths []string) (WireConfig, error) {
-	cfg := DefaultConfig()
+	ko := koanf.New(".")
 
-	for _, p := range paths {
-		overlay, err := loadFile(p)
-		if err != nil {
-			if os.IsNotExist(err) && p == defaultConfigPath {
-				continue
-			}
-			return WireConfig{}, fmt.Errorf("%w: %s: %v", ErrConfigFileLoad, p, err)
-		}
-		mergeConfig(&cfg, &overlay)
+	// 1. Load defaults via confmap provider.
+	if err := ko.Load(confmap.Provider(defaultsMap(), "."), nil); err != nil {
+		return WireConfig{}, fmt.Errorf("%w: defaults: %v", ErrConfigFileLoad, err)
 	}
 
+	// 2. Load config files in order (later files override earlier ones).
+	for _, p := range paths {
+		parser, err := parserForExt(p)
+		if err != nil {
+			return WireConfig{}, fmt.Errorf("%w: %s: %v", ErrConfigFileLoad, p, err)
+		}
+		if loadErr := ko.Load(file.Provider(p), parser); loadErr != nil {
+			if isNotExist(loadErr) && p == defaultConfigPath {
+				continue
+			}
+			return WireConfig{}, fmt.Errorf("%w: %s: %v", ErrConfigFileLoad, p, loadErr)
+		}
+	}
+
+	// 3. Unmarshal into WireConfig.
+	var cfg WireConfig
+	if err := ko.UnmarshalWithConf("", &cfg, unmarshalConf()); err != nil {
+		return WireConfig{}, fmt.Errorf("%w: %v", ErrConfigFileLoad, err)
+	}
+
+	// 4. Apply ${VAR:-default} substitution (koanf doesn't support this).
 	if err := envSubstConfig(&cfg); err != nil {
 		return WireConfig{}, err
 	}
-
 	return cfg, nil
 }
 
-// loadFile reads and unmarshals a single config file. The format is
-// detected by file extension (.yaml/.yml → YAML, .json → JSON).
-func loadFile(path string) (WireConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return WireConfig{}, err
-	}
-
-	var cfg WireConfig
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
+// parserForExt returns the koanf parser for a file extension.
+func parserForExt(path string) (koanf.Parser, error) {
+	switch strings.ToLower(filepath.Ext(path)) {
 	case ".yaml", ".yml":
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			return WireConfig{}, fmt.Errorf("YAML parse error: %w", err)
-		}
+		return yamlparser.Parser(), nil
 	case ".json":
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return WireConfig{}, fmt.Errorf("JSON parse error: %w", err)
-		}
+		return jsonparser.Parser(), nil
 	default:
-		return WireConfig{}, fmt.Errorf("unsupported config file extension: %s", ext)
-	}
-
-	return cfg, nil
-}
-
-// mergeConfig applies non-zero values from overlay onto base.
-func mergeConfig(base, overlay *WireConfig) {
-	// Node
-	mergeStr(&base.Node.ID, overlay.Node.ID)
-	mergeStr(&base.Node.DataDir, overlay.Node.DataDir)
-	mergeStr(&base.Node.StoreDB, overlay.Node.StoreDB)
-	if overlay.Node.Debug {
-		base.Node.Debug = true
-	}
-
-	// HTTP
-	mergeStr(&base.HTTP.Addr, overlay.HTTP.Addr)
-	mergeStr(&base.HTTP.AdvAddr, overlay.HTTP.AdvAddr)
-	mergeStr(&base.HTTP.AllowOrigin, overlay.HTTP.AllowOrigin)
-	mergeTLS(&base.HTTP.TLS, &overlay.HTTP.TLS)
-
-	// NodeTLS
-	mergeTLS(&base.NodeTLS, &overlay.NodeTLS)
-
-	// Auth
-	mergeStr(&base.Auth.File, overlay.Auth.File)
-
-	// WriteQueue
-	mergeInt(&base.WriteQueue.Capacity, overlay.WriteQueue.Capacity)
-	mergeInt(&base.WriteQueue.BatchSize, overlay.WriteQueue.BatchSize)
-	if overlay.WriteQueue.Timeout.Duration != 0 {
-		base.WriteQueue.Timeout = overlay.WriteQueue.Timeout
-	}
-	if overlay.WriteQueue.Transactional {
-		base.WriteQueue.Transactional = true
-	}
-
-	// Election
-	mergeStr(&base.Election.Backend, overlay.Election.Backend)
-	mergeStr(&base.Election.LockPath, overlay.Election.LockPath)
-}
-
-func mergeTLS(base, overlay *TLSConfig) {
-	mergeStr(&base.Cert, overlay.Cert)
-	mergeStr(&base.Key, overlay.Key)
-	mergeStr(&base.CACert, overlay.CACert)
-	mergeStr(&base.VerifyServerName, overlay.VerifyServerName)
-	if overlay.VerifyClient {
-		base.VerifyClient = true
+		return nil, fmt.Errorf("unsupported config file extension: %s", filepath.Ext(path))
 	}
 }
 
-func mergeStr(base *string, overlay string) {
-	if overlay != "" {
-		*base = overlay
+// defaultsMap converts DefaultConfig() to a map[string]any via JSON
+// round-trip. This reuses the existing json struct tags for a type-safe
+// conversion.
+func defaultsMap() map[string]any {
+	b, _ := json.Marshal(DefaultConfig())
+	var m map[string]any
+	json.Unmarshal(b, &m)
+	return m
+}
+
+// unmarshalConf returns koanf's UnmarshalConf with a custom mapstructure
+// DecoderConfig that handles Duration fields.
+func unmarshalConf() koanf.UnmarshalConf {
+	return koanf.UnmarshalConf{
+		DecoderConfig: &mapstructure.DecoderConfig{
+			DecodeHook: mapstructure.ComposeDecodeHookFunc(
+				mapstructure.StringToTimeDurationHookFunc(),
+				durationDecodeHook(),
+			),
+			WeaklyTypedInput: true,
+			TagName:          "koanf",
+		},
 	}
 }
 
-func mergeInt(base *int, overlay int) {
-	if overlay != 0 {
-		*base = overlay
+// durationDecodeHook returns a mapstructure DecodeHookFunc that converts
+// string values (e.g. "50ms") into our Duration wrapper type.
+func durationDecodeHook() mapstructure.DecodeHookFunc {
+	return func(from reflect.Type, to reflect.Type, data any) (any, error) {
+		if to != reflect.TypeOf(Duration{}) {
+			return data, nil
+		}
+		switch v := data.(type) {
+		case string:
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid duration %q: %w", v, err)
+			}
+			return Duration{d}, nil
+		default:
+			return data, nil
+		}
 	}
+}
+
+// isNotExist checks whether err (or any wrapped error) is a file-not-found
+// error. koanf's file.Provider wraps the underlying os error, so we unwrap.
+func isNotExist(err error) bool {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return os.IsNotExist(pathErr)
+	}
+	return os.IsNotExist(err)
 }
