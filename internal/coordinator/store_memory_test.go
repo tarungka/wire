@@ -11,7 +11,7 @@ import (
 
 func TestMemoryStore_GetSetDelete(t *testing.T) {
 	s := NewMemoryStore()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// Get non-existent key returns nil.
 	val, err := s.Get([]byte("missing"))
@@ -66,7 +66,7 @@ func TestMemoryStore_GetSetDelete(t *testing.T) {
 
 func TestMemoryStore_WriteBatch(t *testing.T) {
 	s := NewMemoryStore()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	batch := []KVPair{
 		{Key: []byte("b"), Value: []byte("2")},
@@ -90,7 +90,7 @@ func TestMemoryStore_WriteBatch(t *testing.T) {
 
 func TestMemoryStore_WriteBatch_Overwrite(t *testing.T) {
 	s := NewMemoryStore()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if err := s.Set([]byte("x"), []byte("old")); err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestMemoryStore_WriteBatch_Overwrite(t *testing.T) {
 
 func TestMemoryStore_PrefixScan(t *testing.T) {
 	s := NewMemoryStore()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	entries := []KVPair{
 		{Key: []byte("jobs/a/meta"), Value: []byte("1")},
@@ -149,17 +149,21 @@ func TestMemoryStore_PrefixScan(t *testing.T) {
 
 func TestMemoryStore_PrefixScan_EarlyStop(t *testing.T) {
 	s := NewMemoryStore()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	for i := range 10 {
-		s.Set(fmt.Appendf(nil, "prefix/%02d", i), []byte("x"))
+		if err := s.Set(fmt.Appendf(nil, "prefix/%02d", i), []byte("x")); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
 	}
 
 	count := 0
-	s.PrefixScan([]byte("prefix/"), func(key, value []byte) bool {
+	if err := s.PrefixScan([]byte("prefix/"), func(key, value []byte) bool {
 		count++
 		return count < 3
-	})
+	}); err != nil {
+		t.Fatalf("PrefixScan: %v", err)
+	}
 	if count != 3 {
 		t.Fatalf("expected 3 iterations, got %d", count)
 	}
@@ -167,16 +171,22 @@ func TestMemoryStore_PrefixScan_EarlyStop(t *testing.T) {
 
 func TestMemoryStore_PrefixScan_EmptyPrefix(t *testing.T) {
 	s := NewMemoryStore()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
-	s.Set([]byte("a"), []byte("1"))
-	s.Set([]byte("b"), []byte("2"))
+	if err := s.Set([]byte("a"), []byte("1")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := s.Set([]byte("b"), []byte("2")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 
 	count := 0
-	s.PrefixScan([]byte(""), func(key, value []byte) bool {
+	if err := s.PrefixScan([]byte(""), func(key, value []byte) bool {
 		count++
 		return true
-	})
+	}); err != nil {
+		t.Fatalf("PrefixScan: %v", err)
+	}
 	if count != 2 {
 		t.Fatalf("expected 2, got %d", count)
 	}
@@ -184,10 +194,14 @@ func TestMemoryStore_PrefixScan_EmptyPrefix(t *testing.T) {
 
 func TestMemoryStore_Snapshot(t *testing.T) {
 	s := NewMemoryStore()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
-	s.Set([]byte("key1"), []byte("val1"))
-	s.Set([]byte("key2"), []byte("val2"))
+	if err := s.Set([]byte("key1"), []byte("val1")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := s.Set([]byte("key2"), []byte("val2")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 
 	dir := t.TempDir()
 	snapDir := filepath.Join(dir, "snap")
@@ -218,7 +232,7 @@ func TestMemoryStore_Snapshot(t *testing.T) {
 
 func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 	s := NewMemoryStore()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	var wg sync.WaitGroup
 	n := 50
@@ -230,7 +244,7 @@ func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			key := fmt.Appendf(nil, "key-%03d", i)
 			val := fmt.Appendf(nil, "val-%03d", i)
-			s.Set(key, val)
+			_ = s.Set(key, val)
 		}(i)
 	}
 	wg.Wait()
@@ -256,8 +270,8 @@ func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 
 func TestMemoryStore_ClosedStoreErrors(t *testing.T) {
 	s := NewMemoryStore()
-	s.Set([]byte("k"), []byte("v"))
-	s.Close()
+	_ = s.Set([]byte("k"), []byte("v"))
+	_ = s.Close()
 
 	if _, err := s.Get([]byte("k")); err != ErrStoreCorrupted {
 		t.Fatalf("expected ErrStoreCorrupted, got %v", err)
@@ -281,9 +295,11 @@ func TestMemoryStore_ClosedStoreErrors(t *testing.T) {
 
 func TestMemoryStore_GetReturnsCopy(t *testing.T) {
 	s := NewMemoryStore()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
-	s.Set([]byte("k"), []byte("original"))
+	if err := s.Set([]byte("k"), []byte("original")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 	val, _ := s.Get([]byte("k"))
 
 	// Mutate the returned slice.

@@ -20,7 +20,7 @@ type stateBackendFactory func(t *testing.T) StateBackend
 func runStateBackendContractTests(t *testing.T, name string, factory stateBackendFactory) {
 	t.Run(name+"/PutGetDelete", func(t *testing.T) {
 		b := factory(t)
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 
 		// Put and Get.
 		if err := b.Put([]byte("key1"), []byte("val1")); err != nil {
@@ -58,7 +58,7 @@ func runStateBackendContractTests(t *testing.T, name string, factory stateBacken
 
 	t.Run(name+"/GetMissing", func(t *testing.T) {
 		b := factory(t)
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 
 		_, err := b.Get([]byte("nonexistent"))
 		if !errors.Is(err, ErrKeyNotFound) {
@@ -68,7 +68,7 @@ func runStateBackendContractTests(t *testing.T, name string, factory stateBacken
 
 	t.Run(name+"/DeleteMissing", func(t *testing.T) {
 		b := factory(t)
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 
 		err := b.Delete([]byte("nonexistent"))
 		if !errors.Is(err, ErrKeyNotFound) {
@@ -78,7 +78,7 @@ func runStateBackendContractTests(t *testing.T, name string, factory stateBacken
 
 	t.Run(name+"/EmptyKeyValue", func(t *testing.T) {
 		b := factory(t)
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 
 		// Empty key with non-empty value.
 		if err := b.Put([]byte{}, []byte("val")); err != nil {
@@ -107,7 +107,7 @@ func runStateBackendContractTests(t *testing.T, name string, factory stateBacken
 
 	t.Run(name+"/Iterator", func(t *testing.T) {
 		b := factory(t)
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 
 		// Insert entries with different prefixes.
 		entries := [][2]string{
@@ -162,7 +162,7 @@ func runStateBackendContractTests(t *testing.T, name string, factory stateBacken
 
 	t.Run(name+"/IteratorEmptyPrefix", func(t *testing.T) {
 		b := factory(t)
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 
 		if err := b.Put([]byte("a"), []byte("1")); err != nil {
 			t.Fatal(err)
@@ -186,7 +186,7 @@ func runStateBackendContractTests(t *testing.T, name string, factory stateBacken
 
 	t.Run(name+"/IteratorNoMatch", func(t *testing.T) {
 		b := factory(t)
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 
 		if err := b.Put([]byte("abc"), []byte("1")); err != nil {
 			t.Fatal(err)
@@ -201,7 +201,7 @@ func runStateBackendContractTests(t *testing.T, name string, factory stateBacken
 
 	t.Run(name+"/CheckpointRestore", func(t *testing.T) {
 		b := factory(t)
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 
 		// Populate state.
 		for i := 0; i < 10; i++ {
@@ -252,7 +252,7 @@ func runStateBackendContractTests(t *testing.T, name string, factory stateBacken
 
 	t.Run(name+"/ClosedBackend", func(t *testing.T) {
 		b := factory(t)
-		b.Close()
+		_ = b.Close()
 
 		if _, err := b.Get([]byte("k")); !errors.Is(err, ErrBackendClosed) {
 			t.Errorf("Get on closed: got %v, want ErrBackendClosed", err)
@@ -273,7 +273,7 @@ func runStateBackendContractTests(t *testing.T, name string, factory stateBacken
 
 	t.Run(name+"/ConcurrentAccess", func(t *testing.T) {
 		b := factory(t)
-		defer b.Close()
+		defer func() { _ = b.Close() }()
 
 		var wg sync.WaitGroup
 		for g := 0; g < 4; g++ {
@@ -303,7 +303,7 @@ func TestHashMapStateBackend_Contract(t *testing.T) {
 func TestHashMapStateBackend_MemoryLimit(t *testing.T) {
 	// Limit of 20 bytes.
 	b := NewHashMapStateBackend(20)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	// 10 bytes: "key1"(4) + "val1xx"(6) = 10.
 	if err := b.Put([]byte("key1"), []byte("val1xx")); err != nil {
@@ -334,18 +334,22 @@ func TestHashMapStateBackend_MemoryLimit(t *testing.T) {
 
 func TestHashMapStateBackend_MemUsage(t *testing.T) {
 	b := NewHashMapStateBackend(0)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	if b.MemUsage() != 0 {
 		t.Fatalf("initial mem: got %d, want 0", b.MemUsage())
 	}
 
-	b.Put([]byte("abc"), []byte("12345"))
+	if err := b.Put([]byte("abc"), []byte("12345")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 	if b.MemUsage() != 8 { // 3 + 5
 		t.Errorf("after put: got %d, want 8", b.MemUsage())
 	}
 
-	b.Delete([]byte("abc"))
+	if err := b.Delete([]byte("abc")); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
 	if b.MemUsage() != 0 {
 		t.Errorf("after delete: got %d, want 0", b.MemUsage())
 	}
@@ -353,12 +357,14 @@ func TestHashMapStateBackend_MemUsage(t *testing.T) {
 
 func TestHashMapStateBackend_SortedOrder(t *testing.T) {
 	b := NewHashMapStateBackend(0)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	// Insert out of order.
 	keys := []string{"charlie", "alpha", "bravo", "delta"}
 	for _, k := range keys {
-		b.Put([]byte(k), []byte(k))
+		if err := b.Put([]byte(k), []byte(k)); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
 	}
 
 	it := b.NewIterator([]byte{})
@@ -381,9 +387,11 @@ func TestHashMapStateBackend_SortedOrder(t *testing.T) {
 
 func TestHashMapStateBackend_SnapshotCorrupt(t *testing.T) {
 	b := NewHashMapStateBackend(0)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
-	b.Put([]byte("k"), []byte("v"))
+	if err := b.Put([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 	handle, err := b.Checkpoint(1)
 	if err != nil {
 		t.Fatal(err)
@@ -400,7 +408,7 @@ func TestHashMapStateBackend_SnapshotCorrupt(t *testing.T) {
 
 func TestHashMapStateBackend_SnapshotTooShort(t *testing.T) {
 	b := NewHashMapStateBackend(0)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	err := b.Restore(SnapshotHandle{BackendType: StateBackendHashMap, Data: []byte{1, 2, 3}})
 	if !errors.Is(err, ErrSnapshotCorrupt) {
@@ -410,7 +418,7 @@ func TestHashMapStateBackend_SnapshotTooShort(t *testing.T) {
 
 func TestHashMapStateBackend_EmptyCheckpointRestore(t *testing.T) {
 	b := NewHashMapStateBackend(0)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	// Checkpoint empty state.
 	handle, err := b.Checkpoint(1)
@@ -419,7 +427,9 @@ func TestHashMapStateBackend_EmptyCheckpointRestore(t *testing.T) {
 	}
 
 	// Add data.
-	b.Put([]byte("k"), []byte("v"))
+	if err := b.Put([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 
 	// Restore to empty.
 	if err := b.Restore(handle); err != nil {
@@ -434,21 +444,23 @@ func TestHashMapStateBackend_EmptyCheckpointRestore(t *testing.T) {
 
 func TestHashMapStateBackend_RestoreRespectsMemLimit(t *testing.T) {
 	b := NewHashMapStateBackend(0) // no limit for checkpoint
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	// Create a large snapshot.
 	for i := 0; i < 100; i++ {
-		b.Put([]byte(fmt.Sprintf("key-%03d", i)), bytes.Repeat([]byte("x"), 100))
+		if err := b.Put([]byte(fmt.Sprintf("key-%03d", i)), bytes.Repeat([]byte("x"), 100)); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
 	}
 	handle, err := b.Checkpoint(1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.Close()
+	_ = b.Close()
 
 	// New backend with a small limit.
 	b2 := NewHashMapStateBackend(50)
-	defer b2.Close()
+	defer func() { _ = b2.Close() }()
 
 	err = b2.Restore(handle)
 	if !errors.Is(err, ErrMemoryLimitExceeded) {
@@ -458,24 +470,32 @@ func TestHashMapStateBackend_RestoreRespectsMemLimit(t *testing.T) {
 
 func TestHashMapStateBackend_Len(t *testing.T) {
 	b := NewHashMapStateBackend(0)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	if b.Len() != 0 {
 		t.Fatalf("initial len: got %d, want 0", b.Len())
 	}
 
-	b.Put([]byte("a"), []byte("1"))
-	b.Put([]byte("b"), []byte("2"))
+	if err := b.Put([]byte("a"), []byte("1")); err != nil {
+		t.Fatalf("Put a: %v", err)
+	}
+	if err := b.Put([]byte("b"), []byte("2")); err != nil {
+		t.Fatalf("Put b: %v", err)
+	}
 	if b.Len() != 2 {
 		t.Errorf("after 2 puts: got %d, want 2", b.Len())
 	}
 
-	b.Put([]byte("a"), []byte("updated"))
+	if err := b.Put([]byte("a"), []byte("updated")); err != nil {
+		t.Fatalf("Put update: %v", err)
+	}
 	if b.Len() != 2 {
 		t.Errorf("after update: got %d, want 2 (no duplicate)", b.Len())
 	}
 
-	b.Delete([]byte("a"))
+	if err := b.Delete([]byte("a")); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
 	if b.Len() != 1 {
 		t.Errorf("after delete: got %d, want 1", b.Len())
 	}
@@ -491,7 +511,7 @@ func TestNewStateBackend_HashMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStateBackend hashmap: %v", err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	if err := b.Put([]byte("k"), []byte("v")); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -540,8 +560,10 @@ func TestNoopStateBackendMetrics(t *testing.T) {
 
 func TestHashMapStateBackend_NewIteratorAfterClose(t *testing.T) {
 	b := NewHashMapStateBackend(0)
-	b.Put([]byte("k"), []byte("v"))
-	b.Close()
+	if err := b.Put([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	_ = b.Close()
 
 	// NewIterator on a closed backend returns an empty iterator (no error signal).
 	it := b.NewIterator([]byte{})
@@ -555,9 +577,11 @@ func TestHashMapStateBackend_NewIteratorAfterClose(t *testing.T) {
 
 func TestHashMapStateBackend_RestoreWrongBackendType(t *testing.T) {
 	b := NewHashMapStateBackend(0)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
-	b.Put([]byte("k"), []byte("v"))
+	if err := b.Put([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 	handle, err := b.Checkpoint(1)
 	if err != nil {
 		t.Fatal(err)
@@ -576,9 +600,11 @@ func TestHashMapStateBackend_RestoreWrongBackendType(t *testing.T) {
 
 func TestHashMapStateBackend_GetReturnsCopy(t *testing.T) {
 	b := NewHashMapStateBackend(0)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
-	b.Put([]byte("key"), []byte("original"))
+	if err := b.Put([]byte("key"), []byte("original")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 
 	got, err := b.Get([]byte("key"))
 	if err != nil {
@@ -602,9 +628,11 @@ func TestHashMapStateBackend_GetReturnsCopy(t *testing.T) {
 
 func TestHashMapStateBackend_SnapshotTrailingGarbage(t *testing.T) {
 	b := NewHashMapStateBackend(0)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
-	b.Put([]byte("k"), []byte("v"))
+	if err := b.Put([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 	handle, err := b.Checkpoint(1)
 	if err != nil {
 		t.Fatal(err)
@@ -631,7 +659,7 @@ func TestHashMapStateBackend_SnapshotTrailingGarbage(t *testing.T) {
 
 func TestHashMapStateBackend_SnapshotHugeNumEntries(t *testing.T) {
 	b := NewHashMapStateBackend(0)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	// Craft a minimal snapshot with an absurdly large numEntries.
 	// Format: [version:1B][numEntries:4B LE][CRC:4B LE]
@@ -654,17 +682,27 @@ func TestHashMapStateBackend_SnapshotHugeNumEntries(t *testing.T) {
 
 func TestHashMapStateBackend_IteratorIsolation(t *testing.T) {
 	b := NewHashMapStateBackend(0)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
-	b.Put([]byte("a"), []byte("1"))
-	b.Put([]byte("b"), []byte("2"))
-	b.Put([]byte("c"), []byte("3"))
+	if err := b.Put([]byte("a"), []byte("1")); err != nil {
+		t.Fatalf("Put a: %v", err)
+	}
+	if err := b.Put([]byte("b"), []byte("2")); err != nil {
+		t.Fatalf("Put b: %v", err)
+	}
+	if err := b.Put([]byte("c"), []byte("3")); err != nil {
+		t.Fatalf("Put c: %v", err)
+	}
 
 	it := b.NewIterator([]byte{})
 
 	// Mutate the backend during iteration.
-	b.Put([]byte("d"), []byte("4"))
-	b.Delete([]byte("a"))
+	if err := b.Put([]byte("d"), []byte("4")); err != nil {
+		t.Fatalf("Put d: %v", err)
+	}
+	if err := b.Delete([]byte("a")); err != nil {
+		t.Fatalf("Delete a: %v", err)
+	}
 
 	// Iterator should see the snapshot at creation time.
 	var keys []string

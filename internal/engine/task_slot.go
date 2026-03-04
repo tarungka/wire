@@ -74,7 +74,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	go func() {
 		<-gctx.Done()
 		for _, s := range ts.Inputs {
-			s.Close()
+			_ = s.Close()
 		}
 	}()
 

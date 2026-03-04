@@ -11,12 +11,14 @@ import (
 func TestLoad_SingleYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(`
+	if err := os.WriteFile(path, []byte(`
 node:
   data_dir: /tmp/wire-data
 http:
   addr: ":9001"
-`), 0644)
+`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	cfg, err := Load([]string{path})
 	if err != nil {
@@ -37,10 +39,12 @@ http:
 func TestLoad_SingleJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	os.WriteFile(path, []byte(`{
+	if err := os.WriteFile(path, []byte(`{
 		"node": {"data_dir": "/tmp/json-data"},
 		"write_queue": {"capacity": 2048, "timeout": "100ms"}
-	}`), 0644)
+	}`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	cfg, err := Load([]string{path})
 	if err != nil {
@@ -60,18 +64,22 @@ func TestLoad_SingleJSON(t *testing.T) {
 func TestLoad_TwoFileMerge(t *testing.T) {
 	dir := t.TempDir()
 	first := filepath.Join(dir, "base.yaml")
-	os.WriteFile(first, []byte(`
+	if err := os.WriteFile(first, []byte(`
 node:
   data_dir: /base
 http:
   addr: ":8000"
-`), 0644)
+`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	second := filepath.Join(dir, "override.yaml")
-	os.WriteFile(second, []byte(`
+	if err := os.WriteFile(second, []byte(`
 http:
   addr: ":9000"
-`), 0644)
+`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	cfg, err := Load([]string{first, second})
 	if err != nil {
@@ -112,7 +120,9 @@ func TestLoad_MissingExplicitPath(t *testing.T) {
 func TestLoad_UnsupportedExtension(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	os.WriteFile(path, []byte(`key = "value"`), 0644)
+	if err := os.WriteFile(path, []byte(`key = "value"`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	_, err := Load([]string{path})
 	if err == nil {
@@ -126,7 +136,9 @@ func TestLoad_UnsupportedExtension(t *testing.T) {
 func TestLoad_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")
-	os.WriteFile(path, []byte(`{{{invalid`), 0644)
+	if err := os.WriteFile(path, []byte(`{{{invalid`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	_, err := Load([]string{path})
 	if err == nil {
@@ -141,10 +153,12 @@ func TestLoad_EnvSubstitution(t *testing.T) {
 	t.Setenv("WIRE_TEST_ADDR", ":7777")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(`
+	if err := os.WriteFile(path, []byte(`
 http:
   addr: "${WIRE_TEST_ADDR}"
-`), 0644)
+`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	cfg, err := Load([]string{path})
 	if err != nil {
@@ -158,7 +172,9 @@ http:
 func TestLoad_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.yaml")
-	os.WriteFile(path, []byte(""), 0644)
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	cfg, err := Load([]string{path})
 	if err != nil {
@@ -183,19 +199,23 @@ func TestLoad_NoPaths(t *testing.T) {
 func TestLoad_NestedMergePreservation(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "base.yaml")
-	os.WriteFile(base, []byte(`
+	if err := os.WriteFile(base, []byte(`
 http:
   addr: ":8000"
   tls:
     cert: /etc/ssl/cert.pem
     key: /etc/ssl/key.pem
-`), 0644)
+`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	override := filepath.Join(dir, "override.yaml")
-	os.WriteFile(override, []byte(`
+	if err := os.WriteFile(override, []byte(`
 http:
   addr: ":9000"
-`), 0644)
+`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	cfg, err := Load([]string{base, override})
 	if err != nil {
@@ -215,10 +235,12 @@ http:
 func TestLoad_NumericDurationRejected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(`
+	if err := os.WriteFile(path, []byte(`
 write_queue:
   timeout: 50
-`), 0644)
+`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	_, err := Load([]string{path})
 	if err == nil {
@@ -237,7 +259,9 @@ func TestLoad_ExampleConfig(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wire.yaml")
-	os.WriteFile(path, data, 0644)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	cfg, err := Load([]string{path})
 	if err != nil {

@@ -9,8 +9,12 @@ func TestTriggerSavepoint(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
-	c.transitionJob(job, JobDeploying)
-	c.transitionJob(job, JobRunning)
+	if err := c.transitionJob(job, JobDeploying); err != nil {
+		t.Fatalf("transitionJob to DEPLOYING: %v", err)
+	}
+	if err := c.transitionJob(job, JobRunning); err != nil {
+		t.Fatalf("transitionJob to RUNNING: %v", err)
+	}
 
 	sp, err := c.TriggerSavepoint(job.ID)
 	if err != nil {
@@ -42,10 +46,17 @@ func TestGetSavepoint(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
-	c.transitionJob(job, JobDeploying)
-	c.transitionJob(job, JobRunning)
+	if err := c.transitionJob(job, JobDeploying); err != nil {
+		t.Fatalf("transitionJob to DEPLOYING: %v", err)
+	}
+	if err := c.transitionJob(job, JobRunning); err != nil {
+		t.Fatalf("transitionJob to RUNNING: %v", err)
+	}
 
-	sp, _ := c.TriggerSavepoint(job.ID)
+	sp, err := c.TriggerSavepoint(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerSavepoint: %v", err)
+	}
 
 	got, err := c.GetSavepoint(job.ID, sp.ID)
 	if err != nil {
@@ -69,11 +80,19 @@ func TestListSavepoints(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
-	c.transitionJob(job, JobDeploying)
-	c.transitionJob(job, JobRunning)
+	if err := c.transitionJob(job, JobDeploying); err != nil {
+		t.Fatalf("transitionJob to DEPLOYING: %v", err)
+	}
+	if err := c.transitionJob(job, JobRunning); err != nil {
+		t.Fatalf("transitionJob to RUNNING: %v", err)
+	}
 
-	c.TriggerSavepoint(job.ID)
-	c.TriggerSavepoint(job.ID)
+	if _, err := c.TriggerSavepoint(job.ID); err != nil {
+		t.Fatalf("TriggerSavepoint 1: %v", err)
+	}
+	if _, err := c.TriggerSavepoint(job.ID); err != nil {
+		t.Fatalf("TriggerSavepoint 2: %v", err)
+	}
 
 	sps, err := c.ListSavepoints(job.ID)
 	if err != nil {
@@ -88,17 +107,24 @@ func TestDeleteSavepoint(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
-	c.transitionJob(job, JobDeploying)
-	c.transitionJob(job, JobRunning)
+	if err := c.transitionJob(job, JobDeploying); err != nil {
+		t.Fatalf("transitionJob to DEPLOYING: %v", err)
+	}
+	if err := c.transitionJob(job, JobRunning); err != nil {
+		t.Fatalf("transitionJob to RUNNING: %v", err)
+	}
 
-	sp, _ := c.TriggerSavepoint(job.ID)
+	sp, err := c.TriggerSavepoint(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerSavepoint: %v", err)
+	}
 
 	if err := c.DeleteSavepoint(job.ID, sp.ID); err != nil {
 		t.Fatalf("DeleteSavepoint: %v", err)
 	}
 
 	// Should be gone now.
-	_, err := c.GetSavepoint(job.ID, sp.ID)
+	_, err = c.GetSavepoint(job.ID, sp.ID)
 	if !errors.Is(err, ErrSavepointNotFound) {
 		t.Fatalf("expected ErrSavepointNotFound after delete, got: %v", err)
 	}

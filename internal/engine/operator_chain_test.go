@@ -484,7 +484,9 @@ func TestOperatorChain_AbortCheckpoint_DrainsSideBufferNoBarrier(t *testing.T) {
 
 	// Simulate input 0 has sent a barrier and buffered events.
 	aligner.OnBarrier(0, 1, 1)
-	aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-buffered")})
+	if err := aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-buffered")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
 
 	// Send abort for this checkpoint.
 	controlCh <- ControlMsg{Type: CtrlAbortCheckpoint, CheckpointID: 1}
@@ -535,8 +537,12 @@ func TestOperatorChain_CheckpointBarrier_SideBufferDrainedBeforeBarrier(t *testi
 
 	// Simulate: input 0 barrier arrived, events side-buffered.
 	aligner.OnBarrier(0, 1, 1)
-	aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-1")})
-	aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-2")})
+	if err := aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-1")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
+	if err := aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-2")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
 
 	// Input 1 barrier arrives — alignment complete.
 	aligner.OnBarrier(1, 1, 1)

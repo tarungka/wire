@@ -66,7 +66,7 @@ func TestValidateTransition_Invalid(t *testing.T) {
 
 func TestTransitionJob_Timestamps(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 
@@ -137,7 +137,7 @@ func TestTransitionJob_Timestamps(t *testing.T) {
 
 func TestTransitionJob_FailingToFailed(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 
@@ -197,7 +197,7 @@ func TestStateReachability_AllTerminalStatesReachable(t *testing.T) {
 
 func TestTransitionJob_InvalidReturnsError(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 

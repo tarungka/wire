@@ -16,7 +16,9 @@ func TestApplyFlags_ChangedOverrides(t *testing.T) {
 	fs.Bool("debug", false, "")
 
 	// Simulate: --http-listen :8080 --debug
-	fs.Parse([]string{"--http-listen", ":8080", "--debug"})
+	if err := fs.Parse([]string{"--http-listen", ":8080", "--debug"}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
 
 	if err := ApplyFlags(&cfg, fs); err != nil {
 		t.Fatal(err)
@@ -41,7 +43,9 @@ func TestApplyFlags_UnchangedPreservesConfig(t *testing.T) {
 	fs.Bool("debug", false, "")
 
 	// No flags passed on command line.
-	fs.Parse([]string{})
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
 
 	if err := ApplyFlags(&cfg, fs); err != nil {
 		t.Fatal(err)
@@ -70,7 +74,7 @@ func TestApplyFlags_AllFlags(t *testing.T) {
 	fs.String("election-backend", "noop", "")
 	fs.String("election-lock-path", "data/coordinator/leader.lock", "")
 
-	fs.Parse([]string{
+	if err := fs.Parse([]string{
 		"--node-id", "node-A",
 		"--coordinator-data-dir", "/data/custom",
 		"--debug",
@@ -81,7 +85,9 @@ func TestApplyFlags_AllFlags(t *testing.T) {
 		"--node-verify-client",
 		"--election-backend", "filelock",
 		"--election-lock-path", "/tmp/leader.lock",
-	})
+	}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
 
 	if err := ApplyFlags(&cfg, fs); err != nil {
 		t.Fatal(err)
@@ -129,7 +135,9 @@ func TestApplyFlags_UnmappedFlagsIgnored(t *testing.T) {
 	fs.Int("another-unknown", 42, "")
 
 	// Set unmapped flags on the command line.
-	fs.Parse([]string{"--unknown-flag", "boom", "--another-unknown", "99"})
+	if err := fs.Parse([]string{"--unknown-flag", "boom", "--another-unknown", "99"}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
 
 	if err := ApplyFlags(&cfg, fs); err != nil {
 		t.Fatal(err)

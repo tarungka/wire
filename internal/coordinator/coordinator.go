@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/protocol"
 )
 
@@ -133,7 +134,7 @@ func (c *Coordinator) runMultiNode(ctx context.Context) error {
 
 		if err := c.recover(); err != nil {
 			c.log.Error().Err(err).Msg("recovery failed, resigning")
-			c.election.Resign(ctx)
+			_ = c.election.Resign(ctx)
 			continue
 		}
 

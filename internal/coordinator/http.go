@@ -97,7 +97,7 @@ func (s *HTTPServer) Addr() string {
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }
 
 // handleReady returns 200 if the coordinator is a recovered leader.
@@ -107,7 +107,7 @@ func (s *HTTPServer) handleReady(w http.ResponseWriter, r *http.Request) {
 	if s.coord.IsReady() {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 		return
 	}
 
@@ -140,7 +140,7 @@ func (s *HTTPServer) handleLeader(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // writeStandbyRedirect writes a 307 Temporary Redirect for standby nodes,
@@ -157,10 +157,10 @@ func (s *HTTPServer) writeStandbyRedirect(w http.ResponseWriter, r *http.Request
 		w.Header().Set("Location", location)
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusTemporaryRedirect)
-		w.Write([]byte("redirecting to leader"))
+		_, _ = w.Write([]byte("redirecting to leader"))
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusServiceUnavailable)
-	w.Write([]byte("no leader"))
+	_, _ = w.Write([]byte("no leader"))
 }

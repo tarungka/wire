@@ -29,7 +29,7 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 
 // MarshalYAML returns the duration as a human-readable string.
 func (d Duration) MarshalYAML() (any, error) {
-	return d.Duration.String(), nil
+	return d.String(), nil
 }
 
 // UnmarshalJSON parses a JSON string into a Duration.
@@ -48,5 +48,5 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 // MarshalJSON returns the duration as a JSON string.
 func (d Duration) MarshalJSON() ([]byte, error) {
-	return json.Marshal(d.Duration.String())
+	return json.Marshal(d.String())
 }

@@ -40,8 +40,12 @@ func TestValidate_TLSBothSet(t *testing.T) {
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "cert.pem")
 	keyPath := filepath.Join(dir, "key.pem")
-	os.WriteFile(certPath, []byte("cert"), 0644)
-	os.WriteFile(keyPath, []byte("key"), 0644)
+	if err := os.WriteFile(certPath, []byte("cert"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("key"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	cfg := DefaultConfig()
 	cfg.NodeTLS.Cert = certPath

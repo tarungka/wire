@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/yamux"
+
 	"github.com/tarungka/wire/internal/protocol"
 )
 
@@ -31,8 +32,8 @@ func newTestMuxPair(t *testing.T) (server *Mux, client *Mux, serverAddr string) 
 	client = NewMux(cCfg)
 
 	t.Cleanup(func() {
-		client.Close()
-		server.Close()
+		_ = client.Close()
+		_ = server.Close()
 	})
 
 	return server, client, serverAddr
@@ -107,8 +108,12 @@ func TestStreamLifecycle_HandshakeDataEnd(t *testing.T) {
 		}
 	}
 
-	clientStream.Close()
-	serverStream.Close()
+	if err := clientStream.Close(); err != nil {
+		t.Fatalf("clientStream.Close: %v", err)
+	}
+	if err := serverStream.Close(); err != nil {
+		t.Fatalf("serverStream.Close: %v", err)
+	}
 }
 
 func TestHandshake_Accept(t *testing.T) {
@@ -119,13 +124,13 @@ func TestHandshake_Accept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	params, err := ss.ReceiveHandshake()
 	if err != nil {
@@ -156,21 +161,21 @@ func TestHandshake_Reject(t *testing.T) {
 	clientMux := NewMux(cCfg)
 
 	t.Cleanup(func() {
-		clientMux.Close()
-		server.Close()
+		_ = clientMux.Close()
+		_ = server.Close()
 	})
 
 	cs, err := clientMux.Dial(ctx, serverAddr)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	_, err = ss.ReceiveHandshake()
 	if err == nil {
@@ -190,27 +195,27 @@ func TestHandshake_Timeout(t *testing.T) {
 	}
 	serverAddr := server.ListenAddr()
 
-	t.Cleanup(func() { server.Close() })
+	t.Cleanup(func() { _ = server.Close() })
 
 	// Raw client session — no automatic handshake.
 	sess, err := NewClientSession(serverAddr, DefaultConfig())
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	raw, err := sess.OpenStream()
 	if err != nil {
 		t.Fatalf("OpenStream: %v", err)
 	}
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 
 	// Don't send a handshake — just wait.
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	_, err = ss.ReceiveHandshake()
 	if err == nil {
@@ -227,7 +232,7 @@ func TestHandshake_WrongFirstFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	raw, err := sess.OpenStream()
 	if err != nil {
@@ -236,14 +241,18 @@ func TestHandshake_WrongFirstFrame(t *testing.T) {
 
 	// Write a DataRecord as first frame.
 	dr := &protocol.DataRecordMsg{Value: []byte("bad"), EventTime: 1}
-	protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, dr)
-	raw.Close()
+	if err := protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, dr); err != nil {
+		t.Fatalf("WriteFrame: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("raw.Close: %v", err)
+	}
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	_, err = ss.ReceiveHandshake()
 	if err == nil {
@@ -259,20 +268,30 @@ func TestBarrierOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
-	ss.ReceiveHandshake()
+	defer func() { _ = ss.Close() }()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	// DR, DR, CB, DR.
-	cs.WriteMessage(&protocol.DataRecordMsg{Value: []byte("1"), EventTime: 1})
-	cs.WriteMessage(&protocol.DataRecordMsg{Value: []byte("2"), EventTime: 2})
-	cs.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000})
-	cs.WriteMessage(&protocol.DataRecordMsg{Value: []byte("3"), EventTime: 3})
+	if err := cs.WriteMessage(&protocol.DataRecordMsg{Value: []byte("1"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage[0]: %v", err)
+	}
+	if err := cs.WriteMessage(&protocol.DataRecordMsg{Value: []byte("2"), EventTime: 2}); err != nil {
+		t.Fatalf("WriteMessage[1]: %v", err)
+	}
+	if err := cs.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000}); err != nil {
+		t.Fatalf("WriteMessage[CB]: %v", err)
+	}
+	if err := cs.WriteMessage(&protocol.DataRecordMsg{Value: []byte("3"), EventTime: 3}); err != nil {
+		t.Fatalf("WriteMessage[2]: %v", err)
+	}
 
 	expected := []uint8{
 		protocol.MsgTypeDataRecord,
@@ -300,19 +319,27 @@ func TestWatermarkMonotonicity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
-	ss.ReceiveHandshake()
+	defer func() { _ = ss.Close() }()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	// Send Watermark(100), then Watermark(50) (backward), then Watermark(200).
-	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s"})
-	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 50, SourceID: "s"}) // Should be dropped.
-	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 200, SourceID: "s"})
+	if err := cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s"}); err != nil {
+		t.Fatalf("WriteMessage[wm100]: %v", err)
+	}
+	if err := cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 50, SourceID: "s"}); err != nil {
+		t.Fatalf("WriteMessage[wm50]: %v", err)
+	}
+	if err := cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 200, SourceID: "s"}); err != nil {
+		t.Fatalf("WriteMessage[wm200]: %v", err)
+	}
 
 	// First watermark: 100.
 	m1, err := ss.ReadMessage()
@@ -343,18 +370,24 @@ func TestEndOfPartition_TerminatesStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
-	ss.ReceiveHandshake()
+	defer func() { _ = ss.Close() }()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	// Send EoP, then a DataRecord (should be dropped).
-	cs.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s", Reason: protocol.EndReasonExhausted})
-	cs.WriteMessage(&protocol.DataRecordMsg{Value: []byte("after-eop"), EventTime: 1})
+	if err := cs.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage[EoP]: %v", err)
+	}
+	if err := cs.WriteMessage(&protocol.DataRecordMsg{Value: []byte("after-eop"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage[after-eop]: %v", err)
+	}
 
 	// First read: EndOfPartition.
 	m1, err := ss.ReadMessage()
@@ -384,19 +417,25 @@ func TestBackpressure_PauseResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
-	ss.ReceiveHandshake()
+	defer func() { _ = ss.Close() }()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	// Send Pause.
-	cs.WriteMessage(&protocol.BackpressureMsg{StreamID: 1, State: protocol.BackpressurePause, BufferUsage: 0.85})
+	if err := cs.WriteMessage(&protocol.BackpressureMsg{StreamID: 1, State: protocol.BackpressurePause, BufferUsage: 0.85}); err != nil {
+		t.Fatalf("WriteMessage[Pause]: %v", err)
+	}
 	// Send Resume.
-	cs.WriteMessage(&protocol.BackpressureMsg{StreamID: 1, State: protocol.BackpressureResume, BufferUsage: 0.1})
+	if err := cs.WriteMessage(&protocol.BackpressureMsg{StreamID: 1, State: protocol.BackpressureResume, BufferUsage: 0.1}); err != nil {
+		t.Fatalf("WriteMessage[Resume]: %v", err)
+	}
 
 	m1, err := ss.ReadMessage()
 	if err != nil {
@@ -436,7 +475,7 @@ func TestConcurrentStreams(t *testing.T) {
 				t.Errorf("Dial[%d]: %v", streamIdx, err)
 				return
 			}
-			defer cs.Close()
+			defer func() { _ = cs.Close() }()
 
 			for j := 0; j < msgsPerStream; j++ {
 				msg := &protocol.DataRecordMsg{
@@ -463,7 +502,7 @@ func TestConcurrentStreams(t *testing.T) {
 				t.Errorf("Accept: %v", err)
 				return
 			}
-			defer ss.Close()
+			defer func() { _ = ss.Close() }()
 
 			_, err = ss.ReceiveHandshake()
 			if err != nil {
@@ -494,13 +533,13 @@ func TestSessionReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial[0]: %v", err)
 	}
-	defer cs1.Close()
+	defer func() { _ = cs1.Close() }()
 
 	cs2, err := client.Dial(ctx, addr)
 	if err != nil {
 		t.Fatalf("Dial[1]: %v", err)
 	}
-	defer cs2.Close()
+	defer func() { _ = cs2.Close() }()
 
 	// Accept both streams on the server side.
 	for i := 0; i < 2; i++ {
@@ -508,8 +547,12 @@ func TestSessionReuse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Accept[%d]: %v", i, err)
 		}
-		ss.ReceiveHandshake()
-		ss.Close()
+		if _, err := ss.ReceiveHandshake(); err != nil {
+			t.Fatalf("ReceiveHandshake[%d]: %v", i, err)
+		}
+		if err := ss.Close(); err != nil {
+			t.Fatalf("ss.Close[%d]: %v", i, err)
+		}
 	}
 
 	// Check that only one session exists in the peers map.
@@ -530,7 +573,7 @@ func TestUnknownMsgType_Skipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	raw, err := sess.OpenStream()
 	if err != nil {
@@ -539,22 +582,30 @@ func TestUnknownMsgType_Skipped(t *testing.T) {
 
 	// Send handshake first.
 	hs := &protocol.HandshakeMsg{ProtocolVersion: 1, MinVersion: 1}
-	protocol.WriteFrame(raw, protocol.MsgTypeHandshake, hs)
+	if err := protocol.WriteFrame(raw, protocol.MsgTypeHandshake, hs); err != nil {
+		t.Fatalf("WriteFrame[handshake]: %v", err)
+	}
 
 	// Send unknown MsgType (0x40).
-	protocol.WriteFrameRaw(raw, 0x40, []byte{0x80}) // Empty msgpack map.
+	if err := protocol.WriteFrameRaw(raw, 0x40, []byte{0x80}); err != nil {
+		t.Fatalf("WriteFrameRaw[unknown]: %v", err)
+	}
 
 	// Send valid DataRecord.
 	dr := &protocol.DataRecordMsg{Value: []byte("valid"), EventTime: 1}
-	protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, dr)
+	if err := protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, dr); err != nil {
+		t.Fatalf("WriteFrame[DataRecord]: %v", err)
+	}
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
-	ss.ReceiveHandshake()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	// Should skip the unknown type and return the DataRecord.
 	m, err := ss.ReadMessage()
@@ -575,7 +626,7 @@ func TestCRCErrorThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	raw, err := sess.OpenStream()
 	if err != nil {
@@ -584,7 +635,9 @@ func TestCRCErrorThreshold(t *testing.T) {
 
 	// Send handshake.
 	hs := &protocol.HandshakeMsg{ProtocolVersion: 1, MinVersion: 1}
-	protocol.WriteFrame(raw, protocol.MsgTypeHandshake, hs)
+	if err := protocol.WriteFrame(raw, protocol.MsgTypeHandshake, hs); err != nil {
+		t.Fatalf("WriteFrame[handshake]: %v", err)
+	}
 
 	// Send 10 frames with corrupted CRC (write valid frame, then corrupt CRC byte).
 	for i := 0; i < MaxConsecutiveCRCErrors; i++ {
@@ -599,8 +652,10 @@ func TestCRCErrorThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
-	ss.ReceiveHandshake()
+	defer func() { _ = ss.Close() }()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	_, err = ss.ReadMessage()
 	if err == nil {
@@ -616,7 +671,7 @@ func TestDecodeErrorThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	raw, err := sess.OpenStream()
 	if err != nil {
@@ -625,20 +680,26 @@ func TestDecodeErrorThreshold(t *testing.T) {
 
 	// Send handshake.
 	hs := &protocol.HandshakeMsg{ProtocolVersion: 1, MinVersion: 1}
-	protocol.WriteFrame(raw, protocol.MsgTypeHandshake, hs)
+	if err := protocol.WriteFrame(raw, protocol.MsgTypeHandshake, hs); err != nil {
+		t.Fatalf("WriteFrame[handshake]: %v", err)
+	}
 
 	// Send frames with valid CRC but garbled payload (valid msgpack but wrong structure).
 	for i := 0; i < MaxConsecutiveDecodeErrors; i++ {
 		// Use a payload that's invalid for DataRecord but has correct CRC.
-		protocol.WriteFrameRaw(raw, protocol.MsgTypeDataRecord, []byte{0xC1}) // Invalid msgpack byte 0xC1.
+		if err := protocol.WriteFrameRaw(raw, protocol.MsgTypeDataRecord, []byte{0xC1}); err != nil {
+			t.Fatalf("WriteFrameRaw[%d]: %v", i, err)
+		}
 	}
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
-	ss.ReceiveHandshake()
+	defer func() { _ = ss.Close() }()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	_, err = ss.ReadMessage()
 	if err == nil {
@@ -661,7 +722,7 @@ func writeCorruptedFrame(w *yamux.Stream, msgType uint8, payload []byte) {
 	buf[7] = 0
 	buf[8] = 0
 	copy(buf[9:], payload)
-	w.Write(buf)
+	_, _ = w.Write(buf)
 }
 
 func TestMuxClose_ConcurrentAccept(t *testing.T) {
@@ -690,7 +751,7 @@ func TestMuxClose_ConcurrentAccept(t *testing.T) {
 			if err != nil {
 				return // Connection may fail during close, that's fine.
 			}
-			cs.Close()
+			_ = cs.Close()
 		}()
 	}
 
@@ -703,14 +764,14 @@ func TestMuxClose_ConcurrentAccept(t *testing.T) {
 			if err != nil {
 				return
 			}
-			ss.Close()
+			_ = ss.Close()
 		}()
 	}
 
 	// Give goroutines a moment to start, then close server.
 	time.Sleep(50 * time.Millisecond)
-	server.Close()
-	client.Close()
+	_ = server.Close()
+	_ = client.Close()
 	wg.Wait()
 }
 
@@ -727,7 +788,7 @@ func TestHandshakeTimeout_VsNonTimeout(t *testing.T) {
 		t.Fatalf("Listen: %v", err)
 	}
 	serverAddr := server.ListenAddr()
-	t.Cleanup(func() { server.Close() })
+	t.Cleanup(func() { _ = server.Close() })
 
 	// Case 1: Client closes stream immediately → should NOT get ErrHandshakeTimeout.
 	sess, err := NewClientSession(serverAddr, DefaultConfig())
@@ -738,7 +799,9 @@ func TestHandshakeTimeout_VsNonTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenStream: %v", err)
 	}
-	raw.Close() // Close immediately without sending handshake.
+	if err := raw.Close(); err != nil {
+		t.Fatalf("raw.Close: %v", err)
+	}
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
@@ -751,8 +814,8 @@ func TestHandshakeTimeout_VsNonTimeout(t *testing.T) {
 	if errors.Is(err, protocol.ErrHandshakeTimeout) {
 		t.Errorf("EOF should not be wrapped as ErrHandshakeTimeout, got: %v", err)
 	}
-	ss.Close()
-	sess.Close()
+	_ = ss.Close()
+	_ = sess.Close()
 
 	// Case 2: No data sent, should timeout → should get ErrHandshakeTimeout.
 	sess2, err := NewClientSession(serverAddr, DefaultConfig())
@@ -763,14 +826,14 @@ func TestHandshakeTimeout_VsNonTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenStream: %v", err)
 	}
-	defer raw2.Close()
-	defer sess2.Close()
+	defer func() { _ = raw2.Close() }()
+	defer func() { _ = sess2.Close() }()
 
 	ss2, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss2.Close()
+	defer func() { _ = ss2.Close() }()
 
 	_, err = ss2.ReceiveHandshake()
 	if err == nil {
@@ -789,17 +852,21 @@ func TestPostEOP_ReturnsEOF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
-	ss.ReceiveHandshake()
+	defer func() { _ = ss.Close() }()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	// Send EndOfPartition.
-	cs.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s", Reason: protocol.EndReasonExhausted})
+	if err := cs.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage[EoP]: %v", err)
+	}
 
 	// Read the EOP message.
 	m1, err := ss.ReadMessage()
@@ -827,23 +894,35 @@ func TestWatermarkMonotonicity_MultipleSourceIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
-	ss.ReceiveHandshake()
+	defer func() { _ = ss.Close() }()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	// Send watermarks from two different sources with independent timelines.
 	// Source "a": 100, then 50 (backward — should drop), then 200
 	// Source "b": 10, then 20 (forward — should pass)
-	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "a"})
-	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 10, SourceID: "b"})
-	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 50, SourceID: "a"})  // backward for "a", drop
-	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 20, SourceID: "b"})  // forward for "b", pass
-	cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 200, SourceID: "a"}) // forward for "a", pass
+	if err := cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "a"}); err != nil {
+		t.Fatalf("WriteMessage[a:100]: %v", err)
+	}
+	if err := cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 10, SourceID: "b"}); err != nil {
+		t.Fatalf("WriteMessage[b:10]: %v", err)
+	}
+	if err := cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 50, SourceID: "a"}); err != nil {
+		t.Fatalf("WriteMessage[a:50]: %v", err)
+	}
+	if err := cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 20, SourceID: "b"}); err != nil {
+		t.Fatalf("WriteMessage[b:20]: %v", err)
+	}
+	if err := cs.WriteMessage(&protocol.WatermarkMsg{Timestamp: 200, SourceID: "a"}); err != nil {
+		t.Fatalf("WriteMessage[a:200]: %v", err)
+	}
 
 	// Expected: a:100, b:10, b:20, a:200 (a:50 dropped)
 	expected := []struct {
@@ -899,16 +978,18 @@ func TestErrorCounterResetAfterSuccess_CRC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	raw, err := sess.OpenStream()
 	if err != nil {
 		t.Fatalf("OpenStream: %v", err)
 	}
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 
 	// Send handshake.
-	protocol.WriteFrame(raw, protocol.MsgTypeHandshake, &protocol.HandshakeMsg{ProtocolVersion: 1, MinVersion: 1})
+	if err := protocol.WriteFrame(raw, protocol.MsgTypeHandshake, &protocol.HandshakeMsg{ProtocolVersion: 1, MinVersion: 1}); err != nil {
+		t.Fatalf("WriteFrame[handshake]: %v", err)
+	}
 
 	// Send (MaxConsecutiveCRCErrors - 1) bad CRC frames.
 	payload, _ := protocol.EncodeMsgPack(&protocol.DataRecordMsg{Value: []byte("x"), EventTime: 1})
@@ -917,7 +998,9 @@ func TestErrorCounterResetAfterSuccess_CRC(t *testing.T) {
 	}
 
 	// Send one valid frame — this should reset the counter.
-	protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, &protocol.DataRecordMsg{Value: []byte("ok"), EventTime: 2})
+	if err := protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, &protocol.DataRecordMsg{Value: []byte("ok"), EventTime: 2}); err != nil {
+		t.Fatalf("WriteFrame[ok]: %v", err)
+	}
 
 	// Send (MaxConsecutiveCRCErrors - 1) more bad CRC frames.
 	for i := 0; i < MaxConsecutiveCRCErrors-1; i++ {
@@ -925,14 +1008,18 @@ func TestErrorCounterResetAfterSuccess_CRC(t *testing.T) {
 	}
 
 	// Send another valid frame.
-	protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, &protocol.DataRecordMsg{Value: []byte("ok2"), EventTime: 3})
+	if err := protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, &protocol.DataRecordMsg{Value: []byte("ok2"), EventTime: 3}); err != nil {
+		t.Fatalf("WriteFrame[ok2]: %v", err)
+	}
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
-	ss.ReceiveHandshake()
+	defer func() { _ = ss.Close() }()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	// First read: should skip 9 bad CRC frames and return "ok".
 	m1, err := ss.ReadMessage()
@@ -963,26 +1050,34 @@ func TestErrorCounterResetAfterSuccess_Decode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	raw, err := sess.OpenStream()
 	if err != nil {
 		t.Fatalf("OpenStream: %v", err)
 	}
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 
-	protocol.WriteFrame(raw, protocol.MsgTypeHandshake, &protocol.HandshakeMsg{ProtocolVersion: 1, MinVersion: 1})
+	if err := protocol.WriteFrame(raw, protocol.MsgTypeHandshake, &protocol.HandshakeMsg{ProtocolVersion: 1, MinVersion: 1}); err != nil {
+		t.Fatalf("WriteFrame[handshake]: %v", err)
+	}
 
 	// Send bad decode frame, then good frame.
-	protocol.WriteFrameRaw(raw, protocol.MsgTypeDataRecord, []byte{0xC1}) // invalid msgpack
-	protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, &protocol.DataRecordMsg{Value: []byte("ok"), EventTime: 1})
+	if err := protocol.WriteFrameRaw(raw, protocol.MsgTypeDataRecord, []byte{0xC1}); err != nil {
+		t.Fatalf("WriteFrameRaw: %v", err)
+	}
+	if err := protocol.WriteFrame(raw, protocol.MsgTypeDataRecord, &protocol.DataRecordMsg{Value: []byte("ok"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteFrame[ok]: %v", err)
+	}
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
-	ss.ReceiveHandshake()
+	defer func() { _ = ss.Close() }()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	m, err := ss.ReadMessage()
 	if err != nil {
@@ -1006,29 +1101,31 @@ func TestHandshake_RejectSendsEOPToClient(t *testing.T) {
 	if err := server.Listen(ctx); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	t.Cleanup(func() { server.Close() })
+	t.Cleanup(func() { _ = server.Close() })
 
 	// Raw client to control the handshake content.
 	sess, err := NewClientSession(server.ListenAddr(), DefaultConfig())
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	raw, err := sess.OpenStream()
 	if err != nil {
 		t.Fatalf("OpenStream: %v", err)
 	}
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 
 	// Send incompatible handshake.
-	protocol.WriteFrame(raw, protocol.MsgTypeHandshake, &protocol.HandshakeMsg{ProtocolVersion: 99, MinVersion: 99})
+	if err := protocol.WriteFrame(raw, protocol.MsgTypeHandshake, &protocol.HandshakeMsg{ProtocolVersion: 99, MinVersion: 99}); err != nil {
+		t.Fatalf("WriteFrame[handshake]: %v", err)
+	}
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	_, err = ss.ReceiveHandshake()
 	if !errors.Is(err, protocol.ErrVersionIncompatible) {
@@ -1074,7 +1171,7 @@ func TestMuxClose_UnblocksPendingAccept(t *testing.T) {
 
 	// Give the goroutine time to block on channel read.
 	time.Sleep(50 * time.Millisecond)
-	server.Close()
+	_ = server.Close()
 
 	select {
 	case err := <-errCh:
@@ -1096,17 +1193,21 @@ func TestWriteMessage_AfterEOP_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
-	ss.ReceiveHandshake()
+	defer func() { _ = ss.Close() }()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	// Client sends EOP.
-	cs.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s", Reason: protocol.EndReasonExhausted})
+	if err := cs.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage[EoP]: %v", err)
+	}
 
 	// Server reads the EOP (sets ended=true on server stream).
 	_, err = ss.ReadMessage()
@@ -1132,10 +1233,19 @@ func TestMuxDial_RetryOnDeadSession(t *testing.T) {
 		t.Fatalf("Dial[0]: %v", err)
 	}
 	// Accept + handshake on server side.
-	ss1, _ := server.Accept(ctx)
-	ss1.ReceiveHandshake()
-	cs1.Close()
-	ss1.Close()
+	ss1, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept[0]: %v", err)
+	}
+	if _, err := ss1.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake[0]: %v", err)
+	}
+	if err := cs1.Close(); err != nil {
+		t.Fatalf("cs1.Close: %v", err)
+	}
+	if err := ss1.Close(); err != nil {
+		t.Fatalf("ss1.Close: %v", err)
+	}
 
 	// Force-close the cached session to simulate a dead connection.
 	client.mu.RLock()
@@ -1144,25 +1254,31 @@ func TestMuxDial_RetryOnDeadSession(t *testing.T) {
 	if cachedSess == nil {
 		t.Fatal("expected cached session, got nil")
 	}
-	cachedSess.Close()
+	if err := cachedSess.Close(); err != nil {
+		t.Fatalf("cachedSess.Close: %v", err)
+	}
 
 	// Dial again — should detect dead session and recreate.
 	cs2, err := client.Dial(ctx, addr)
 	if err != nil {
 		t.Fatalf("Dial[1] retry failed: %v", err)
 	}
-	defer cs2.Close()
+	defer func() { _ = cs2.Close() }()
 
 	// Accept on server side to verify the new stream works.
 	ss2, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept[1]: %v", err)
 	}
-	defer ss2.Close()
-	ss2.ReceiveHandshake()
+	defer func() { _ = ss2.Close() }()
+	if _, err := ss2.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake[1]: %v", err)
+	}
 
 	// Verify data flows on the new stream.
-	cs2.WriteMessage(&protocol.DataRecordMsg{Value: []byte("recovered"), EventTime: 1})
+	if err := cs2.WriteMessage(&protocol.DataRecordMsg{Value: []byte("recovered"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage: %v", err)
+	}
 	m, err := ss2.ReadMessage()
 	if err != nil {
 		t.Fatalf("ReadMessage: %v", err)
@@ -1184,23 +1300,23 @@ func TestReceiveHandshake_DeadlineClearedAfterSuccess(t *testing.T) {
 	if err := server.Listen(ctx); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	t.Cleanup(func() { server.Close() })
+	t.Cleanup(func() { _ = server.Close() })
 
 	cCfg := DefaultConfig()
 	client := NewMux(cCfg)
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 
 	cs, err := client.Dial(ctx, server.ListenAddr())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	_, err = ss.ReceiveHandshake()
 	if err != nil {
@@ -1211,7 +1327,9 @@ func TestReceiveHandshake_DeadlineClearedAfterSuccess(t *testing.T) {
 	// the next read would fail with a timeout error.
 	time.Sleep(100 * time.Millisecond)
 
-	cs.WriteMessage(&protocol.DataRecordMsg{Value: []byte("delayed"), EventTime: 1})
+	if err := cs.WriteMessage(&protocol.DataRecordMsg{Value: []byte("delayed"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage: %v", err)
+	}
 	m, err := ss.ReadMessage()
 	if err != nil {
 		t.Fatalf("ReadMessage after delay should succeed (deadline should be cleared): %v", err)
@@ -1230,7 +1348,7 @@ func TestMuxAccept_AfterClose_ReturnsError(t *testing.T) {
 	if err := server.Listen(context.Background()); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	server.Close()
+	_ = server.Close()
 
 	_, err := server.Accept(context.Background())
 	if err == nil {

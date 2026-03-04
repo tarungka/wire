@@ -12,14 +12,14 @@ import (
 func newReadyCoordinator(t *testing.T) (*Coordinator, *MemoryStore) {
 	t.Helper()
 	store := NewMemoryStore()
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 
 	c := New(CoordinatorConfig{
 		NodeID:                 "n1",
 		HeartbeatFlushInterval: time.Hour,
 	}, store, nil, zerolog.Nop())
 
-	go c.Run(t.Context())
+	go func() { _ = c.Run(t.Context()) }()
 	// Wait for leader + recovery.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -106,8 +106,12 @@ func TestGetJob_NotFound(t *testing.T) {
 func TestListJobs(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
-	c.SubmitJob("a", 1, []byte("cfg"))
-	c.SubmitJob("b", 1, []byte("cfg"))
+	if _, err := c.SubmitJob("a", 1, []byte("cfg")); err != nil {
+		t.Fatalf("SubmitJob a: %v", err)
+	}
+	if _, err := c.SubmitJob("b", 1, []byte("cfg")); err != nil {
+		t.Fatalf("SubmitJob b: %v", err)
+	}
 
 	all := c.ListJobs(nil)
 	if len(all) != 2 {
@@ -132,8 +136,12 @@ func TestCancelJob(t *testing.T) {
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
 	// Transition to a cancelable state: CREATED → DEPLOYING → RUNNING
-	c.transitionJob(job, JobDeploying)
-	c.transitionJob(job, JobRunning)
+	if err := c.transitionJob(job, JobDeploying); err != nil {
+		t.Fatalf("transitionJob to DEPLOYING: %v", err)
+	}
+	if err := c.transitionJob(job, JobRunning); err != nil {
+		t.Fatalf("transitionJob to RUNNING: %v", err)
+	}
 
 	canceled, err := c.CancelJob(job.ID)
 	if err != nil {
@@ -159,8 +167,12 @@ func TestPauseResumeJob(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
-	c.transitionJob(job, JobDeploying)
-	c.transitionJob(job, JobRunning)
+	if err := c.transitionJob(job, JobDeploying); err != nil {
+		t.Fatalf("transitionJob to DEPLOYING: %v", err)
+	}
+	if err := c.transitionJob(job, JobRunning); err != nil {
+		t.Fatalf("transitionJob to RUNNING: %v", err)
+	}
 
 	paused, sp, err := c.PauseJob(job.ID)
 	if err != nil {
@@ -219,8 +231,12 @@ func TestResumeJob_NotPaused(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
-	c.transitionJob(job, JobDeploying)
-	c.transitionJob(job, JobRunning)
+	if err := c.transitionJob(job, JobDeploying); err != nil {
+		t.Fatalf("transitionJob to DEPLOYING: %v", err)
+	}
+	if err := c.transitionJob(job, JobRunning); err != nil {
+		t.Fatalf("transitionJob to RUNNING: %v", err)
+	}
 
 	_, err := c.ResumeJob(job.ID)
 	if !errors.Is(err, ErrInvalidTransition) {
