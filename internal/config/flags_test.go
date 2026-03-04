@@ -119,6 +119,31 @@ func TestApplyFlags_AllFlags(t *testing.T) {
 	}
 }
 
+func TestApplyFlags_UnmappedFlagsIgnored(t *testing.T) {
+	cfg := DefaultConfig()
+	orig := cfg // snapshot
+
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.String("http-listen", ":4001", "")
+	fs.String("unknown-flag", "some-value", "")
+	fs.Int("another-unknown", 42, "")
+
+	// Set unmapped flags on the command line.
+	fs.Parse([]string{"--unknown-flag", "boom", "--another-unknown", "99"})
+
+	if err := ApplyFlags(&cfg, fs); err != nil {
+		t.Fatal(err)
+	}
+
+	// Config should be unchanged — unmapped flags must not affect it.
+	if cfg.HTTP.Addr != orig.HTTP.Addr {
+		t.Errorf("HTTP.Addr = %q, want %q (unmapped flags should not change config)", cfg.HTTP.Addr, orig.HTTP.Addr)
+	}
+	if cfg.Node.Debug != orig.Node.Debug {
+		t.Errorf("Node.Debug changed unexpectedly")
+	}
+}
+
 func TestApplyFlags_NilFlagSet(t *testing.T) {
 	cfg := DefaultConfig()
 	if err := ApplyFlags(&cfg, nil); err != nil {

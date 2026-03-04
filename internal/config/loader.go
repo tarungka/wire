@@ -80,21 +80,30 @@ func parserForExt(path string) (koanf.Parser, error) {
 // conversion. Panics on marshal/unmarshal failure since DefaultConfig()
 // is a compile-time-known struct.
 func defaultsMap() map[string]any {
-	return structToMap(DefaultConfig())
+	return mustStructToMap(DefaultConfig())
+}
+
+// mustStructToMap converts a struct to map[string]any via JSON round-trip.
+// Panics on failure — use only for compile-time-known structs (e.g. DefaultConfig).
+func mustStructToMap(v any) map[string]any {
+	m, err := structToMap(v)
+	if err != nil {
+		panic(fmt.Sprintf("config: structToMap failed on known struct: %v", err))
+	}
+	return m
 }
 
 // structToMap converts a struct to map[string]any via JSON round-trip.
-// Panics on failure since inputs are always known Go structs.
-func structToMap(v any) map[string]any {
+func structToMap(v any) (map[string]any, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		panic(fmt.Sprintf("config: json.Marshal failed on known struct: %v", err))
+		return nil, fmt.Errorf("json.Marshal: %w", err)
 	}
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {
-		panic(fmt.Sprintf("config: json.Unmarshal failed on known struct: %v", err))
+		return nil, fmt.Errorf("json.Unmarshal: %w", err)
 	}
-	return m
+	return m, nil
 }
 
 // unmarshalConf returns koanf's UnmarshalConf with a custom mapstructure
@@ -126,9 +135,11 @@ func durationDecodeHook() mapstructure.DecodeHookFunc {
 				return nil, fmt.Errorf("invalid duration %q: %w", v, err)
 			}
 			return Duration{d}, nil
-		case float64, int, int64:
-			return nil, fmt.Errorf("duration must be a string like \"50ms\", got number %v", v)
 		default:
+			k := reflect.TypeOf(data).Kind()
+			if k >= reflect.Int && k <= reflect.Float64 {
+				return nil, fmt.Errorf("duration must be a string like \"50ms\", got number %v", v)
+			}
 			return data, nil
 		}
 	}

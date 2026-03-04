@@ -36,7 +36,11 @@ func ApplyFlags(cfg *WireConfig, flagSet *pflag.FlagSet) error {
 	// Load current cfg state so koanf knows which keys already exist.
 	// This gives us Changed() semantics: unchanged flags with existing
 	// values in ko are skipped by the posflag provider.
-	if err := ko.Load(confmap.Provider(structToMap(cfg), "."), nil); err != nil {
+	cfgMap, err := structToMap(cfg)
+	if err != nil {
+		return fmt.Errorf("converting config to map: %w", err)
+	}
+	if err := ko.Load(confmap.Provider(cfgMap, "."), nil); err != nil {
 		return fmt.Errorf("loading config state into koanf: %w", err)
 	}
 

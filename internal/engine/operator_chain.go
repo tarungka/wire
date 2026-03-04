@@ -203,8 +203,6 @@ func processEvent(cc *chainContext, event Event) error {
 				if err := invokeSinkWithRetry(cc, link, e, o); err != nil {
 					return err
 				}
-				// Sink is terminal — no further output.
-				return nil
 			}
 		}
 		events = next
