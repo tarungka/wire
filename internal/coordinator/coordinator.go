@@ -199,6 +199,18 @@ func (c *Coordinator) recover() error {
 		}
 	}
 
+	// Mark in-flight savepoints as failed (coordinator crashed mid-savepoint).
+	for _, sp := range state.savepointsToFail {
+		sp.Status = SavepointFailed
+		data, err := protocol.EncodeMsgPack(sp)
+		if err != nil {
+			return fmt.Errorf("encoding failed savepoint %s for job %s: %w", sp.ID, sp.JobID, err)
+		}
+		if err := c.store.Set(SavepointKey(sp.JobID, sp.ID), data); err != nil {
+			return fmt.Errorf("persisting failed savepoint %s for job %s: %w", sp.ID, sp.JobID, err)
+		}
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -213,6 +225,7 @@ func (c *Coordinator) recover() error {
 		Int("jobs", len(state.jobs)).
 		Int("workers", len(state.workers)).
 		Int("checkpoints_aborted", len(state.checkpointsToAbort)).
+		Int("savepoints_failed", len(state.savepointsToFail)).
 		Uint64("epoch", c.epoch).
 		Msg("recovery complete")
 

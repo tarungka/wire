@@ -15,8 +15,10 @@ type recoveredState struct {
 	workers            map[string]*WorkerMeta
 	epoch              uint64
 	config             *ClusterConfig
-	latestCheckpoints  map[string]*CheckpointMeta // jobID → latest completed
-	checkpointsToAbort []*CheckpointMeta          // in-flight checkpoints to abort
+	latestCheckpoints  map[string]*CheckpointMeta  // jobID → latest completed
+	checkpointsToAbort []*CheckpointMeta           // in-flight checkpoints to abort
+	savepoints         map[string][]*SavepointMeta // jobID → savepoints
+	savepointsToFail   []*SavepointMeta            // in-flight savepoints to mark failed
 }
 
 // recoverFromStore reconstructs coordinator state from the metadata store.
@@ -27,6 +29,7 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 		jobs:              make(map[string]*JobMeta),
 		workers:           make(map[string]*WorkerMeta),
 		latestCheckpoints: make(map[string]*CheckpointMeta),
+		savepoints:        make(map[string][]*SavepointMeta),
 	}
 
 	// 1. Recover jobs.
@@ -63,6 +66,13 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 	// 2. Recover checkpoints for each job.
 	for jobID := range state.jobs {
 		if err := recoverJobCheckpoints(store, jobID, state); err != nil {
+			return nil, err
+		}
+	}
+
+	// 2b. Recover savepoints for each job.
+	for jobID := range state.jobs {
+		if err := recoverJobSavepoints(store, jobID, state); err != nil {
 			return nil, err
 		}
 	}
@@ -170,6 +180,36 @@ func recoverJobCheckpoints(store MetadataStore, jobID string, state *recoveredSt
 
 	if latestCompleted != nil {
 		state.latestCheckpoints[jobID] = latestCompleted
+	}
+
+	return nil
+}
+
+// recoverJobSavepoints scans savepoints for a job and marks in-progress ones as failed.
+func recoverJobSavepoints(store MetadataStore, jobID string, state *recoveredState) error {
+	prefix := SavepointsPrefix(jobID)
+
+	var decodeErr error
+	err := store.PrefixScan(prefix, func(key, value []byte) bool {
+		var sp SavepointMeta
+		if err := protocol.DecodeMsgPack(value, &sp); err != nil {
+			decodeErr = fmt.Errorf("%w: corrupt savepoint entry %q: %v", ErrStoreCorrupted, string(key), err)
+			return false
+		}
+
+		if sp.Status == SavepointInProgress {
+			sp.Status = SavepointFailed
+			state.savepointsToFail = append(state.savepointsToFail, &sp)
+		}
+
+		state.savepoints[jobID] = append(state.savepoints[jobID], &sp)
+		return true
+	})
+	if decodeErr != nil {
+		return decodeErr
+	}
+	if err != nil {
+		return fmt.Errorf("%w: scanning savepoints for job %s: %v", ErrRecoveryFailed, jobID, err)
 	}
 
 	return nil

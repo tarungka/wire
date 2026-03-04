@@ -63,3 +63,18 @@ func TaskStatusKey(taskID string) []byte {
 func ClusterLeaderKey() []byte {
 	return []byte("cluster/leader")
 }
+
+// SavepointKey returns the PebbleDB key for a specific savepoint of a job.
+func SavepointKey(jobID, spID string) []byte {
+	return fmt.Appendf(nil, "jobs/%s/savepoints/%s", jobID, spID)
+}
+
+// SavepointsPrefix returns the PebbleDB key prefix for all savepoints of a job.
+func SavepointsPrefix(jobID string) []byte {
+	return fmt.Appendf(nil, "jobs/%s/savepoints/", jobID)
+}
+
+// JobConfigKey returns the PebbleDB key for a job's raw configuration.
+func JobConfigKey(jobID string) []byte {
+	return fmt.Appendf(nil, "jobs/%s/config", jobID)
+}

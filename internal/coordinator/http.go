@@ -29,6 +29,25 @@ func NewHTTPServer(coord *Coordinator, listenAddr string, log zerolog.Logger) *H
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("GET /api/v1/cluster/leader", s.handleLeader)
 
+	// Job endpoints.
+	mux.HandleFunc("POST /api/v1/jobs", s.leaderOnly(s.handleSubmitJob))
+	mux.HandleFunc("POST /api/v1/jobs/submit", s.leaderOnly(s.handleSubmitBinary))
+	mux.HandleFunc("GET /api/v1/jobs", s.handleListJobs)
+	mux.HandleFunc("GET /api/v1/jobs/{job_id}", s.handleGetJob)
+	mux.HandleFunc("POST /api/v1/jobs/{job_id}/cancel", s.leaderOnly(s.handleCancelJob))
+	mux.HandleFunc("POST /api/v1/jobs/{job_id}/pause", s.leaderOnly(s.handlePauseJob))
+	mux.HandleFunc("POST /api/v1/jobs/{job_id}/resume", s.leaderOnly(s.handleResumeJob))
+
+	// Savepoint endpoints.
+	mux.HandleFunc("POST /api/v1/jobs/{job_id}/savepoints", s.leaderOnly(s.handleTriggerSavepoint))
+	mux.HandleFunc("GET /api/v1/jobs/{job_id}/savepoints", s.handleListSavepoints)
+	mux.HandleFunc("GET /api/v1/jobs/{job_id}/savepoints/{savepoint_id}", s.handleGetSavepoint)
+	mux.HandleFunc("DELETE /api/v1/jobs/{job_id}/savepoints/{savepoint_id}", s.leaderOnly(s.handleDeleteSavepoint))
+
+	// Cluster endpoints.
+	mux.HandleFunc("GET /api/v1/cluster", s.handleClusterStatus)
+	mux.HandleFunc("DELETE /api/v1/cluster/nodes/{node_id}", s.leaderOnly(s.handleRemoveNode))
+
 	s.server = &http.Server{
 		Addr:    listenAddr,
 		Handler: mux,

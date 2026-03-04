@@ -35,6 +35,9 @@ tmp/
 # Log files
 *.log
 
+# Pal MCP config
+.mcp.json
+
 # misc files
 wsnapshots/
 raft/
