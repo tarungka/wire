@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -33,6 +34,12 @@ type jobDetailResponse struct {
 	RestartCount     int    `json:"restart_count"`
 	LatestCheckpoint uint64 `json:"latest_checkpoint"`
 	SavepointPath    string `json:"savepoint_path,omitempty"`
+}
+
+// pauseJobResponse includes the job and the savepoint created on pause.
+type pauseJobResponse struct {
+	Job       jobDetailResponse `json:"job"`
+	Savepoint savepointResponse `json:"savepoint"`
 }
 
 // jobListResponse wraps a list of jobs.
@@ -69,7 +76,10 @@ type clusterStatusResponse struct {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		// Headers already sent; best-effort logging.
+		log.Printf("writeJSON: encode error: %v", err)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {

@@ -13,6 +13,7 @@ type submitJobRequest struct {
 }
 
 func (s *HTTPServer) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB limit
 	var req submitJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
@@ -35,12 +36,12 @@ func (s *HTTPServer) handleSubmitBinary(w http.ResponseWriter, _ *http.Request) 
 func (s *HTTPServer) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	var filter *JobStatus
 	if statusStr := r.URL.Query().Get("status"); statusStr != "" {
-		s, err := parseJobStatus(statusStr)
+		st, err := parseJobStatus(statusStr)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_STATUS", err.Error())
 			return
 		}
-		filter = &s
+		filter = &st
 	}
 
 	jobs := s.coord.ListJobs(filter)
@@ -73,12 +74,15 @@ func (s *HTTPServer) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 
 func (s *HTTPServer) handlePauseJob(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("job_id")
-	job, _, err := s.coord.PauseJob(jobID)
+	job, sp, err := s.coord.PauseJob(jobID)
 	if err != nil {
 		writeJobError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, jobDetailFromMeta(job))
+	writeJSON(w, http.StatusOK, pauseJobResponse{
+		Job:       jobDetailFromMeta(job),
+		Savepoint: savepointResponseFromMeta(sp),
+	})
 }
 
 func (s *HTTPServer) handleResumeJob(w http.ResponseWriter, r *http.Request) {

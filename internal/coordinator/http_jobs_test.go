@@ -230,6 +230,18 @@ func TestHTTP_PauseResumeJob(t *testing.T) {
 		t.Fatalf("expected 200 for pause, got %d", resp.StatusCode)
 	}
 
+	var pauseResult pauseJobResponse
+	json.NewDecoder(resp.Body).Decode(&pauseResult)
+	if pauseResult.Job.Status != "PAUSED" {
+		t.Fatalf("expected PAUSED, got %s", pauseResult.Job.Status)
+	}
+	if pauseResult.Savepoint.ID == "" {
+		t.Fatal("expected savepoint ID in pause response")
+	}
+	if pauseResult.Savepoint.JobID != job.ID {
+		t.Fatalf("expected savepoint job_id %s, got %s", job.ID, pauseResult.Savepoint.JobID)
+	}
+
 	// Resume
 	resp2, err := http.Post(
 		fmt.Sprintf("http://%s/api/v1/jobs/%s/resume", srv.Addr(), job.ID),

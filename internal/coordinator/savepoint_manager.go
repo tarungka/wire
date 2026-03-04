@@ -9,10 +9,12 @@ import (
 	"github.com/tarungka/wire/internal/protocol"
 )
 
-// generateSavepointID returns a unique savepoint identifier in the form "sp-<hex8>".
+// generateSavepointID returns a unique savepoint identifier in the form "sp-<hex32>".
 func generateSavepointID() string {
-	b := make([]byte, 4)
-	rand.Read(b)
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand: " + err.Error())
+	}
 	return "sp-" + hex.EncodeToString(b)
 }
 

@@ -5,12 +5,16 @@ import (
 	"encoding/hex"
 	"fmt"
 	"time"
+
+	"github.com/tarungka/wire/internal/protocol"
 )
 
-// generateJobID returns a unique job identifier in the form "job-<hex8>".
+// generateJobID returns a unique job identifier in the form "job-<hex32>".
 func generateJobID() string {
-	b := make([]byte, 4)
-	rand.Read(b)
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand: " + err.Error())
+	}
 	return "job-" + hex.EncodeToString(b)
 }
 
@@ -26,16 +30,6 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 		return nil, fmt.Errorf("%w: parallelism must be >= 1", ErrInvalidConfig)
 	}
 
-	// Check for duplicate active job name.
-	c.mu.RLock()
-	for _, j := range c.jobs {
-		if j.Name == name && !j.Status.IsTerminal() {
-			c.mu.RUnlock()
-			return nil, fmt.Errorf("%w: active job with name %q", ErrJobExists, name)
-		}
-	}
-	c.mu.RUnlock()
-
 	now := time.Now().UTC()
 	job := &JobMeta{
 		ID:          generateJobID(),
@@ -47,9 +41,28 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 		UpdatedAt:   now,
 	}
 
-	if err := c.persistJob(job); err != nil {
-		return nil, err
+	// Encode outside the lock to avoid holding it during serialization.
+	data, err := protocol.EncodeMsgPack(job)
+	if err != nil {
+		return nil, fmt.Errorf("encoding job %s: %w", job.ID, err)
 	}
+
+	// Atomic check+insert under a single lock to prevent TOCTOU races:
+	// two concurrent SubmitJob calls with the same name could both pass a
+	// separate read-only duplicate check before either persists.
+	c.mu.Lock()
+	for _, j := range c.jobs {
+		if j.Name == name && !j.Status.IsTerminal() {
+			c.mu.Unlock()
+			return nil, fmt.Errorf("%w: active job with name %q", ErrJobExists, name)
+		}
+	}
+	if err := c.store.Set(JobMetaKey(job.ID), data); err != nil {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("persisting job %s: %w", job.ID, err)
+	}
+	c.jobs[job.ID] = job
+	c.mu.Unlock()
 
 	// Persist raw config separately for large configs.
 	if err := c.store.Set(JobConfigKey(job.ID), config); err != nil {
@@ -122,10 +135,6 @@ func (c *Coordinator) PauseJob(jobID string) (*JobMeta, *SavepointMeta, error) {
 		return nil, nil, ErrJobNotFound
 	}
 
-	if job.Status != JobRunning {
-		return nil, nil, ErrJobNotRunning
-	}
-
 	sp, err := c.TriggerSavepoint(jobID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("triggering savepoint for pause: %w", err)
@@ -150,10 +159,6 @@ func (c *Coordinator) ResumeJob(jobID string) (*JobMeta, error) {
 	c.mu.RUnlock()
 	if !ok {
 		return nil, ErrJobNotFound
-	}
-
-	if job.Status != JobPaused {
-		return nil, ErrJobNotPaused
 	}
 
 	if err := c.transitionJob(job, JobDeploying); err != nil {

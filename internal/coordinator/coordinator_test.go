@@ -262,6 +262,75 @@ func TestCoordinator_ConcurrentPersistWorker(t *testing.T) {
 	c.mu.RUnlock()
 }
 
+func TestCoordinator_FlushHeartbeats_NoClobberPersistWorker(t *testing.T) {
+	// Verify that flushHeartbeats does not overwrite a concurrent persistWorker update.
+	store := NewMemoryStore()
+	defer store.Close()
+
+	c := New(CoordinatorConfig{
+		NodeID:                 "n1",
+		HeartbeatFlushInterval: time.Hour,
+	}, store, nil, zerolog.Nop())
+	c.mu.Lock()
+	c.state = StateLeader
+	c.epoch = 1
+	c.recovered = true
+	c.mu.Unlock()
+
+	// Add initial worker.
+	initial := &WorkerMeta{
+		ID:             "w1",
+		Address:        "localhost:5001",
+		TaskSlotsTotal: 4,
+		LastHeartbeat:  time.Now().UTC(),
+	}
+	if err := c.persistWorker(initial); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run concurrent flushHeartbeats and persistWorker updates.
+	const iterations = 100
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			c.flushHeartbeats(context.Background())
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			w := &WorkerMeta{
+				ID:                 "w1",
+				Address:            "localhost:5001",
+				TaskSlotsTotal:     4,
+				TaskSlotsAvailable: i, // changes each iteration
+				LastHeartbeat:      time.Now().UTC(),
+			}
+			c.persistWorker(w)
+		}
+	}()
+
+	wg.Wait()
+
+	// After all operations, cache and store must agree.
+	c.mu.RLock()
+	cached := c.workers["w1"]
+	c.mu.RUnlock()
+
+	storeData, _ := store.Get(WorkerMetaKey("w1"))
+	var stored WorkerMeta
+	protocol.DecodeMsgPack(storeData, &stored)
+
+	if cached.TaskSlotsAvailable != stored.TaskSlotsAvailable {
+		t.Fatalf("cache/store mismatch after concurrent flush+persist: cache=%d store=%d",
+			cached.TaskSlotsAvailable, stored.TaskSlotsAvailable)
+	}
+}
+
 func TestCoordinator_PersistConsistency(t *testing.T) {
 	// Verify that after concurrent writes, the cache and store contain the
 	// same final value for each key (no stale cache entries).

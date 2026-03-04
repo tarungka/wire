@@ -16,9 +16,9 @@ func (s *HTTPServer) handleClusterStatus(w http.ResponseWriter, _ *http.Request)
 		IsSelf:         isSelf,
 	}
 
-	s.coord.mu.RLock()
-	workers := make([]nodeResponse, 0, len(s.coord.workers))
-	for _, w := range s.coord.workers {
+	wms := s.coord.ListWorkers()
+	workers := make([]nodeResponse, 0, len(wms))
+	for _, w := range wms {
 		workers = append(workers, nodeResponse{
 			ID:                 w.ID,
 			Address:            w.Address,
@@ -28,7 +28,6 @@ func (s *HTTPServer) handleClusterStatus(w http.ResponseWriter, _ *http.Request)
 			RunningTasks:       w.RunningTasks,
 		})
 	}
-	s.coord.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, clusterStatusResponse{
 		Leader:  leader,
@@ -39,20 +38,16 @@ func (s *HTTPServer) handleClusterStatus(w http.ResponseWriter, _ *http.Request)
 func (s *HTTPServer) handleRemoveNode(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("node_id")
 
-	s.coord.mu.Lock()
-	_, ok := s.coord.workers[nodeID]
-	if !ok {
-		s.coord.mu.Unlock()
-		writeError(w, http.StatusNotFound, "NODE_NOT_FOUND", "worker node not found")
+	if err := s.coord.RemoveWorker(nodeID); err != nil {
+		if err == ErrWorkerNotFound {
+			writeError(w, http.StatusNotFound, "NODE_NOT_FOUND", "worker node not found")
+			return
+		}
+		s.coord.log.Error().Err(err).Str("node_id", nodeID).Msg("failed to delete worker from store")
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to remove node from store")
 		return
 	}
-	delete(s.coord.workers, nodeID)
-	s.coord.mu.Unlock()
 
-	// Delete from store as well.
-	s.coord.store.Delete(WorkerMetaKey(nodeID))
-
-	s.coord.log.Info().Str("node_id", nodeID).Msg("worker node removed")
 	// TODO: reschedule tasks from the removed worker
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "node_id": nodeID})

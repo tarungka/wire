@@ -22,6 +22,7 @@ func TestValidateTransition_Valid(t *testing.T) {
 		{JobPaused, JobDeploying},
 		{JobFinishing, JobFinished},
 		{JobFailing, JobDeploying},
+		{JobFailing, JobFailed},
 		{JobFailing, JobCanceled},
 		{JobCanceling, JobCanceled},
 	}
@@ -131,6 +132,66 @@ func TestTransitionJob_Timestamps(t *testing.T) {
 	}
 	if job.FinishedAt.IsZero() {
 		t.Fatal("FinishedAt should be set on terminal state")
+	}
+}
+
+func TestTransitionJob_FailingToFailed(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+
+	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
+
+	job := &JobMeta{
+		ID:        "job-1",
+		Name:      "test",
+		Status:    JobCreated,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := c.persistJob(job); err != nil {
+		t.Fatalf("persistJob: %v", err)
+	}
+
+	// CREATED → DEPLOYING → RUNNING → FAILING → FAILED
+	for _, to := range []JobStatus{JobDeploying, JobRunning, JobFailing, JobFailed} {
+		if err := c.transitionJob(job, to); err != nil {
+			t.Fatalf("transition to %s: %v", to, err)
+		}
+	}
+
+	if job.Status != JobFailed {
+		t.Fatalf("expected FAILED, got %s", job.Status)
+	}
+	if job.FinishedAt.IsZero() {
+		t.Fatal("FinishedAt should be set on FAILED (terminal)")
+	}
+}
+
+func TestStateReachability_AllTerminalStatesReachable(t *testing.T) {
+	// Verify that every terminal state (Finished, Failed, Canceled) can be
+	// reached from JobCreated via valid transitions.
+	reachable := map[JobStatus]bool{JobCreated: true}
+	changed := true
+	for changed {
+		changed = false
+		for from, targets := range validTransitions {
+			if !reachable[from] {
+				continue
+			}
+			for _, to := range targets {
+				if !reachable[to] {
+					reachable[to] = true
+					changed = true
+				}
+			}
+		}
+	}
+
+	terminals := []JobStatus{JobFinished, JobFailed, JobCanceled}
+	for _, s := range terminals {
+		if !reachable[s] {
+			t.Errorf("terminal state %s is not reachable from CREATED", s)
+		}
 	}
 }
 

@@ -12,7 +12,7 @@ var validTransitions = map[JobStatus][]JobStatus{
 	JobRunning:   {JobFinishing, JobPaused, JobFailing, JobCanceling},
 	JobPaused:    {JobDeploying},
 	JobFinishing: {JobFinished},
-	JobFailing:   {JobDeploying, JobCanceled},
+	JobFailing:   {JobDeploying, JobFailed, JobCanceled},
 	JobCanceling: {JobCanceled},
 	// Terminal states have no outgoing transitions.
 	JobFinished: {},
@@ -36,12 +36,17 @@ func ValidateTransition(from, to JobStatus) error {
 
 // transitionJob validates and applies a state transition on a job, updating
 // timestamps and restart count as appropriate, then persists the result.
+// All mutations are performed under c.mu.Lock() to prevent data races with
+// concurrent HTTP handlers reading the same *JobMeta.
 func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
+	now := time.Now().UTC()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if err := ValidateTransition(job.Status, to); err != nil {
 		return err
 	}
-
-	now := time.Now().UTC()
 
 	// Set StartedAt on first transition to RUNNING.
 	if to == JobRunning && job.StartedAt.IsZero() {
@@ -61,5 +66,5 @@ func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
 	job.Status = to
 	job.UpdatedAt = now
 
-	return c.persistJob(job)
+	return c.persistJobLocked(job)
 }

@@ -182,6 +182,39 @@ func TestPauseResumeJob(t *testing.T) {
 	}
 }
 
+func TestSubmitJob_ConcurrentDuplicateName(t *testing.T) {
+	c, _ := newReadyCoordinator(t)
+
+	const goroutines = 20
+	results := make(chan error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			_, err := c.SubmitJob("same-name", 1, []byte("cfg"))
+			results <- err
+		}()
+	}
+
+	var successes, duplicates int
+	for i := 0; i < goroutines; i++ {
+		err := <-results
+		if err == nil {
+			successes++
+		} else if errors.Is(err, ErrJobExists) {
+			duplicates++
+		} else {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	if successes != 1 {
+		t.Fatalf("expected exactly 1 success, got %d", successes)
+	}
+	if duplicates != goroutines-1 {
+		t.Fatalf("expected %d duplicates, got %d", goroutines-1, duplicates)
+	}
+}
+
 func TestResumeJob_NotPaused(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
@@ -190,7 +223,7 @@ func TestResumeJob_NotPaused(t *testing.T) {
 	c.transitionJob(job, JobRunning)
 
 	_, err := c.ResumeJob(job.ID)
-	if !errors.Is(err, ErrJobNotPaused) {
-		t.Fatalf("expected ErrJobNotPaused, got: %v", err)
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("expected ErrInvalidTransition, got: %v", err)
 	}
 }

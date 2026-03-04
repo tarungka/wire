@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/tarungka/wire/internal/protocol"
 )
@@ -15,10 +16,9 @@ type recoveredState struct {
 	workers            map[string]*WorkerMeta
 	epoch              uint64
 	config             *ClusterConfig
-	latestCheckpoints  map[string]*CheckpointMeta  // jobID → latest completed
-	checkpointsToAbort []*CheckpointMeta           // in-flight checkpoints to abort
-	savepoints         map[string][]*SavepointMeta // jobID → savepoints
-	savepointsToFail   []*SavepointMeta            // in-flight savepoints to mark failed
+	latestCheckpoints  map[string]*CheckpointMeta // jobID → latest completed
+	checkpointsToAbort []*CheckpointMeta          // in-flight checkpoints to abort
+	savepointsToFail   []*SavepointMeta           // in-flight savepoints to mark failed
 }
 
 // recoverFromStore reconstructs coordinator state from the metadata store.
@@ -29,7 +29,6 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 		jobs:              make(map[string]*JobMeta),
 		workers:           make(map[string]*WorkerMeta),
 		latestCheckpoints: make(map[string]*CheckpointMeta),
-		savepoints:        make(map[string][]*SavepointMeta),
 	}
 
 	// 1. Recover jobs.
@@ -96,7 +95,7 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 			return false
 		}
 		// Mark worker as stale by zeroing heartbeat.
-		worker.LastHeartbeat = worker.LastHeartbeat.UTC()
+		worker.LastHeartbeat = time.Time{}
 		state.workers[workerID] = &worker
 		return true
 	})
@@ -123,9 +122,10 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 	}
 	if cfgData != nil {
 		var cfg ClusterConfig
-		if err := protocol.DecodeMsgPack(cfgData, &cfg); err == nil {
-			state.config = &cfg
+		if err := protocol.DecodeMsgPack(cfgData, &cfg); err != nil {
+			return nil, fmt.Errorf("%w: corrupt cluster config: %v", ErrStoreCorrupted, err)
 		}
+		state.config = &cfg
 	}
 
 	// 6. Increment epoch and persist (fence stale coordinators).
@@ -201,8 +201,6 @@ func recoverJobSavepoints(store MetadataStore, jobID string, state *recoveredSta
 			sp.Status = SavepointFailed
 			state.savepointsToFail = append(state.savepointsToFail, &sp)
 		}
-
-		state.savepoints[jobID] = append(state.savepoints[jobID], &sp)
 		return true
 	})
 	if decodeErr != nil {

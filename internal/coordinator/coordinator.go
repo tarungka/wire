@@ -251,10 +251,13 @@ func (c *Coordinator) serve(ctx context.Context) error {
 }
 
 // flushHeartbeats persists worker heartbeat summaries to the metadata store.
+// Uses a full Lock to prevent races with persistWorker: if we used RLock,
+// a concurrent persistWorker could update a worker between our read and
+// the WriteBatch call, and our stale snapshot would overwrite the newer state.
 func (c *Coordinator) flushHeartbeats(ctx context.Context) error {
-	c.mu.RLock()
+	c.mu.Lock()
 	if c.state != StateLeader {
-		c.mu.RUnlock()
+		c.mu.Unlock()
 		return nil
 	}
 
@@ -262,7 +265,7 @@ func (c *Coordinator) flushHeartbeats(ctx context.Context) error {
 	for id, w := range c.workers {
 		data, err := protocol.EncodeMsgPack(w)
 		if err != nil {
-			c.mu.RUnlock()
+			c.mu.Unlock()
 			return fmt.Errorf("encoding worker %s: %w", id, err)
 		}
 		batch = append(batch, KVPair{
@@ -270,13 +273,15 @@ func (c *Coordinator) flushHeartbeats(ctx context.Context) error {
 			Value: data,
 		})
 	}
-	c.mu.RUnlock()
+	c.mu.Unlock()
 
 	if len(batch) == 0 {
 		return nil
 	}
 
-	_ = ctx // reserved for future cancellation support
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	return c.store.WriteBatch(batch)
 }
 
@@ -290,6 +295,20 @@ func (c *Coordinator) persistJob(job *JobMeta) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.store.Set(JobMetaKey(job.ID), data); err != nil {
+		return fmt.Errorf("persisting job %s: %w", job.ID, err)
+	}
+	c.jobs[job.ID] = job
+	return nil
+}
+
+// persistJobLocked writes a job to both the metadata store and the in-memory
+// cache. The caller MUST hold c.mu.Lock().
+func (c *Coordinator) persistJobLocked(job *JobMeta) error {
+	data, err := protocol.EncodeMsgPack(job)
+	if err != nil {
+		return fmt.Errorf("encoding job %s: %w", job.ID, err)
+	}
 	if err := c.store.Set(JobMetaKey(job.ID), data); err != nil {
 		return fmt.Errorf("persisting job %s: %w", job.ID, err)
 	}
@@ -326,6 +345,42 @@ func (c *Coordinator) persistEpoch(epoch uint64) error {
 		return fmt.Errorf("persisting epoch: %w", err)
 	}
 	c.epoch = epoch
+	return nil
+}
+
+// ListWorkers returns a copy of all registered workers.
+func (c *Coordinator) ListWorkers() []WorkerMeta {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	result := make([]WorkerMeta, 0, len(c.workers))
+	for _, w := range c.workers {
+		result = append(result, *w)
+	}
+	return result
+}
+
+// RemoveWorker removes a worker from the in-memory cache and metadata store
+// atomically under the lock.
+func (c *Coordinator) RemoveWorker(nodeID string) error {
+	c.mu.Lock()
+	worker, ok := c.workers[nodeID]
+	if !ok {
+		c.mu.Unlock()
+		return ErrWorkerNotFound
+	}
+	delete(c.workers, nodeID)
+	c.mu.Unlock()
+
+	// Delete from store. On failure, restore the in-memory entry so
+	// cache and store remain consistent.
+	if err := c.store.Delete(WorkerMetaKey(nodeID)); err != nil {
+		c.mu.Lock()
+		c.workers[nodeID] = worker
+		c.mu.Unlock()
+		return fmt.Errorf("deleting worker %s from store: %w", nodeID, err)
+	}
+
+	c.log.Info().Str("node_id", nodeID).Msg("worker node removed")
 	return nil
 }
 

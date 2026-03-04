@@ -89,6 +89,110 @@ func TestRecovery_WithWorkers(t *testing.T) {
 	}
 }
 
+func TestRecovery_WorkerHeartbeatZeroed(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+
+	worker := &WorkerMeta{
+		ID:             "w1",
+		Address:        "localhost:5001",
+		TaskSlotsTotal: 4,
+		LastHeartbeat:  time.Now().UTC(),
+	}
+	data, _ := protocol.EncodeMsgPack(worker)
+	store.Set(WorkerMetaKey("w1"), data)
+
+	state, err := recoverFromStore(store)
+	if err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+
+	w := state.workers["w1"]
+	if !w.LastHeartbeat.IsZero() {
+		t.Fatalf("expected zeroed heartbeat after recovery, got %v", w.LastHeartbeat)
+	}
+}
+
+func TestRecovery_CorruptConfigFails(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+
+	store.Set(ClusterConfigKey(), []byte("corrupt-config-data"))
+
+	_, err := recoverFromStore(store)
+	if err == nil {
+		t.Fatal("expected error for corrupt config")
+	}
+	if !errors.Is(err, ErrStoreCorrupted) {
+		t.Fatalf("expected ErrStoreCorrupted, got: %v", err)
+	}
+}
+
+func TestRecovery_RoundTrip(t *testing.T) {
+	// Verify that a coordinator can persist state, then a fresh coordinator
+	// can recover it correctly.
+	store := NewMemoryStore()
+	defer store.Close()
+
+	c := New(CoordinatorConfig{
+		NodeID:                 "n1",
+		HeartbeatFlushInterval: time.Hour,
+	}, store, nil, zerolog.Nop())
+	c.mu.Lock()
+	c.state = StateLeader
+	c.epoch = 1
+	c.recovered = true
+	c.mu.Unlock()
+
+	// Create jobs.
+	j1, err := c.SubmitJob("job-alpha", 2, []byte("config-a"))
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+	c.transitionJob(j1, JobDeploying)
+	c.transitionJob(j1, JobRunning)
+
+	j2, err := c.SubmitJob("job-beta", 4, []byte("config-b"))
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+
+	// Add a worker.
+	c.persistWorker(&WorkerMeta{
+		ID:             "w1",
+		Address:        "localhost:5001",
+		TaskSlotsTotal: 8,
+		LastHeartbeat:  time.Now().UTC(),
+	})
+
+	// Recover from store.
+	state, err := recoverFromStore(store)
+	if err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+
+	if len(state.jobs) != 2 {
+		t.Fatalf("expected 2 jobs, got %d", len(state.jobs))
+	}
+	if state.jobs[j1.ID].Status != JobRunning {
+		t.Fatalf("j1 status: expected RUNNING, got %s", state.jobs[j1.ID].Status)
+	}
+	if state.jobs[j2.ID].Status != JobCreated {
+		t.Fatalf("j2 status: expected CREATED, got %s", state.jobs[j2.ID].Status)
+	}
+
+	if len(state.workers) != 1 {
+		t.Fatalf("expected 1 worker, got %d", len(state.workers))
+	}
+	w := state.workers["w1"]
+	if !w.LastHeartbeat.IsZero() {
+		t.Fatal("recovered worker heartbeat should be zeroed")
+	}
+	if w.TaskSlotsTotal != 8 {
+		t.Fatalf("expected 8 task slots, got %d", w.TaskSlotsTotal)
+	}
+}
+
 func TestRecovery_InFlightCheckpointAbort(t *testing.T) {
 	store := NewMemoryStore()
 	defer store.Close()
@@ -139,6 +243,40 @@ func TestRecovery_InFlightCheckpointAbort(t *testing.T) {
 	}
 	if state.checkpointsToAbort[0].Status != CheckpointAborted {
 		t.Fatalf("expected ABORTED status, got %s", state.checkpointsToAbort[0].Status)
+	}
+}
+
+func TestRecovery_InFlightSavepointMarkedFailed(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+
+	// Persist a job.
+	job := &JobMeta{ID: "j1", Name: "job-1", Status: JobRunning}
+	jobData, _ := protocol.EncodeMsgPack(job)
+	store.Set(JobMetaKey("j1"), jobData)
+
+	// Persist an in-progress savepoint.
+	sp := &SavepointMeta{
+		ID:     "sp-abc",
+		JobID:  "j1",
+		Status: SavepointInProgress,
+	}
+	spData, _ := protocol.EncodeMsgPack(sp)
+	store.Set(SavepointKey("j1", "sp-abc"), spData)
+
+	state, err := recoverFromStore(store)
+	if err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+
+	if len(state.savepointsToFail) != 1 {
+		t.Fatalf("expected 1 savepoint to fail, got %d", len(state.savepointsToFail))
+	}
+	if state.savepointsToFail[0].ID != "sp-abc" {
+		t.Fatalf("expected savepoint sp-abc, got %s", state.savepointsToFail[0].ID)
+	}
+	if state.savepointsToFail[0].Status != SavepointFailed {
+		t.Fatalf("expected FAILED status, got %s", state.savepointsToFail[0].Status)
 	}
 }
 
