@@ -47,14 +47,15 @@ type OperatorMeta struct {
 
 // TaskMeta describes a single task's checkpoint state.
 type TaskMeta struct {
-	TaskID         string            `json:"task_id"`
-	OperatorID     string            `json:"operator_id"`
-	SubtaskIndex   int               `json:"subtask_index"`
-	KeyGroupRange  KeyGroupRangeMeta `json:"key_group_range"`
-	StatePath      string            `json:"state_path"`
-	StateSizeBytes int64             `json:"state_size_bytes"`
-	StateFiles     []string          `json:"state_files"`
-	SourceOffsets  json.RawMessage   `json:"source_offsets,omitempty"`
+	TaskID           string            `json:"task_id"`
+	OperatorID       string            `json:"operator_id"`
+	SubtaskIndex     int               `json:"subtask_index"`
+	KeyGroupRange    KeyGroupRangeMeta `json:"key_group_range"`
+	StatePath        string            `json:"state_path"`
+	StateSizeBytes   int64             `json:"state_size_bytes"`
+	StateFiles       []string          `json:"state_files"`
+	SourceOffsets    json.RawMessage   `json:"source_offsets,omitempty"`
+	StateBackendType string            `json:"state_backend_type,omitempty"`
 }
 
 // KeyGroupRangeMeta represents a key group range in checkpoint metadata.
@@ -72,6 +73,7 @@ type SinkTransaction struct {
 	OperatorID          string  `json:"operator_id"`
 	CommittedCheckpoint int64   `json:"committed_checkpoint"`
 	TransactionID       *string `json:"transaction_id"`
+	TransactionState    string  `json:"transaction_state,omitempty"` // "ACTIVE", "PRE_COMMITTED", "COMMITTED"
 }
 
 // Validate checks structural invariants on the checkpoint metadata. It

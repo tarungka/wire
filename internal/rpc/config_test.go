@@ -23,6 +23,8 @@ func TestDefaultConfig(t *testing.T) {
 		{"HeartbeatInterval", cfg.HeartbeatInterval, 5 * time.Second},
 		{"SuspectThreshold", cfg.SuspectThreshold, 3},
 		{"DeadThreshold", cfg.DeadThreshold, 5},
+		{"MaxConsecutiveHeartbeatFailures", cfg.MaxConsecutiveHeartbeatFailures, 6},
+		{"MaxConcurrentRPCs", cfg.MaxConcurrentRPCs, 256},
 		{"MaxPayloadSize", cfg.MaxPayloadSize, 16 * 1024 * 1024},
 	}
 

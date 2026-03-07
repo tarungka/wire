@@ -28,6 +28,8 @@ func TestErrorCodeName(t *testing.T) {
 		{ErrCodeInsufficientResources, "INSUFFICIENT_RESOURCES"},
 		{ErrCodeWorkerShuttingDown, "WORKER_SHUTTING_DOWN"},
 		{ErrCodeStateRestoreFailed, "STATE_RESTORE_FAILED"},
+		{ErrCodeHeartbeatTimeout, "HEARTBEAT_TIMEOUT"},
+		{ErrCodeWorkerLost, "WORKER_LOST"},
 		{ErrorCode(9999), "UNKNOWN"},
 	}
 
@@ -48,6 +50,7 @@ func TestIsRetryable(t *testing.T) {
 		ErrCodeInsufficientSlots,
 		ErrCodeInsufficientResources,
 		ErrCodeCheckpointInProgress,
+		ErrCodeHeartbeatTimeout,
 	}
 	for _, code := range retryable {
 		if !IsRetryable(code) {
@@ -63,6 +66,7 @@ func TestIsRetryable(t *testing.T) {
 		ErrCodeStaleEpoch,
 		ErrCodeWorkerShuttingDown,
 		ErrCodeStateRestoreFailed,
+		ErrCodeWorkerLost,
 	}
 	for _, code := range nonRetryable {
 		if IsRetryable(code) {

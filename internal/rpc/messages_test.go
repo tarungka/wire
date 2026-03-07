@@ -319,13 +319,52 @@ func TestMsgpackRoundtrip(t *testing.T) {
 		}
 	})
 
+	t.Run("ResourceReport", func(t *testing.T) {
+		rr := ResourceReport{
+			CPUUsagePercent:  75.5,
+			MemoryUsedBytes:  1024 * 1024 * 512,
+			MemoryTotalBytes: 1024 * 1024 * 1024,
+			DiskUsedBytes:    1024 * 1024 * 100,
+			DiskTotalBytes:   1024 * 1024 * 500,
+			GoroutineCount:   42,
+		}
+
+		data, err := protocol.EncodeMsgPack(&rr)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+
+		var decoded ResourceReport
+		if err := protocol.DecodeMsgPack(data, &decoded); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+
+		if decoded.CPUUsagePercent != 75.5 {
+			t.Errorf("CPUUsagePercent = %f, want 75.5", decoded.CPUUsagePercent)
+		}
+		if decoded.GoroutineCount != 42 {
+			t.Errorf("GoroutineCount = %d, want 42", decoded.GoroutineCount)
+		}
+		if decoded.MemoryUsedBytes != 1024*1024*512 {
+			t.Errorf("MemoryUsedBytes = %d, want %d", decoded.MemoryUsedBytes, 1024*1024*512)
+		}
+	})
+
 	t.Run("Heartbeat", func(t *testing.T) {
 		req := HeartbeatRequest{
-			WorkerID: "worker-1",
-			EpochID:  7,
-			Load:     &WorkerLoad{CPUUsage: 0.5, MemoryUsage: 0.7, ActiveSlots: 3, TotalSlots: 8},
+			WorkerID:  "worker-1",
+			EpochID:   7,
+			Timestamp: 1700000000,
+			Load:      &WorkerLoad{CPUUsage: 0.5, MemoryUsage: 0.7, ActiveSlots: 3, TotalSlots: 8},
+			Resources: &ResourceReport{
+				CPUUsagePercent: 50.0, MemoryUsedBytes: 1024, MemoryTotalBytes: 2048,
+				GoroutineCount: 10,
+			},
 			Tasks: []RunningTaskSummary{
-				{TaskID: "t-1", JobID: "j-1", Status: TaskStatusRunning, UptimeMs: 60000},
+				{
+					TaskID: "t-1", JobID: "j-1", Status: TaskStatusRunning, UptimeMs: 60000,
+					Metrics: &TaskMetrics{RecordsIn: 500, RecordsOut: 480},
+				},
 			},
 		}
 
@@ -342,14 +381,29 @@ func TestMsgpackRoundtrip(t *testing.T) {
 		if decoded.WorkerID != "worker-1" {
 			t.Errorf("WorkerID = %q, want %q", decoded.WorkerID, "worker-1")
 		}
+		if decoded.Timestamp != 1700000000 {
+			t.Errorf("Timestamp = %d, want 1700000000", decoded.Timestamp)
+		}
 		if decoded.Load.CPUUsage != 0.5 {
 			t.Errorf("CPUUsage = %f, want 0.5", decoded.Load.CPUUsage)
+		}
+		if decoded.Resources == nil {
+			t.Fatal("expected non-nil Resources")
+		}
+		if decoded.Resources.CPUUsagePercent != 50.0 {
+			t.Errorf("Resources.CPUUsagePercent = %f, want 50.0", decoded.Resources.CPUUsagePercent)
 		}
 		if len(decoded.Tasks) != 1 {
 			t.Fatalf("Tasks count = %d, want 1", len(decoded.Tasks))
 		}
 		if decoded.Tasks[0].Status != TaskStatusRunning {
 			t.Errorf("Task status = %d, want %d", decoded.Tasks[0].Status, TaskStatusRunning)
+		}
+		if decoded.Tasks[0].Metrics == nil {
+			t.Fatal("expected non-nil task Metrics")
+		}
+		if decoded.Tasks[0].Metrics.RecordsIn != 500 {
+			t.Errorf("Metrics.RecordsIn = %d, want 500", decoded.Tasks[0].Metrics.RecordsIn)
 		}
 
 		resp := HeartbeatResponse{

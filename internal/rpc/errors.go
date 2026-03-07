@@ -47,6 +47,12 @@ const (
 	ErrCodeStateRestoreFailed ErrorCode = 5001
 )
 
+// Heartbeat errors (6000–6001).
+const (
+	ErrCodeHeartbeatTimeout ErrorCode = 6000
+	ErrCodeWorkerLost       ErrorCode = 6001
+)
+
 // RPCError is the error envelope returned by RPC handlers.
 type RPCError struct {
 	Code         ErrorCode `codec:"c"`
@@ -112,6 +118,10 @@ func ErrorCodeName(code ErrorCode) string {
 		return "WORKER_SHUTTING_DOWN"
 	case ErrCodeStateRestoreFailed:
 		return "STATE_RESTORE_FAILED"
+	case ErrCodeHeartbeatTimeout:
+		return "HEARTBEAT_TIMEOUT"
+	case ErrCodeWorkerLost:
+		return "WORKER_LOST"
 	default:
 		return "UNKNOWN"
 	}
@@ -121,7 +131,8 @@ func ErrorCodeName(code ErrorCode) string {
 func IsRetryable(code ErrorCode) bool {
 	switch code {
 	case ErrCodeInternalError, ErrCodeTimeout, ErrCodeInsufficientSlots,
-		ErrCodeInsufficientResources, ErrCodeCheckpointInProgress:
+		ErrCodeInsufficientResources, ErrCodeCheckpointInProgress,
+		ErrCodeHeartbeatTimeout:
 		return true
 	default:
 		return false
@@ -130,10 +141,11 @@ func IsRetryable(code ErrorCode) bool {
 
 // Sentinel errors for common RPC failure modes.
 var (
-	ErrRPCTimeout         = errors.New("rpc: request timed out")
-	ErrRPCClosed          = errors.New("rpc: connection closed")
-	ErrRPCUnknownMethod   = errors.New("rpc: unknown method")
-	ErrRPCEncodeFailed    = errors.New("rpc: encode failed")
-	ErrRPCDecodeFailed    = errors.New("rpc: decode failed")
-	ErrRPCPayloadTooLarge = errors.New("rpc: payload exceeds maximum size")
+	ErrRPCTimeout           = errors.New("rpc: request timed out")
+	ErrRPCClosed            = errors.New("rpc: connection closed")
+	ErrRPCUnknownMethod     = errors.New("rpc: unknown method")
+	ErrRPCEncodeFailed      = errors.New("rpc: encode failed")
+	ErrRPCDecodeFailed      = errors.New("rpc: decode failed")
+	ErrRPCPayloadTooLarge   = errors.New("rpc: payload exceeds maximum size")
+	ErrHeartbeatContactLost = errors.New("rpc: coordinator contact lost")
 )

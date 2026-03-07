@@ -470,12 +470,24 @@ type WorkerResourceInfo struct {
 
 // ---------- Heartbeat RPC ----------
 
+// ResourceReport carries worker-level resource utilization.
+type ResourceReport struct {
+	CPUUsagePercent  float64 `codec:"cpu"`
+	MemoryUsedBytes  int64   `codec:"mub"`
+	MemoryTotalBytes int64   `codec:"mtb"`
+	DiskUsedBytes    int64   `codec:"dub"`
+	DiskTotalBytes   int64   `codec:"dtb"`
+	GoroutineCount   int     `codec:"gc"`
+}
+
 // HeartbeatRequest is sent from Worker to Coordinator as a liveness signal.
 type HeartbeatRequest struct {
-	WorkerID string               `codec:"wid"`
-	EpochID  uint64               `codec:"eid"`
-	Load     *WorkerLoad          `codec:"ld,omitempty"`
-	Tasks    []RunningTaskSummary `codec:"tsk,omitempty"`
+	WorkerID  string               `codec:"wid"`
+	EpochID   uint64               `codec:"eid"`
+	Timestamp int64                `codec:"ts,omitempty"`
+	Load      *WorkerLoad          `codec:"ld,omitempty"`
+	Resources *ResourceReport      `codec:"res,omitempty"`
+	Tasks     []RunningTaskSummary `codec:"tsk,omitempty"`
 }
 
 // HeartbeatResponse is the Coordinator's reply, which may include commands.
@@ -495,10 +507,11 @@ type WorkerLoad struct {
 
 // RunningTaskSummary is a brief status of a running task.
 type RunningTaskSummary struct {
-	TaskID   string     `codec:"tid"`
-	JobID    string     `codec:"jid"`
-	Status   TaskStatus `codec:"st"`
-	UptimeMs int64      `codec:"up"`
+	TaskID   string       `codec:"tid"`
+	JobID    string       `codec:"jid"`
+	Status   TaskStatus   `codec:"st"`
+	UptimeMs int64        `codec:"up"`
+	Metrics  *TaskMetrics `codec:"met,omitempty"`
 }
 
 // WorkerCommand carries a command from Coordinator to Worker via heartbeat.
