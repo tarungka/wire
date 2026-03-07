@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"testing"
 )
@@ -161,7 +162,9 @@ func TestDataRecord_MaximumPayload(t *testing.T) {
 func TestReadFrame_OversizedRejected(t *testing.T) {
 	var buf bytes.Buffer
 	// Write a length field that exceeds max frame size.
-	binary.Write(&buf, binary.BigEndian, DefaultMaxFrameSize+1)
+	if err := binary.Write(&buf, binary.BigEndian, DefaultMaxFrameSize+1); err != nil {
+		t.Fatalf("binary.Write: %v", err)
+	}
 	// Write dummy data so ReadFull doesn't EOF on length read.
 	buf.Write(make([]byte, 100))
 
@@ -175,7 +178,9 @@ func TestReadFrame_UnderMinimumRejected(t *testing.T) {
 	for _, length := range []uint32{0, 1, 2, 3, 4} {
 		t.Run("", func(t *testing.T) {
 			var buf bytes.Buffer
-			binary.Write(&buf, binary.BigEndian, length)
+			if err := binary.Write(&buf, binary.BigEndian, length); err != nil {
+				t.Fatalf("binary.Write: %v", err)
+			}
 			buf.Write(make([]byte, 100))
 
 			_, err := ReadFrame(&buf, DefaultMaxFrameSize)
@@ -439,5 +444,144 @@ func TestEncodeAndWriteFrame_UnsupportedType(t *testing.T) {
 	err := EncodeAndWriteFrame(&buf, "not a message")
 	if err == nil {
 		t.Error("expected error for unsupported type")
+	}
+}
+
+func TestReadFrame_LengthEqualsMax_Accepted(t *testing.T) {
+	// Boundary: frameLen == maxFrameSize should be accepted (not rejected as too large).
+	// This catches off-by-one in the > vs >= check at frame.go ReadFrame.
+	maxFrame := uint32(64)
+	payloadSize := int(maxFrame - MinFrameLength)
+	payload := bytes.Repeat([]byte{0xAB}, payloadSize)
+
+	var buf bytes.Buffer
+	if err := WriteFrameRaw(&buf, MsgTypeDataRecord, payload); err != nil {
+		t.Fatalf("WriteFrameRaw: %v", err)
+	}
+
+	frame, err := ReadFrame(&buf, maxFrame)
+	if err != nil {
+		t.Fatalf("ReadFrame with frameLen==max should succeed, got: %v", err)
+	}
+	if !bytes.Equal(frame.Payload, payload) {
+		t.Errorf("payload mismatch")
+	}
+}
+
+func TestReadFrame_BufferPoolReuse(t *testing.T) {
+	// Ensure the sync.Pool buffer reuse doesn't leak data from a previous
+	// larger frame into a subsequent smaller frame.
+	largeMsg := &DataRecordMsg{Value: make([]byte, 8192), EventTime: 1}
+	var largeBuf bytes.Buffer
+	if err := WriteFrame(&largeBuf, MsgTypeDataRecord, largeMsg); err != nil {
+		t.Fatalf("WriteFrame(large): %v", err)
+	}
+	// Read the large frame to return its buffer to the pool.
+	if _, err := ReadFrame(&largeBuf, DefaultMaxFrameSize); err != nil {
+		t.Fatalf("ReadFrame(large): %v", err)
+	}
+
+	// Write and read a small frame — should reuse the pooled buffer.
+	smallMsg := &DataRecordMsg{Value: []byte("small"), EventTime: 2}
+	var smallBuf bytes.Buffer
+	if err := WriteFrame(&smallBuf, MsgTypeDataRecord, smallMsg); err != nil {
+		t.Fatalf("WriteFrame(small): %v", err)
+	}
+	frame, err := ReadFrame(&smallBuf, DefaultMaxFrameSize)
+	if err != nil {
+		t.Fatalf("ReadFrame(small): %v", err)
+	}
+
+	decoded, err := DecodePayload(frame)
+	if err != nil {
+		t.Fatalf("DecodePayload: %v", err)
+	}
+	result := decoded.(*DataRecordMsg)
+	if string(result.Value) != "small" {
+		t.Errorf("payload corrupted by pool reuse: got %q, want %q", result.Value, "small")
+	}
+}
+
+func TestReadFrame_BodyTruncated_DoesNotPoisonPool(t *testing.T) {
+	// If a frame body read fails (truncated), subsequent reads from the pool
+	// should still work correctly.
+
+	// 1. Truncated frame: length says MinFrameLength but body shorter.
+	bad := []byte{0x00, 0x00, 0x00, 0x05, 0x01} // length=5, only 1 byte of body
+	_, err := ReadFrame(bytes.NewReader(bad), DefaultMaxFrameSize)
+	if err == nil {
+		t.Fatal("expected error on truncated body")
+	}
+
+	// 2. A valid frame should still decode correctly after the pool error path.
+	var good bytes.Buffer
+	if err := WriteFrame(&good, MsgTypeDataRecord, &DataRecordMsg{Value: []byte("ok"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteFrame: %v", err)
+	}
+	frame, err := ReadFrame(&good, DefaultMaxFrameSize)
+	if err != nil {
+		t.Fatalf("ReadFrame after pool error should succeed: %v", err)
+	}
+	if frame.MsgType != MsgTypeDataRecord {
+		t.Errorf("MsgType: got 0x%02X, want 0x%02X", frame.MsgType, MsgTypeDataRecord)
+	}
+}
+
+func TestWriteFrameRaw_NilPayload_MinFrameLength(t *testing.T) {
+	// A nil payload should produce a frame with length == MinFrameLength
+	// and total wire size == HeaderSize (no payload bytes on the wire).
+	var buf bytes.Buffer
+	if err := WriteFrameRaw(&buf, MsgTypeDataRecord, nil); err != nil {
+		t.Fatalf("WriteFrameRaw: %v", err)
+	}
+	data := buf.Bytes()
+
+	gotLen := binary.BigEndian.Uint32(data[0:4])
+	if gotLen != MinFrameLength {
+		t.Errorf("frame length: got %d, want %d", gotLen, MinFrameLength)
+	}
+	if len(data) != HeaderSize {
+		t.Errorf("wire size: got %d, want %d (header only)", len(data), HeaderSize)
+	}
+}
+
+func TestDecodePayload_UnknownType_ErrorWrapping(t *testing.T) {
+	// Verify that ErrUnknownMsgType is properly wrapped (errors.Is works)
+	// and the hex byte is included in the message.
+	_, err := DecodePayload(Frame{MsgType: 0xFE, Payload: []byte{0x80}})
+	if err == nil {
+		t.Fatal("expected error for unknown type")
+	}
+	if !errors.Is(err, ErrUnknownMsgType) {
+		t.Errorf("expected errors.Is(err, ErrUnknownMsgType), got: %v", err)
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("0xFE")) {
+		t.Errorf("error should contain hex byte 0xFE, got: %v", err)
+	}
+}
+
+func TestEncodeAndWriteFrame_AllValueTypes(t *testing.T) {
+	// Ensure all non-pointer (value) type variants are correctly mapped
+	// in the EncodeAndWriteFrame type switch.
+	msgs := []any{
+		HandshakeMsg{ProtocolVersion: 1, MinVersion: 1},
+		DataRecordMsg{Value: []byte("v"), EventTime: 1},
+		CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1},
+		WatermarkMsg{Timestamp: 1, SourceID: "s"},
+		EndOfPartitionMsg{SourceID: "s", Reason: EndReasonExhausted},
+		BackpressureMsg{StreamID: 1, State: BackpressurePause},
+	}
+	for _, msg := range msgs {
+		var buf bytes.Buffer
+		if err := EncodeAndWriteFrame(&buf, msg); err != nil {
+			t.Fatalf("EncodeAndWriteFrame(%T): %v", msg, err)
+		}
+		frame, err := ReadFrame(&buf, DefaultMaxFrameSize)
+		if err != nil {
+			t.Fatalf("ReadFrame(%T): %v", msg, err)
+		}
+		if _, err := DecodePayload(frame); err != nil {
+			t.Fatalf("DecodePayload(%T): %v", msg, err)
+		}
 	}
 }

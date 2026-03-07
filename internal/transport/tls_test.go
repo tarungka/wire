@@ -109,8 +109,10 @@ func writePEM(t *testing.T, path, blockType string, data []byte) {
 	if err != nil {
 		t.Fatalf("create %s: %v", path, err)
 	}
-	defer f.Close()
-	pem.Encode(f, &pem.Block{Type: blockType, Bytes: data})
+	defer func() { _ = f.Close() }()
+	if err := pem.Encode(f, &pem.Block{Type: blockType, Bytes: data}); err != nil {
+		t.Fatalf("pem.Encode %s: %v", path, err)
+	}
 }
 
 func writeKeyPEM(t *testing.T, path string, key *ecdsa.PrivateKey) {
@@ -140,7 +142,7 @@ func TestTLS_MutualAuth(t *testing.T) {
 	if err := server.Listen(ctx); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 	addr := server.ListenAddr()
 
 	// Client TLS config.
@@ -152,19 +154,19 @@ func TestTLS_MutualAuth(t *testing.T) {
 	cCfg := DefaultConfig()
 	cCfg.TLSConfig = clientTLS
 	clientMux := NewMux(cCfg)
-	defer clientMux.Close()
+	defer func() { _ = clientMux.Close() }()
 
 	cs, err := clientMux.Dial(ctx, addr)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	_, err = ss.ReceiveHandshake()
 	if err != nil {
@@ -205,7 +207,7 @@ func TestTLS_InvalidCert(t *testing.T) {
 	if err := server.Listen(ctx); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 	addr := server.ListenAddr()
 
 	// Client with no cert (should fail mutual TLS).
@@ -216,7 +218,7 @@ func TestTLS_InvalidCert(t *testing.T) {
 	cCfg := DefaultConfig()
 	cCfg.TLSConfig = clientTLS
 	clientMux := NewMux(cCfg)
-	defer clientMux.Close()
+	defer func() { _ = clientMux.Close() }()
 
 	_, err = clientMux.Dial(ctx, addr)
 	if err == nil {
@@ -224,38 +226,101 @@ func TestTLS_InvalidCert(t *testing.T) {
 	}
 }
 
-func TestTLS_AllMessageTypes(t *testing.T) {
+func TestTLS_ServerNameAutoInference(t *testing.T) {
+	// Verify that if TLSConfig.ServerName is empty, NewClientSession
+	// automatically infers it from the dial address.
 	certs := generateTestCerts(t)
 
-	serverTLS, _ := LoadTLSConfig(certs.ServerCertFile, certs.ServerKeyFile, true, certs.CACertFile)
+	// Server without mutual auth (so we don't need client certs for this test).
+	serverTLS, err := LoadTLSConfig(certs.ServerCertFile, certs.ServerKeyFile, false, "")
+	if err != nil {
+		t.Fatalf("LoadTLSConfig: %v", err)
+	}
+
 	sCfg := DefaultConfig()
 	sCfg.ListenAddr = "127.0.0.1:0"
 	sCfg.TLSConfig = serverTLS
 	server := NewMux(sCfg)
 
 	ctx := context.Background()
-	server.Listen(ctx)
-	defer server.Close()
-	addr := server.ListenAddr()
+	if err := server.Listen(ctx); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = server.Close() }()
 
-	clientTLS, _ := NewTLSClientConfig(certs.ClientCertFile, certs.ClientKeyFile, certs.CACertFile)
+	// Client TLS config with ServerName intentionally empty.
+	clientTLS, err := NewTLSClientConfig(certs.ClientCertFile, certs.ClientKeyFile, certs.CACertFile)
+	if err != nil {
+		t.Fatalf("NewTLSClientConfig: %v", err)
+	}
+	clientTLS.ServerName = "" // Clear to test auto-inference.
+
 	cCfg := DefaultConfig()
 	cCfg.TLSConfig = clientTLS
 	clientMux := NewMux(cCfg)
-	defer clientMux.Close()
+	defer func() { _ = clientMux.Close() }()
+
+	// Dial should succeed — ServerName should be auto-populated from the address.
+	cs, err := clientMux.Dial(ctx, server.ListenAddr())
+	if err != nil {
+		t.Fatalf("Dial with empty ServerName should auto-infer: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	// Verify the stream actually works.
+	ss, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer func() { _ = ss.Close() }()
+	_, err = ss.ReceiveHandshake()
+	if err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
+}
+
+func TestTLS_AllMessageTypes(t *testing.T) {
+	certs := generateTestCerts(t)
+
+	serverTLS, err := LoadTLSConfig(certs.ServerCertFile, certs.ServerKeyFile, true, certs.CACertFile)
+	if err != nil {
+		t.Fatalf("LoadTLSConfig: %v", err)
+	}
+	sCfg := DefaultConfig()
+	sCfg.ListenAddr = "127.0.0.1:0"
+	sCfg.TLSConfig = serverTLS
+	server := NewMux(sCfg)
+
+	ctx := context.Background()
+	if err := server.Listen(ctx); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = server.Close() }()
+	addr := server.ListenAddr()
+
+	clientTLS, err := NewTLSClientConfig(certs.ClientCertFile, certs.ClientKeyFile, certs.CACertFile)
+	if err != nil {
+		t.Fatalf("NewTLSClientConfig: %v", err)
+	}
+	cCfg := DefaultConfig()
+	cCfg.TLSConfig = clientTLS
+	clientMux := NewMux(cCfg)
+	defer func() { _ = clientMux.Close() }()
 
 	cs, err := clientMux.Dial(ctx, addr)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	ss, err := server.Accept(ctx)
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer ss.Close()
-	ss.ReceiveHandshake()
+	defer func() { _ = ss.Close() }()
+	if _, err := ss.ReceiveHandshake(); err != nil {
+		t.Fatalf("ReceiveHandshake: %v", err)
+	}
 
 	// Send all message types (except Handshake which was already sent).
 	messages := []any{

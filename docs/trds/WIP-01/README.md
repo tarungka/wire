@@ -647,7 +647,7 @@ The wire protocol runs on top of TCP, which can optionally be wrapped in TLS. Wh
 
 ### 7.2 No Protocol-Level Authentication
 
-The wire protocol itself does not include authentication fields (e.g., tokens, signatures). Authentication is handled at the TLS layer (certificate-based) or at the cluster membership layer (Raft-based node registration). A node that is not a cluster member cannot discover worker addresses and therefore cannot open data plane connections.
+The wire protocol itself does not include authentication fields (e.g., tokens, signatures). Authentication is handled at the TLS layer (certificate-based) or at the cluster membership layer (cluster membership registration; see WIP-09). A node that is not a cluster member cannot discover worker addresses and therefore cannot open data plane connections.
 
 ### 7.3 Denial of Service Considerations
 

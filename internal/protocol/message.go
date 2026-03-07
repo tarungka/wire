@@ -36,6 +36,10 @@ const (
 	MinProtocolVersion     uint16 = 1
 )
 
+// HandshakeSourceID is the SourceID used in EndOfPartition messages
+// sent during handshake rejection.
+const HandshakeSourceID = "handshake"
+
 // HandshakeMsg is sent as the first frame on every new stream for version and feature negotiation.
 type HandshakeMsg struct {
 	ProtocolVersion uint16 `codec:"v"`
