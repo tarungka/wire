@@ -11,5 +11,4 @@ func TestNoopCheckpointMetrics(t *testing.T) {
 	// Verify no panics on all method calls.
 	m.IncTimeoutTotal()
 	m.ObserveAlignmentTime(100 * time.Millisecond)
-	m.SetAlignmentBufferedBytes(1024)
 }

@@ -7,7 +7,7 @@
 | **Broadcast State** | A special state type sent to all parallel instances of an operator. Used for configuration data that every subtask needs (e.g., feature flags, rule sets). | state-backend.md §1.1 |
 | **Checkpoint** | A consistent global snapshot of all operator state and source offsets. Triggered periodically by the Coordinator. Used for failure recovery. Checkpoints may be garbage-collected by the system. | execution-model.md §5.3 |
 | **Checkpoint Barrier** | See **Barrier**. |  |
-| **Coordinator** | The control plane node responsible for job management, checkpoint coordination, resource management, and failure recovery. In HA mode, a Raft leader among coordinator replicas. | architecture.md §1.1, WIP-09 |
+| **Coordinator** | The control plane node responsible for job management, checkpoint coordination, resource management, and failure recovery. Persists metadata in PebbleDB. In HA mode, uses pluggable leader election and fencing tokens for split-brain prevention (see WIP-09). | architecture.md §1.1, WIP-09 |
 | **DataStream** | The SDK abstraction representing an unbounded sequence of events flowing through a pipeline. Supports transformation operators (Map, Filter, KeyBy, etc.). | WIP-14 §3.2 |
 | **Dead Letter Queue (DLQ)** | A side output sink where events that fail processing (poison messages) are routed instead of crashing the job. | WIP-11 |
 | **Epoch** | The logical time period between two consecutive Checkpoint Barriers. Epoch N contains all events processed between Barrier N-1 and Barrier N. | execution-model.md §5.1 |
