@@ -381,38 +381,81 @@ func TestHeartbeatTrackerDeadDoesNotAdvance(t *testing.T) {
 }
 
 func TestHeartbeatSenderConsecutiveFailuresReset(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.MaxConsecutiveHeartbeatFailures = 3
+	client, server := testYamuxPair(t)
 
-	callbackCalled := false
+	cfg := DefaultConfig()
+	cfg.HeartbeatInterval = 20 * time.Millisecond
+	cfg.HeartbeatTimeout = 5 * time.Second
+	cfg.MaxConsecutiveHeartbeatFailures = 5
+
+	srv := &Server{
+		cfg:      cfg,
+		handlers: make(map[MethodID]Handler),
+		log:      testLogger(),
+	}
+
+	var mu sync.Mutex
+	callCount := 0
+	failUntil := 2 // fail the first 2 calls, then succeed
+
+	srv.Register(MethodHeartbeat, func(ctx context.Context, reqID uint64, payload []byte) (any, *RPCError) {
+		mu.Lock()
+		callCount++
+		n := callCount
+		mu.Unlock()
+		if n <= failUntil {
+			return nil, NewRPCError(ErrCodeInternalError, "transient")
+		}
+		return &HeartbeatResponse{Accepted: true}, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go srv.ServeSession(ctx, server)
+
+	rpcClient := &Client{
+		session: client,
+		cfg:     cfg,
+		log:     testLogger(),
+	}
+
+	contactLostCalled := false
 	sender := &HeartbeatSender{
-		cfg: cfg,
+		client: rpcClient,
+		cfg:    cfg,
+		buildRequestFn: func() *HeartbeatRequest {
+			return &HeartbeatRequest{WorkerID: "w-1"}
+		},
+		handleCommandsFn: func(cmds []WorkerCommand) {},
 		onContactLost: func() {
-			callbackCalled = true
+			mu.Lock()
+			contactLostCalled = true
+			mu.Unlock()
 		},
 		metrics: NoopHeartbeatMetrics(),
 		log:     testLogger(),
 	}
 
-	// Simulate 2 failures then a success.
-	sender.mu.Lock()
-	sender.consecutiveFailures = 2
-	sender.mu.Unlock()
+	go sender.Run(ctx)
 
-	// On success, failures should reset.
-	sender.mu.Lock()
-	sender.consecutiveFailures = 0
-	sender.mu.Unlock()
+	// Wait for enough cycles: 2 failures + a few successes.
+	time.Sleep(cfg.HeartbeatInterval * 6)
 
 	sender.mu.Lock()
-	count := sender.consecutiveFailures
+	failures := sender.consecutiveFailures
 	sender.mu.Unlock()
 
-	if count != 0 {
-		t.Errorf("expected 0 consecutive failures after reset, got %d", count)
+	if failures != 0 {
+		t.Errorf("expected 0 consecutive failures after success, got %d", failures)
 	}
-	if callbackCalled {
-		t.Error("callback should not have been called")
+
+	mu.Lock()
+	lost := contactLostCalled
+	mu.Unlock()
+
+	if lost {
+		t.Error("callback should not have fired (only 2 failures, threshold 5)")
 	}
 }
 
@@ -475,25 +518,47 @@ func TestHeartbeatSenderContactLostCallback(t *testing.T) {
 }
 
 func TestHeartbeatSenderContactLostNilCallback(t *testing.T) {
+	client, server := testYamuxPair(t)
+
 	cfg := DefaultConfig()
-	cfg.MaxConsecutiveHeartbeatFailures = 1
+	cfg.HeartbeatInterval = 20 * time.Millisecond
+	cfg.HeartbeatTimeout = 10 * time.Millisecond
+	cfg.MaxConsecutiveHeartbeatFailures = 2
 
+	srv := &Server{
+		cfg:      cfg,
+		handlers: make(map[MethodID]Handler),
+		log:      testLogger(),
+	}
+	// No handler registered — calls will fail.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go srv.ServeSession(ctx, server)
+
+	rpcClient := &Client{
+		session: client,
+		cfg:     cfg,
+		log:     testLogger(),
+	}
+
+	// Sender with nil onContactLost — should not panic.
 	sender := &HeartbeatSender{
-		cfg:           cfg,
-		onContactLost: nil,
-		metrics:       NoopHeartbeatMetrics(),
-		log:           testLogger(),
+		client: rpcClient,
+		cfg:    cfg,
+		buildRequestFn: func() *HeartbeatRequest {
+			return &HeartbeatRequest{WorkerID: "w-1"}
+		},
+		handleCommandsFn: func(cmds []WorkerCommand) {},
+		onContactLost:    nil,
+		metrics:          NoopHeartbeatMetrics(),
+		log:              testLogger(),
 	}
 
-	// Simulate exceeding threshold with nil callback — should not panic.
-	sender.mu.Lock()
-	sender.consecutiveFailures = cfg.MaxConsecutiveHeartbeatFailures + 1
-	sender.mu.Unlock()
+	go sender.Run(ctx)
 
-	// The nil check is in sendHeartbeat; just verify the struct doesn't panic.
-	if sender.onContactLost != nil {
-		t.Error("expected nil onContactLost")
-	}
+	// Wait enough to exceed the threshold — should not panic.
+	time.Sleep(cfg.HeartbeatInterval * time.Duration(cfg.MaxConsecutiveHeartbeatFailures+3))
 }
 
 func TestHeartbeatSenderPartialFailureRecovery(t *testing.T) {
@@ -690,6 +755,193 @@ func TestHeartbeatSenderCancelPath(t *testing.T) {
 		// Success — Run returned promptly.
 	case <-time.After(time.Second):
 		t.Fatal("HeartbeatSender.Run did not return after context cancellation")
+	}
+}
+
+func TestRecordHeartbeatUnknownWorker(t *testing.T) {
+	cfg := DefaultConfig()
+	tracker := NewHeartbeatTracker(cfg, nil)
+	tracker.log = testLogger()
+
+	// Recording a heartbeat for an unknown worker should not panic or create state.
+	tracker.RecordHeartbeat("nonexistent", nil, nil, nil)
+
+	_, ok := tracker.GetWorkerState("nonexistent")
+	if ok {
+		t.Error("expected unknown worker to remain absent from state")
+	}
+
+	workers := tracker.GetAllWorkers()
+	if len(workers) != 0 {
+		t.Errorf("expected 0 workers, got %d", len(workers))
+	}
+}
+
+func TestRecordHeartbeatDeadWorkerIgnored(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.HeartbeatInterval = 10 * time.Millisecond
+	cfg.SuspectThreshold = 1
+	cfg.DeadThreshold = 2
+
+	tracker := NewHeartbeatTracker(cfg, nil)
+	tracker.log = testLogger()
+
+	tracker.RegisterWorker("w-1", "localhost:4002")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go tracker.Run(ctx)
+
+	// Wait for DEAD.
+	time.Sleep(cfg.HeartbeatInterval * time.Duration(cfg.DeadThreshold+3))
+
+	state, _ := tracker.GetWorkerState("w-1")
+	if state != WorkerDead {
+		t.Fatalf("expected DEAD, got %s", state)
+	}
+
+	// Try to record a heartbeat for the dead worker.
+	tracker.RecordHeartbeat("w-1", &WorkerLoad{CPUUsage: 0.1}, nil, nil)
+
+	// Worker should still be DEAD.
+	state, _ = tracker.GetWorkerState("w-1")
+	if state != WorkerDead {
+		t.Errorf("expected worker to remain DEAD after stale heartbeat, got %s", state)
+	}
+}
+
+func TestOnContactLostFiresOnce(t *testing.T) {
+	client, server := testYamuxPair(t)
+
+	cfg := DefaultConfig()
+	cfg.HeartbeatInterval = 20 * time.Millisecond
+	cfg.HeartbeatTimeout = 10 * time.Millisecond
+	cfg.MaxConsecutiveHeartbeatFailures = 2
+
+	srv := &Server{
+		cfg:      cfg,
+		handlers: make(map[MethodID]Handler),
+		log:      testLogger(),
+	}
+	// No handler — all calls fail.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go srv.ServeSession(ctx, server)
+
+	rpcClient := &Client{
+		session: client,
+		cfg:     cfg,
+		log:     testLogger(),
+	}
+
+	var mu sync.Mutex
+	contactLostCount := 0
+
+	sender := &HeartbeatSender{
+		client: rpcClient,
+		cfg:    cfg,
+		buildRequestFn: func() *HeartbeatRequest {
+			return &HeartbeatRequest{WorkerID: "w-1"}
+		},
+		handleCommandsFn: func(cmds []WorkerCommand) {},
+		onContactLost: func() {
+			mu.Lock()
+			contactLostCount++
+			mu.Unlock()
+		},
+		metrics: NoopHeartbeatMetrics(),
+		log:     testLogger(),
+	}
+
+	go sender.Run(ctx)
+
+	// Wait for many failures well past the threshold.
+	time.Sleep(cfg.HeartbeatInterval * time.Duration(cfg.MaxConsecutiveHeartbeatFailures+5))
+
+	mu.Lock()
+	count := contactLostCount
+	mu.Unlock()
+
+	if count != 1 {
+		t.Errorf("expected onContactLost to fire exactly once, got %d", count)
+	}
+}
+
+func TestOnContactLostRearms(t *testing.T) {
+	client, server := testYamuxPair(t)
+
+	cfg := DefaultConfig()
+	cfg.HeartbeatInterval = 20 * time.Millisecond
+	cfg.HeartbeatTimeout = 5 * time.Second
+	cfg.MaxConsecutiveHeartbeatFailures = 2
+
+	srv := &Server{
+		cfg:      cfg,
+		handlers: make(map[MethodID]Handler),
+		log:      testLogger(),
+	}
+
+	var mu sync.Mutex
+	callCount := 0
+	// Phase 1: fail 3 times (triggers contact lost once)
+	// Phase 2: succeed 2 times (resets)
+	// Phase 3: fail 3 more times (triggers contact lost again)
+	srv.Register(MethodHeartbeat, func(ctx context.Context, reqID uint64, payload []byte) (any, *RPCError) {
+		mu.Lock()
+		callCount++
+		n := callCount
+		mu.Unlock()
+		switch {
+		case n <= 3:
+			return nil, NewRPCError(ErrCodeInternalError, "outage-1")
+		case n <= 5:
+			return &HeartbeatResponse{Accepted: true}, nil
+		default:
+			return nil, NewRPCError(ErrCodeInternalError, "outage-2")
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go srv.ServeSession(ctx, server)
+
+	rpcClient := &Client{
+		session: client,
+		cfg:     cfg,
+		log:     testLogger(),
+	}
+
+	contactLostCount := 0
+	sender := &HeartbeatSender{
+		client: rpcClient,
+		cfg:    cfg,
+		buildRequestFn: func() *HeartbeatRequest {
+			return &HeartbeatRequest{WorkerID: "w-1"}
+		},
+		handleCommandsFn: func(cmds []WorkerCommand) {},
+		onContactLost: func() {
+			mu.Lock()
+			contactLostCount++
+			mu.Unlock()
+		},
+		metrics: NoopHeartbeatMetrics(),
+		log:     testLogger(),
+	}
+
+	go sender.Run(ctx)
+
+	// Wait for all phases to complete: 3+2+3 = 8 calls + buffer.
+	time.Sleep(cfg.HeartbeatInterval * 12)
+
+	mu.Lock()
+	count := contactLostCount
+	mu.Unlock()
+
+	if count != 2 {
+		t.Errorf("expected onContactLost to fire twice (once per outage), got %d", count)
 	}
 }
 
