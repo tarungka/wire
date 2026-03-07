@@ -28,8 +28,8 @@ func newTestStreamPair(t *testing.T) (*transport.FrameStream, *transport.FrameSt
 	client := transport.NewMux(cCfg)
 
 	t.Cleanup(func() {
-		client.Close()
-		server.Close()
+		_ = client.Close()
+		_ = server.Close()
 	})
 
 	writer, err := client.Dial(ctx, addr)
@@ -51,8 +51,8 @@ func newTestStreamPair(t *testing.T) (*transport.FrameStream, *transport.FrameSt
 
 func TestInputReader_DataRecordRouting(t *testing.T) {
 	writer, reader := newTestStreamPair(t)
-	defer writer.Close()
-	defer reader.Close()
+	defer func() { _ = writer.Close() }()
+	defer func() { _ = reader.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -65,16 +65,20 @@ func TestInputReader_DataRecordRouting(t *testing.T) {
 	// Write 3 data records then EoP.
 	go func() {
 		for i := 0; i < 3; i++ {
-			writer.WriteMessage(&protocol.DataRecordMsg{
+			if err := writer.WriteMessage(&protocol.DataRecordMsg{
 				Key:       []byte("key"),
 				Value:     []byte{byte(i)},
 				EventTime: int64(i * 1000),
-			})
+			}); err != nil {
+				t.Errorf("WriteMessage data record: %v", err)
+			}
 		}
-		writer.WriteMessage(&protocol.EndOfPartitionMsg{
+		if err := writer.WriteMessage(&protocol.EndOfPartitionMsg{
 			SourceID: "test",
 			Reason:   protocol.EndReasonExhausted,
-		})
+		}); err != nil {
+			t.Errorf("WriteMessage EoP: %v", err)
+		}
 	}()
 
 	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
@@ -108,8 +112,8 @@ func TestInputReader_DataRecordRouting(t *testing.T) {
 
 func TestInputReader_BarrierDetection(t *testing.T) {
 	writer, reader := newTestStreamPair(t)
-	defer writer.Close()
-	defer reader.Close()
+	defer func() { _ = writer.Close() }()
+	defer func() { _ = reader.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -120,15 +124,19 @@ func TestInputReader_BarrierDetection(t *testing.T) {
 	tracker := testTracker(1)
 
 	go func() {
-		writer.WriteMessage(&protocol.CheckpointBarrierMsg{
+		if err := writer.WriteMessage(&protocol.CheckpointBarrierMsg{
 			CheckpointID: 42,
 			EpochID:      7,
 			Timestamp:    1000,
-		})
-		writer.WriteMessage(&protocol.EndOfPartitionMsg{
+		}); err != nil {
+			t.Errorf("WriteMessage barrier: %v", err)
+		}
+		if err := writer.WriteMessage(&protocol.EndOfPartitionMsg{
 			SourceID: "test",
 			Reason:   protocol.EndReasonExhausted,
-		})
+		}); err != nil {
+			t.Errorf("WriteMessage EoP: %v", err)
+		}
 	}()
 
 	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
@@ -153,8 +161,8 @@ func TestInputReader_BarrierDetection(t *testing.T) {
 
 func TestInputReader_WatermarkCASUpdate(t *testing.T) {
 	writer, reader := newTestStreamPair(t)
-	defer writer.Close()
-	defer reader.Close()
+	defer func() { _ = writer.Close() }()
+	defer func() { _ = reader.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -165,12 +173,18 @@ func TestInputReader_WatermarkCASUpdate(t *testing.T) {
 	tracker := testTracker(1)
 
 	go func() {
-		writer.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s"})
-		writer.WriteMessage(&protocol.WatermarkMsg{Timestamp: 200, SourceID: "s"})
-		writer.WriteMessage(&protocol.EndOfPartitionMsg{
+		if err := writer.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s"}); err != nil {
+			t.Errorf("WriteMessage watermark: %v", err)
+		}
+		if err := writer.WriteMessage(&protocol.WatermarkMsg{Timestamp: 200, SourceID: "s"}); err != nil {
+			t.Errorf("WriteMessage watermark: %v", err)
+		}
+		if err := writer.WriteMessage(&protocol.EndOfPartitionMsg{
 			SourceID: "test",
 			Reason:   protocol.EndReasonExhausted,
-		})
+		}); err != nil {
+			t.Errorf("WriteMessage EoP: %v", err)
+		}
 	}()
 
 	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
@@ -185,8 +199,8 @@ func TestInputReader_WatermarkCASUpdate(t *testing.T) {
 
 func TestInputReader_SideBufferRouting(t *testing.T) {
 	writer, reader := newTestStreamPair(t)
-	defer writer.Close()
-	defer reader.Close()
+	defer func() { _ = writer.Close() }()
+	defer func() { _ = reader.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -198,11 +212,19 @@ func TestInputReader_SideBufferRouting(t *testing.T) {
 
 	go func() {
 		// Send some data, then a barrier (this is input 0 with 2-input aligner).
-		writer.WriteMessage(&protocol.DataRecordMsg{Value: []byte("before-barrier"), EventTime: 1})
-		writer.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000})
+		if err := writer.WriteMessage(&protocol.DataRecordMsg{Value: []byte("before-barrier"), EventTime: 1}); err != nil {
+			t.Errorf("WriteMessage data record: %v", err)
+		}
+		if err := writer.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000}); err != nil {
+			t.Errorf("WriteMessage barrier: %v", err)
+		}
 		// After barrier, input 0 is aligning — data should go to side buffer.
-		writer.WriteMessage(&protocol.DataRecordMsg{Value: []byte("after-barrier"), EventTime: 2})
-		writer.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "test", Reason: protocol.EndReasonExhausted})
+		if err := writer.WriteMessage(&protocol.DataRecordMsg{Value: []byte("after-barrier"), EventTime: 2}); err != nil {
+			t.Errorf("WriteMessage data record: %v", err)
+		}
+		if err := writer.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "test", Reason: protocol.EndReasonExhausted}); err != nil {
+			t.Errorf("WriteMessage EoP: %v", err)
+		}
 	}()
 
 	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
@@ -231,7 +253,7 @@ func TestInputReader_SideBufferRouting(t *testing.T) {
 
 func TestInputReader_ContextCancellation(t *testing.T) {
 	writer, reader := newTestStreamPair(t)
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -245,7 +267,7 @@ func TestInputReader_ContextCancellation(t *testing.T) {
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		cancel()
-		writer.Close() // Causes EOF on reader, unblocking ReadMessage.
+		_ = writer.Close() // Causes EOF on reader, unblocking ReadMessage.
 	}()
 
 	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
@@ -257,8 +279,8 @@ func TestInputReader_ContextCancellation(t *testing.T) {
 
 func TestInputReader_WatermarkDoesNotRegress(t *testing.T) {
 	writer, reader := newTestStreamPair(t)
-	defer writer.Close()
-	defer reader.Close()
+	defer func() { _ = writer.Close() }()
+	defer func() { _ = reader.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -271,11 +293,15 @@ func TestInputReader_WatermarkDoesNotRegress(t *testing.T) {
 
 	go func() {
 		// Send a stale watermark (100 < 200).
-		writer.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s"})
-		writer.WriteMessage(&protocol.EndOfPartitionMsg{
+		if err := writer.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s"}); err != nil {
+			t.Errorf("WriteMessage watermark: %v", err)
+		}
+		if err := writer.WriteMessage(&protocol.EndOfPartitionMsg{
 			SourceID: "test",
 			Reason:   protocol.EndReasonExhausted,
-		})
+		}); err != nil {
+			t.Errorf("WriteMessage EoP: %v", err)
+		}
 	}()
 
 	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
@@ -291,7 +317,7 @@ func TestInputReader_WatermarkDoesNotRegress(t *testing.T) {
 
 func TestInputReader_EventChannelFull_UnblocksOnContextCancel(t *testing.T) {
 	writer, reader := newTestStreamPair(t)
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -303,10 +329,13 @@ func TestInputReader_EventChannelFull_UnblocksOnContextCancel(t *testing.T) {
 	go func() {
 		// Send enough data to fill eventCh and block the reader.
 		for i := 0; i < 10; i++ {
-			writer.WriteMessage(&protocol.DataRecordMsg{
+			if err := writer.WriteMessage(&protocol.DataRecordMsg{
 				Value:     []byte{byte(i)},
 				EventTime: int64(i),
-			})
+			}); err != nil {
+				t.Errorf("WriteMessage data record: %v", err)
+				return
+			}
 		}
 	}()
 
@@ -318,7 +347,7 @@ func TestInputReader_EventChannelFull_UnblocksOnContextCancel(t *testing.T) {
 	// Let the reader block on the full channel, then cancel.
 	time.Sleep(100 * time.Millisecond)
 	cancel()
-	writer.Close() // Unblock the inner read goroutine.
+	_ = writer.Close() // Unblock the inner read goroutine.
 
 	select {
 	case err := <-done:
@@ -332,8 +361,8 @@ func TestInputReader_EventChannelFull_UnblocksOnContextCancel(t *testing.T) {
 
 func TestInputReader_ActivityRecording(t *testing.T) {
 	writer, reader := newTestStreamPair(t)
-	defer writer.Close()
-	defer reader.Close()
+	defer func() { _ = writer.Close() }()
+	defer func() { _ = reader.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -349,14 +378,18 @@ func TestInputReader_ActivityRecording(t *testing.T) {
 	}
 
 	go func() {
-		writer.WriteMessage(&protocol.DataRecordMsg{
+		if err := writer.WriteMessage(&protocol.DataRecordMsg{
 			Value:     []byte("data"),
 			EventTime: 1000,
-		})
-		writer.WriteMessage(&protocol.EndOfPartitionMsg{
+		}); err != nil {
+			t.Errorf("WriteMessage data record: %v", err)
+		}
+		if err := writer.WriteMessage(&protocol.EndOfPartitionMsg{
 			SourceID: "test",
 			Reason:   protocol.EndReasonExhausted,
-		})
+		}); err != nil {
+			t.Errorf("WriteMessage EoP: %v", err)
+		}
 	}()
 
 	err := runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())

@@ -1,0 +1,384 @@
+package rpc
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"github.com/rs/zerolog"
+
+	"github.com/tarungka/wire/internal/logger"
+)
+
+// WorkerState represents the liveness state of a worker.
+type WorkerState uint8
+
+const (
+	WorkerAlive   WorkerState = 0
+	WorkerSuspect WorkerState = 1
+	WorkerDead    WorkerState = 2
+)
+
+// String returns the human-readable name of the worker state.
+func (s WorkerState) String() string {
+	switch s {
+	case WorkerAlive:
+		return "Alive"
+	case WorkerSuspect:
+		return "Suspect"
+	case WorkerDead:
+		return "Dead"
+	default:
+		return "Unknown"
+	}
+}
+
+// WorkerInfo holds the Coordinator's view of a worker's liveness.
+type WorkerInfo struct {
+	WorkerID      string
+	Address       string
+	State         WorkerState
+	LastHeartbeat time.Time
+	MissedCount   int
+	Load          *WorkerLoad
+	Resources     *ResourceReport
+	LastTasks     []RunningTaskSummary
+}
+
+// StateChangeCallback is called when a worker's state transitions.
+type StateChangeCallback func(workerID string, from, to WorkerState)
+
+// WorkerLostEvent carries context about a worker that transitioned to DEAD.
+type WorkerLostEvent struct {
+	WorkerID      string
+	LastHeartbeat time.Time
+	RunningTasks  []RunningTaskSummary
+	MissedCount   int
+}
+
+// WorkerLostCallback is called when a worker transitions to DEAD.
+type WorkerLostCallback func(event WorkerLostEvent)
+
+// HeartbeatTrackerOption configures optional HeartbeatTracker behavior.
+type HeartbeatTrackerOption func(*HeartbeatTracker)
+
+// WithHeartbeatMetrics attaches a metrics collector to the tracker.
+func WithHeartbeatMetrics(m HeartbeatMetrics) HeartbeatTrackerOption {
+	return func(ht *HeartbeatTracker) {
+		ht.metrics = m
+	}
+}
+
+// WithWorkerLostCallback registers a callback that fires when a worker transitions to DEAD.
+func WithWorkerLostCallback(cb WorkerLostCallback) HeartbeatTrackerOption {
+	return func(ht *HeartbeatTracker) {
+		ht.onWorkerLost = cb
+	}
+}
+
+// HeartbeatTracker manages Coordinator-side worker liveness tracking.
+type HeartbeatTracker struct {
+	mu            sync.Mutex
+	cfg           Config
+	workers       map[string]*WorkerInfo
+	onStateChange StateChangeCallback
+	onWorkerLost  WorkerLostCallback
+	metrics       HeartbeatMetrics
+	log           zerolog.Logger
+}
+
+// NewHeartbeatTracker creates a new tracker with the given configuration and callback.
+func NewHeartbeatTracker(cfg Config, onStateChange StateChangeCallback, opts ...HeartbeatTrackerOption) *HeartbeatTracker {
+	ht := &HeartbeatTracker{
+		cfg:           cfg,
+		workers:       make(map[string]*WorkerInfo),
+		onStateChange: onStateChange,
+		metrics:       NoopHeartbeatMetrics(),
+		log:           logger.GetLogger("heartbeat-tracker"),
+	}
+	for _, opt := range opts {
+		opt(ht)
+	}
+	return ht
+}
+
+// RegisterWorker adds a new worker as ALIVE.
+func (ht *HeartbeatTracker) RegisterWorker(id, addr string) {
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+
+	ht.workers[id] = &WorkerInfo{
+		WorkerID:      id,
+		Address:       addr,
+		State:         WorkerAlive,
+		LastHeartbeat: time.Now(),
+		MissedCount:   0,
+	}
+
+	ht.log.Info().Str("worker_id", id).Str("address", addr).Msg("worker registered")
+}
+
+// stateTransition records a pending state change to be invoked outside the lock.
+type stateTransition struct {
+	workerID string
+	from     WorkerState
+	to       WorkerState
+	lostEvt  *WorkerLostEvent // non-nil only for DEAD transitions
+}
+
+// RecordHeartbeat resets MissedCount for the worker and transitions SUSPECT→ALIVE.
+func (ht *HeartbeatTracker) RecordHeartbeat(id string, load *WorkerLoad, resources *ResourceReport, tasks []RunningTaskSummary) {
+	var transitions []stateTransition
+
+	ht.mu.Lock()
+	w, ok := ht.workers[id]
+	if ok {
+		if w.State == WorkerDead {
+			// Dead workers must re-register; ignore stale heartbeats.
+			ht.mu.Unlock()
+			return
+		}
+		w.MissedCount = 0
+		w.LastHeartbeat = time.Now()
+		w.Load = load
+		w.Resources = resources
+		w.LastTasks = tasks
+
+		if w.State == WorkerSuspect {
+			transitions = append(transitions, stateTransition{
+				workerID: id,
+				from:     w.State,
+				to:       WorkerAlive,
+			})
+			w.State = WorkerAlive
+			ht.log.Info().Str("worker_id", id).Msg("worker recovered to ALIVE")
+		}
+	}
+	ht.mu.Unlock()
+
+	// Invoke callbacks outside lock.
+	for _, t := range transitions {
+		if ht.onStateChange != nil {
+			ht.onStateChange(t.workerID, t.from, t.to)
+		}
+	}
+}
+
+// UnregisterWorker removes a worker from tracking.
+func (ht *HeartbeatTracker) UnregisterWorker(id string) {
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+	delete(ht.workers, id)
+}
+
+// GetWorkerState returns the current state of a worker.
+func (ht *HeartbeatTracker) GetWorkerState(id string) (WorkerState, bool) {
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+
+	w, ok := ht.workers[id]
+	if !ok {
+		return 0, false
+	}
+	return w.State, true
+}
+
+// GetAllWorkers returns a snapshot of all tracked workers.
+func (ht *HeartbeatTracker) GetAllWorkers() []WorkerInfo {
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+
+	result := make([]WorkerInfo, 0, len(ht.workers))
+	for _, w := range ht.workers {
+		result = append(result, *w)
+	}
+	return result
+}
+
+// Run starts the heartbeat check loop. It increments MissedCount for all workers
+// every HeartbeatInterval and evaluates liveness thresholds. It blocks until ctx
+// is canceled.
+func (ht *HeartbeatTracker) Run(ctx context.Context) {
+	ticker := time.NewTicker(ht.cfg.HeartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ht.checkWorkers()
+		}
+	}
+}
+
+// checkWorkers increments missed counts and evaluates thresholds.
+func (ht *HeartbeatTracker) checkWorkers() {
+	var transitions []stateTransition
+
+	ht.mu.Lock()
+	aliveCount := 0
+
+	for id, w := range ht.workers {
+		if w.State == WorkerDead {
+			continue
+		}
+
+		w.MissedCount++
+
+		switch {
+		case w.MissedCount >= ht.cfg.DeadThreshold && w.State == WorkerSuspect:
+			old := w.State
+			w.State = WorkerDead
+			ht.log.Warn().
+				Str("worker_id", id).
+				Int("missed", w.MissedCount).
+				Msg("worker transitioned to DEAD")
+			ht.metrics.IncWorkersLostTotal()
+			transitions = append(transitions, stateTransition{
+				workerID: id,
+				from:     old,
+				to:       WorkerDead,
+				lostEvt: &WorkerLostEvent{
+					WorkerID:      id,
+					LastHeartbeat: w.LastHeartbeat,
+					RunningTasks:  append([]RunningTaskSummary(nil), w.LastTasks...),
+					MissedCount:   w.MissedCount,
+				},
+			})
+
+		case w.MissedCount >= ht.cfg.SuspectThreshold && w.State == WorkerAlive:
+			old := w.State
+			w.State = WorkerSuspect
+			ht.log.Warn().
+				Str("worker_id", id).
+				Int("missed", w.MissedCount).
+				Msg("worker transitioned to SUSPECT")
+			transitions = append(transitions, stateTransition{
+				workerID: id,
+				from:     old,
+				to:       WorkerSuspect,
+			})
+		}
+
+		if w.State != WorkerDead {
+			aliveCount++
+		}
+	}
+
+	ht.metrics.SetWorkersAlive(aliveCount)
+	ht.mu.Unlock()
+
+	// Invoke callbacks outside lock.
+	for _, t := range transitions {
+		if ht.onStateChange != nil {
+			ht.onStateChange(t.workerID, t.from, t.to)
+		}
+		if t.lostEvt != nil && ht.onWorkerLost != nil {
+			ht.onWorkerLost(*t.lostEvt)
+		}
+	}
+}
+
+// HeartbeatSender manages Worker-side periodic heartbeat sending.
+type HeartbeatSender struct {
+	client              *Client
+	cfg                 Config
+	buildRequestFn      func() *HeartbeatRequest
+	handleCommandsFn    func([]WorkerCommand)
+	onContactLost       func()
+	metrics             HeartbeatMetrics
+	mu                  sync.Mutex
+	consecutiveFailures int
+	contactLostFired    bool
+	log                 zerolog.Logger
+}
+
+// HeartbeatSenderOption configures optional HeartbeatSender behavior.
+type HeartbeatSenderOption func(*HeartbeatSender)
+
+// WithSenderMetrics attaches a metrics collector to the sender.
+func WithSenderMetrics(m HeartbeatMetrics) HeartbeatSenderOption {
+	return func(hs *HeartbeatSender) { hs.metrics = m }
+}
+
+// WithContactLostCallback registers a callback that fires once when the
+// coordinator becomes unreachable (consecutive failures >= threshold).
+// The callback re-arms after a successful heartbeat.
+func WithContactLostCallback(fn func()) HeartbeatSenderOption {
+	return func(hs *HeartbeatSender) { hs.onContactLost = fn }
+}
+
+// NewHeartbeatSender creates a sender that periodically sends heartbeats via the client.
+func NewHeartbeatSender(
+	client *Client,
+	cfg Config,
+	buildRequestFn func() *HeartbeatRequest,
+	handleCommandsFn func([]WorkerCommand),
+	opts ...HeartbeatSenderOption,
+) *HeartbeatSender {
+	hs := &HeartbeatSender{
+		client:           client,
+		cfg:              cfg,
+		buildRequestFn:   buildRequestFn,
+		handleCommandsFn: handleCommandsFn,
+		metrics:          NoopHeartbeatMetrics(),
+		log:              logger.GetLogger("heartbeat-sender"),
+	}
+	for _, opt := range opts {
+		opt(hs)
+	}
+	return hs
+}
+
+// Run starts the heartbeat send loop. It blocks until ctx is canceled.
+func (hs *HeartbeatSender) Run(ctx context.Context) {
+	ticker := time.NewTicker(hs.cfg.HeartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			hs.sendHeartbeat(ctx)
+		}
+	}
+}
+
+// sendHeartbeat sends a single heartbeat and processes the response.
+func (hs *HeartbeatSender) sendHeartbeat(ctx context.Context) {
+	req := hs.buildRequestFn()
+
+	start := time.Now()
+	resp, err := hs.client.Heartbeat(ctx, req)
+	if err != nil {
+		hs.metrics.IncFailuresTotal()
+		hs.log.Warn().Err(err).Msg("heartbeat failed")
+
+		hs.mu.Lock()
+		hs.consecutiveFailures++
+		failures := hs.consecutiveFailures
+		fired := hs.contactLostFired
+		hs.mu.Unlock()
+
+		if failures >= hs.cfg.MaxConsecutiveHeartbeatFailures && !fired && hs.onContactLost != nil {
+			hs.mu.Lock()
+			hs.contactLostFired = true
+			hs.mu.Unlock()
+			hs.onContactLost()
+		}
+		return
+	}
+
+	hs.metrics.ObserveLatency(time.Since(start))
+
+	hs.mu.Lock()
+	hs.consecutiveFailures = 0
+	hs.contactLostFired = false
+	hs.mu.Unlock()
+
+	if len(resp.Commands) > 0 && hs.handleCommandsFn != nil {
+		hs.handleCommandsFn(resp.Commands)
+	}
+}

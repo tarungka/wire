@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/logger"
 )
 
@@ -44,7 +45,7 @@ func NewClientSession(addr string, cfg Config) (*Session, error) {
 		}
 		tlsConn := tls.Client(conn, tlsCfg)
 		if err := tlsConn.Handshake(); err != nil {
-			conn.Close()
+			_ = conn.Close()
 			return nil, fmt.Errorf("transport: TLS handshake with %s: %w", addr, err)
 		}
 		conn = tlsConn
@@ -52,7 +53,7 @@ func NewClientSession(addr string, cfg Config) (*Session, error) {
 
 	ymux, err := yamux.Client(conn, cfg.yamuxConfig())
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("transport: yamux client session: %w", err)
 	}
 
@@ -74,7 +75,7 @@ func NewServerSession(conn net.Conn, cfg Config) (*Session, error) {
 		}
 		tlsConn := tls.Server(conn, tlsCfg)
 		if err := tlsConn.Handshake(); err != nil {
-			conn.Close()
+			_ = conn.Close()
 			return nil, fmt.Errorf("transport: TLS server handshake: %w", err)
 		}
 		conn = tlsConn
@@ -82,7 +83,7 @@ func NewServerSession(conn net.Conn, cfg Config) (*Session, error) {
 
 	ymux, err := yamux.Server(conn, cfg.yamuxConfig())
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("transport: yamux server session: %w", err)
 	}
 

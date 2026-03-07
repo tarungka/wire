@@ -92,7 +92,7 @@ User Code / Operator
        |                 |
        v                 v
 +-----------------------------------+
-| Durable Store (S3/MinIO/local FS) |
+| Durable Store (Replicated PebbleDB) |
 +-----------------------------------+
 ```
 
@@ -116,7 +116,7 @@ User Code / Operator
 **Component 4:** HashMapSnapshotSerializer
 * **Responsibility:** Serializes the in-memory B-tree to a binary format for checkpoint upload and deserializes it on restore.
 * **Technology:** Custom length-prefixed binary format with magic number, version, and CRC32 checksum.
-* **Interactions:** Called by `HashMapStateBackend.Checkpoint()` and `HashMapStateBackend.Restore()`. Produces a single file uploaded to the same S3 layout defined in WIP-06.
+* **Interactions:** Called by `HashMapStateBackend.Checkpoint()` and `HashMapStateBackend.Restore()`. Produces a single file persisted to the same checkpoint layout defined in WIP-06.
 
 ### 2.3 Data Flow: Checkpoint with HashMap Backend
 
@@ -128,7 +128,7 @@ User Code / Operator
    b. Iterates all entries, serializes to binary format.
    c. Releases the read lock.
    d. Writes serialized blob to a temp file or in-memory buffer.
-5. Background goroutine uploads the blob to `s3://bucket/wire/jobs/{job_id}/checkpoints/chk-{N}/task-{i}-state/state.bin`.
+5. Background goroutine replicates the blob to `<data-dir>/jobs/{job_id}/checkpoints/chk-{N}/task-{i}-state/state.bin`.
 6. Task sends `AcknowledgeCheckpoint(N)` with `StateHandle` (WIP-07 Section 3.2.4).
 7. Resume processing.
 
@@ -390,7 +390,7 @@ The durable storage layout from WIP-06 is extended with backend-specific state f
 
 **Pebble (existing):**
 ```
-s3://bucket/wire/jobs/{job_id}/checkpoints/chk-{N}/
+<data-dir>/jobs/{job_id}/checkpoints/chk-{N}/
   metadata.json
   task-0-state/
     MANIFEST-000001
@@ -403,7 +403,7 @@ s3://bucket/wire/jobs/{job_id}/checkpoints/chk-{N}/
 
 **HashMap (new):**
 ```
-s3://bucket/wire/jobs/{job_id}/checkpoints/chk-{N}/
+<data-dir>/jobs/{job_id}/checkpoints/chk-{N}/
   metadata.json
   task-0-state/
     state.bin                    # Single serialized blob
@@ -507,7 +507,7 @@ Wire exposes `wire_state_backend_memory_bytes{backend="hashmap"}` as a Prometheu
 | **Options Considered** | (A) Full snapshot (serialize entire map), (B) Change tracking (track dirty keys, serialize delta), (C) Copy-on-write snapshot using B-tree immutability |
 | **Decision** | Option A: Full snapshot |
 | **Rationale** | HashMap is designed for small state (< 256 MB). Serializing 256 MB takes ~50-200ms (bounded by memory bandwidth). The simplicity of a full snapshot eliminates the complexity of dirty tracking, delta management, and merge logic. Delta checkpoints only save bandwidth/time when state is large and changes are sparse — the exact scenario where Pebble should be used instead. |
-| **Trade-offs Accepted** | Every checkpoint uploads the full state, even if only 1 key changed. For 256 MB state with 10s checkpoint interval, this is ~25.6 MB/s upload bandwidth — acceptable for S3. |
+| **Trade-offs Accepted** | Every checkpoint uploads the full state, even if only 1 key changed. For 256 MB state with 10s checkpoint interval, this is ~25.6 MB/s upload bandwidth — acceptable for peer replication. |
 | **Revisit Trigger** | If users need HashMap with state > 256 MB. More likely: users should switch to Pebble. |
 
 ### Decision 3: Copy-under-read-lock for iterator snapshots (not COW)
@@ -563,7 +563,7 @@ Wire exposes `wire_state_backend_memory_bytes{backend="hashmap"}` as a Prometheu
 | 1 | HashMap `Put` exceeds `max_memory_mb` | Returns `ErrStateMemoryExceeded`. Operator receives error, routes to DLQ (WIP-11) or fails the task. | Event processing blocked for that key | High |
 | 2 | Process crash with HashMap backend (state in memory only) | State is lost. On recovery, state is restored from the last completed checkpoint (WIP-06). Events between last checkpoint and crash are replayed from sources. Exactly-once semantics preserved. | Data replayed from last checkpoint | Medium |
 | 3 | Checkpoint serialization takes longer than checkpoint interval | Next checkpoint is delayed (per `min_pause` from WIP-05). Coordinator logs warning. If serialization exceeds `checkpoint.timeout`, checkpoint is aborted. | Checkpoint skipped | Medium |
-| 4 | `state.bin` corrupted in S3 | CRC32 check fails during `Restore()`. Task reports `STATE_RESTORE_FAILED` (WIP-07 error 5001). Coordinator falls back to previous checkpoint. | One checkpoint lost | Medium |
+| 4 | `state.bin` corrupted in durable store | CRC32 check fails during `Restore()`. Task reports `STATE_RESTORE_FAILED` (WIP-07 error 5001). Coordinator falls back to previous checkpoint. | One checkpoint lost | Medium |
 | 5 | User configures HashMap for a job with growing, unbounded state | State grows until `max_memory_mb` is hit. Every `Put` returns `ErrStateMemoryExceeded`. Job effectively stalls. | Job failure | High |
 | 6 | Restoring a Pebble checkpoint with HashMap backend (or vice versa) | `metadata.json` `state_backend_type` field does not match the configured backend. Restore fails with error: `"state backend mismatch: checkpoint uses 'pebble', job configured with 'hashmap'"` | Job rejected at restore | Medium |
 | 7 | Rescaling with HashMap backend (parallelism 4 to 8) | Same Key Group redistribution as Pebble (WIP-03 Section 3.4). Each new task downloads the relevant `state.bin`, deserializes it, and filters entries by Key Group prefix. Only entries with Key Group in the task's new range are kept. | Correct but requires full deserialization + filter | Low |
@@ -578,7 +578,7 @@ Wire exposes `wire_state_backend_memory_bytes{backend="hashmap"}` as a Prometheu
 ### 7.1 Data Protection
 
 * HashMap state is stored in process memory. It is not encrypted at rest in memory. If the host is compromised, state is readable from the process memory space.
-* Checkpoint `state.bin` files uploaded to S3 inherit the same encryption as Pebble SSTables (SSE-S3 or SSE-KMS, per state-backend.md Section 4.2).
+* Checkpoint `state.bin` files replicated to peers inherit the same disk encryption as local Pebble SSTables (per state-backend.md Section 4.2).
 * No credentials or sensitive configuration are stored in state data by Wire itself. User application state may contain sensitive data — this is the user's responsibility.
 
 ### 7.2 Memory Safety
@@ -638,7 +638,7 @@ Wire exposes `wire_state_backend_memory_bytes{backend="hashmap"}` as a Prometheu
 | 2 | Should we support per-operator state backend selection (e.g., stateless operators use HashMap, windowed aggregation uses Pebble)? Adds significant complexity. | Tarun | Open — likely No for v1 |
 | 3 | Should the HashMap checkpoint block processing (synchronous snapshot under read lock) or use a COW snapshot for true async? COW adds complexity but eliminates the ~250ms stall at max state size. | Tarun | Open |
 | 4 | Risk: Users may use HashMap in production for jobs whose state gradually grows beyond the memory limit, causing sudden failures. Should we log warnings at 50% and 80% of the limit? | Tarun | Open — leaning Yes |
-| 5 | Should `state.bin` support compression (e.g., Snappy/LZ4) to reduce upload size and S3 storage cost? | Tarun | Open |
+| 5 | Should `state.bin` support compression (e.g., Snappy/LZ4) to reduce replication size and storage cost? | Tarun | Open |
 | 6 | Risk: The B-tree's actual memory usage includes internal node overhead (~40-60 bytes per entry). With millions of small keys, real memory usage could be ~1.5-2x the tracked `curMemBytes`. Should B-tree overhead be included in memory accounting? | — | Acknowledged |
 | 7 | Should restoring across backend types be supported (e.g., checkpoint taken with HashMap, restore with Pebble)? This requires a canonical format or conversion tool. Flink supports this via a "canonical savepoint format." | Tarun | Open — likely future WIP |
 | 8 | How does the HashMap backend interact with State TTL (WIP-14 `WithTTL()`)? Pebble can use compaction filters for TTL cleanup. HashMap would need an explicit expiry sweep goroutine or lazy eviction on access. | Tarun | Open |

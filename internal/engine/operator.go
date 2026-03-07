@@ -39,3 +39,17 @@ type SinkOperator interface {
 	Operator
 	Write(ctx context.Context, event Event) error
 }
+
+// TransactionalSink extends SinkOperator with two-phase commit (2PC) support.
+// Sinks that implement this interface participate in the checkpoint protocol:
+//   - BeginTransaction: open a new transaction (called at startup and after each Commit/Abort)
+//   - PreCommit: flush buffered data and prepare the transaction for commit
+//   - Commit: finalize the transaction after global checkpoint completion
+//   - Abort: rollback the in-flight transaction on failure
+type TransactionalSink interface {
+	SinkOperator
+	BeginTransaction(ctx context.Context) error
+	PreCommit(ctx context.Context, checkpointID uint64) error
+	Commit(ctx context.Context, checkpointID uint64) error
+	Abort(ctx context.Context) error
+}

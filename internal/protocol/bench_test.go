@@ -17,7 +17,7 @@ func BenchmarkWriteFrame_DataRecord_1KB(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		buf.Reset()
-		WriteFrame(&buf, MsgTypeDataRecord, msg)
+		_ = WriteFrame(&buf, MsgTypeDataRecord, msg)
 	}
 }
 
@@ -28,11 +28,11 @@ func BenchmarkReadFrame_DataRecord_1KB(b *testing.B) {
 		EventTime: 1708819200000,
 	}
 	var encoded bytes.Buffer
-	WriteFrame(&encoded, MsgTypeDataRecord, msg)
+	_ = WriteFrame(&encoded, MsgTypeDataRecord, msg)
 	data := encoded.Bytes()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ReadFrame(bytes.NewReader(data), DefaultMaxFrameSize)
+		_, _ = ReadFrame(bytes.NewReader(data), DefaultMaxFrameSize)
 	}
 }
 
@@ -62,7 +62,7 @@ func BenchmarkEncodeMsgPack_DataRecord(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		EncodeMsgPack(msg)
+		_, _ = EncodeMsgPack(msg)
 	}
 }
 
@@ -76,7 +76,7 @@ func BenchmarkDecodeMsgPack_DataRecord(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var out DataRecordMsg
-		DecodeMsgPack(data, &out)
+		_ = DecodeMsgPack(data, &out)
 	}
 }
 
@@ -90,7 +90,7 @@ func BenchmarkWriteFrame_CheckpointBarrier(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		buf.Reset()
-		WriteFrame(&buf, MsgTypeCheckpointBarrier, msg)
+		_ = WriteFrame(&buf, MsgTypeCheckpointBarrier, msg)
 	}
 }
 
@@ -101,13 +101,13 @@ func BenchmarkReadFrame_Concurrent(b *testing.B) {
 		EventTime: 1708819200000,
 	}
 	var encoded bytes.Buffer
-	WriteFrame(&encoded, MsgTypeDataRecord, msg)
+	_ = WriteFrame(&encoded, MsgTypeDataRecord, msg)
 	data := encoded.Bytes()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			ReadFrame(bytes.NewReader(data), DefaultMaxFrameSize)
+			_, _ = ReadFrame(bytes.NewReader(data), DefaultMaxFrameSize)
 		}
 	})
 }
