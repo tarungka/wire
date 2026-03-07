@@ -16,15 +16,18 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
-	Config      TaskSlotConfig
-	Inputs      []*transport.FrameStream // Upstream input streams.
-	Outputs     []*transport.FrameStream // Downstream output streams.
-	Operators   []Operator               // Fused operator chain.
-	Source      SourceOperator           // Non-nil for source tasks.
-	Strategy    WatermarkStrategy        // Resolved watermark strategy (source tasks only).
-	Coordinator *CheckpointCoordinator   // Optional checkpoint coordinator (WIP-05).
-	Metrics     CheckpointMetrics        // Optional checkpoint metrics collector.
-	log         zerolog.Logger
+	Config       TaskSlotConfig
+	Inputs       []*transport.FrameStream // Upstream input streams.
+	Outputs      []*transport.FrameStream // Downstream output streams.
+	Operators    []Operator               // Fused operator chain.
+	Source       SourceOperator           // Non-nil for source tasks.
+	Strategy     WatermarkStrategy        // Resolved watermark strategy (source tasks only).
+	Coordinator  *CheckpointCoordinator   // Optional checkpoint coordinator (WIP-05).
+	Metrics      CheckpointMetrics        // Optional checkpoint metrics collector.
+	ErrorMetrics ErrorMetrics             // Optional error handling metrics collector (WIP-11).
+	TaskIndex    int                      // Index of this task within the parallel subtasks.
+	TaskID       string                   // Unique identifier for this task.
+	log          zerolog.Logger
 }
 
 // NewTaskSlot creates a new TaskSlot with the given configuration.
@@ -56,7 +59,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 
 	// Create channels.
 	eventCh := make(chan Event, ts.Config.InputBufferSize)
-	controlCh := make(chan ControlMsg, numInputs*2) // Extra capacity for barrier + EoP per input.
+	controlCh := make(chan ControlMsg, numInputs*2+4) // barrier + EoP per input, +4 for 2PC control messages (CtrlCommitCheckpoint, CtrlAbortTransaction).
 	outputCh := make(chan OutputMsg, ts.Config.OutputBufferSize)
 
 	// Create barrier aligner.
@@ -71,7 +74,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	go func() {
 		<-gctx.Done()
 		for _, s := range ts.Inputs {
-			s.Close()
+			_ = s.Close()
 		}
 	}()
 
@@ -127,10 +130,61 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		metrics = NoopCheckpointMetrics()
 	}
 
+	// Resolve error metrics.
+	errMetrics := ts.ErrorMetrics
+	if errMetrics == nil {
+		errMetrics = NoopErrorMetrics()
+	}
+
+	// Create DLQ channel if error configs are configured.
+	var dlqCh chan DLQEvent
+	if ts.Config.ErrorConfigs != nil {
+		bufSize := ts.Config.DLQBufferSize
+		if bufSize <= 0 {
+			bufSize = DefaultDLQBufferSize
+		}
+		dlqCh = make(chan DLQEvent, bufSize)
+	}
+
+	// Detect if the last operator is a TransactionalSink.
+	var txnSink TransactionalSink
+	if len(ts.Operators) > 0 {
+		txnSink, _ = ts.Operators[len(ts.Operators)-1].(TransactionalSink)
+	}
+
+	// Register transactional sink with coordinator if applicable.
+	if txnSink != nil && ts.Coordinator != nil {
+		ts.Coordinator.RegisterTransactionalSink(ts.TaskIndex, ts.TaskID)
+	}
+
+	// Build ackFn closure for transactional sinks.
+	var ackFn func(checkpointID uint64)
+	if txnSink != nil && ts.Coordinator != nil {
+		taskIndex := ts.TaskIndex
+		ackFn = func(checkpointID uint64) {
+			ts.Coordinator.AckCheckpoint(taskIndex, checkpointID)
+		}
+	}
+
 	// Launch checkpoint coordinator if configured.
 	if ts.Coordinator != nil {
 		g.Go(func() error {
 			return ts.Coordinator.Run(gctx)
+		})
+	}
+
+	// Launch DLQ drain goroutine if DLQ is configured.
+	if dlqCh != nil {
+		dlqLog := ts.log.With().Str("component", "dlq").Logger()
+		g.Go(func() error {
+			for dlqEvent := range dlqCh {
+				dlqLog.Error().
+					Str("operator", dlqEvent.OperatorName).
+					Str("error", dlqEvent.Error).
+					Int("retries", dlqEvent.RetryCount).
+					Msg("event routed to DLQ")
+			}
+			return nil
 		})
 	}
 
@@ -140,7 +194,10 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	g.Go(func() error {
 		defer producerWg.Done()
 		defer runCancel() // Signal all goroutines to stop when chain exits.
-		return runOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger())
+		if dlqCh != nil {
+			defer close(dlqCh)
+		}
+		return runOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics)
 	})
 
 	// Goroutine to close outputCh when all producers are done.

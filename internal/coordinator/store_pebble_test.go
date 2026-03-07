@@ -15,7 +15,7 @@ func newTestPebbleStore(t *testing.T) *PebbleStore {
 	if err != nil {
 		t.Fatalf("NewPebbleStore: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -152,10 +152,12 @@ func TestPebbleStore_PrefixScan_MixedPrefixes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		count := 0
-		s.PrefixScan([]byte(tt.prefix), func(key, value []byte) bool {
+		if err := s.PrefixScan([]byte(tt.prefix), func(key, value []byte) bool {
 			count++
 			return true
-		})
+		}); err != nil {
+			t.Fatalf("PrefixScan %q: %v", tt.prefix, err)
+		}
 		if count != tt.expected {
 			t.Errorf("prefix %q: expected %d, got %d", tt.prefix, tt.expected, count)
 		}
@@ -166,14 +168,18 @@ func TestPebbleStore_PrefixScan_EarlyStop(t *testing.T) {
 	s := newTestPebbleStore(t)
 
 	for i := range 10 {
-		s.Set(fmt.Appendf(nil, "prefix/%02d", i), []byte("x"))
+		if err := s.Set(fmt.Appendf(nil, "prefix/%02d", i), []byte("x")); err != nil {
+			t.Fatalf("Set prefix/%02d: %v", i, err)
+		}
 	}
 
 	count := 0
-	s.PrefixScan([]byte("prefix/"), func(key, value []byte) bool {
+	if err := s.PrefixScan([]byte("prefix/"), func(key, value []byte) bool {
 		count++
 		return count < 3
-	})
+	}); err != nil {
+		t.Fatalf("PrefixScan: %v", err)
+	}
 	if count != 3 {
 		t.Fatalf("expected 3 iterations, got %d", count)
 	}
@@ -199,7 +205,7 @@ func TestPebbleStore_WALRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 
 	val, err := s2.Get([]byte("persist-key"))
 	if err != nil {
@@ -213,7 +219,9 @@ func TestPebbleStore_WALRecovery(t *testing.T) {
 func TestPebbleStore_Snapshot(t *testing.T) {
 	s := newTestPebbleStore(t)
 
-	s.Set([]byte("snap-key"), []byte("snap-val"))
+	if err := s.Set([]byte("snap-key"), []byte("snap-val")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 
 	snapDir := filepath.Join(t.TempDir(), "snapshot")
 	if err := s.Snapshot(snapDir); err != nil {
@@ -234,7 +242,7 @@ func TestPebbleStore_Snapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open snapshot: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 
 	val, err := s2.Get([]byte("snap-key"))
 	if err != nil {
@@ -257,7 +265,7 @@ func TestPebbleStore_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			key := fmt.Appendf(nil, "key-%03d", i)
 			val := fmt.Appendf(nil, "val-%03d", i)
-			s.Set(key, val)
+			_ = s.Set(key, val)
 		}(i)
 	}
 	wg.Wait()
@@ -290,7 +298,7 @@ func TestPebbleStore_FunctionalOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPebbleStore with options: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// Verify it works with custom config.
 	if err := s.Set([]byte("test"), []byte("value")); err != nil {

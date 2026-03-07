@@ -37,4 +37,22 @@ var (
 	// ErrEpochMismatch indicates the worker's reported epoch does not match
 	// the coordinator's current epoch during re-registration.
 	ErrEpochMismatch = errors.New("coordinator: epoch mismatch on re-registration")
+
+	// ErrInvalidTransition indicates an illegal job state transition was attempted.
+	ErrInvalidTransition = errors.New("coordinator: invalid state transition")
+
+	// ErrJobNotRunning indicates the job must be in RUNNING state for this operation.
+	ErrJobNotRunning = errors.New("coordinator: job is not running")
+
+	// ErrJobNotPaused indicates the job must be in PAUSED state for this operation.
+	ErrJobNotPaused = errors.New("coordinator: job is not paused")
+
+	// ErrSavepointNotFound indicates the specified savepoint ID does not exist.
+	ErrSavepointNotFound = errors.New("coordinator: savepoint not found")
+
+	// ErrInvalidConfig indicates the job configuration is invalid.
+	ErrInvalidConfig = errors.New("coordinator: invalid job configuration")
+
+	// ErrJobExists indicates a job with the same name already exists and is active.
+	ErrJobExists = errors.New("coordinator: job already exists")
 )

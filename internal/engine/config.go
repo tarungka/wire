@@ -21,6 +21,11 @@ const (
 	DefaultTolerableCheckpointFailureRate   = 0.0 // 0 = no tolerance
 )
 
+// Default error handling configuration values per WIP-11.
+const (
+	DefaultDLQBufferSize = 256
+)
+
 // WatermarkStrategyType identifies a watermark generation strategy.
 type WatermarkStrategyType uint8
 
@@ -53,13 +58,15 @@ type WatermarkConfig struct {
 
 // TaskSlotConfig holds configuration for a single TaskSlot execution.
 type TaskSlotConfig struct {
-	InputBufferSize     int              // Per-input event channel capacity.
-	OutputBufferSize    int              // Output channel capacity.
-	AlignmentBufferSize int              // Per-input side buffer capacity for barrier alignment.
-	DrainTimeout        time.Duration    // Maximum time to drain channels on shutdown.
-	WatermarkInterval   time.Duration    // Watermark emission interval (source tasks only). Deprecated: use Watermark.EmitInterval.
-	Watermark           WatermarkConfig  // Watermark generation and propagation config.
-	Checkpoint          CheckpointConfig // Checkpoint timeout and failure tracking config.
+	InputBufferSize     int                  // Per-input event channel capacity.
+	OutputBufferSize    int                  // Output channel capacity.
+	AlignmentBufferSize int                  // Per-input side buffer capacity for barrier alignment.
+	DrainTimeout        time.Duration        // Maximum time to drain channels on shutdown.
+	WatermarkInterval   time.Duration        // Watermark emission interval (source tasks only). Deprecated: use Watermark.EmitInterval.
+	Watermark           WatermarkConfig      // Watermark generation and propagation config.
+	Checkpoint          CheckpointConfig     // Checkpoint timeout and failure tracking config.
+	ErrorConfigs        []ErrorHandlerConfig // Per-operator error handling config. nil = legacy behavior (fail on any error).
+	DLQBufferSize       int                  // DLQ channel buffer capacity. 0 → DefaultDLQBufferSize.
 }
 
 // DefaultTaskSlotConfig returns a TaskSlotConfig populated with default values.
