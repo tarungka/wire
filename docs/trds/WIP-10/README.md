@@ -234,6 +234,20 @@ The Coordinator tracks per-sink-task transaction state:
 | last_committed_checkpoint | int64 | Last successfully committed checkpoint |
 | transaction_state | enum | ACTIVE / PRE_COMMITTED / COMMITTED |
 
+```mermaid
+stateDiagram-v2
+    [*] --> ACTIVE : BeginTransaction()
+    ACTIVE --> ACTIVE : WriteBatch()
+    ACTIVE --> PRE_COMMITTED : PreCommit(N)
+    PRE_COMMITTED --> COMMITTED : Commit(N)<br/>(global checkpoint complete)
+    COMMITTED --> ACTIVE : BeginTransaction()<br/>(next epoch)
+    COMMITTED --> [*] : job finished
+
+    ACTIVE --> ABORTED : failure
+    PRE_COMMITTED --> ABORTED : failure / timeout
+    ABORTED --> [*] : recovery from checkpoint
+```
+
 ### 4.2 Recovery Metadata
 
 On recovery, the Coordinator determines which transactions need Commit vs Abort:

@@ -57,6 +57,18 @@ Key Groups:  [0]  [1]  [2] ... [63] [64] [65] ... [127]
               (parallelism = 2)
 ```
 
+```mermaid
+flowchart LR
+    K["User Key<br/>(e.g. 'user-1')"] --> H["murmur3(key)"]
+    H --> M["hash mod numKeyGroups"]
+    M --> KG["Key Group ID<br/>(e.g. KG 52)"]
+    KG --> RP["Range Partitioning"]
+    RP --> T["Task Index<br/>(e.g. Task 1)"]
+
+    style K fill:#e3f2fd
+    style T fill:#e8f5e9
+```
+
 ### 2.2 Component Breakdown
 
 **Component 1:** Key Group Assigner
@@ -145,6 +157,37 @@ When parallelism changes (e.g., 4 → 8) via savepoint-based rescale:
 5. Each task opens a Pebble instance with only its assigned key range.
 
 State transfer is via the durable store (replicated PebbleDB). During rescaling, tasks restore state from local or peer-replicated checkpoints.
+
+```mermaid
+flowchart TD
+    subgraph Old["Old Assignment (parallelism=4)"]
+        OT0["Task 0: KG [0,32)"]
+        OT1["Task 1: KG [32,64)"]
+        OT2["Task 2: KG [64,96)"]
+        OT3["Task 3: KG [96,128)"]
+    end
+    subgraph New["New Assignment (parallelism=8)"]
+        NT0["Task 0: KG [0,16)"]
+        NT4["Task 4: KG [16,32)"]
+        NT1["Task 1: KG [32,48)"]
+        NT5["Task 5: KG [48,64)"]
+        NT2["Task 2: KG [64,80)"]
+        NT6["Task 6: KG [80,96)"]
+        NT3["Task 3: KG [96,112)"]
+        NT7["Task 7: KG [112,128)"]
+    end
+    OT0 --> NT0
+    OT0 --> NT4
+    OT1 --> NT1
+    OT1 --> NT5
+    OT2 --> NT2
+    OT2 --> NT6
+    OT3 --> NT3
+    OT3 --> NT7
+
+    style Old fill:#fff3e0
+    style New fill:#e8f5e9
+```
 
 ---
 

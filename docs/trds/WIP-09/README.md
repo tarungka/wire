@@ -168,6 +168,17 @@ stateDiagram-v2
 * **Technology:** Monotonically increasing `uint64` epoch, persisted in PebbleDB under `cluster/epoch`. Workers track the highest epoch seen and reject lower epochs.
 * **Interactions:** Embedded in all Coordinator-to-worker RPCs and checkpoint coordination messages.
 
+```mermaid
+stateDiagram-v2
+    [*] --> Follower
+    Follower --> Candidate : election timeout
+    Candidate --> Leader : receives majority votes
+    Candidate --> Candidate : election timeout, no majority
+    Candidate --> Follower : discovers higher term
+    Leader --> Follower : discovers higher term
+    Leader --> Follower : lease expires / stepdown
+```
+
 ### 2.3 Data Flow
 
 **Normal Operation (Single-Node, Phase A):**
@@ -241,6 +252,27 @@ sequenceDiagram
     Note over OL: Zombie leader attempts command
     OL->>W: Command(epoch 42)
     W-->>OL: ErrStaleEpoch (42 < 43)
+```
+
+```mermaid
+sequenceDiagram
+    participant L as Leader (old)
+    participant F1 as Follower 1
+    participant F2 as Follower 2
+    participant W as Worker
+
+    Note over L: Leader crashes
+    destroy L
+    L-xF1: heartbeat stops
+
+    Note over F1: Election timeout fires
+    F1->>F2: RequestVote(term=2)
+    F2->>F1: VoteGranted
+    Note over F1: Becomes new Leader
+
+    W->>F1: RegisterWorker (re-register)
+    F1->>W: Assign tasks (reconcile from FSM)
+    Note over F1,W: Normal operation resumes
 ```
 
 ---

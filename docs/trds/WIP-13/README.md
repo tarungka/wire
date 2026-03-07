@@ -66,6 +66,20 @@ Document the complete configuration surface: CLI flags (derived from `cmd/init.g
 └─────────────────────────────────────────────┘
 ```
 
+```mermaid
+flowchart LR
+    A["Built-in Defaults"] -->|overrides| B["Config File<br/>(wire.yaml)"]
+    B -->|overrides| C["Environment Variables<br/>(WIRE_*)"]
+    C -->|overrides| D["CLI Flags"]
+    D --> E["Merged Config"]
+
+    style A fill:#e3f2fd
+    style B fill:#e8f5e9
+    style C fill:#fff3e0
+    style D fill:#fce4ec
+    style E fill:#f3e5f5
+```
+
 ### 2.2 Component Breakdown
 
 **Component 1:** `cmd/init.go` — Flag Parser

@@ -87,6 +87,25 @@ User Code (Go SDK or YAML)
 └─────────────────────────┘
 ```
 
+```mermaid
+flowchart LR
+    ENV["StreamExecution<br/>Environment"] --> SRC["AddSource()"]
+    SRC --> DS1["DataStream"]
+    DS1 --> MF["Map() / Filter()"]
+    MF --> DS2["DataStream"]
+    DS2 --> KB["KeyBy()"]
+    KB --> KS["KeyedStream"]
+    KS --> WIN["Window()"]
+    WIN --> WS["WindowedStream"]
+    WS --> AGG["Aggregate() /<br/>Reduce()"]
+    AGG --> DS3["DataStream"]
+    DS3 --> SINK["AddSink()"]
+
+    style ENV fill:#e3f2fd
+    style SRC fill:#e8f5e9
+    style SINK fill:#fff3e0
+```
+
 ### 2.2 Component Breakdown
 
 **Component 1:** `sdk.StreamExecutionEnvironment`

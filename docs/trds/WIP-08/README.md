@@ -58,6 +58,14 @@ Worker                                  Coordinator
   │                                        │ Jobs on this worker → FAILING
 ```
 
+```mermaid
+stateDiagram-v2
+    [*] --> ALIVE : first heartbeat received
+    ALIVE --> ALIVE : heartbeat received (reset timer)
+    ALIVE --> LOST : heartbeat_timeout expires
+    LOST --> [*] : triggers task FAILED,<br/>jobs FAILING
+```
+
 ### 2.2 Heartbeat Payload
 
 ```go
@@ -136,6 +144,25 @@ heartbeat:
 3. All tasks on lost worker → status **FAILED**.
 4. All jobs with failed tasks → status **FAILING**.
 5. Coordinator initiates recovery per job's restart strategy (see WIP-15).
+
+```mermaid
+flowchart TD
+    A[Worker misses heartbeat] --> B[Coordinator starts countdown]
+    B --> C{heartbeat_timeout expires?}
+    C -- No --> D[Heartbeat received]
+    D --> E[Reset timer, ALIVE]
+    C -- Yes --> F[Worker marked LOST]
+    F --> G[All tasks on worker → FAILED]
+    G --> H[All affected jobs → FAILING]
+    H --> I{Restart budget remaining?}
+    I -- Yes --> J[Reschedule tasks on other workers]
+    I -- No --> K[Job → CANCELED]
+
+    style F fill:#ffcdd2
+    style K fill:#ffcdd2
+    style E fill:#c8e6c9
+    style J fill:#c8e6c9
+```
 
 ### 3.3 Worker Self-Termination
 
