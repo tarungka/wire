@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/protocol"
 )
 
 func TestCoordinator_SingleNode_StartStop(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{
 		NodeID:                 "n1",
@@ -46,7 +47,7 @@ func TestCoordinator_SingleNode_StartStop(t *testing.T) {
 
 func TestCoordinator_State(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 	if c.State() != StateStandby {
@@ -56,7 +57,7 @@ func TestCoordinator_State(t *testing.T) {
 
 func TestCoordinator_WriteThrough_Job(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 	c.mu.Lock()
@@ -96,7 +97,7 @@ func TestCoordinator_WriteThrough_Job(t *testing.T) {
 
 func TestCoordinator_WriteThrough_Worker(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 	c.mu.Lock()
@@ -133,7 +134,7 @@ func TestCoordinator_WriteThrough_Worker(t *testing.T) {
 
 func TestCoordinator_HeartbeatFlush(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{
 		NodeID:                 "n1",
@@ -142,7 +143,7 @@ func TestCoordinator_HeartbeatFlush(t *testing.T) {
 
 	ctx := t.Context()
 
-	go c.Run(ctx)
+	go func() { _ = c.Run(ctx) }()
 	time.Sleep(50 * time.Millisecond) // Wait for leader
 
 	// Add a worker.
@@ -169,7 +170,7 @@ func TestCoordinator_HeartbeatFlush(t *testing.T) {
 
 func TestCoordinator_ConcurrentPersistJob(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 	c.mu.Lock()
@@ -222,7 +223,7 @@ func TestCoordinator_ConcurrentPersistJob(t *testing.T) {
 
 func TestCoordinator_ConcurrentPersistWorker(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 	c.mu.Lock()
@@ -262,11 +263,85 @@ func TestCoordinator_ConcurrentPersistWorker(t *testing.T) {
 	c.mu.RUnlock()
 }
 
+func TestCoordinator_FlushHeartbeats_NoClobberPersistWorker(t *testing.T) {
+	// Verify that flushHeartbeats does not overwrite a concurrent persistWorker update.
+	store := NewMemoryStore()
+	defer func() { _ = store.Close() }()
+
+	c := New(CoordinatorConfig{
+		NodeID:                 "n1",
+		HeartbeatFlushInterval: time.Hour,
+	}, store, nil, zerolog.Nop())
+	c.mu.Lock()
+	c.state = StateLeader
+	c.epoch = 1
+	c.recovered = true
+	c.mu.Unlock()
+
+	// Add initial worker.
+	initial := &WorkerMeta{
+		ID:             "w1",
+		Address:        "localhost:5001",
+		TaskSlotsTotal: 4,
+		LastHeartbeat:  time.Now().UTC(),
+	}
+	if err := c.persistWorker(initial); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run concurrent flushHeartbeats and persistWorker updates.
+	const iterations = 100
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			_ = c.flushHeartbeats(context.Background())
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			w := &WorkerMeta{
+				ID:                 "w1",
+				Address:            "localhost:5001",
+				TaskSlotsTotal:     4,
+				TaskSlotsAvailable: i, // changes each iteration
+				LastHeartbeat:      time.Now().UTC(),
+			}
+			_ = c.persistWorker(w)
+		}
+	}()
+
+	wg.Wait()
+
+	// After all operations, cache and store must agree.
+	c.mu.RLock()
+	cached := c.workers["w1"]
+	c.mu.RUnlock()
+
+	storeData, err := store.Get(WorkerMetaKey("w1"))
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	var stored WorkerMeta
+	if err := protocol.DecodeMsgPack(storeData, &stored); err != nil {
+		t.Fatalf("DecodeMsgPack: %v", err)
+	}
+
+	if cached.TaskSlotsAvailable != stored.TaskSlotsAvailable {
+		t.Fatalf("cache/store mismatch after concurrent flush+persist: cache=%d store=%d",
+			cached.TaskSlotsAvailable, stored.TaskSlotsAvailable)
+	}
+}
+
 func TestCoordinator_PersistConsistency(t *testing.T) {
 	// Verify that after concurrent writes, the cache and store contain the
 	// same final value for each key (no stale cache entries).
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 	c.mu.Lock()
@@ -285,7 +360,7 @@ func TestCoordinator_PersistConsistency(t *testing.T) {
 				ID:   "contended-job",
 				Name: fmt.Sprintf("version-%d", ver),
 			}
-			c.persistJob(job)
+			_ = c.persistJob(job)
 		}(i)
 	}
 	wg.Wait()
@@ -295,9 +370,14 @@ func TestCoordinator_PersistConsistency(t *testing.T) {
 	cached := c.jobs["contended-job"]
 	c.mu.RUnlock()
 
-	storeData, _ := store.Get(JobMetaKey("contended-job"))
+	storeData, err := store.Get(JobMetaKey("contended-job"))
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
 	var stored JobMeta
-	protocol.DecodeMsgPack(storeData, &stored)
+	if err := protocol.DecodeMsgPack(storeData, &stored); err != nil {
+		t.Fatalf("DecodeMsgPack: %v", err)
+	}
 
 	if cached.Name != stored.Name {
 		t.Fatalf("cache/store mismatch: cache=%q store=%q", cached.Name, stored.Name)

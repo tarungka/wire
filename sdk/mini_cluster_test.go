@@ -7,7 +7,11 @@ import (
 
 func TestMiniClusterBasic(t *testing.T) {
 	mc := NewMiniCluster(MiniClusterConfig{NumTaskSlots: 2})
-	defer mc.Shutdown()
+	defer func() {
+		if err := mc.Shutdown(); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
 
 	env := mc.GetExecutionEnvironment()
 	sink := &collectSink{}

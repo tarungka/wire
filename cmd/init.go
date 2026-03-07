@@ -98,7 +98,7 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, *pflag.FlagSet, er
 		f.PrintDefaults()
 	}
 
-	pflag.CommandLine.MarkHidden("help")
+	_ = pflag.CommandLine.MarkHidden("help")
 
 	if err := f.Parse(os.Args[1:]); err != nil {
 		fmt.Printf("error when loading flags: %v\n", err)

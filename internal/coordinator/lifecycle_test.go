@@ -10,7 +10,7 @@ import (
 
 func TestLifecycle_SingleNode(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{
 		NodeID:                 "n1",
@@ -39,7 +39,7 @@ func TestLifecycle_SingleNode(t *testing.T) {
 
 func TestLifecycle_MultiNode_ElectionWin(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	election := NewNoopElection(":4001")
 	c := New(CoordinatorConfig{
@@ -71,7 +71,7 @@ func TestLifecycle_MultiNode_ElectionWin(t *testing.T) {
 
 func TestLifecycle_GracefulShutdown(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{
 		NodeID:                 "n1",
@@ -87,7 +87,9 @@ func TestLifecycle_GracefulShutdown(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Shutdown via coordinator method.
-	c.Shutdown(context.Background())
+	if err := c.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
 	cancel()
 
 	err := <-done
@@ -98,7 +100,7 @@ func TestLifecycle_GracefulShutdown(t *testing.T) {
 
 func TestLifecycle_GetLeaderInfo_SingleNode(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{
 		NodeID:                 "n1",
@@ -108,7 +110,7 @@ func TestLifecycle_GetLeaderInfo_SingleNode(t *testing.T) {
 
 	ctx := t.Context()
 
-	go c.Run(ctx)
+	go func() { _ = c.Run(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 
 	info, isSelf, err := c.GetLeaderInfo()

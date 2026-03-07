@@ -9,7 +9,7 @@ import (
 
 func TestValidateEpoch_Accept(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 	c.mu.Lock()
@@ -31,7 +31,7 @@ func TestValidateEpoch_Accept(t *testing.T) {
 
 func TestValidateEpoch_Reject(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 	c.mu.Lock()
@@ -51,7 +51,7 @@ func TestValidateEpoch_Reject(t *testing.T) {
 
 func TestCurrentEpoch(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 	c.mu.Lock()
@@ -65,11 +65,13 @@ func TestCurrentEpoch(t *testing.T) {
 
 func TestEpochMonotonicity_AfterRecovery(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Simulate a previous epoch stored.
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
-	c.persistEpoch(10)
+	if err := c.persistEpoch(10); err != nil {
+		t.Fatalf("persistEpoch: %v", err)
+	}
 
 	// Recovery should increment.
 	state, err := recoverFromStore(store)
