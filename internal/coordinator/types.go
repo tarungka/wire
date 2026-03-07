@@ -40,6 +40,7 @@ const (
 	JobFailed                     // Job terminated due to an error.
 	JobCanceling                  // Job cancellation was requested.
 	JobCanceled                   // Job was canceled by the user.
+	JobPaused                     // Job is paused (savepoint taken).
 )
 
 func (s JobStatus) String() string {
@@ -62,6 +63,8 @@ func (s JobStatus) String() string {
 		return "CANCELING"
 	case JobCanceled:
 		return "CANCELED"
+	case JobPaused:
+		return "PAUSED"
 	default:
 		return "UNKNOWN"
 	}
@@ -102,13 +105,19 @@ func (s CheckpointStatus) String() string {
 
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
-	ID          string    `codec:"id"`
-	Name        string    `codec:"name"`
-	Status      JobStatus `codec:"status"`
-	Parallelism int       `codec:"parallelism"`
-	ConfigHash  string    `codec:"config_hash"`
-	CreatedAt   time.Time `codec:"created_at"`
-	UpdatedAt   time.Time `codec:"updated_at"`
+	ID               string    `codec:"id"`
+	Name             string    `codec:"name"`
+	Status           JobStatus `codec:"status"`
+	Parallelism      int       `codec:"parallelism"`
+	ConfigHash       string    `codec:"config_hash"`
+	CreatedAt        time.Time `codec:"created_at"`
+	UpdatedAt        time.Time `codec:"updated_at"`
+	StartedAt        time.Time `codec:"started_at,omitempty"`
+	FinishedAt       time.Time `codec:"finished_at,omitempty"`
+	RestartCount     int       `codec:"restart_count,omitempty"`
+	LatestCheckpoint uint64    `codec:"latest_checkpoint,omitempty"`
+	Config           []byte    `codec:"config,omitempty"`
+	SavepointPath    string    `codec:"savepoint_path,omitempty"`
 }
 
 // TaskAssignmentMap maps task IDs to the worker IDs they are assigned to.
@@ -125,6 +134,38 @@ type CheckpointMeta struct {
 	Offsets    map[string]int64  `codec:"offsets"`     // source → offset
 	StatePaths map[string]string `codec:"state_paths"` // task_id → path
 	Timestamp  time.Time         `codec:"timestamp"`
+}
+
+// SavepointStatus represents the lifecycle state of a savepoint.
+type SavepointStatus uint8
+
+const (
+	SavepointInProgress SavepointStatus = iota // Savepoint is being taken.
+	SavepointCompleted                         // Savepoint completed successfully.
+	SavepointFailed                            // Savepoint failed.
+)
+
+func (s SavepointStatus) String() string {
+	switch s {
+	case SavepointInProgress:
+		return "IN_PROGRESS"
+	case SavepointCompleted:
+		return "COMPLETED"
+	case SavepointFailed:
+		return "FAILED"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// SavepointMeta holds persisted metadata for a single savepoint.
+type SavepointMeta struct {
+	ID             string          `codec:"id"`
+	JobID          string          `codec:"job_id"`
+	Status         SavepointStatus `codec:"status"`
+	Path           string          `codec:"path"`
+	TriggerTime    time.Time       `codec:"trigger_time"`
+	CompletionTime time.Time       `codec:"completion_time,omitempty"`
 }
 
 // WorkerMeta holds persisted metadata for a registered worker.

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/tarungka/wire/internal/protocol"
 )
@@ -17,6 +18,7 @@ type recoveredState struct {
 	config             *ClusterConfig
 	latestCheckpoints  map[string]*CheckpointMeta // jobID → latest completed
 	checkpointsToAbort []*CheckpointMeta          // in-flight checkpoints to abort
+	savepointsToFail   []*SavepointMeta           // in-flight savepoints to mark failed
 }
 
 // recoverFromStore reconstructs coordinator state from the metadata store.
@@ -67,6 +69,13 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 		}
 	}
 
+	// 2b. Recover savepoints for each job.
+	for jobID := range state.jobs {
+		if err := recoverJobSavepoints(store, jobID, state); err != nil {
+			return nil, err
+		}
+	}
+
 	// 3. Recover workers (mark all as stale).
 	decodeErr = nil
 	err = store.PrefixScan([]byte(WorkersPrefix), func(key, value []byte) bool {
@@ -86,7 +95,7 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 			return false
 		}
 		// Mark worker as stale by zeroing heartbeat.
-		worker.LastHeartbeat = worker.LastHeartbeat.UTC()
+		worker.LastHeartbeat = time.Time{}
 		state.workers[workerID] = &worker
 		return true
 	})
@@ -113,9 +122,10 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 	}
 	if cfgData != nil {
 		var cfg ClusterConfig
-		if err := protocol.DecodeMsgPack(cfgData, &cfg); err == nil {
-			state.config = &cfg
+		if err := protocol.DecodeMsgPack(cfgData, &cfg); err != nil {
+			return nil, fmt.Errorf("%w: corrupt cluster config: %v", ErrStoreCorrupted, err)
 		}
+		state.config = &cfg
 	}
 
 	// 6. Increment epoch and persist (fence stale coordinators).
@@ -170,6 +180,34 @@ func recoverJobCheckpoints(store MetadataStore, jobID string, state *recoveredSt
 
 	if latestCompleted != nil {
 		state.latestCheckpoints[jobID] = latestCompleted
+	}
+
+	return nil
+}
+
+// recoverJobSavepoints scans savepoints for a job and marks in-progress ones as failed.
+func recoverJobSavepoints(store MetadataStore, jobID string, state *recoveredState) error {
+	prefix := SavepointsPrefix(jobID)
+
+	var decodeErr error
+	err := store.PrefixScan(prefix, func(key, value []byte) bool {
+		var sp SavepointMeta
+		if err := protocol.DecodeMsgPack(value, &sp); err != nil {
+			decodeErr = fmt.Errorf("%w: corrupt savepoint entry %q: %v", ErrStoreCorrupted, string(key), err)
+			return false
+		}
+
+		if sp.Status == SavepointInProgress {
+			sp.Status = SavepointFailed
+			state.savepointsToFail = append(state.savepointsToFail, &sp)
+		}
+		return true
+	})
+	if decodeErr != nil {
+		return decodeErr
+	}
+	if err != nil {
+		return fmt.Errorf("%w: scanning savepoints for job %s: %v", ErrRecoveryFailed, jobID, err)
 	}
 
 	return nil

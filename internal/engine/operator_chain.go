@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/protocol"
 )
 
@@ -74,7 +75,7 @@ func runOperatorChain(
 		if err := op.Open(ctx); err != nil {
 			// Close already-opened operators in reverse order.
 			for j := i - 1; j >= 0; j-- {
-				operators[j].Close()
+				_ = operators[j].Close()
 			}
 			return fmt.Errorf("operator[%d] open: %w", i, err)
 		}
@@ -203,8 +204,6 @@ func processEvent(cc *chainContext, event Event) error {
 				if err := invokeSinkWithRetry(cc, link, e, o); err != nil {
 					return err
 				}
-				// Sink is terminal — no further output.
-				return nil
 			}
 		}
 		events = next

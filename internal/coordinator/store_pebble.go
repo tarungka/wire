@@ -82,7 +82,7 @@ func (s *PebbleStore) Get(key []byte) ([]byte, error) {
 	// Copy value before closing.
 	result := make([]byte, len(val))
 	copy(result, val)
-	closer.Close()
+	_ = closer.Close()
 	return result, nil
 }
 
@@ -98,12 +98,12 @@ func (s *PebbleStore) WriteBatch(batch []KVPair) error {
 	b := s.db.NewBatch()
 	for _, kv := range batch {
 		if err := b.Set(kv.Key, kv.Value, nil); err != nil {
-			b.Close()
+			_ = b.Close()
 			return err
 		}
 	}
 	if err := b.Commit(pebble.Sync); err != nil {
-		b.Close()
+		_ = b.Close()
 		return err
 	}
 	return b.Close()
@@ -119,7 +119,7 @@ func (s *PebbleStore) PrefixScan(prefix []byte, fn func(key, value []byte) bool)
 	if err != nil {
 		return err
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	for iter.First(); iter.Valid(); iter.Next() {
 		if !fn(iter.Key(), iter.Value()) {

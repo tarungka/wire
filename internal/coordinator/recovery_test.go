@@ -6,12 +6,13 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/protocol"
 )
 
 func TestRecovery_EmptyStore(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	state, err := recoverFromStore(store)
 	if err != nil {
@@ -30,7 +31,7 @@ func TestRecovery_EmptyStore(t *testing.T) {
 
 func TestRecovery_WithJobs(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Persist some jobs.
 	jobs := []*JobMeta{
@@ -43,7 +44,9 @@ func TestRecovery_WithJobs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		store.Set(JobMetaKey(j.ID), data)
+		if err := store.Set(JobMetaKey(j.ID), data); err != nil {
+			t.Fatalf("store.Set: %v", err)
+		}
 	}
 
 	state, err := recoverFromStore(store)
@@ -66,7 +69,7 @@ func TestRecovery_WithJobs(t *testing.T) {
 
 func TestRecovery_WithWorkers(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	worker := &WorkerMeta{
 		ID:             "w1",
@@ -74,8 +77,13 @@ func TestRecovery_WithWorkers(t *testing.T) {
 		TaskSlotsTotal: 4,
 		LastHeartbeat:  time.Now().UTC(),
 	}
-	data, _ := protocol.EncodeMsgPack(worker)
-	store.Set(WorkerMetaKey("w1"), data)
+	data, err := protocol.EncodeMsgPack(worker)
+	if err != nil {
+		t.Fatalf("EncodeMsgPack: %v", err)
+	}
+	if err := store.Set(WorkerMetaKey("w1"), data); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	state, err := recoverFromStore(store)
 	if err != nil {
@@ -89,14 +97,136 @@ func TestRecovery_WithWorkers(t *testing.T) {
 	}
 }
 
+func TestRecovery_WorkerHeartbeatZeroed(t *testing.T) {
+	store := NewMemoryStore()
+	defer func() { _ = store.Close() }()
+
+	worker := &WorkerMeta{
+		ID:             "w1",
+		Address:        "localhost:5001",
+		TaskSlotsTotal: 4,
+		LastHeartbeat:  time.Now().UTC(),
+	}
+	data, err := protocol.EncodeMsgPack(worker)
+	if err != nil {
+		t.Fatalf("EncodeMsgPack: %v", err)
+	}
+	if err := store.Set(WorkerMetaKey("w1"), data); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+
+	state, err := recoverFromStore(store)
+	if err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+
+	w := state.workers["w1"]
+	if !w.LastHeartbeat.IsZero() {
+		t.Fatalf("expected zeroed heartbeat after recovery, got %v", w.LastHeartbeat)
+	}
+}
+
+func TestRecovery_CorruptConfigFails(t *testing.T) {
+	store := NewMemoryStore()
+	defer func() { _ = store.Close() }()
+
+	if err := store.Set(ClusterConfigKey(), []byte("corrupt-config-data")); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+
+	_, err := recoverFromStore(store)
+	if err == nil {
+		t.Fatal("expected error for corrupt config")
+	}
+	if !errors.Is(err, ErrStoreCorrupted) {
+		t.Fatalf("expected ErrStoreCorrupted, got: %v", err)
+	}
+}
+
+func TestRecovery_RoundTrip(t *testing.T) {
+	// Verify that a coordinator can persist state, then a fresh coordinator
+	// can recover it correctly.
+	store := NewMemoryStore()
+	defer func() { _ = store.Close() }()
+
+	c := New(CoordinatorConfig{
+		NodeID:                 "n1",
+		HeartbeatFlushInterval: time.Hour,
+	}, store, nil, zerolog.Nop())
+	c.mu.Lock()
+	c.state = StateLeader
+	c.epoch = 1
+	c.recovered = true
+	c.mu.Unlock()
+
+	// Create jobs.
+	j1, err := c.SubmitJob("job-alpha", 2, []byte("config-a"))
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+	if err := c.transitionJob(j1, JobDeploying); err != nil {
+		t.Fatalf("transitionJob to Deploying: %v", err)
+	}
+	if err := c.transitionJob(j1, JobRunning); err != nil {
+		t.Fatalf("transitionJob to Running: %v", err)
+	}
+
+	j2, err := c.SubmitJob("job-beta", 4, []byte("config-b"))
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+
+	// Add a worker.
+	if err := c.persistWorker(&WorkerMeta{
+		ID:             "w1",
+		Address:        "localhost:5001",
+		TaskSlotsTotal: 8,
+		LastHeartbeat:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("persistWorker: %v", err)
+	}
+
+	// Recover from store.
+	state, err := recoverFromStore(store)
+	if err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+
+	if len(state.jobs) != 2 {
+		t.Fatalf("expected 2 jobs, got %d", len(state.jobs))
+	}
+	if state.jobs[j1.ID].Status != JobRunning {
+		t.Fatalf("j1 status: expected RUNNING, got %s", state.jobs[j1.ID].Status)
+	}
+	if state.jobs[j2.ID].Status != JobCreated {
+		t.Fatalf("j2 status: expected CREATED, got %s", state.jobs[j2.ID].Status)
+	}
+
+	if len(state.workers) != 1 {
+		t.Fatalf("expected 1 worker, got %d", len(state.workers))
+	}
+	w := state.workers["w1"]
+	if !w.LastHeartbeat.IsZero() {
+		t.Fatal("recovered worker heartbeat should be zeroed")
+	}
+	if w.TaskSlotsTotal != 8 {
+		t.Fatalf("expected 8 task slots, got %d", w.TaskSlotsTotal)
+	}
+}
+
 func TestRecovery_InFlightCheckpointAbort(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Persist a job.
 	job := &JobMeta{ID: "j1", Name: "job-1", Status: JobRunning}
-	jobData, _ := protocol.EncodeMsgPack(job)
-	store.Set(JobMetaKey("j1"), jobData)
+	jobData, err := protocol.EncodeMsgPack(job)
+	if err != nil {
+		t.Fatalf("EncodeMsgPack: %v", err)
+	}
+	if err := store.Set(JobMetaKey("j1"), jobData); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	// Persist a completed checkpoint.
 	cpCompleted := &CheckpointMeta{
@@ -104,8 +234,13 @@ func TestRecovery_InFlightCheckpointAbort(t *testing.T) {
 		JobID:  "j1",
 		Status: CheckpointCompleted,
 	}
-	cpData, _ := protocol.EncodeMsgPack(cpCompleted)
-	store.Set(CheckpointKey("j1", 1), cpData)
+	cpData, err := protocol.EncodeMsgPack(cpCompleted)
+	if err != nil {
+		t.Fatalf("EncodeMsgPack: %v", err)
+	}
+	if err := store.Set(CheckpointKey("j1", 1), cpData); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	// Persist an in-flight checkpoint.
 	cpInFlight := &CheckpointMeta{
@@ -113,8 +248,13 @@ func TestRecovery_InFlightCheckpointAbort(t *testing.T) {
 		JobID:  "j1",
 		Status: CheckpointTriggered,
 	}
-	cpData2, _ := protocol.EncodeMsgPack(cpInFlight)
-	store.Set(CheckpointKey("j1", 2), cpData2)
+	cpData2, err := protocol.EncodeMsgPack(cpInFlight)
+	if err != nil {
+		t.Fatalf("EncodeMsgPack: %v", err)
+	}
+	if err := store.Set(CheckpointKey("j1", 2), cpData2); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	state, err := recoverFromStore(store)
 	if err != nil {
@@ -142,12 +282,58 @@ func TestRecovery_InFlightCheckpointAbort(t *testing.T) {
 	}
 }
 
+func TestRecovery_InFlightSavepointMarkedFailed(t *testing.T) {
+	store := NewMemoryStore()
+	defer func() { _ = store.Close() }()
+
+	// Persist a job.
+	job := &JobMeta{ID: "j1", Name: "job-1", Status: JobRunning}
+	jobData, err := protocol.EncodeMsgPack(job)
+	if err != nil {
+		t.Fatalf("EncodeMsgPack: %v", err)
+	}
+	if err := store.Set(JobMetaKey("j1"), jobData); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+
+	// Persist an in-progress savepoint.
+	sp := &SavepointMeta{
+		ID:     "sp-abc",
+		JobID:  "j1",
+		Status: SavepointInProgress,
+	}
+	spData, err := protocol.EncodeMsgPack(sp)
+	if err != nil {
+		t.Fatalf("EncodeMsgPack: %v", err)
+	}
+	if err := store.Set(SavepointKey("j1", "sp-abc"), spData); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+
+	state, err := recoverFromStore(store)
+	if err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+
+	if len(state.savepointsToFail) != 1 {
+		t.Fatalf("expected 1 savepoint to fail, got %d", len(state.savepointsToFail))
+	}
+	if state.savepointsToFail[0].ID != "sp-abc" {
+		t.Fatalf("expected savepoint sp-abc, got %s", state.savepointsToFail[0].ID)
+	}
+	if state.savepointsToFail[0].Status != SavepointFailed {
+		t.Fatalf("expected FAILED status, got %s", state.savepointsToFail[0].Status)
+	}
+}
+
 func TestRecovery_EpochIncrement(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
-	c.persistEpoch(10)
+	if err := c.persistEpoch(10); err != nil {
+		t.Fatalf("persistEpoch: %v", err)
+	}
 
 	state, err := recoverFromStore(store)
 	if err != nil {
@@ -158,7 +344,10 @@ func TestRecovery_EpochIncrement(t *testing.T) {
 	}
 
 	// Verify persisted epoch.
-	storedEpoch, _ := store.Get(ClusterEpochKey())
+	storedEpoch, err := store.Get(ClusterEpochKey())
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
 	if storedEpoch == nil {
 		t.Fatal("epoch not persisted")
 	}
@@ -166,7 +355,7 @@ func TestRecovery_EpochIncrement(t *testing.T) {
 
 func TestRecovery_AllJobStates(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	allStatuses := []JobStatus{
 		JobCreated, JobDeploying, JobRunning, JobFinishing, JobFinished,
@@ -179,9 +368,13 @@ func TestRecovery_AllJobStates(t *testing.T) {
 			Name:   s.String(),
 			Status: s,
 		}
-		data, _ := protocol.EncodeMsgPack(job)
-		store.Set(JobMetaKey(job.ID), data)
-		_ = i
+		data, err := protocol.EncodeMsgPack(job)
+		if err != nil {
+			t.Fatalf("EncodeMsgPack[%d]: %v", i, err)
+		}
+		if err := store.Set(JobMetaKey(job.ID), data); err != nil {
+			t.Fatalf("store.Set[%d]: %v", i, err)
+		}
 	}
 
 	state, err := recoverFromStore(store)
@@ -195,17 +388,24 @@ func TestRecovery_AllJobStates(t *testing.T) {
 
 func TestRecovery_CorruptJobFailsFast(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Write a valid job.
 	job := &JobMeta{ID: "j1", Name: "good-job", Status: JobRunning}
-	data, _ := protocol.EncodeMsgPack(job)
-	store.Set(JobMetaKey("j1"), data)
+	data, err := protocol.EncodeMsgPack(job)
+	if err != nil {
+		t.Fatalf("EncodeMsgPack: %v", err)
+	}
+	if err := store.Set(JobMetaKey("j1"), data); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	// Write a corrupt job entry (invalid msgpack).
-	store.Set(JobMetaKey("j2"), []byte("corrupt-data-not-msgpack"))
+	if err := store.Set(JobMetaKey("j2"), []byte("corrupt-data-not-msgpack")); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
-	_, err := recoverFromStore(store)
+	_, err = recoverFromStore(store)
 	if err == nil {
 		t.Fatal("expected error for corrupt job entry")
 	}
@@ -216,10 +416,12 @@ func TestRecovery_CorruptJobFailsFast(t *testing.T) {
 
 func TestRecovery_CorruptWorkerFailsFast(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Write a corrupt worker entry.
-	store.Set(WorkerMetaKey("w1"), []byte("corrupt-worker"))
+	if err := store.Set(WorkerMetaKey("w1"), []byte("corrupt-worker")); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	_, err := recoverFromStore(store)
 	if err == nil {
@@ -232,17 +434,24 @@ func TestRecovery_CorruptWorkerFailsFast(t *testing.T) {
 
 func TestRecovery_CorruptCheckpointFailsFast(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Need a valid job first (checkpoints are scanned per-job).
 	job := &JobMeta{ID: "j1", Name: "job-1", Status: JobRunning}
-	data, _ := protocol.EncodeMsgPack(job)
-	store.Set(JobMetaKey("j1"), data)
+	data, err := protocol.EncodeMsgPack(job)
+	if err != nil {
+		t.Fatalf("EncodeMsgPack: %v", err)
+	}
+	if err := store.Set(JobMetaKey("j1"), data); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	// Write a corrupt checkpoint.
-	store.Set(CheckpointKey("j1", 1), []byte("corrupt-checkpoint"))
+	if err := store.Set(CheckpointKey("j1", 1), []byte("corrupt-checkpoint")); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
-	_, err := recoverFromStore(store)
+	_, err = recoverFromStore(store)
 	if err == nil {
 		t.Fatal("expected error for corrupt checkpoint entry")
 	}
@@ -253,12 +462,17 @@ func TestRecovery_CorruptCheckpointFailsFast(t *testing.T) {
 
 func TestRecovery_CheckpointsToAbortPersisted(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Persist a job.
 	job := &JobMeta{ID: "j1", Name: "job-1", Status: JobRunning}
-	jobData, _ := protocol.EncodeMsgPack(job)
-	store.Set(JobMetaKey("j1"), jobData)
+	jobData, err := protocol.EncodeMsgPack(job)
+	if err != nil {
+		t.Fatalf("EncodeMsgPack: %v", err)
+	}
+	if err := store.Set(JobMetaKey("j1"), jobData); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	// Persist an in-flight checkpoint (Triggered).
 	cpTriggered := &CheckpointMeta{
@@ -266,8 +480,13 @@ func TestRecovery_CheckpointsToAbortPersisted(t *testing.T) {
 		JobID:  "j1",
 		Status: CheckpointTriggered,
 	}
-	cpData, _ := protocol.EncodeMsgPack(cpTriggered)
-	store.Set(CheckpointKey("j1", 1), cpData)
+	cpData, err := protocol.EncodeMsgPack(cpTriggered)
+	if err != nil {
+		t.Fatalf("EncodeMsgPack: %v", err)
+	}
+	if err := store.Set(CheckpointKey("j1", 1), cpData); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	// Persist an in-progress checkpoint.
 	cpInProgress := &CheckpointMeta{
@@ -275,8 +494,13 @@ func TestRecovery_CheckpointsToAbortPersisted(t *testing.T) {
 		JobID:  "j1",
 		Status: CheckpointInProgress,
 	}
-	cpData2, _ := protocol.EncodeMsgPack(cpInProgress)
-	store.Set(CheckpointKey("j1", 2), cpData2)
+	cpData2, err := protocol.EncodeMsgPack(cpInProgress)
+	if err != nil {
+		t.Fatalf("EncodeMsgPack: %v", err)
+	}
+	if err := store.Set(CheckpointKey("j1", 2), cpData2); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	// Run coordinator recovery (not just recoverFromStore).
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())

@@ -19,7 +19,9 @@ var (
 	// ErrBackendClosed indicates the state backend has been closed.
 	ErrBackendClosed = errors.New("engine: state backend closed")
 
-	// ErrMemoryLimitExceeded indicates a Put would exceed the configured memory limit.
+	// ErrMemoryLimitExceeded indicates a Put would exceed the configured logical
+	// payload size limit (sum of key + value bytes). This does not account for
+	// Go runtime overhead such as slice headers, struct padding, or allocator rounding.
 	ErrMemoryLimitExceeded = errors.New("engine: state backend memory limit exceeded")
 
 	// ErrSnapshotCorrupt indicates a snapshot failed integrity verification.
@@ -35,7 +37,7 @@ var (
 // task its own StateBackend instance.
 type StateBackend interface {
 	// Put stores a key-value pair. Returns ErrMemoryLimitExceeded if the
-	// backend has a memory limit and the write would exceed it.
+	// backend has a logical payload size limit and the write would exceed it.
 	Put(key, value []byte) error
 
 	// Get retrieves the value for key. Returns ErrKeyNotFound if the key
@@ -47,6 +49,10 @@ type StateBackend interface {
 
 	// NewIterator returns an iterator over all keys with the given prefix.
 	// The caller must call Close on the returned iterator when done.
+	//
+	// If the backend has been closed, NewIterator returns an empty iterator
+	// rather than signaling an error (the signature does not return error).
+	// Callers that need closed-backend detection should check via Put/Get first.
 	NewIterator(prefix []byte) StateIterator
 
 	// Checkpoint creates a consistent snapshot of the current state.
