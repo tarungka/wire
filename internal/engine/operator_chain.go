@@ -7,12 +7,31 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/protocol"
 )
 
 // errChainDone is a sentinel returned by handleControl to signal the operator
 // chain should exit cleanly. It is never surfaced to the caller.
 var errChainDone = errors.New("operator chain done")
+
+// chainContext consolidates parameters passed between the operator chain
+// functions, avoiding long parameter lists.
+type chainContext struct {
+	ctx        context.Context
+	links      []ChainLink
+	inputCh    <-chan Event
+	controlCh  <-chan ControlMsg
+	outputCh   chan<- OutputMsg
+	dlqCh      chan<- DLQEvent // nil if no DLQ configured.
+	aligner    *BarrierAligner
+	numInputs  int
+	cpMetrics  CheckpointMetrics
+	errMetrics ErrorMetrics
+	log        zerolog.Logger
+	txnSink    TransactionalSink
+	ackFn      func(checkpointID uint64)
+}
 
 // runOperatorChain is the main processing goroutine. It reads events from
 // inputCh and control messages from controlCh, runs events through the fused
@@ -25,6 +44,8 @@ var errChainDone = errors.New("operator chain done")
 //   - DrainAll events processed inline (not re-injected into inputCh)
 //   - TransactionalSink detection: if last operator implements TransactionalSink,
 //     BeginTransaction is called at startup and 2PC protocol is used for checkpoints
+//   - Per-operator error handling: retry transient errors, route poison messages
+//     to DLQ, fail the job on fatal errors (WIP-11)
 func runOperatorChain(
 	ctx context.Context,
 	operators []Operator,
@@ -37,8 +58,11 @@ func runOperatorChain(
 	log zerolog.Logger,
 	txnSink TransactionalSink,
 	ackFn func(checkpointID uint64),
+	errorConfigs []ErrorHandlerConfig,
+	dlqCh chan<- DLQEvent,
+	errMetrics ErrorMetrics,
 ) (retErr error) {
-	// Panic recovery.
+	// Panic recovery (safety net for non-operator panics).
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = fmt.Errorf("%w: %v", ErrOperatorPanic, r)
@@ -51,7 +75,7 @@ func runOperatorChain(
 		if err := op.Open(ctx); err != nil {
 			// Close already-opened operators in reverse order.
 			for j := i - 1; j >= 0; j-- {
-				operators[j].Close()
+				_ = operators[j].Close()
 			}
 			return fmt.Errorf("operator[%d] open: %w", i, err)
 		}
@@ -73,6 +97,30 @@ func runOperatorChain(
 		}
 	}
 
+	// Build chain links (pairs operators with error configs).
+	links := buildChainLinks(operators, errorConfigs)
+
+	// Resolve error metrics.
+	if errMetrics == nil {
+		errMetrics = NoopErrorMetrics()
+	}
+
+	cc := &chainContext{
+		ctx:        ctx,
+		links:      links,
+		inputCh:    inputCh,
+		controlCh:  controlCh,
+		outputCh:   outputCh,
+		dlqCh:      dlqCh,
+		aligner:    aligner,
+		numInputs:  numInputs,
+		cpMetrics:  metrics,
+		errMetrics: errMetrics,
+		log:        log,
+		txnSink:    txnSink,
+		ackFn:      ackFn,
+	}
+
 	eofCount := 0
 
 	for {
@@ -84,7 +132,7 @@ func runOperatorChain(
 				if !ok {
 					return nil
 				}
-				if err := handleControl(ctx, ctrl, operators, aligner, inputCh, outputCh, numInputs, &eofCount, metrics, log, txnSink, ackFn); err != nil {
+				if err := handleControl(cc, ctrl, &eofCount); err != nil {
 					if err == errChainDone {
 						return nil
 					}
@@ -103,7 +151,7 @@ func runOperatorChain(
 			if !ok {
 				return nil
 			}
-			if err := handleControl(ctx, ctrl, operators, aligner, inputCh, outputCh, numInputs, &eofCount, metrics, log, txnSink, ackFn); err != nil {
+			if err := handleControl(cc, ctrl, &eofCount); err != nil {
 				if err == errChainDone {
 					return nil
 				}
@@ -114,45 +162,48 @@ func runOperatorChain(
 				log.Debug().Msg("input channel closed")
 				return nil
 			}
-			if err := processEvent(ctx, event, operators, outputCh); err != nil {
+			if err := processEvent(cc, event); err != nil {
 				return err
 			}
 		}
 	}
 }
 
+// isZeroEvent returns true if the event is a zero-value (filtered) event.
+func isZeroEvent(e Event) bool {
+	return e.Key == nil && e.Value == nil && e.EventTime == 0 && e.Headers == nil
+}
+
 // processEvent runs a single event through the fused operator chain.
 // MapOperator: one-to-one. FlatMapOperator: one-to-many. SinkOperator: terminal.
-func processEvent(ctx context.Context, event Event, operators []Operator, outputCh chan<- OutputMsg) error {
+// When an operator has a non-zero ErrorHandlerConfig, errors are handled via
+// invokeWithRetry (retry/DLQ/drop); otherwise errors fail the job immediately.
+func processEvent(cc *chainContext, event Event) error {
 	// Start with the input event. For FlatMap we may fan out to multiple events.
 	events := []Event{event}
 
-	for _, op := range operators {
+	for _, link := range cc.links {
 		var next []Event
 		for _, e := range events {
-			switch o := op.(type) {
+			switch o := link.Operator.(type) {
 			case MapOperator:
-				result, err := o.Map(ctx, e)
+				result, err := invokeMapWithRetry(cc, link, e, o)
 				if err != nil {
-					return fmt.Errorf("map operator: %w", err)
+					return err
 				}
-				// Zero-value Event (empty Key, Value, and EventTime 0) means filtered.
-				if result.Key != nil || result.Value != nil || result.EventTime != 0 || result.Headers != nil {
-					next = append(next, result)
+				if result != nil {
+					next = append(next, *result)
 				}
 			case FlatMapOperator:
-				err := o.FlatMap(ctx, e, func(emitted Event) {
-					next = append(next, emitted)
-				})
+				emitted, err := invokeFlatMapWithRetry(cc, link, e, o)
 				if err != nil {
-					return fmt.Errorf("flatmap operator: %w", err)
+					return err
 				}
+				next = append(next, emitted...)
 			case SinkOperator:
-				if err := o.Write(ctx, e); err != nil {
-					return fmt.Errorf("sink operator: %w", err)
+				if err := invokeSinkWithRetry(cc, link, e, o); err != nil {
+					return err
 				}
-				// Sink is terminal — no further output.
-				return nil
 			}
 		}
 		events = next
@@ -161,24 +212,102 @@ func processEvent(ctx context.Context, event Event, operators []Operator, output
 	// Send surviving events to output.
 	for _, e := range events {
 		select {
-		case outputCh <- OutputMsg{Type: OutputData, Event: e}:
-		case <-ctx.Done():
-			return ctx.Err()
+		case cc.outputCh <- OutputMsg{Type: OutputData, Event: e}:
+		case <-cc.ctx.Done():
+			return cc.ctx.Err()
 		}
 	}
 	return nil
 }
 
+// invokeMapWithRetry wraps a MapOperator call with error handling.
+// Returns nil Event pointer if the event was filtered or DLQ'd/dropped.
+func invokeMapWithRetry(cc *chainContext, link ChainLink, e Event, op MapOperator) (*Event, error) {
+	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob || link.Config.Classifier != nil
+
+	if !hasErrorHandling {
+		// Legacy path: no error handling, fail on any error.
+		result, err := op.Map(cc.ctx, e)
+		if err != nil {
+			return nil, fmt.Errorf("map operator: %w", err)
+		}
+		if isZeroEvent(result) {
+			return nil, nil // Filtered.
+		}
+		return &result, nil
+	}
+
+	var result Event
+	err := invokeWithRetry(cc, link, e, func() error {
+		var mapErr error
+		result, mapErr = op.Map(cc.ctx, e)
+		return mapErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	if isZeroEvent(result) {
+		return nil, nil // Filtered or DLQ'd.
+	}
+	return &result, nil
+}
+
+// invokeFlatMapWithRetry wraps a FlatMapOperator call with error handling.
+func invokeFlatMapWithRetry(cc *chainContext, link ChainLink, e Event, op FlatMapOperator) ([]Event, error) {
+	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob || link.Config.Classifier != nil
+
+	if !hasErrorHandling {
+		// Legacy path.
+		var emitted []Event
+		err := op.FlatMap(cc.ctx, e, func(out Event) {
+			emitted = append(emitted, out)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("flatmap operator: %w", err)
+		}
+		return emitted, nil
+	}
+
+	var emitted []Event
+	err := invokeWithRetry(cc, link, e, func() error {
+		emitted = nil // Reset on retry.
+		return op.FlatMap(cc.ctx, e, func(out Event) {
+			emitted = append(emitted, out)
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return emitted, nil
+}
+
+// invokeSinkWithRetry wraps a SinkOperator Write call with error handling.
+func invokeSinkWithRetry(cc *chainContext, link ChainLink, e Event, op SinkOperator) error {
+	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob || link.Config.Classifier != nil
+
+	if !hasErrorHandling {
+		// Legacy path.
+		if err := op.Write(cc.ctx, e); err != nil {
+			return fmt.Errorf("sink operator: %w", err)
+		}
+		return nil
+	}
+
+	return invokeWithRetry(cc, link, e, func() error {
+		return op.Write(cc.ctx, e)
+	})
+}
+
 // drainInputCh non-blocking-drains all remaining events from inputCh and
 // processes them through the operator chain.
-func drainInputCh(ctx context.Context, inputCh <-chan Event, operators []Operator, outputCh chan<- OutputMsg) error {
+func drainInputCh(cc *chainContext) error {
 	for {
 		select {
-		case event, ok := <-inputCh:
+		case event, ok := <-cc.inputCh:
 			if !ok {
 				return nil
 			}
-			if err := processEvent(ctx, event, operators, outputCh); err != nil {
+			if err := processEvent(cc, event); err != nil {
 				return err
 			}
 		default:
@@ -188,56 +317,43 @@ func drainInputCh(ctx context.Context, inputCh <-chan Event, operators []Operato
 }
 
 // handleControl processes a control message.
-func handleControl(
-	ctx context.Context,
-	ctrl ControlMsg,
-	operators []Operator,
-	aligner *BarrierAligner,
-	inputCh <-chan Event,
-	outputCh chan<- OutputMsg,
-	numInputs int,
-	eofCount *int,
-	metrics CheckpointMetrics,
-	log zerolog.Logger,
-	txnSink TransactionalSink,
-	ackFn func(checkpointID uint64),
-) error {
+func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 	switch ctrl.Type {
 	case CtrlBarrierReceived:
-		if !aligner.AllAligned(ctrl.CheckpointID) {
+		if !cc.aligner.AllAligned(ctrl.CheckpointID) {
 			return nil // Not all inputs aligned yet.
 		}
 
-		log.Debug().Uint64("checkpoint", ctrl.CheckpointID).Msg("all barriers aligned, checkpointing")
+		cc.log.Debug().Uint64("checkpoint", ctrl.CheckpointID).Msg("all barriers aligned, checkpointing")
 
 		// Record alignment time metric.
-		if startTime := aligner.AlignmentStartTime(); !startTime.IsZero() {
-			metrics.ObserveAlignmentTime(time.Since(startTime))
+		if startTime := cc.aligner.AlignmentStartTime(); !startTime.IsZero() {
+			cc.cpMetrics.ObserveAlignmentTime(time.Since(startTime))
 		}
 
 		// Snapshot all operators.
-		for i, op := range operators {
-			if _, err := op.Checkpoint(ctrl.CheckpointID); err != nil {
+		for i, link := range cc.links {
+			if _, err := link.Operator.Checkpoint(ctrl.CheckpointID); err != nil {
 				return fmt.Errorf("operator[%d] checkpoint: %w", i, err)
 			}
 		}
 
 		// Drain side-buffered events and process them inline.
-		drained := aligner.DrainAll(ctrl.CheckpointID)
+		drained := cc.aligner.DrainAll(ctrl.CheckpointID)
 		for _, event := range drained {
-			if err := processEvent(ctx, event, operators, outputCh); err != nil {
+			if err := processEvent(cc, event); err != nil {
 				return err
 			}
 		}
 
-		if txnSink != nil {
+		if cc.txnSink != nil {
 			// Transactional sink: PreCommit and ACK to coordinator.
 			// Do NOT forward barrier downstream (sink is terminal).
-			if err := txnSink.PreCommit(ctx, ctrl.CheckpointID); err != nil {
+			if err := cc.txnSink.PreCommit(cc.ctx, ctrl.CheckpointID); err != nil {
 				return fmt.Errorf("%w: %v", ErrPreCommitFailed, err)
 			}
-			if ackFn != nil {
-				ackFn(ctrl.CheckpointID)
+			if cc.ackFn != nil {
+				cc.ackFn(ctrl.CheckpointID)
 			}
 		} else {
 			// Non-transactional: forward barrier downstream (existing behavior).
@@ -247,74 +363,74 @@ func handleControl(
 				Timestamp:    time.Now().UnixMilli(),
 			}
 			select {
-			case outputCh <- OutputMsg{Type: OutputBarrier, Barrier: barrier}:
-			case <-ctx.Done():
-				return ctx.Err()
+			case cc.outputCh <- OutputMsg{Type: OutputBarrier, Barrier: barrier}:
+			case <-cc.ctx.Done():
+				return cc.ctx.Err()
 			}
 		}
 
-		aligner.Reset(ctrl.CheckpointID)
+		cc.aligner.Reset(ctrl.CheckpointID)
 
 	case CtrlCommitCheckpoint:
-		if txnSink == nil {
+		if cc.txnSink == nil {
 			break // Ignore for non-transactional sinks.
 		}
-		log.Debug().Uint64("checkpoint", ctrl.CheckpointID).Msg("committing transaction")
-		if err := txnSink.Commit(ctx, ctrl.CheckpointID); err != nil {
+		cc.log.Debug().Uint64("checkpoint", ctrl.CheckpointID).Msg("committing transaction")
+		if err := cc.txnSink.Commit(cc.ctx, ctrl.CheckpointID); err != nil {
 			return fmt.Errorf("%w: %v", ErrCommitFailed, err)
 		}
-		if err := txnSink.BeginTransaction(ctx); err != nil {
+		if err := cc.txnSink.BeginTransaction(cc.ctx); err != nil {
 			return fmt.Errorf("%w: %v", ErrBeginTransactionFailed, err)
 		}
 
 	case CtrlAbortTransaction:
-		if txnSink == nil {
+		if cc.txnSink == nil {
 			break // Ignore for non-transactional sinks.
 		}
-		log.Warn().Msg("aborting transaction")
-		if err := txnSink.Abort(ctx); err != nil {
+		cc.log.Warn().Msg("aborting transaction")
+		if err := cc.txnSink.Abort(cc.ctx); err != nil {
 			return fmt.Errorf("%w: %v", ErrAbortFailed, err)
 		}
-		if err := txnSink.BeginTransaction(ctx); err != nil {
+		if err := cc.txnSink.BeginTransaction(cc.ctx); err != nil {
 			return fmt.Errorf("%w: %v", ErrBeginTransactionFailed, err)
 		}
 
 	case CtrlAbortCheckpoint:
-		log.Warn().Uint64("checkpoint", ctrl.CheckpointID).Msg("aborting checkpoint")
+		cc.log.Warn().Uint64("checkpoint", ctrl.CheckpointID).Msg("aborting checkpoint")
 		// Drain side buffers and process them (events are still valid, just no checkpoint).
-		drained := aligner.DrainAll(ctrl.CheckpointID)
+		drained := cc.aligner.DrainAll(ctrl.CheckpointID)
 		for _, event := range drained {
-			if err := processEvent(ctx, event, operators, outputCh); err != nil {
+			if err := processEvent(cc, event); err != nil {
 				return err
 			}
 		}
-		aligner.Reset(ctrl.CheckpointID)
+		cc.aligner.Reset(ctrl.CheckpointID)
 
 	case CtrlEndOfPartition:
 		*eofCount++
-		log.Debug().Int("input", ctrl.InputIndex).Int("eof_count", *eofCount).Int("num_inputs", numInputs).Msg("input EOF")
-		if *eofCount >= numInputs {
+		cc.log.Debug().Int("input", ctrl.InputIndex).Int("eof_count", *eofCount).Int("num_inputs", cc.numInputs).Msg("input EOF")
+		if *eofCount >= cc.numInputs {
 			// Drain any remaining events in the input channel before
 			// forwarding EoP downstream. This ensures all events sent before
 			// the EoP control message are processed.
-			if err := drainInputCh(ctx, inputCh, operators, outputCh); err != nil {
+			if err := drainInputCh(cc); err != nil {
 				return err
 			}
 
-			log.Info().Msg("all inputs exhausted, forwarding EndOfPartition")
+			cc.log.Info().Msg("all inputs exhausted, forwarding EndOfPartition")
 			eop := &protocol.EndOfPartitionMsg{
 				Reason: protocol.EndReasonExhausted,
 			}
 			select {
-			case outputCh <- OutputMsg{Type: OutputEnd, End: eop}:
-			case <-ctx.Done():
-				return ctx.Err()
+			case cc.outputCh <- OutputMsg{Type: OutputEnd, End: eop}:
+			case <-cc.ctx.Done():
+				return cc.ctx.Err()
 			}
 			return errChainDone
 		}
 
 	case CtrlShutdown:
-		log.Info().Msg("shutdown control received")
+		cc.log.Info().Msg("shutdown control received")
 		return errChainDone
 	}
 

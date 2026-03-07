@@ -84,10 +84,12 @@ func TestTaskSlot_StreamThrough(t *testing.T) {
 		}
 	}
 	// Send EoP.
-	inputWriter.WriteMessage(&protocol.EndOfPartitionMsg{
+	if err := inputWriter.WriteMessage(&protocol.EndOfPartitionMsg{
 		SourceID: "test",
 		Reason:   protocol.EndReasonExhausted,
-	})
+	}); err != nil {
+		t.Fatalf("WriteMessage EoP: %v", err)
+	}
 
 	// Read output events.
 	var dataCount int
@@ -157,10 +159,18 @@ func TestTaskSlot_CheckpointBarrier(t *testing.T) {
 	}()
 
 	// Write data, barrier, more data, then EoP.
-	inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("before"), EventTime: 1})
-	inputWriter.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 42, EpochID: 7, Timestamp: 1000})
-	inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("after"), EventTime: 2})
-	inputWriter.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "test", Reason: protocol.EndReasonExhausted})
+	if err := inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("before"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage before: %v", err)
+	}
+	if err := inputWriter.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 42, EpochID: 7, Timestamp: 1000}); err != nil {
+		t.Fatalf("WriteMessage barrier: %v", err)
+	}
+	if err := inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("after"), EventTime: 2}); err != nil {
+		t.Fatalf("WriteMessage after: %v", err)
+	}
+	if err := inputWriter.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "test", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP: %v", err)
+	}
 
 	// Read output.
 	var foundBarrier bool
@@ -208,8 +218,12 @@ func TestTaskSlot_OperatorPanic(t *testing.T) {
 	}()
 
 	// Send events — the panic map will panic on the 2nd event.
-	inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("1"), EventTime: 1})
-	inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("2"), EventTime: 2})
+	if err := inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("1"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage 1: %v", err)
+	}
+	if err := inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("2"), EventTime: 2}); err != nil {
+		t.Fatalf("WriteMessage 2: %v", err)
+	}
 
 	select {
 	case err := <-done:
@@ -244,17 +258,31 @@ func TestTaskSlot_BarrierAlignment(t *testing.T) {
 	}()
 
 	// Input 0: data, barrier, data (side-buffered).
-	iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-before"), EventTime: 1})
-	iw0.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000})
-	iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-after"), EventTime: 2})
+	if err := iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-before"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage i0-before: %v", err)
+	}
+	if err := iw0.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000}); err != nil {
+		t.Fatalf("WriteMessage barrier i0: %v", err)
+	}
+	if err := iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-after"), EventTime: 2}); err != nil {
+		t.Fatalf("WriteMessage i0-after: %v", err)
+	}
 
 	// Input 1: data, barrier.
-	iw1.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i1-before"), EventTime: 3})
-	iw1.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000})
+	if err := iw1.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i1-before"), EventTime: 3}); err != nil {
+		t.Fatalf("WriteMessage i1-before: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000}); err != nil {
+		t.Fatalf("WriteMessage barrier i1: %v", err)
+	}
 
 	// Both EoPs.
-	iw0.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s0", Reason: protocol.EndReasonExhausted})
-	iw1.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s1", Reason: protocol.EndReasonExhausted})
+	if err := iw0.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s0", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP s0: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s1", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP s1: %v", err)
+	}
 
 	// Read output — should get:
 	// i0-before, i1-before (in some order), barrier, i0-after (drained), EoP.
@@ -380,9 +408,15 @@ func TestTaskSlot_BarrierAbort(t *testing.T) {
 	}()
 
 	// Input 0: data, barrier, more data (side-buffered).
-	iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-before"), EventTime: 1})
-	iw0.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000})
-	iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-after"), EventTime: 2})
+	if err := iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-before"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage i0-before: %v", err)
+	}
+	if err := iw0.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000}); err != nil {
+		t.Fatalf("WriteMessage barrier i0: %v", err)
+	}
+	if err := iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-after"), EventTime: 2}); err != nil {
+		t.Fatalf("WriteMessage i0-after: %v", err)
+	}
 
 	// Small delay to let the input reader process messages before sending abort.
 	time.Sleep(50 * time.Millisecond)
@@ -392,12 +426,20 @@ func TestTaskSlot_BarrierAbort(t *testing.T) {
 	// is an internal control type, we test abort via the operator chain directly.
 	// For the integration test, we complete alignment normally and then send
 	// additional data + EoPs.
-	iw1.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i1-data"), EventTime: 3})
-	iw1.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000})
+	if err := iw1.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i1-data"), EventTime: 3}); err != nil {
+		t.Fatalf("WriteMessage i1-data: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000}); err != nil {
+		t.Fatalf("WriteMessage barrier i1: %v", err)
+	}
 
 	// Both EoPs.
-	iw0.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s0", Reason: protocol.EndReasonExhausted})
-	iw1.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s1", Reason: protocol.EndReasonExhausted})
+	if err := iw0.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s0", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP s0: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s1", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP s1: %v", err)
+	}
 
 	// Read output — all data events must come through (including side-buffered ones).
 	var dataValues []string
@@ -1018,19 +1060,31 @@ func TestTaskSlot_WatermarkPropagation_TwoInputs(t *testing.T) {
 	}()
 
 	// Send watermarks on both inputs.
-	iw0.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s0"})
-	iw1.WriteMessage(&protocol.WatermarkMsg{Timestamp: 200, SourceID: "s1"})
+	if err := iw0.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s0"}); err != nil {
+		t.Fatalf("WriteMessage wm s0: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.WatermarkMsg{Timestamp: 200, SourceID: "s1"}); err != nil {
+		t.Fatalf("WriteMessage wm s1: %v", err)
+	}
 
 	// Send data to trigger activity recording.
-	iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("d0"), EventTime: 1})
-	iw1.WriteMessage(&protocol.DataRecordMsg{Value: []byte("d1"), EventTime: 2})
+	if err := iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("d0"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage d0: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.DataRecordMsg{Value: []byte("d1"), EventTime: 2}); err != nil {
+		t.Fatalf("WriteMessage d1: %v", err)
+	}
 
 	// Wait for propagation.
 	time.Sleep(200 * time.Millisecond)
 
 	// Send EoPs to terminate.
-	iw0.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s0", Reason: protocol.EndReasonExhausted})
-	iw1.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s1", Reason: protocol.EndReasonExhausted})
+	if err := iw0.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s0", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP s0: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s1", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP s1: %v", err)
+	}
 
 	// Read output — should get watermarks with min value.
 	var watermarks []int64

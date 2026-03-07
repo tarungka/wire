@@ -97,7 +97,7 @@ func TestOperatorChain_MapPassthrough(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestOperatorChain_Filter(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&filterMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestOperatorChain_FlatMapOneToMany(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&doublerFlatMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestOperatorChain_Sink(t *testing.T) {
 
 	sink := &countingSink{}
 	ops := []Operator{sink}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestOperatorChain_PanicRecovery(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&panicMap{limit: 2}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 
 	if !errors.Is(err, ErrOperatorPanic) {
 		t.Fatalf("expected ErrOperatorPanic, got: %v", err)
@@ -250,7 +250,7 @@ func TestOperatorChain_ControlPriority(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	}()
 
 	// Let the chain start and process a few events.
@@ -289,7 +289,7 @@ func TestOperatorChain_AllInputsEoP(t *testing.T) {
 	close(inputCh) // Close input to not block the operator chain.
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestOperatorChain_CheckpointBarrier(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestOperatorChain_OpenError_ClosesPreviouslyOpenedInReverse(t *testing.T) {
 	outputCh := make(chan OutputMsg, 1)
 	aligner := NewBarrierAligner(1, 100)
 
-	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err == nil || !errors.Is(err, op2.openErr) {
 		t.Fatalf("expected op2 open error, got: %v", err)
 	}
@@ -454,7 +454,7 @@ func TestOperatorChain_CloseCalledInReverseOrder(t *testing.T) {
 	outputCh := make(chan OutputMsg, 1)
 	aligner := NewBarrierAligner(1, 100)
 
-	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, []Operator{op1, op2, op3}, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -484,14 +484,16 @@ func TestOperatorChain_AbortCheckpoint_DrainsSideBufferNoBarrier(t *testing.T) {
 
 	// Simulate input 0 has sent a barrier and buffered events.
 	aligner.OnBarrier(0, 1, 1)
-	aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-buffered")})
+	if err := aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-buffered")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
 
 	// Send abort for this checkpoint.
 	controlCh <- ControlMsg{Type: CtrlAbortCheckpoint, CheckpointID: 1}
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -535,8 +537,12 @@ func TestOperatorChain_CheckpointBarrier_SideBufferDrainedBeforeBarrier(t *testi
 
 	// Simulate: input 0 barrier arrived, events side-buffered.
 	aligner.OnBarrier(0, 1, 1)
-	aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-1")})
-	aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-2")})
+	if err := aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-1")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
+	if err := aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-2")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
 
 	// Input 1 barrier arrives — alignment complete.
 	aligner.OnBarrier(1, 1, 1)
@@ -545,7 +551,7 @@ func TestOperatorChain_CheckpointBarrier_SideBufferDrainedBeforeBarrier(t *testi
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 2, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -599,7 +605,7 @@ func TestOperatorChain_MapErrorPropagation(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&errorMap{err: mapErr}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -622,7 +628,7 @@ func TestOperatorChain_FlatMapErrorPropagation(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&errorFlatMap{err: fmErr}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -645,7 +651,7 @@ func TestOperatorChain_SinkErrorPropagation(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{&errorSink{err: sinkErr}}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -676,7 +682,7 @@ func TestOperatorChain_FinalEoPDrainsInputChannel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	}()
 
 	select {
@@ -737,7 +743,7 @@ func TestOperatorChain_OutputBackpressure_UnblocksOnContextCancel(t *testing.T) 
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	}()
 
 	// Let the chain block on output, then cancel.
@@ -765,7 +771,11 @@ func TestOperatorChain_TransactionalSink_NormalCycle(t *testing.T) {
 	outputCh := make(chan OutputMsg, 10)
 	aligner := NewBarrierAligner(1, 100)
 
-	sink := &mockTransactionalSink{}
+	sink := &mockTransactionalSink{
+		writeCh:     make(chan struct{}, 10),
+		preCommitCh: make(chan struct{}, 1),
+		commitCh:    make(chan struct{}, 1),
+	}
 
 	var acked []uint64
 	var ackedMu sync.Mutex
@@ -779,22 +789,36 @@ func TestOperatorChain_TransactionalSink_NormalCycle(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, ackFn)
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, ackFn, nil, nil, NoopErrorMetrics())
 	}()
 
-	// Send events first and let them be processed.
+	// Send events and wait for them to be written.
 	inputCh <- Event{Value: []byte("a")}
 	inputCh <- Event{Value: []byte("b")}
-	time.Sleep(50 * time.Millisecond)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-sink.writeCh:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for Write")
+		}
+	}
 
 	// Now send barrier (pre-register with aligner first).
 	aligner.OnBarrier(0, 1, 1)
 	controlCh <- ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 1, EpochID: 1}
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-sink.preCommitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for PreCommit")
+	}
 
 	// Send commit.
 	controlCh <- ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 1, EpochID: 1}
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-sink.commitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Commit")
+	}
 
 	// Shutdown.
 	controlCh <- ControlMsg{Type: CtrlShutdown}
@@ -863,7 +887,7 @@ func TestOperatorChain_TransactionalSink_PreCommitError(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{sink}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil, nil, nil, NoopErrorMetrics())
 	if !errors.Is(err, ErrPreCommitFailed) {
 		t.Fatalf("expected ErrPreCommitFailed, got: %v", err)
 	}
@@ -884,7 +908,7 @@ func TestOperatorChain_TransactionalSink_CommitError(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{sink}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil, nil, nil, NoopErrorMetrics())
 	if !errors.Is(err, ErrCommitFailed) {
 		t.Fatalf("expected ErrCommitFailed, got: %v", err)
 	}
@@ -905,7 +929,7 @@ func TestOperatorChain_TransactionalSink_AbortThenRestart(t *testing.T) {
 	controlCh <- ControlMsg{Type: CtrlShutdown}
 
 	ops := []Operator{sink}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil, nil, nil, NoopErrorMetrics())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -934,7 +958,7 @@ func TestOperatorChain_TransactionalSink_AbortError(t *testing.T) {
 	close(inputCh)
 
 	ops := []Operator{sink}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil, nil, nil, NoopErrorMetrics())
 	if !errors.Is(err, ErrAbortFailed) {
 		t.Fatalf("expected ErrAbortFailed, got: %v", err)
 	}
@@ -955,17 +979,27 @@ func TestOperatorChain_NonTransactionalSink_Unchanged(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil)
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	}()
 
-	// Send event and let it be processed.
+	// Send event — the sink is terminal so no output to wait on. We rely on
+	// control message ordering: the barrier is processed after the event
+	// because the operator chain drains inputCh before handling controlCh.
 	inputCh <- Event{Value: []byte("x")}
-	time.Sleep(50 * time.Millisecond)
 
 	// Send barrier — should be forwarded to outputCh for non-transactional sink.
 	aligner.OnBarrier(0, 1, 1)
 	controlCh <- ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 1, EpochID: 1}
-	time.Sleep(50 * time.Millisecond)
+
+	// Wait for the barrier to appear on outputCh (deterministic sync).
+	select {
+	case msg := <-outputCh:
+		if msg.Type != OutputBarrier {
+			t.Errorf("expected OutputBarrier, got %v", msg.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for barrier on outputCh")
+	}
 
 	// Shutdown.
 	controlCh <- ControlMsg{Type: CtrlShutdown}
@@ -981,18 +1015,6 @@ func TestOperatorChain_NonTransactionalSink_Unchanged(t *testing.T) {
 
 	if sink.Count() != 1 {
 		t.Errorf("sink count: got %d, want 1", sink.Count())
-	}
-
-	// Barrier should have been forwarded.
-	close(outputCh)
-	var foundBarrier bool
-	for msg := range outputCh {
-		if msg.Type == OutputBarrier {
-			foundBarrier = true
-		}
-	}
-	if !foundBarrier {
-		t.Error("expected barrier forwarded for non-transactional sink")
 	}
 }
 
@@ -1013,7 +1035,7 @@ func TestOperatorChain_TransactionalSink_IdempotentCommit(t *testing.T) {
 	controlCh <- ControlMsg{Type: CtrlShutdown}
 
 	ops := []Operator{sink}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil, nil, nil, NoopErrorMetrics())
 	if err != nil {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
@@ -1042,8 +1064,575 @@ func TestOperatorChain_TransactionalSink_BeginTransactionErrorAtStartup(t *testi
 	sink := &mockTransactionalSink{beginTxnErr: errors.New("connection refused")}
 
 	ops := []Operator{sink}
-	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil)
+	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil, nil, nil, NoopErrorMetrics())
 	if !errors.Is(err, ErrBeginTransactionFailed) {
 		t.Fatalf("expected ErrBeginTransactionFailed, got: %v", err)
 	}
+}
+
+// -- WIP-11: Error handling integration tests --
+
+// transientErrorMap returns ErrTransient-wrapped errors for a configurable number of calls.
+type transientErrorMap struct {
+	mu        sync.Mutex
+	failCount int // number of calls that will fail
+	callCount int
+	lastEvent Event
+}
+
+func (m *transientErrorMap) Open(ctx context.Context) error       { return nil }
+func (m *transientErrorMap) Close() error                         { return nil }
+func (m *transientErrorMap) Checkpoint(id uint64) ([]byte, error) { return nil, nil }
+func (m *transientErrorMap) Map(ctx context.Context, e Event) (Event, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callCount++
+	m.lastEvent = e
+	if m.callCount <= m.failCount {
+		return Event{}, fmt.Errorf("transient map error: %w", ErrTransient)
+	}
+	return e, nil
+}
+func (m *transientErrorMap) CallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.callCount
+}
+
+// poisonErrorMap always returns a non-sentinel error (classified as Poison).
+type poisonErrorMap struct{}
+
+func (p *poisonErrorMap) Open(ctx context.Context) error       { return nil }
+func (p *poisonErrorMap) Close() error                         { return nil }
+func (p *poisonErrorMap) Checkpoint(id uint64) ([]byte, error) { return nil, nil }
+func (p *poisonErrorMap) Map(ctx context.Context, e Event) (Event, error) {
+	return Event{}, errors.New("bad record format")
+}
+
+// panicOnFirstMap panics on the first call, succeeds on subsequent calls.
+type panicOnFirstMap struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *panicOnFirstMap) Open(ctx context.Context) error       { return nil }
+func (p *panicOnFirstMap) Close() error                         { return nil }
+func (p *panicOnFirstMap) Checkpoint(id uint64) ([]byte, error) { return nil, nil }
+func (p *panicOnFirstMap) Map(ctx context.Context, e Event) (Event, error) {
+	p.mu.Lock()
+	p.calls++
+	n := p.calls
+	p.mu.Unlock()
+	if n == 1 {
+		panic("deserialization panic")
+	}
+	return e, nil
+}
+
+func TestOperatorChain_ErrorHandler_MapRetryThenSuccess(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	// Map fails twice then succeeds.
+	op := &transientErrorMap{failCount: 2}
+
+	inputCh <- Event{Value: []byte("x")}
+	close(inputCh)
+
+	errorConfigs := []ErrorHandlerConfig{{
+		OperatorName: "retry-map",
+		MaxRetries:   5,
+		Backoff:      FixedBackoff(1 * time.Millisecond),
+		OnExhausted:  FailJob,
+	}}
+
+	err := runOperatorChain(ctx, []Operator{op}, inputCh, controlCh, outputCh, aligner, 1,
+		NoopCheckpointMetrics(), testLogger(), nil, nil, errorConfigs, nil, NoopErrorMetrics())
+	if err != nil {
+		t.Fatalf("expected success after retry, got: %v", err)
+	}
+
+	close(outputCh)
+	var got int
+	for msg := range outputCh {
+		if msg.Type == OutputData {
+			got++
+		}
+	}
+	if got != 1 {
+		t.Fatalf("got %d events, want 1", got)
+	}
+	if op.CallCount() != 3 {
+		t.Errorf("call count: got %d, want 3 (1 initial + 2 retries + 1 success on 3rd)", op.CallCount())
+	}
+}
+
+func TestOperatorChain_ErrorHandler_MapPoisonToDLQ(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	// Send 3 events: 1 will poison, 2 will pass (we chain poisonErrorMap with noopMap
+	// at different indices). For this test, use a single poisonErrorMap that always fails.
+	// The good events are processed by a different chain.
+	//
+	// Simpler: send 1 event through a poison map → should route to DLQ, not fail job.
+	inputCh <- Event{Value: []byte("bad")}
+	close(inputCh)
+
+	dlqCh := make(chan DLQEvent, 10)
+	errorConfigs := []ErrorHandlerConfig{{
+		OperatorName: "poison-map",
+		MaxRetries:   0,
+		OnExhausted:  RouteToDLQ,
+	}}
+
+	err := runOperatorChain(ctx, []Operator{&poisonErrorMap{}}, inputCh, controlCh, outputCh, aligner, 1,
+		NoopCheckpointMetrics(), testLogger(), nil, nil, errorConfigs, dlqCh, NoopErrorMetrics())
+	if err != nil {
+		t.Fatalf("expected nil (event DLQ'd), got: %v", err)
+	}
+
+	// No output events (event was DLQ'd).
+	close(outputCh)
+	for msg := range outputCh {
+		t.Errorf("unexpected output: %v", msg)
+	}
+
+	// Verify DLQ event.
+	if len(dlqCh) != 1 {
+		t.Fatalf("expected 1 DLQ event, got %d", len(dlqCh))
+	}
+	dlqEvent := <-dlqCh
+	if dlqEvent.OperatorName != "poison-map" {
+		t.Errorf("DLQ operator: got %q, want %q", dlqEvent.OperatorName, "poison-map")
+	}
+	if string(dlqEvent.OriginalEvent.Value) != "bad" {
+		t.Errorf("DLQ event value: got %q, want %q", dlqEvent.OriginalEvent.Value, "bad")
+	}
+}
+
+func TestOperatorChain_ErrorHandler_PanicRoutesDLQ(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	inputCh <- Event{Value: []byte("panic-trigger")}
+	close(inputCh)
+
+	dlqCh := make(chan DLQEvent, 10)
+	errorConfigs := []ErrorHandlerConfig{{
+		OperatorName: "panic-map",
+		MaxRetries:   0,
+		OnExhausted:  RouteToDLQ,
+	}}
+
+	err := runOperatorChain(ctx, []Operator{&panicOnFirstMap{}}, inputCh, controlCh, outputCh, aligner, 1,
+		NoopCheckpointMetrics(), testLogger(), nil, nil, errorConfigs, dlqCh, NoopErrorMetrics())
+	if err != nil {
+		t.Fatalf("expected nil (panic caught and DLQ'd), got: %v", err)
+	}
+
+	if len(dlqCh) != 1 {
+		t.Fatalf("expected 1 DLQ event, got %d", len(dlqCh))
+	}
+	dlqEvent := <-dlqCh
+	if dlqEvent.OperatorName != "panic-map" {
+		t.Errorf("DLQ operator: got %q, want %q", dlqEvent.OperatorName, "panic-map")
+	}
+}
+
+func TestOperatorChain_ErrorHandler_SinkRetryExhausted_FailsJob(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	sinkErr := fmt.Errorf("sink write failed: %w", ErrTransient)
+	inputCh <- Event{Value: []byte("trigger")}
+	close(inputCh)
+
+	errorConfigs := []ErrorHandlerConfig{{
+		OperatorName: "fail-sink",
+		MaxRetries:   2,
+		Backoff:      FixedBackoff(1 * time.Millisecond),
+		OnExhausted:  FailJob,
+	}}
+
+	err := runOperatorChain(ctx, []Operator{&errorSink{err: sinkErr}}, inputCh, controlCh, outputCh, aligner, 1,
+		NoopCheckpointMetrics(), testLogger(), nil, nil, errorConfigs, nil, NoopErrorMetrics())
+	if !errors.Is(err, ErrRetriesExhausted) {
+		t.Fatalf("expected ErrRetriesExhausted, got: %v", err)
+	}
+}
+
+func TestOperatorChain_ErrorHandler_NilConfigs_LegacyBehavior(t *testing.T) {
+	// nil errorConfigs = legacy behavior: any error fails the job.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	mapErr := errors.New("map failed")
+	inputCh <- Event{Value: []byte("trigger")}
+	close(inputCh)
+
+	// nil errorConfigs, nil dlqCh.
+	err := runOperatorChain(ctx, []Operator{&errorMap{err: mapErr}}, inputCh, controlCh, outputCh, aligner, 1,
+		NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
+	if !errors.Is(err, mapErr) {
+		t.Fatalf("expected map error (legacy behavior), got: %v", err)
+	}
+}
+
+func TestOperatorChain_ErrorHandler_FlatMapRetryDLQ(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	fmErr := fmt.Errorf("flatmap transient: %w", ErrTransient)
+	inputCh <- Event{Value: []byte("trigger")}
+	close(inputCh)
+
+	dlqCh := make(chan DLQEvent, 10)
+	errorConfigs := []ErrorHandlerConfig{{
+		OperatorName: "fail-flatmap",
+		MaxRetries:   1,
+		Backoff:      FixedBackoff(1 * time.Millisecond),
+		OnExhausted:  RouteToDLQ,
+	}}
+
+	err := runOperatorChain(ctx, []Operator{&errorFlatMap{err: fmErr}}, inputCh, controlCh, outputCh, aligner, 1,
+		NoopCheckpointMetrics(), testLogger(), nil, nil, errorConfigs, dlqCh, NoopErrorMetrics())
+	if err != nil {
+		t.Fatalf("expected nil (DLQ'd), got: %v", err)
+	}
+
+	if len(dlqCh) != 1 {
+		t.Fatalf("expected 1 DLQ event, got %d", len(dlqCh))
+	}
+}
+
+func TestOperatorChain_ErrorHandler_DropEvent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	inputCh <- Event{Value: []byte("drop-me")}
+	close(inputCh)
+
+	errorConfigs := []ErrorHandlerConfig{{
+		OperatorName: "drop-map",
+		MaxRetries:   0,
+		OnExhausted:  DropEvent,
+	}}
+
+	err := runOperatorChain(ctx, []Operator{&poisonErrorMap{}}, inputCh, controlCh, outputCh, aligner, 1,
+		NoopCheckpointMetrics(), testLogger(), nil, nil, errorConfigs, nil, NoopErrorMetrics())
+	if err != nil {
+		t.Fatalf("expected nil (dropped), got: %v", err)
+	}
+
+	close(outputCh)
+	for msg := range outputCh {
+		t.Errorf("unexpected output (should have been dropped): %v", msg)
+	}
+}
+
+func TestOperatorChain_ErrorHandler_MixedGoodAndBadEvents(t *testing.T) {
+	// Send 100 events through a map that fails on event #50 (poison).
+	// With DLQ configured, 99 events should pass through and 1 goes to DLQ.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 200)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 200)
+	aligner := NewBarrierAligner(1, 100)
+
+	for i := 0; i < 100; i++ {
+		inputCh <- Event{Value: []byte{byte(i)}, EventTime: int64(i)}
+	}
+	close(inputCh)
+
+	dlqCh := make(chan DLQEvent, 10)
+	errorConfigs := []ErrorHandlerConfig{{
+		OperatorName: "selective-map",
+		MaxRetries:   0,
+		OnExhausted:  RouteToDLQ,
+	}}
+
+	// Map that fails only on event #50.
+	selectiveMap := &selectiveErrorMap{failIndex: 50}
+	err := runOperatorChain(ctx, []Operator{selectiveMap}, inputCh, controlCh, outputCh, aligner, 1,
+		NoopCheckpointMetrics(), testLogger(), nil, nil, errorConfigs, dlqCh, NoopErrorMetrics())
+	if err != nil {
+		t.Fatalf("expected nil, got: %v", err)
+	}
+
+	close(outputCh)
+	var dataCount int
+	for msg := range outputCh {
+		if msg.Type == OutputData {
+			dataCount++
+		}
+	}
+	if dataCount != 99 {
+		t.Errorf("data events: got %d, want 99", dataCount)
+	}
+	if len(dlqCh) != 1 {
+		t.Errorf("DLQ events: got %d, want 1", len(dlqCh))
+	}
+}
+
+func TestOperatorChain_ErrorHandler_WithTransactionalSink(t *testing.T) {
+	// Verify that error handling on a map operator works alongside
+	// a transactional sink (2PC protocol is unaffected).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	// transientErrorMap that fails first 2 calls then succeeds.
+	mapOp := &transientErrorMap{failCount: 2}
+	sink := &mockTransactionalSink{
+		writeCh:     make(chan struct{}, 10),
+		preCommitCh: make(chan struct{}, 1),
+		commitCh:    make(chan struct{}, 1),
+	}
+
+	ops := []Operator{mapOp, sink}
+
+	// Error config only on the map operator (index 0). Sink (index 1) has zero config.
+	errorConfigs := []ErrorHandlerConfig{
+		{
+			OperatorName: "retry-map",
+			MaxRetries:   5,
+			Backoff:      FixedBackoff(1 * time.Millisecond),
+			OnExhausted:  FailJob,
+		},
+		{}, // Zero config for sink.
+	}
+
+	var acked []uint64
+	var ackedMu sync.Mutex
+	ackFn := func(checkpointID uint64) {
+		ackedMu.Lock()
+		acked = append(acked, checkpointID)
+		ackedMu.Unlock()
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1,
+			NoopCheckpointMetrics(), testLogger(), sink, ackFn, errorConfigs, nil, NoopErrorMetrics())
+	}()
+
+	// Send event and wait for it to be written (after retries).
+	inputCh <- Event{Value: []byte("a")}
+	select {
+	case <-sink.writeCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Write")
+	}
+
+	// Send barrier and wait for PreCommit.
+	aligner.OnBarrier(0, 1, 1)
+	controlCh <- ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 1, EpochID: 1}
+	select {
+	case <-sink.preCommitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for PreCommit")
+	}
+
+	// Send commit and wait for Commit.
+	controlCh <- ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 1, EpochID: 1}
+	select {
+	case <-sink.commitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Commit")
+	}
+
+	controlCh <- ControlMsg{Type: CtrlShutdown}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runOperatorChain: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("operator chain did not finish")
+	}
+
+	// Verify the sink received the event (after retries).
+	if len(sink.Written()) != 1 {
+		t.Errorf("written: got %d, want 1", len(sink.Written()))
+	}
+	// Verify 2PC lifecycle.
+	if sink.BeginTxnCalls() != 2 { // startup + after commit
+		t.Errorf("BeginTransaction calls: got %d, want 2", sink.BeginTxnCalls())
+	}
+	ackedMu.Lock()
+	if len(acked) != 1 || acked[0] != 1 {
+		t.Errorf("ackFn calls: got %v, want [1]", acked)
+	}
+	ackedMu.Unlock()
+}
+
+// T1: Classifier-only config activates error handling path.
+// A user can set Classifier without MaxRetries or OnExhausted; the custom
+// classifier must still be invoked (not silently ignored via legacy path).
+func TestOperatorChain_ClassifierOnlyConfig_ActivatesErrorHandling(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	dlqCh := make(chan DLQEvent, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	// Operator always returns an error. Custom classifier marks it Transient
+	// (but MaxRetries=0, OnExhausted=FailJob, so it will exhaust immediately
+	// and fail the job). The key test: the custom classifier IS invoked.
+	classifierCalled := false
+	errorConfigs := []ErrorHandlerConfig{{
+		OperatorName: "classifier-only",
+		MaxRetries:   0,
+		OnExhausted:  FailJob, // zero value
+		Classifier: func(err error) ErrorClass {
+			classifierCalled = true
+			return ErrorClassPoison
+		},
+	}}
+
+	op := &poisonErrorMap{}
+	inputCh <- Event{Value: []byte("x")}
+	close(inputCh)
+
+	err := runOperatorChain(ctx, []Operator{op}, inputCh, controlCh, outputCh, aligner, 1,
+		NoopCheckpointMetrics(), testLogger(), nil, nil, errorConfigs, dlqCh, NoopErrorMetrics())
+
+	// With Classifier-only config (MaxRetries=0, OnExhausted=FailJob), a poison
+	// error goes through handleExhausted → FailJob → returns error.
+	if err == nil {
+		t.Fatal("expected error (FailJob on poison), got nil")
+	}
+	if !classifierCalled {
+		t.Error("custom classifier was never called — hasErrorHandling guard is ignoring Classifier field")
+	}
+}
+
+// T2: Panic behavior differs between legacy and error-handling paths.
+// Legacy path: panic propagates to top-level defer recover → ErrOperatorPanic.
+// Error-handling path: safeInvoke catches panic → classified as Poison → DLQ'd.
+func TestOperatorChain_PanicBehavior_LegacyVsErrorHandling(t *testing.T) {
+	t.Run("legacy_path_panic_fails_job", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		inputCh := make(chan Event, 10)
+		controlCh := make(chan ControlMsg, 10)
+		outputCh := make(chan OutputMsg, 10)
+		aligner := NewBarrierAligner(1, 100)
+
+		op := &panicOnFirstMap{}
+		inputCh <- Event{Value: []byte("x")}
+		close(inputCh)
+
+		// No error configs → legacy path.
+		err := runOperatorChain(ctx, []Operator{op}, inputCh, controlCh, outputCh, aligner, 1,
+			NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
+
+		if !errors.Is(err, ErrOperatorPanic) {
+			t.Fatalf("legacy path: expected ErrOperatorPanic, got: %v", err)
+		}
+	})
+
+	t.Run("error_handling_path_panic_dlqs", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		inputCh := make(chan Event, 10)
+		controlCh := make(chan ControlMsg, 10)
+		outputCh := make(chan OutputMsg, 10)
+		dlqCh := make(chan DLQEvent, 10)
+		aligner := NewBarrierAligner(1, 100)
+
+		op := &panicOnFirstMap{}
+		inputCh <- Event{Value: []byte("x")}
+		close(inputCh)
+
+		// Error handling enabled → safeInvoke catches panic → Poison → DLQ.
+		errorConfigs := []ErrorHandlerConfig{{
+			OperatorName: "panic-op",
+			MaxRetries:   2,
+			OnExhausted:  RouteToDLQ,
+		}}
+
+		err := runOperatorChain(ctx, []Operator{op}, inputCh, controlCh, outputCh, aligner, 1,
+			NoopCheckpointMetrics(), testLogger(), nil, nil, errorConfigs, dlqCh, NoopErrorMetrics())
+
+		if err != nil {
+			t.Fatalf("error-handling path: expected nil (DLQ'd), got: %v", err)
+		}
+		if len(dlqCh) != 1 {
+			t.Fatalf("expected 1 DLQ event (panic caught), got %d", len(dlqCh))
+		}
+		dlqEvent := <-dlqCh
+		if dlqEvent.OperatorName != "panic-op" {
+			t.Errorf("DLQ operator: got %q, want %q", dlqEvent.OperatorName, "panic-op")
+		}
+	})
+}
+
+// selectiveErrorMap fails on a specific event index (0-based).
+type selectiveErrorMap struct {
+	mu        sync.Mutex
+	count     int
+	failIndex int
+}
+
+func (m *selectiveErrorMap) Open(ctx context.Context) error       { return nil }
+func (m *selectiveErrorMap) Close() error                         { return nil }
+func (m *selectiveErrorMap) Checkpoint(id uint64) ([]byte, error) { return nil, nil }
+func (m *selectiveErrorMap) Map(ctx context.Context, e Event) (Event, error) {
+	m.mu.Lock()
+	idx := m.count
+	m.count++
+	m.mu.Unlock()
+	if idx == m.failIndex {
+		return Event{}, errors.New("selective failure")
+	}
+	return e, nil
 }

@@ -1,0 +1,43 @@
+# Wire configuration file example.
+# Copy to wire.yaml and customize as needed.
+#
+# Precedence (highest to lowest):
+#   CLI flags → environment variables → config file(s) → defaults
+#
+# Environment variable substitution is supported:
+#   ${VAR}           — replaced by the value of VAR (error if unset)
+#   ${VAR:-default}  — replaced by VAR, or "default" if unset
+
+node:
+  # id: "wire-node-1"          # Node ID (defaults to hostname)
+  data_dir: "data/coordinator"  # PebbleDB metadata storage
+  store_db: "pebble"            # Storage backend
+
+http:
+  addr: ":4001"                 # HTTP API listen address
+  # adv_addr: ""                # Advertised address for cluster peers
+  # allow_origin: ""            # CORS allowed origin
+
+  # tls:
+  #   cert: "/path/to/cert.pem"
+  #   key: "/path/to/key.pem"
+  #   ca_cert: "/path/to/ca.pem"
+
+# node_tls:                     # Wire protocol TLS
+#   cert: "/path/to/cert.pem"
+#   key: "/path/to/key.pem"
+#   ca_cert: "/path/to/ca.pem"
+#   verify_client: false
+
+# auth:
+#   file: "/path/to/auth.json"
+
+write_queue:
+  capacity: 1024
+  batch_size: 128
+  timeout: "50ms"
+  # transactional: false
+
+election:
+  backend: "noop"                           # "noop" or "filelock"
+  lock_path: "data/coordinator/leader.lock"

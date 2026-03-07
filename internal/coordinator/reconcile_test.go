@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/protocol"
 )
 
@@ -19,7 +20,7 @@ func newTestCoordinator(t *testing.T) (*Coordinator, *MemoryStore) {
 	c.epoch = 5
 	c.recovered = true
 	c.mu.Unlock()
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 	return c, store
 }
 
@@ -69,7 +70,7 @@ func TestRegisterWorker_EpochFencing(t *testing.T) {
 
 func TestRegisterWorker_NotLeader(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 	// State is STANDBY (default).
@@ -88,7 +89,9 @@ func TestReconcileTasks_Match(t *testing.T) {
 	// Persist tasks for worker.
 	tasks := []string{"task-1", "task-2"}
 	data, _ := protocol.EncodeMsgPack(tasks)
-	store.Set(WorkerTasksKey("w1"), data)
+	if err := store.Set(WorkerTasksKey("w1"), data); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	// Worker reports the same tasks.
 	resp, err := c.RegisterWorker(RegisterWorkerRequest{
@@ -131,7 +134,9 @@ func TestReconcileTasks_Missing(t *testing.T) {
 	// Coordinator has tasks assigned but worker doesn't report them.
 	tasks := []string{"task-1", "task-2", "task-3"}
 	data, _ := protocol.EncodeMsgPack(tasks)
-	store.Set(WorkerTasksKey("w1"), data)
+	if err := store.Set(WorkerTasksKey("w1"), data); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	resp, err := c.RegisterWorker(RegisterWorkerRequest{
 		WorkerID:         "w1",
@@ -155,7 +160,9 @@ func TestReconcileTasks_MixedScenario(t *testing.T) {
 	// Coordinator has task-1 and task-2 assigned.
 	tasks := []string{"task-1", "task-2"}
 	data, _ := protocol.EncodeMsgPack(tasks)
-	store.Set(WorkerTasksKey("w1"), data)
+	if err := store.Set(WorkerTasksKey("w1"), data); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	// Worker reports task-1 (match) and task-3 (orphan).
 	// task-2 is missing from worker.
@@ -181,7 +188,9 @@ func TestReconcileTasks_MissingTaskMarkedFailed(t *testing.T) {
 	// Coordinator has task-1, task-2, task-3 assigned to worker.
 	tasks := []string{"task-1", "task-2", "task-3"}
 	data, _ := protocol.EncodeMsgPack(tasks)
-	store.Set(WorkerTasksKey("w1"), data)
+	if err := store.Set(WorkerTasksKey("w1"), data); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
 
 	// Worker only reports task-1: task-2 and task-3 are missing.
 	resp, err := c.RegisterWorker(RegisterWorkerRequest{

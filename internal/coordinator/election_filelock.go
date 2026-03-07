@@ -58,7 +58,7 @@ func (f *FileLockElection) Campaign(ctx context.Context, nodeID string) (*Leader
 		// Try non-blocking exclusive lock.
 		err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err != nil {
-			lockFile.Close()
+			_ = lockFile.Close()
 			// Lock held by another process, wait and retry.
 			select {
 			case <-ctx.Done():
@@ -77,8 +77,8 @@ func (f *FileLockElection) Campaign(ctx context.Context, nodeID string) (*Leader
 		// Lock acquired. Read and increment epoch from companion file.
 		epoch, err := f.incrementEpoch()
 		if err != nil {
-			syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-			lockFile.Close()
+			_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+			_ = lockFile.Close()
 			return nil, err
 		}
 
@@ -105,8 +105,8 @@ func (f *FileLockElection) Resign(_ context.Context) error {
 		f.lctx = nil
 	}
 	if f.lockFile != nil {
-		syscall.Flock(int(f.lockFile.Fd()), syscall.LOCK_UN)
-		f.lockFile.Close()
+		_ = syscall.Flock(int(f.lockFile.Fd()), syscall.LOCK_UN)
+		_ = f.lockFile.Close()
 		f.lockFile = nil
 	}
 	return nil

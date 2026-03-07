@@ -30,7 +30,9 @@ func TestNoopElection_GetLeader(t *testing.T) {
 	}
 
 	// After campaign, returns self.
-	e.Campaign(context.Background(), "node-1")
+	if _, err = e.Campaign(context.Background(), "node-1"); err != nil {
+		t.Fatalf("Campaign: %v", err)
+	}
 	nodeID, addr, err := e.GetLeader(context.Background())
 	if err != nil {
 		t.Fatalf("GetLeader: %v", err)

@@ -33,6 +33,6 @@ func BenchmarkEncodePebbleKey(b *testing.B) {
 func BenchmarkDecodePebbleKey(b *testing.B) {
 	encoded := EncodePebbleKey(42, 100, []byte("user-key-data"), []byte("namespace"))
 	for b.Loop() {
-		DecodePebbleKey(encoded)
+		_, _, _, _ = DecodePebbleKey(encoded)
 	}
 }

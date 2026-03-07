@@ -57,10 +57,10 @@ type BuildInfo struct {
 	Branch  string
 }
 
-func initFlags(name, desc string, build *BuildInfo) (*Config, error) {
+func initFlags(name, desc string, build *BuildInfo) (*Config, *pflag.FlagSet, error) {
 
 	if pflag.Parsed() {
-		return nil, fmt.Errorf("command-line flags already parsed")
+		return nil, nil, fmt.Errorf("command-line flags already parsed")
 	}
 
 	config := &Config{}
@@ -98,7 +98,7 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, error) {
 		f.PrintDefaults()
 	}
 
-	pflag.CommandLine.MarkHidden("help")
+	_ = pflag.CommandLine.MarkHidden("help")
 
 	if err := f.Parse(os.Args[1:]); err != nil {
 		fmt.Printf("error when loading flags: %v\n", err)
@@ -111,7 +111,7 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, error) {
 		errorExit(0, msg)
 	}
 
-	return config, nil
+	return config, f, nil
 }
 
 func errorExit(code int, msg string) {
