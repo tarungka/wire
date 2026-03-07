@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/protocol"
 )
 
@@ -74,7 +75,7 @@ func runOperatorChain(
 		if err := op.Open(ctx); err != nil {
 			// Close already-opened operators in reverse order.
 			for j := i - 1; j >= 0; j-- {
-				operators[j].Close()
+				_ = operators[j].Close()
 			}
 			return fmt.Errorf("operator[%d] open: %w", i, err)
 		}
@@ -203,8 +204,6 @@ func processEvent(cc *chainContext, event Event) error {
 				if err := invokeSinkWithRetry(cc, link, e, o); err != nil {
 					return err
 				}
-				// Sink is terminal — no further output.
-				return nil
 			}
 		}
 		events = next
@@ -224,7 +223,7 @@ func processEvent(cc *chainContext, event Event) error {
 // invokeMapWithRetry wraps a MapOperator call with error handling.
 // Returns nil Event pointer if the event was filtered or DLQ'd/dropped.
 func invokeMapWithRetry(cc *chainContext, link ChainLink, e Event, op MapOperator) (*Event, error) {
-	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob
+	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob || link.Config.Classifier != nil
 
 	if !hasErrorHandling {
 		// Legacy path: no error handling, fail on any error.
@@ -255,7 +254,7 @@ func invokeMapWithRetry(cc *chainContext, link ChainLink, e Event, op MapOperato
 
 // invokeFlatMapWithRetry wraps a FlatMapOperator call with error handling.
 func invokeFlatMapWithRetry(cc *chainContext, link ChainLink, e Event, op FlatMapOperator) ([]Event, error) {
-	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob
+	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob || link.Config.Classifier != nil
 
 	if !hasErrorHandling {
 		// Legacy path.
@@ -284,7 +283,7 @@ func invokeFlatMapWithRetry(cc *chainContext, link ChainLink, e Event, op FlatMa
 
 // invokeSinkWithRetry wraps a SinkOperator Write call with error handling.
 func invokeSinkWithRetry(cc *chainContext, link ChainLink, e Event, op SinkOperator) error {
-	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob
+	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob || link.Config.Classifier != nil
 
 	if !hasErrorHandling {
 		// Legacy path.

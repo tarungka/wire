@@ -484,7 +484,9 @@ func TestOperatorChain_AbortCheckpoint_DrainsSideBufferNoBarrier(t *testing.T) {
 
 	// Simulate input 0 has sent a barrier and buffered events.
 	aligner.OnBarrier(0, 1, 1)
-	aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-buffered")})
+	if err := aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-buffered")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
 
 	// Send abort for this checkpoint.
 	controlCh <- ControlMsg{Type: CtrlAbortCheckpoint, CheckpointID: 1}
@@ -535,8 +537,12 @@ func TestOperatorChain_CheckpointBarrier_SideBufferDrainedBeforeBarrier(t *testi
 
 	// Simulate: input 0 barrier arrived, events side-buffered.
 	aligner.OnBarrier(0, 1, 1)
-	aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-1")})
-	aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-2")})
+	if err := aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-1")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
+	if err := aligner.BufferEvent(ctx, 0, Event{Value: []byte("side-2")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
 
 	// Input 1 barrier arrives — alignment complete.
 	aligner.OnBarrier(1, 1, 1)
@@ -1501,6 +1507,113 @@ func TestOperatorChain_ErrorHandler_WithTransactionalSink(t *testing.T) {
 		t.Errorf("ackFn calls: got %v, want [1]", acked)
 	}
 	ackedMu.Unlock()
+}
+
+// T1: Classifier-only config activates error handling path.
+// A user can set Classifier without MaxRetries or OnExhausted; the custom
+// classifier must still be invoked (not silently ignored via legacy path).
+func TestOperatorChain_ClassifierOnlyConfig_ActivatesErrorHandling(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	inputCh := make(chan Event, 10)
+	controlCh := make(chan ControlMsg, 10)
+	outputCh := make(chan OutputMsg, 10)
+	dlqCh := make(chan DLQEvent, 10)
+	aligner := NewBarrierAligner(1, 100)
+
+	// Operator always returns an error. Custom classifier marks it Transient
+	// (but MaxRetries=0, OnExhausted=FailJob, so it will exhaust immediately
+	// and fail the job). The key test: the custom classifier IS invoked.
+	classifierCalled := false
+	errorConfigs := []ErrorHandlerConfig{{
+		OperatorName: "classifier-only",
+		MaxRetries:   0,
+		OnExhausted:  FailJob, // zero value
+		Classifier: func(err error) ErrorClass {
+			classifierCalled = true
+			return ErrorClassPoison
+		},
+	}}
+
+	op := &poisonErrorMap{}
+	inputCh <- Event{Value: []byte("x")}
+	close(inputCh)
+
+	err := runOperatorChain(ctx, []Operator{op}, inputCh, controlCh, outputCh, aligner, 1,
+		NoopCheckpointMetrics(), testLogger(), nil, nil, errorConfigs, dlqCh, NoopErrorMetrics())
+
+	// With Classifier-only config (MaxRetries=0, OnExhausted=FailJob), a poison
+	// error goes through handleExhausted → FailJob → returns error.
+	if err == nil {
+		t.Fatal("expected error (FailJob on poison), got nil")
+	}
+	if !classifierCalled {
+		t.Error("custom classifier was never called — hasErrorHandling guard is ignoring Classifier field")
+	}
+}
+
+// T2: Panic behavior differs between legacy and error-handling paths.
+// Legacy path: panic propagates to top-level defer recover → ErrOperatorPanic.
+// Error-handling path: safeInvoke catches panic → classified as Poison → DLQ'd.
+func TestOperatorChain_PanicBehavior_LegacyVsErrorHandling(t *testing.T) {
+	t.Run("legacy_path_panic_fails_job", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		inputCh := make(chan Event, 10)
+		controlCh := make(chan ControlMsg, 10)
+		outputCh := make(chan OutputMsg, 10)
+		aligner := NewBarrierAligner(1, 100)
+
+		op := &panicOnFirstMap{}
+		inputCh <- Event{Value: []byte("x")}
+		close(inputCh)
+
+		// No error configs → legacy path.
+		err := runOperatorChain(ctx, []Operator{op}, inputCh, controlCh, outputCh, aligner, 1,
+			NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
+
+		if !errors.Is(err, ErrOperatorPanic) {
+			t.Fatalf("legacy path: expected ErrOperatorPanic, got: %v", err)
+		}
+	})
+
+	t.Run("error_handling_path_panic_dlqs", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		inputCh := make(chan Event, 10)
+		controlCh := make(chan ControlMsg, 10)
+		outputCh := make(chan OutputMsg, 10)
+		dlqCh := make(chan DLQEvent, 10)
+		aligner := NewBarrierAligner(1, 100)
+
+		op := &panicOnFirstMap{}
+		inputCh <- Event{Value: []byte("x")}
+		close(inputCh)
+
+		// Error handling enabled → safeInvoke catches panic → Poison → DLQ.
+		errorConfigs := []ErrorHandlerConfig{{
+			OperatorName: "panic-op",
+			MaxRetries:   2,
+			OnExhausted:  RouteToDLQ,
+		}}
+
+		err := runOperatorChain(ctx, []Operator{op}, inputCh, controlCh, outputCh, aligner, 1,
+			NoopCheckpointMetrics(), testLogger(), nil, nil, errorConfigs, dlqCh, NoopErrorMetrics())
+
+		if err != nil {
+			t.Fatalf("error-handling path: expected nil (DLQ'd), got: %v", err)
+		}
+		if len(dlqCh) != 1 {
+			t.Fatalf("expected 1 DLQ event (panic caught), got %d", len(dlqCh))
+		}
+		dlqEvent := <-dlqCh
+		if dlqEvent.OperatorName != "panic-op" {
+			t.Errorf("DLQ operator: got %q, want %q", dlqEvent.OperatorName, "panic-op")
+		}
+	})
 }
 
 // selectiveErrorMap fails on a specific event index (0-based).

@@ -181,7 +181,6 @@ func handleExhausted(
 ) error {
 	switch cfg.OnExhausted {
 	case RouteToDLQ:
-		metrics.IncDLQTotal(cfg.OperatorName)
 		dlqEvent := DLQEvent{
 			OriginalEvent: event,
 			Error:         err.Error(),
@@ -192,7 +191,9 @@ func handleExhausted(
 		if dlqCh != nil {
 			select {
 			case dlqCh <- dlqEvent:
+				metrics.IncDLQTotal(cfg.OperatorName)
 			default:
+				metrics.IncDLQOverflowTotal(cfg.OperatorName)
 				log.Error().Str("operator", cfg.OperatorName).Msg("DLQ channel full, dropping DLQ event")
 			}
 		}

@@ -125,7 +125,7 @@ func BenchmarkBarrierAligner_BufferDrain(b *testing.B) {
 		ba := NewBarrierAligner(2, 4096)
 		ba.OnBarrier(0, uint64(i+1), 1)
 		for j := 0; j < 100; j++ {
-			ba.BufferEvent(ctx, 0, Event{Value: []byte("x")})
+			_ = ba.BufferEvent(ctx, 0, Event{Value: []byte("x")})
 		}
 		ba.OnBarrier(1, uint64(i+1), 1)
 		ba.DrainAll(uint64(i + 1))
