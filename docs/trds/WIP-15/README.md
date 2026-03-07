@@ -88,19 +88,30 @@ Define the complete job lifecycle state machine with all transitions, a REST API
                     +------------+
 ```
 
+The same state machine rendered in Mermaid for maintainability:
+
 ```mermaid
 stateDiagram-v2
-    [*] --> CREATED
+    [*] --> CREATED : Job submitted
+
     CREATED --> DEPLOYING : SubmitJob()
-    DEPLOYING --> RUNNING : all tasks RUNNING
-    RUNNING --> PAUSED : Pause
-    RUNNING --> FAILING : failure detected
-    RUNNING --> FINISHED : bounded sources exhausted
-    RUNNING --> CANCELED : Cancel
-    PAUSED --> DEPLOYING : Resume
-    FAILING --> DEPLOYING : restart budget remains
-    FAILING --> CANCELED : restart budget exhausted
-    DEPLOYING --> CANCELED : Cancel
+
+    DEPLOYING --> RUNNING : All tasks RUNNING
+    DEPLOYING --> FAILING : Deploy error
+
+    RUNNING --> FINISHING : Bounded sources exhausted
+    RUNNING --> PAUSED : User pause (savepoint triggered)
+    RUNNING --> FAILING : Failure detected
+    RUNNING --> CANCELING : User cancel
+
+    FINISHING --> FINISHED : All sinks flushed
+
+    PAUSED --> DEPLOYING : User resume (restore from savepoint)
+
+    FAILING --> DEPLOYING : Restart from checkpoint (budget remains)
+    FAILING --> CANCELED : Restart budget exhausted
+
+    CANCELING --> CANCELED : All tasks stopped
 
     FINISHED --> [*]
     CANCELED --> [*]
@@ -319,7 +330,7 @@ sinks: [...]
 {
   "job_id": "job-a1b2c3d4",
   "status": "CANCELED",
-  "savepoint_path": "s3://bucket/jobs/job-a1b2c3d4/savepoints/sp-1"
+  "savepoint_path": "/var/lib/wire/jobs/job-a1b2c3d4/savepoints/sp-1"
 }
 ```
 
@@ -340,7 +351,7 @@ sinks: [...]
 {
   "job_id": "job-a1b2c3d4",
   "status": "PAUSED",
-  "savepoint_path": "s3://bucket/jobs/job-a1b2c3d4/savepoints/sp-2"
+  "savepoint_path": "/var/lib/wire/jobs/job-a1b2c3d4/savepoints/sp-2"
 }
 ```
 
@@ -396,7 +407,7 @@ sinks: [...]
 {
   "savepoint_id": "sp-1",
   "status": "COMPLETED",
-  "path": "s3://bucket/jobs/job-a1b2c3d4/savepoints/sp-1",
+  "path": "/var/lib/wire/jobs/job-a1b2c3d4/savepoints/sp-1",
   "trigger_time": "2024-01-15T12:00:00Z",
   "completion_time": "2024-01-15T12:00:01Z"
 }
@@ -448,7 +459,7 @@ Deletes savepoint data from durable storage. Returns `204 No Content`.
 
 ### 3.13 Endpoint: `DELETE /api/v1/cluster/nodes/{node_id}`
 
-Removes a node from the Raft cluster. Running tasks are rescheduled.
+Removes a node from the Coordinator cluster. Running tasks are rescheduled.
 
 ---
 
@@ -466,7 +477,7 @@ Removes a node from the Raft cluster. Running tasks are rescheduled.
 
 ### 4.1 Job Metadata Schema
 
-Stored in Coordinator's metadata store (Raft-replicated):
+Stored in Coordinator's metadata store (persisted in PebbleDB; see WIP-09):
 
 | Field | Type | Description |
 | -- | -- | -- |
@@ -490,7 +501,7 @@ Stored in Coordinator's metadata store (Raft-replicated):
 | savepoint_id | string | Unique identifier |
 | job_id | string | Parent job |
 | status | enum | IN_PROGRESS/COMPLETED/FAILED |
-| path | string | Durable storage path (e.g., `s3://...`) |
+| path | string | Durable storage path (e.g., `/var/lib/wire/jobs/.../savepoints/sp-1`) |
 | trigger_time | timestamp | When triggered |
 | completion_time | timestamp | When completed |
 
@@ -558,7 +569,7 @@ Stored in Coordinator's metadata store (Raft-replicated):
 ### 7.2 Data Protection
 
 * Job configurations may contain connector credentials via `${ENV_VAR}` references — the resolved values are never stored in job metadata or returned in API responses.
-* Savepoint data inherits the encryption of the underlying storage (S3 SSE, filesystem encryption).
+* Savepoint data inherits storage-level encryption (filesystem or volume encryption).
 
 ---
 

@@ -196,7 +196,7 @@ Heartbeat state is ephemeral — maintained in Coordinator memory:
 | task_slots | int | Available task slots |
 | resource_report | ResourceReport | Latest resource usage |
 
-Heartbeat state is **not** persisted to the Raft log (too frequent, too ephemeral). On Coordinator failover, workers must re-register via the next heartbeat cycle.
+Heartbeat state is **not** persisted to the Coordinator's metadata store (too frequent, too ephemeral; see WIP-09 Decision 4). On Coordinator failover, workers must re-register via the next heartbeat cycle.
 
 ---
 
@@ -272,5 +272,5 @@ ResourceReport includes system-level metrics (CPU, memory, disk). These are not 
 | # | Question / Risk | Owner | Status |
 | -- | -- | -- | -- |
 | 1 | Should heartbeat interval be configurable per-worker (not just globally)? | Tarun | Open |
-| 2 | Should we use Raft's built-in heartbeat instead of a separate mechanism? | Tarun | Open |
+| 2 | ~~Should we use Raft's built-in heartbeat instead of a separate mechanism?~~ | Tarun | **Resolved.** WIP-09 defers embedded Raft to Phase D. The separate heartbeat mechanism (this TRD) is the design. Even if Raft is added later, its internal heartbeat serves consensus, not application-level health monitoring — so a separate mechanism is needed regardless. |
 | 3 | Risk: GC pauses in Go can exceed 5s on large heaps. Default timeout may need tuning for large workers. | — | Acknowledged |

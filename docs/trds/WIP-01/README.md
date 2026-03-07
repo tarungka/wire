@@ -179,7 +179,7 @@ Every message transmitted on a Yamux stream is wrapped in a frame with the follo
 |-------|--------|------|----------|-------------|
 | **Length** | 0 | 4 bytes | Big-endian uint32 | Total number of bytes following this field: `1 + 4 + len(Payload)` = `5 + len(Payload)`. Does **not** include the 4-byte length field itself. Maximum value: 16,777,215 (16 MB - 1). Minimum valid value: 5 (MsgType + CRC32C, zero-length payload). |
 | **MsgType** | 4 | 1 byte | uint8 | Message type discriminator. See Section 3.2. |
-| **CRC32C** | 5 | 4 bytes | Big-endian uint32 | CRC-32C (Castagnoli) checksum computed over the `MsgType` byte concatenated with the `Payload` bytes. Uses the polynomial `0x1EDC6F41`. Hardware-accelerated via SSE4.2 (x86-64) or CRC instructions (ARM64). Detects all single-bit errors, all double-bit errors, and all burst errors up to 32 bits. |
+| **CRC32C** | 5 | 4 bytes | Big-endian uint32 | CRC-32C (Castagnoli) checksum computed over the `MsgType` byte concatenated with the `Payload` bytes. Uses the polynomial `0x1EDC6F41`. Hardware-accelerated via SSE4.2 (x86-64) or CRC instructions (ARM64). Detects all single-bit errors, all double-bit errors, and all burst errors up to 32 bits. **Always active** — every frame includes a valid CRC32C; receivers MUST always verify. |
 | **Payload** | 9 | N bytes | msgpack | Message-type-specific payload. Encoded using `hashicorp/go-msgpack/v2` with `codec.MsgpackHandle{}`. Length is `Length - 5` bytes. |
 
 **Total frame size:** `4 + 1 + 4 + N = 9 + N` bytes, where `N = len(Payload)`.
@@ -490,9 +490,9 @@ Version and feature negotiation is handled at the session level via `SessionHand
 
 | Field | msgpack Key | Type | Required | Description |
 |-------|-------------|------|----------|-------------|
-| **SourceTaskID** | `"src"` | `str` | Yes | Identifier of the upstream task opening this stream. Format: `"{operator_name}-{subtask_index}"` (e.g., `"map-op-3"`). |
-| **TargetTaskID** | `"dst"` | `str` | Yes | Identifier of the downstream task this stream is addressed to. Format: `"{operator_name}-{subtask_index}"` (e.g., `"reduce-op-1"`). |
-| **PartitionIndex** | `"p"` | `uint16` | No | Output partition index. Used by the downstream to route the stream to the correct input channel. Omitted for non-partitioned streams. |
+| **ProtocolVersion** | `"v"` | `uint16` | Yes | Protocol version offered by the sender. Current version: `1`. |
+| **MinVersion** | `"min_v"` | `uint16` | Yes | Minimum protocol version the sender supports. Current: `1`. |
+| **Features** | `"f"` | `uint32` | No | Bitmask of feature flags. Bit 0: CRC32C (reserved — CRC32C is always active, see Section 3.1; this bit exists for forward compatibility). Bit 1: LZ4 compression (reserved). Bits 2-31: reserved (must be 0). Omitted if no optional features are requested. |
 
 **Go struct:**
 
@@ -506,12 +506,12 @@ type StreamHeaderMsg struct {
 
 **Semantics:**
 
-1. The upstream (sender) sends a `StreamHeader` frame as the very first frame on a new data stream.
-2. The downstream reads the `StreamHeader` and uses `TargetTaskID` and `PartitionIndex` to route the stream to the correct task's input channel.
-3. If the downstream does not recognize the `TargetTaskID` (e.g., the task has been rescheduled), it closes the stream with `EndOfPartition(Reason=Error)`.
-4. A receiver that does not receive a `StreamHeader` frame within 5 seconds of stream open MUST close the stream.
-5. If the first frame on a data stream has a `MsgType` other than `0x00`, the receiver MUST close the stream immediately (protocol violation).
-6. No response is sent. The data stream is strictly unidirectional after the `StreamHeader`.
+1. The initiator (upstream/sender) sends a `Handshake` frame as the very first frame on a new stream.
+2. The receiver validates version compatibility: if `sender.ProtocolVersion < receiver.MinVersion` or `receiver.ProtocolVersion < sender.MinVersion`, the versions are incompatible. The receiver closes the stream with `EndOfPartition(Reason=Error)`.
+3. The effective protocol version is `min(sender.ProtocolVersion, receiver.ProtocolVersion)`.
+4. Feature flags are negotiated by bitwise AND: `active = sender.Features & receiver.Features`. This applies to future optional features (e.g., LZ4 compression). **CRC32C checksums are always active** — the CRC32C field in every frame header is always computed and verified regardless of the negotiated feature set. Bit 0 (`FeatureCRC32C`) is reserved for forward compatibility; implementations MUST NOT treat CRC32C as optional.
+5. A receiver that does not receive a `Handshake` frame within 5 seconds of stream open MUST close the stream.
+6. If the first frame on a stream has a `MsgType` other than `0x00`, the receiver MUST close the stream immediately (protocol violation).
 
 **Example frame (hex):**
 
@@ -843,7 +843,7 @@ The wire protocol runs on top of TCP, which can optionally be wrapped in TLS. Wh
 
 ### 7.2 No Protocol-Level Authentication
 
-The wire protocol itself does not include authentication fields (e.g., tokens, signatures). Authentication is handled at the TLS layer (certificate-based) or at the cluster membership layer (Raft-based node registration). A node that is not a cluster member cannot discover worker addresses and therefore cannot open data plane connections.
+The wire protocol itself does not include authentication fields (e.g., tokens, signatures). Authentication is handled at the TLS layer (certificate-based) or at the cluster membership layer (cluster membership registration; see WIP-09). A node that is not a cluster member cannot discover worker addresses and therefore cannot open data plane connections.
 
 ### 7.3 Denial of Service Considerations
 

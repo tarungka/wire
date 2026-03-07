@@ -86,32 +86,42 @@ Coordinator                     Worker (Sink Task)               External System
     │                               │                               │
 ```
 
+The 2PC protocol with failure handling branches — showing the happy path, Phase 1 failure (abort), and Phase 2 failure (retry):
+
 ```mermaid
 sequenceDiagram
     participant C as Coordinator
     participant S as Sink Task
-    participant E as External System
+    participant Ext as External System
 
-    Note over C: Trigger Checkpoint N
-    C->>S: CheckpointBarrier(N)
-
-    rect rgb(232, 245, 233)
-        Note over S,E: Phase 1: Pre-Commit
-        S->>E: PreCommit(N) — flush buffered writes
-        E->>S: Prepared
-    end
-
+    Note over C,Ext: Happy Path
+    C->>S: TriggerCheckpoint(N) (barrier arrives)
+    S->>Ext: PreCommit(N) — flush and prepare tx
+    Ext-->>S: Prepared
     S->>C: AcknowledgeCheckpoint(N)
-    Note over C: All ACKs collected
-    C->>S: NotifyCheckpointComplete(N)
+    C->>C: All tasks ACK'd
+    C->>S: Checkpoint N Complete
+    S->>Ext: Commit(N) — finalize tx
+    Ext-->>S: Committed
+    S->>Ext: BeginTransaction() — start next tx
 
-    rect rgb(227, 242, 253)
-        Note over S,E: Phase 2: Commit
-        S->>E: Commit(N) — make writes visible
-        E->>S: Committed
+    alt Phase 1 Failure (before global completion)
+        Note over S: Worker crashes during PreCommit
+        C->>C: Checkpoint N timeout, Job = FAILING
+        C->>S: Cancel tasks
+        S->>Ext: Abort() — rollback prepared tx
+        C->>C: Restart from Checkpoint N-1
+        S->>Ext: BeginTransaction() — fresh tx
+        Note over S: Events from Epoch N reprocessed
     end
 
-    S->>S: BeginTransaction() for next epoch
+    alt Phase 2 Failure (Commit fails)
+        S->>Ext: Commit(N) fails (system down)
+        S->>S: Retry with exponential backoff
+        S->>Ext: Commit(N) — retry
+        Ext-->>S: Committed
+        Note over S: Commit must be idempotent
+    end
 ```
 
 ### 2.2 Component Breakdown

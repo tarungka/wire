@@ -108,8 +108,8 @@ flowchart LR
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--config` | `[]string` | `.config/config.json` | Path to one or more config files (merged in order) |
-| `--node-id` | `string` | _(advertised Raft addr)_ | Unique identifier for this node |
-| `--store-db` | `string` | `bbolt` | Backend database for Raft stable/log store (`bbolt`, `badgerdb`) |
+| `--node-id` | `string` | _(hostname)_ | Unique identifier for this node |
+| `--store-db` | `string` | `pebble` | Backend database for Coordinator metadata store. **Legacy:** `bbolt` and `badgerdb` values exist in code but are superseded by PebbleDB (see WIP-09). |
 | `--debug` | `bool` | `false` | Enable debug mode (verbose logging) |
 | `--version` | `bool` | `false` | Print version information and exit |
 
@@ -125,7 +125,9 @@ flowchart LR
 | `--http-ca-cert` | `string` | `""` | Path to CA certificate for HTTPS client verification |
 | `--http-verify-client` | `bool` | `false` | Enable mutual TLS for HTTPS |
 
-#### Raft Consensus Flags
+#### Raft Consensus Flags (Deferred — WIP-09 Phase D)
+
+> **Note:** These flags exist in `cmd/init.go` but are **not active** in the current design. WIP-09 defers embedded Raft consensus to Phase D. These flags will only apply if/when Phase D is implemented. The current HA strategy uses PebbleDB persistence (Phase A), pluggable leader election (Phase B), and fencing tokens (Phase C).
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
@@ -146,7 +148,9 @@ flowchart LR
 | `--raft-reap-node-timeout` | `duration` | `0` | Reap unreachable voting nodes after this duration (0 = disabled) |
 | `--raft-reap-read-only-node-timeout` | `duration` | `0` | Reap unreachable non-voting nodes after this duration (0 = disabled) |
 
-#### Cluster Join Flags
+#### Cluster Join Flags (Deferred — WIP-09 Phase D)
+
+> **Note:** These flags exist in `cmd/init.go` but are **not active** in the current design. Cluster join is part of the embedded Raft multi-node setup deferred to WIP-09 Phase D. The current single-Coordinator deployment does not use cluster join.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
@@ -207,7 +211,7 @@ flowchart LR
 node:
   id: "node-1"
   data_dir: "/var/lib/wire"
-  store_db: "bbolt"
+  store_db: "pebble"
   debug: false
 
 http:
@@ -220,26 +224,28 @@ http:
     ca_cert: "/etc/wire/certs/ca.crt"
     verify_client: false
 
-raft:
-  addr: "0.0.0.0:4002"
-  adv_addr: "node1.wire.local:4002"
-  heartbeat_timeout: "1s"
-  election_timeout: "1s"
-  apply_timeout: "10s"
-  snapshot_threshold: 8192
-  snapshot_interval: "10s"
-  leader_lease_timeout: "0s"
-  log_level: "INFO"
-  non_voter: false
-  shutdown_stepdown: true
+# raft: and cluster: sections are for future multi-node HA (Phase D of WIP-09).
+# These settings are NOT active in the current single-Coordinator design.
+# raft:
+#   addr: "0.0.0.0:4002"
+#   adv_addr: "node1.wire.local:4002"
+#   heartbeat_timeout: "1s"
+#   election_timeout: "1s"
+#   apply_timeout: "10s"
+#   snapshot_threshold: 8192
+#   snapshot_interval: "10s"
+#   leader_lease_timeout: "0s"
+#   log_level: "INFO"
+#   non_voter: false
+#   shutdown_stepdown: true
 
-cluster:
-  join: ["node2:4002", "node3:4002"]
-  join_attempts: 5
-  join_interval: "3s"
-  bootstrap_expect: 3
-  bootstrap_expect_timeout: "120s"
-  connect_timeout: "30s"
+# cluster:
+#   join: ["node2:4002", "node3:4002"]
+#   join_attempts: 5
+#   join_interval: "3s"
+#   bootstrap_expect: 3
+#   bootstrap_expect_timeout: "120s"
+#   connect_timeout: "30s"
 
 node_tls:
   cert: "/etc/wire/certs/node.crt"
@@ -296,17 +302,19 @@ config:
 | Port | Protocol | Purpose |
 |------|----------|---------|
 | `4001` | HTTP/HTTPS | REST API, health checks, Prometheus metrics |
-| `4002` | TCP | Raft consensus + Yamux data transport |
+| `4002` | TCP | Inter-node communication (Yamux data transport). **Note:** Raft consensus on this port is deferred to WIP-09 Phase D. |
 
-Both ports are configurable via `--http-addr` and `--raft-addr`.
+Both ports are configurable via `--http-addr` and `--raft-addr` (the `--raft-addr` flag name is a legacy artifact; it serves as the general inter-node communication address).
 
 ### 4.2 Data Directory Layout
 
 ```
-/var/lib/wire/                      # --raft-dir
-  raft/                             # Raft log and stable store
-    raft.db                         # BoltDB (or BadgerDB) for log/stable store
-    snapshots/                      # Raft snapshots
+/var/lib/wire/                      # --raft-dir (data root)
+  coordinator/                      # Coordinator metadata
+    metadata/                       # PebbleDB metadata store (see WIP-09)
+  # raft/                           # Future: Raft log and stable store (Phase D of WIP-09)
+  #   raft.db                       # Future: Raft log/stable store
+  #   snapshots/                    # Future: Raft snapshots
   state/                            # Pebble state databases (per task)
     job-<id>/task-<n>/pebble-db/
 ```

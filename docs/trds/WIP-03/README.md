@@ -156,7 +156,7 @@ When parallelism changes (e.g., 4 → 8) via savepoint-based rescale:
 4. Task 4 downloads state from the savepoint and extracts groups [16, 32).
 5. Each task opens a Pebble instance with only its assigned key range.
 
-State transfer is via the durable storage (S3/MinIO), not direct worker-to-worker.
+State transfer is via the durable store (replicated PebbleDB). During rescaling, tasks restore state from local or peer-replicated checkpoints.
 
 ```mermaid
 flowchart TD

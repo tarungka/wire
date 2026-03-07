@@ -395,7 +395,7 @@ const (
 ### 4.2 Storage Considerations
 
 * **State storage:** All keyed state is stored in Pebble, scoped to `(KeyGroup, OperatorID, UserKey)`. See WIP-03 for key encoding.
-* **Checkpoint storage:** State snapshots are uploaded to S3/MinIO or local filesystem. See `state-backend.md` Canon doc.
+* **Checkpoint storage:** State snapshots are persisted locally in PebbleDB and replicated to peer nodes via the wire protocol. See `state-backend.md` Canon doc.
 * **Job metadata:** Job graph, configuration, and checkpoint history stored in Coordinator's metadata store (see WIP-09).
 
 ---
@@ -460,7 +460,7 @@ const (
 ### 7.2 Data Protection
 
 * **In transit:** All data between SDK client and Coordinator encrypted via TLS.
-* **At rest:** State in Pebble inherits worker disk encryption. Checkpoints in S3 use server-side encryption.
+* **At rest:** State in Pebble inherits worker disk encryption. Checkpoints replicated to peers inherit the same disk encryption.
 
 ---
 

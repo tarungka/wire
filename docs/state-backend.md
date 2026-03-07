@@ -78,13 +78,13 @@ When a Task receives a **Barrier**, it triggers `backend.Checkpoint()`:
 1.  **Flush:** Pebble MemTables are flushed to disk (optional, or just included in log).
 2.  **Link:** Pebble creates a "Checkpoint" (directory of hard links to SSTables). This takes milliseconds.
 3.  **Resume:** The Task resumes processing immediately.
-4.  **Upload (Async):** A background Goroutine walks the Checkpoint directory and uploads new/changed SSTables to the Durable Store (S3/MinIO).
+4.  **Replicate (Async):** A background Goroutine walks the Checkpoint directory and replicates new/changed SSTables to the durable store (replicated PebbleDB on peer nodes via the wire protocol; see WIP-09).
 
 ### 4.2 Durable Storage Organization
-Snapshots are stored in an Object Store layout:
+Snapshots are stored in a durable storage layout:
 
 ```
-s3://bucket/jobs/<job-id>/checkpoints/
+<data-dir>/jobs/<job-id>/checkpoints/
     chk-1/
         metadata.json  (Global Graph Topology)
         task-0-state/  (SSTables)
@@ -98,4 +98,4 @@ s3://bucket/jobs/<job-id>/checkpoints/
 ## 5. Consistency Guarantees
 
 *   **Snapshot Isolation:** Pebble provides a consistent view of the database at the moment `Checkpoint()` was called.
-*   **Atomic Restore:** On recovery, the database is completely replaced by the downloaded snapshot before processing resumes. Wire does not support "partial" restores that mix old and new state.
+*   **Atomic Restore:** On recovery, the database is completely replaced by the restored snapshot before processing resumes. Wire does not support "partial" restores that mix old and new state.

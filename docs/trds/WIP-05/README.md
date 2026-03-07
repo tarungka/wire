@@ -72,23 +72,33 @@ Coordinator                      Operator (2 inputs)
     ├──────────────────────────────▶│
 ```
 
-**Barrier Alignment State Machine:**
+The same timeout flow as a Mermaid sequence diagram, showing the timing interactions between the Coordinator and a multi-input operator:
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> Aligning : barrier arrives on first input
-    Aligning --> WaitingForInputs : more inputs pending
-    Aligning --> FullyAligned : all barriers received
-    WaitingForInputs --> WaitingForInputs : barrier on next input
-    WaitingForInputs --> FullyAligned : all barriers received
-    FullyAligned --> SnapshotInProgress : begin state snapshot
-    SnapshotInProgress --> Idle : snapshot complete, forward barrier
+sequenceDiagram
+    participant C as Coordinator
+    participant Op as Operator (2 inputs)
+    participant IA as Input A (upstream)
+    participant IB as Input B (upstream)
 
-    Aligning --> TimedOut : alignment timeout expires
-    WaitingForInputs --> TimedOut : alignment timeout expires
-    TimedOut --> Aborted : AbortCheckpoint(N)
-    Aborted --> Idle : drain side buffers, resume processing
+    C->>Op: TriggerCheckpoint(N)
+    IA->>Op: Barrier(N) arrives on Input A
+    activate Op
+    Note over Op: Buffer Input A data,<br/>continue processing Input B
+
+    Note over IB: Input B stalled or slow
+    Note over C: Timeout timer running...
+
+    C->>C: Timeout expires (no ACK from Op)
+    C->>Op: AbortCheckpoint(N)
+    deactivate Op
+    Note over Op: Release buffered data,<br/>discard partial snapshot,<br/>resume normal processing
+
+    C->>Op: TriggerCheckpoint(N+1)
+    IA->>Op: Barrier(N+1) arrives
+    IB->>Op: Barrier(N+1) arrives
+    Note over Op: All inputs aligned, snapshot succeeds
+    Op->>C: AcknowledgeCheckpoint(N+1)
 ```
 
 ### 2.2 Component Breakdown
