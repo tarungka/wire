@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestBarrierAlignment_SingleInput(t *testing.T) {
@@ -91,7 +92,9 @@ func TestBarrierAlignment_StaggeredBarriers(t *testing.T) {
 
 	// Buffer events for input 0 while waiting for others.
 	for i := 0; i < 5; i++ {
-		ba.BufferEvent(ctx, 0, Event{Key: []byte("0"), Value: []byte{byte(i)}})
+		if err := ba.BufferEvent(ctx, 0, Event{Key: []byte("0"), Value: []byte{byte(i)}}); err != nil {
+			t.Fatalf("BufferEvent: %v", err)
+		}
 	}
 
 	// Barrier from input 2 (skip 1).
@@ -99,7 +102,9 @@ func TestBarrierAlignment_StaggeredBarriers(t *testing.T) {
 
 	// Buffer events for input 2.
 	for i := 0; i < 3; i++ {
-		ba.BufferEvent(ctx, 2, Event{Key: []byte("2"), Value: []byte{byte(i)}})
+		if err := ba.BufferEvent(ctx, 2, Event{Key: []byte("2"), Value: []byte{byte(i)}}); err != nil {
+			t.Fatalf("BufferEvent: %v", err)
+		}
 	}
 
 	// Barrier from input 1 completes alignment.
@@ -133,8 +138,12 @@ func TestBarrierAlignment_DrainOrdering(t *testing.T) {
 	ctx := context.Background()
 
 	ba.OnBarrier(0, 1, 1)
-	ba.BufferEvent(ctx, 0, Event{Value: []byte("a0")})
-	ba.BufferEvent(ctx, 0, Event{Value: []byte("a1")})
+	if err := ba.BufferEvent(ctx, 0, Event{Value: []byte("a0")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
+	if err := ba.BufferEvent(ctx, 0, Event{Value: []byte("a1")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
 
 	ba.OnBarrier(1, 1, 1)
 	// No events buffered for input 1 — DrainAll should still work.
@@ -168,7 +177,9 @@ func TestBarrierAlignment_AbortDrain(t *testing.T) {
 	ctx := context.Background()
 
 	ba.OnBarrier(0, 1, 1)
-	ba.BufferEvent(ctx, 0, Event{Value: []byte("buffered")})
+	if err := ba.BufferEvent(ctx, 0, Event{Value: []byte("buffered")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
 
 	// Abort (drain + reset without completing alignment).
 	drained := ba.DrainAll(1)
@@ -208,7 +219,9 @@ func TestBarrierAlignment_WrongCheckpointDrain(t *testing.T) {
 	ctx := context.Background()
 
 	ba.OnBarrier(0, 1, 1)
-	ba.BufferEvent(ctx, 0, Event{Value: []byte("x")})
+	if err := ba.BufferEvent(ctx, 0, Event{Value: []byte("x")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
 
 	// DrainAll with wrong checkpoint ID should return nil.
 	drained := ba.DrainAll(99)
@@ -223,7 +236,9 @@ func TestBarrierAlignment_CapacityReuse(t *testing.T) {
 
 	// First checkpoint cycle.
 	ba.OnBarrier(0, 1, 1)
-	ba.BufferEvent(ctx, 0, Event{Value: []byte("a")})
+	if err := ba.BufferEvent(ctx, 0, Event{Value: []byte("a")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
 	ba.DrainAll(1)
 	ba.Reset(1)
 
@@ -300,7 +315,9 @@ func TestBarrierAlignment_BufferEventErrorWrapsErrSideBufferFull(t *testing.T) {
 	ctx := context.Background()
 
 	ba.OnBarrier(0, 1, 1)
-	ba.BufferEvent(ctx, 0, Event{Value: []byte("fill")})
+	if err := ba.BufferEvent(ctx, 0, Event{Value: []byte("fill")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
 
 	err := ba.BufferEvent(ctx, 0, Event{Value: []byte("overflow")})
 	if err == nil {
@@ -323,5 +340,75 @@ func TestBarrierAlignment_ActiveEpochSetOnFirstBarrierOnly(t *testing.T) {
 	ba.OnBarrier(1, 1, 11)
 	if ba.ActiveEpochID() != 10 {
 		t.Fatalf("epoch should remain 10 (set by first barrier), got %d", ba.ActiveEpochID())
+	}
+}
+
+func TestBarrierAligner_AlignmentStartTime(t *testing.T) {
+	ba := NewBarrierAligner(2, 100)
+
+	// No alignment active — should be zero.
+	if !ba.AlignmentStartTime().IsZero() {
+		t.Fatal("expected zero time before any barrier")
+	}
+
+	before := time.Now()
+	ba.OnBarrier(0, 1, 1)
+	after := time.Now()
+
+	st := ba.AlignmentStartTime()
+	if st.IsZero() {
+		t.Fatal("expected non-zero time after first barrier")
+	}
+	if st.Before(before) || st.After(after) {
+		t.Errorf("start time %v not between %v and %v", st, before, after)
+	}
+
+	// Second barrier should not change start time.
+	ba.OnBarrier(1, 1, 1)
+	if ba.AlignmentStartTime() != st {
+		t.Error("start time changed after second barrier")
+	}
+
+	// Reset should clear it.
+	ba.Reset(1)
+	if !ba.AlignmentStartTime().IsZero() {
+		t.Fatal("expected zero time after reset")
+	}
+}
+
+func TestBarrierAligner_BufferedEventCount(t *testing.T) {
+	ba := NewBarrierAligner(3, 100)
+	ctx := context.Background()
+
+	if ba.BufferedEventCount() != 0 {
+		t.Fatal("expected 0 buffered events initially")
+	}
+
+	ba.OnBarrier(0, 1, 1)
+	if err := ba.BufferEvent(ctx, 0, Event{Value: []byte("a")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
+	if err := ba.BufferEvent(ctx, 0, Event{Value: []byte("b")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
+
+	if ba.BufferedEventCount() != 2 {
+		t.Fatalf("expected 2 buffered events, got %d", ba.BufferedEventCount())
+	}
+
+	ba.OnBarrier(1, 1, 1)
+	if err := ba.BufferEvent(ctx, 1, Event{Value: []byte("c")}); err != nil {
+		t.Fatalf("BufferEvent: %v", err)
+	}
+
+	if ba.BufferedEventCount() != 3 {
+		t.Fatalf("expected 3 buffered events across inputs, got %d", ba.BufferedEventCount())
+	}
+
+	// Drain clears buffers.
+	ba.OnBarrier(2, 1, 1)
+	ba.DrainAll(1)
+	if ba.BufferedEventCount() != 0 {
+		t.Fatalf("expected 0 buffered events after drain, got %d", ba.BufferedEventCount())
 	}
 }

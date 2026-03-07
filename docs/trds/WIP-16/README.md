@@ -102,6 +102,39 @@ Define a connector SDK with two core interfaces — `Source` (replayable reads w
 * **Technology:** Global registry with `RegisterSource` / `RegisterSink` functions
 * **Interactions:** YAML parser and SDK look up connectors by type string.
 
+### 2.2.1 Connector Lifecycle State Machine
+
+The lifecycle of a connector (Source or Sink) within a Task Slot, showing the callback ordering that connector implementers must follow:
+
+```mermaid
+stateDiagram-v2
+    [*] --> INIT : Task Slot created
+
+    INIT --> OPEN : Open(ctx, config)
+    OPEN --> RUNNING : First ReadBatch() or WriteBatch()
+
+    state RUNNING {
+        [*] --> Processing
+        Processing --> Processing : ReadBatch() / WriteBatch()
+        Processing --> Checkpointing : Checkpoint barrier arrives
+        Checkpointing --> Processing : Checkpoint ACK sent
+    }
+
+    RUNNING --> CLOSING : Shutdown signal or stream ends
+    RUNNING --> FAILED : Unrecoverable error
+
+    CLOSING --> CLOSED : Close() returns
+    FAILED --> CLOSED : Close() called for cleanup
+
+    CLOSED --> [*]
+
+    note right of Checkpointing
+        Source: persist offset
+        Sink: PreCommit() then Commit()
+        TransactionalSink: full 2PC cycle
+    end note
+```
+
 ### 2.3 Data Flow
 
 **Source data flow:**

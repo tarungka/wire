@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/logger"
 )
 
@@ -71,7 +72,7 @@ func (m *Mux) Dial(ctx context.Context, addr string) (*FrameStream, error) {
 		m.mu.Lock()
 		delete(m.peers, addr)
 		m.mu.Unlock()
-		sess.Close()
+		_ = sess.Close()
 
 		sess, err = m.getOrCreateSession(addr)
 		if err != nil {
@@ -85,7 +86,7 @@ func (m *Mux) Dial(ctx context.Context, addr string) (*FrameStream, error) {
 
 	fs := NewFrameStream(raw, m.cfg)
 	if err := fs.SendHandshake(); err != nil {
-		fs.Close()
+		_ = fs.Close()
 		return nil, fmt.Errorf("transport: handshake to %s: %w", addr, err)
 	}
 
@@ -118,10 +119,10 @@ func (m *Mux) Close() error {
 
 	m.mu.Lock()
 	if m.listener != nil {
-		m.listener.Close()
+		_ = m.listener.Close()
 	}
 	for addr, sess := range m.peers {
-		sess.Close()
+		_ = sess.Close()
 		delete(m.peers, addr)
 	}
 	m.mu.Unlock()
@@ -199,10 +200,10 @@ func (m *Mux) sessionAcceptLoop(ctx context.Context, sess *Session) {
 		select {
 		case m.streamCh <- fs:
 		case <-ctx.Done():
-			fs.Close()
+			_ = fs.Close()
 			return
 		case <-m.ctx.Done():
-			fs.Close()
+			_ = fs.Close()
 			return
 		}
 	}
@@ -232,7 +233,7 @@ func (m *Mux) getOrCreateSession(addr string) (*Session, error) {
 	// Double-check — another goroutine may have created one.
 	if existing, ok := m.peers[addr]; ok && !existing.IsClosed() {
 		m.mu.Unlock()
-		sess.Close()
+		_ = sess.Close()
 		return existing, nil
 	}
 	m.peers[addr] = sess

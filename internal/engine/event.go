@@ -37,10 +37,12 @@ func (e Event) ToProto() *protocol.DataRecordMsg {
 type ControlType uint8
 
 const (
-	CtrlBarrierReceived ControlType = iota // A checkpoint barrier arrived on an input.
-	CtrlAbortCheckpoint                    // Abort the current checkpoint.
-	CtrlShutdown                           // Graceful shutdown requested.
-	CtrlEndOfPartition                     // An input has reached end of partition.
+	CtrlBarrierReceived  ControlType = iota // A checkpoint barrier arrived on an input.
+	CtrlAbortCheckpoint                     // Abort the current checkpoint.
+	CtrlShutdown                            // Graceful shutdown requested.
+	CtrlEndOfPartition                      // An input has reached end of partition.
+	CtrlCommitCheckpoint                    // Coordinator confirms global checkpoint completion; sink should Commit.
+	CtrlAbortTransaction                    // Coordinator instructs sink to abort in-flight transaction.
 )
 
 // ControlMsg carries control signals from input readers to the operator chain.
