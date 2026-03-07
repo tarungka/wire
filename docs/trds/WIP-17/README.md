@@ -128,6 +128,48 @@ Document Wire's layered security model: (1) TLS encryption for the HTTP API, (2)
 6. Clients authenticate via Basic Auth or API key (from auth file).
 7. Coordinator validates role and authorizes the request.
 
+### 2.4 mTLS Authentication Sequence
+
+The following sequence shows how mutual TLS authentication establishes trust between Wire nodes and how API clients authenticate for REST access:
+
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant C as Coordinator (port 4002)
+    participant CA as Shared CA
+
+    Note over W,CA: Node-to-Node mTLS (port 4002)
+    W->>C: TCP connect + TLS ClientHello
+    C-->>W: ServerHello + Coordinator certificate
+    W->>W: Verify Coordinator cert against CA
+    W->>C: Worker certificate (client auth)
+    C->>C: Verify Worker cert against CA
+    C->>C: Extract worker_id from cert CN
+    Note over W,C: Mutual auth complete, Yamux session established
+    W->>C: Heartbeat, UpdateTaskStatus (over Yamux)
+
+    participant Client as API Client
+    participant API as Coordinator (port 4001)
+
+    Note over Client,API: REST API Authentication (port 4001)
+    Client->>API: HTTPS request + Authorization header
+    alt Basic Auth
+        API->>API: Decode base64, bcrypt compare password_hash
+    else API Key
+        API->>API: Match Bearer token against auth file
+    end
+    API->>API: Look up user role (admin/operator/viewer)
+    API->>API: Check RBAC permissions for endpoint
+
+    alt Authorized
+        API-->>Client: 200 OK (response)
+    else Wrong credentials
+        API-->>Client: 401 Unauthorized
+    else Insufficient role
+        API-->>Client: 403 Forbidden
+    end
+```
+
 ---
 
 ## 3. API Design

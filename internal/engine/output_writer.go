@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/transport"
 )
 

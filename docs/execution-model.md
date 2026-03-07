@@ -100,7 +100,7 @@ This alignment ensures the snapshot captures **exactly** the state of "All event
 ### 5.3 Snapshot Lifecycle
 1.  **Trigger:** Coordinator sends `TriggerCheckpoint(N)` to Sources.
 2.  **Local Snapshot:** Each operator creates an async **Pebble Checkpoint** (hard link) of its local state.
-3.  **Persist:** Background workers upload the checkpoint data to durable storage (S3/MinIO).
+3.  **Persist:** Background workers replicate the checkpoint data to the durable store (replicated PebbleDB on peer nodes).
 4.  **Acknowledge:** Workers notify the Coordinator.
 5.  **Complete:** When all tasks ACK Checkpoint N, it is marked "Global Complete".
 

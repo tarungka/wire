@@ -136,3 +136,121 @@ func (e *errorSource) GenerateWatermark() int64 { return 0 }
 func testTracker(numInputs int) *InputWatermarkTracker {
 	return NewInputWatermarkTracker(numInputs)
 }
+
+// mockTransactionalSink implements TransactionalSink with call tracking
+// and optional error injection.
+type mockTransactionalSink struct {
+	mu             sync.Mutex
+	written        []Event
+	beginTxnCalls  int
+	preCommitCalls []uint64
+	commitCalls    []uint64
+	abortCalls     int
+	preCommitErr   error // inject error
+	commitErr      error
+	abortErr       error
+	beginTxnErr    error
+
+	// Synchronization channels for deterministic testing (optional).
+	writeCh     chan struct{} // signaled on each Write call
+	preCommitCh chan struct{} // signaled on each PreCommit call
+	commitCh    chan struct{} // signaled on each Commit call
+}
+
+func (m *mockTransactionalSink) Open(ctx context.Context) error       { return nil }
+func (m *mockTransactionalSink) Close() error                         { return nil }
+func (m *mockTransactionalSink) Checkpoint(id uint64) ([]byte, error) { return nil, nil }
+
+func (m *mockTransactionalSink) Write(ctx context.Context, e Event) error {
+	m.mu.Lock()
+	m.written = append(m.written, e)
+	ch := m.writeCh
+	m.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+func (m *mockTransactionalSink) BeginTransaction(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.beginTxnCalls++
+	return m.beginTxnErr
+}
+
+func (m *mockTransactionalSink) PreCommit(ctx context.Context, checkpointID uint64) error {
+	m.mu.Lock()
+	m.preCommitCalls = append(m.preCommitCalls, checkpointID)
+	err := m.preCommitErr
+	ch := m.preCommitCh
+	m.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	return err
+}
+
+func (m *mockTransactionalSink) Commit(ctx context.Context, checkpointID uint64) error {
+	m.mu.Lock()
+	m.commitCalls = append(m.commitCalls, checkpointID)
+	err := m.commitErr
+	ch := m.commitCh
+	m.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	return err
+}
+
+func (m *mockTransactionalSink) Abort(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.abortCalls++
+	return m.abortErr
+}
+
+func (m *mockTransactionalSink) Written() []Event {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]Event, len(m.written))
+	copy(out, m.written)
+	return out
+}
+
+func (m *mockTransactionalSink) BeginTxnCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.beginTxnCalls
+}
+
+func (m *mockTransactionalSink) PreCommitCallIDs() []uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]uint64, len(m.preCommitCalls))
+	copy(out, m.preCommitCalls)
+	return out
+}
+
+func (m *mockTransactionalSink) CommitCallIDs() []uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]uint64, len(m.commitCalls))
+	copy(out, m.commitCalls)
+	return out
+}
+
+func (m *mockTransactionalSink) AbortCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.abortCalls
+}

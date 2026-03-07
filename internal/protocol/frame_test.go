@@ -162,7 +162,9 @@ func TestDataRecord_MaximumPayload(t *testing.T) {
 func TestReadFrame_OversizedRejected(t *testing.T) {
 	var buf bytes.Buffer
 	// Write a length field that exceeds max frame size.
-	binary.Write(&buf, binary.BigEndian, DefaultMaxFrameSize+1)
+	if err := binary.Write(&buf, binary.BigEndian, DefaultMaxFrameSize+1); err != nil {
+		t.Fatalf("binary.Write: %v", err)
+	}
 	// Write dummy data so ReadFull doesn't EOF on length read.
 	buf.Write(make([]byte, 100))
 
@@ -176,7 +178,9 @@ func TestReadFrame_UnderMinimumRejected(t *testing.T) {
 	for _, length := range []uint32{0, 1, 2, 3, 4} {
 		t.Run("", func(t *testing.T) {
 			var buf bytes.Buffer
-			binary.Write(&buf, binary.BigEndian, length)
+			if err := binary.Write(&buf, binary.BigEndian, length); err != nil {
+				t.Fatalf("binary.Write: %v", err)
+			}
 			buf.Write(make([]byte, 100))
 
 			_, err := ReadFrame(&buf, DefaultMaxFrameSize)

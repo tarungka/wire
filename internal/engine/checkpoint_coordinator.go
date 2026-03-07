@@ -15,6 +15,13 @@ type ackMsg struct {
 	CheckpointID uint64
 }
 
+// pendingCommitInfo holds deferred commit notification data so the
+// coordinator can send CtrlCommitCheckpoint outside the lock.
+type pendingCommitInfo struct {
+	checkpointID uint64
+	epochID      uint64
+}
+
 // CheckpointCoordinator tracks per-checkpoint timeouts, triggers aborts on
 // timeout, and enforces consecutive failure thresholds. It is the central
 // component added by WIP-05.
@@ -45,6 +52,10 @@ type CheckpointCoordinator struct {
 	// Internal communication.
 	ackCh     chan ackMsg
 	triggerCh chan struct{} // signals a new checkpoint was triggered
+
+	// Two-phase commit state for transactional sinks (WIP-10).
+	sinkTxnStates map[int]*SinkTaskTxnState // key: task index
+	pendingCommit *pendingCommitInfo        // deferred commit notification
 }
 
 // NewCheckpointCoordinator creates a new coordinator.
@@ -63,9 +74,66 @@ func NewCheckpointCoordinator(
 		log:             log,
 		controlChannels: controlChannels,
 		pendingACKs:     make(map[int]bool),
-		ackCh:           make(chan ackMsg, len(controlChannels)),
+		ackCh:           make(chan ackMsg, 2*len(controlChannels)),
 		triggerCh:       make(chan struct{}, 1),
 	}
+}
+
+// RegisterTransactionalSink registers a task index as hosting a transactional
+// sink. Must be called before Run(). The coordinator will send
+// CtrlCommitCheckpoint and CtrlAbortTransaction to registered sinks.
+func (cc *CheckpointCoordinator) RegisterTransactionalSink(taskIndex int, taskID string) {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	if cc.sinkTxnStates == nil {
+		cc.sinkTxnStates = make(map[int]*SinkTaskTxnState)
+	}
+	cc.sinkTxnStates[taskIndex] = &SinkTaskTxnState{
+		TaskID: taskID,
+		State:  TxnActive,
+	}
+}
+
+// sendCommitNotifications sends CtrlCommitCheckpoint to all registered
+// transactional sink task control channels. Must be called without holding mu
+// to avoid deadlock on full channels.
+func (cc *CheckpointCoordinator) sendCommitNotifications(ctx context.Context, info *pendingCommitInfo) {
+	cc.mu.Lock()
+	sinkIndices := make([]int, 0, len(cc.sinkTxnStates))
+	for idx := range cc.sinkTxnStates {
+		sinkIndices = append(sinkIndices, idx)
+	}
+	cc.mu.Unlock()
+
+	commitMsg := ControlMsg{
+		Type:         CtrlCommitCheckpoint,
+		CheckpointID: info.checkpointID,
+		EpochID:      info.epochID,
+	}
+	for _, idx := range sinkIndices {
+		if idx < len(cc.controlChannels) {
+			select {
+			case cc.controlChannels[idx] <- commitMsg:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// PendingCommits returns task indices whose LastCommittedCheckpoint is behind
+// the given globally-completed checkpoint. Used during recovery to identify
+// sinks that need to re-commit.
+func (cc *CheckpointCoordinator) PendingCommits(globallyCompletedCheckpoint uint64) []int {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	var pending []int
+	for idx, state := range cc.sinkTxnStates {
+		if state.LastCommittedCheckpoint < globallyCompletedCheckpoint {
+			pending = append(pending, idx)
+		}
+	}
+	return pending
 }
 
 // resolveTimeout returns the configured timeout or the default.
@@ -83,7 +151,7 @@ func (cc *CheckpointCoordinator) TriggerCheckpoint(ctx context.Context, checkpoi
 
 	if cc.activeCheckpointID != 0 {
 		cc.mu.Unlock()
-		return fmt.Errorf("%w: checkpoint %d still active", ErrCheckpointAborted, cc.activeCheckpointID)
+		return fmt.Errorf("%w: checkpoint %d still active", ErrCheckpointAlreadyActive, cc.activeCheckpointID)
 	}
 
 	// MinPause enforcement.
@@ -196,7 +264,14 @@ func (cc *CheckpointCoordinator) Run(ctx context.Context) error {
 			if len(cc.pendingACKs) == 0 {
 				cc.completeCheckpoint()
 			}
+			pending := cc.pendingCommit
+			cc.pendingCommit = nil
 			cc.mu.Unlock()
+
+			// Send commit notifications outside the lock to avoid deadlock.
+			if pending != nil {
+				cc.sendCommitNotifications(ctx, pending)
+			}
 		}
 	}
 }
@@ -249,10 +324,42 @@ func (cc *CheckpointCoordinator) abortCheckpoint(ctx context.Context) error {
 		}
 	}
 
+	// Snapshot transactional sink indices and reset their state while still
+	// holding the lock. This avoids a second lock/unlock cycle and prevents
+	// a race with RegisterTransactionalSink between the two critical sections.
+	sinkIndices := make([]int, 0, len(cc.sinkTxnStates))
+	for idx := range cc.sinkTxnStates {
+		sinkIndices = append(sinkIndices, idx)
+		cc.sinkTxnStates[idx].State = TxnActive
+		cc.sinkTxnStates[idx].CurrentCheckpoint = 0
+	}
+
 	cc.activeCheckpointID = 0
 	cc.mu.Unlock()
 
-	// Send abort to all task slots.
+	// Send CtrlAbortTransaction to sink tasks FIRST so they rollback their
+	// external transaction before the barrier aligner is reset by
+	// CtrlAbortCheckpoint. This prevents a window where the sink processes
+	// CtrlAbortCheckpoint (resetting aligner/buffers) but continues writing
+	// into an open transaction.
+	if len(sinkIndices) > 0 {
+		txnAbortMsg := ControlMsg{
+			Type:         CtrlAbortTransaction,
+			CheckpointID: checkpointID,
+			EpochID:      epochID,
+		}
+		for _, idx := range sinkIndices {
+			if idx < len(cc.controlChannels) {
+				select {
+				case cc.controlChannels[idx] <- txnAbortMsg:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+	}
+
+	// Send CtrlAbortCheckpoint to all task slots.
 	abortMsg := ControlMsg{
 		Type:         CtrlAbortCheckpoint,
 		CheckpointID: checkpointID,
@@ -270,19 +377,35 @@ func (cc *CheckpointCoordinator) abortCheckpoint(ctx context.Context) error {
 }
 
 // completeCheckpoint resets active checkpoint state and consecutive failures.
-// Must be called with mu held.
+// Must be called with mu held. If transactional sinks are registered, stores
+// pending commit info for deferred notification (sent after releasing mu).
 func (cc *CheckpointCoordinator) completeCheckpoint() {
 	if cc.activeCheckpointID == 0 {
 		return
 	}
 
+	checkpointID := cc.activeCheckpointID
+	epochID := cc.activeEpochID
+
 	cc.log.Info().
-		Uint64("checkpoint_id", cc.activeCheckpointID).
+		Uint64("checkpoint_id", checkpointID).
 		Msg("checkpoint completed")
 
 	if cc.timer != nil {
 		cc.timer.Stop()
 		cc.timer = nil
+	}
+
+	// Store pending commit info for transactional sinks.
+	if len(cc.sinkTxnStates) > 0 {
+		cc.pendingCommit = &pendingCommitInfo{
+			checkpointID: checkpointID,
+			epochID:      epochID,
+		}
+		for _, state := range cc.sinkTxnStates {
+			state.CurrentCheckpoint = checkpointID
+			state.State = TxnPreCommitted
+		}
 	}
 
 	cc.activeCheckpointID = 0

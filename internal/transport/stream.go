@@ -10,6 +10,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/protocol"
 )
@@ -58,8 +59,8 @@ func (fs *FrameStream) SendHandshake() error {
 // On incompatible version, it sends EndOfPartition(Error) and returns ErrVersionIncompatible.
 func (fs *FrameStream) ReceiveHandshake() (*NegotiatedParams, error) {
 	// Set read deadline for handshake.
-	fs.raw.SetReadDeadline(time.Now().Add(fs.cfg.HandshakeTimeout))
-	defer fs.raw.SetReadDeadline(time.Time{}) // Clear deadline after handshake.
+	_ = fs.raw.SetReadDeadline(time.Now().Add(fs.cfg.HandshakeTimeout))
+	defer func() { _ = fs.raw.SetReadDeadline(time.Time{}) }() // Clear deadline after handshake.
 
 	frame, err := protocol.ReadFrame(fs.raw, fs.cfg.MaxFrameSize)
 	if err != nil {
@@ -88,7 +89,7 @@ func (fs *FrameStream) ReceiveHandshake() (*NegotiatedParams, error) {
 			SourceID: protocol.HandshakeSourceID,
 			Reason:   protocol.EndReasonError,
 		}
-		protocol.WriteFrame(fs.raw, protocol.MsgTypeEndOfPartition, eop)
+		_ = protocol.WriteFrame(fs.raw, protocol.MsgTypeEndOfPartition, eop)
 		return nil, protocol.ErrVersionIncompatible
 	}
 
@@ -145,7 +146,7 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 				fs.mu.Unlock()
 				if shouldClose {
 					fs.log.Error().Msg("closing stream: too many consecutive CRC errors")
-					fs.raw.Close()
+					_ = fs.raw.Close()
 					return nil, fmt.Errorf("transport: stream closed after %d consecutive CRC errors", MaxConsecutiveCRCErrors)
 				}
 				fs.log.Warn().Err(err).Msg("CRC mismatch, dropping frame")
@@ -167,7 +168,7 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 			fs.mu.Unlock()
 			if shouldClose {
 				fs.log.Error().Msg("closing stream: too many consecutive decode errors")
-				fs.raw.Close()
+				_ = fs.raw.Close()
 				return nil, fmt.Errorf("transport: stream closed after %d consecutive decode errors", MaxConsecutiveDecodeErrors)
 			}
 			fs.log.Warn().Err(err).Msg("decode error, dropping frame")
