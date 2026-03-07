@@ -3,9 +3,9 @@ package engine
 import (
 	"context"
 	"io"
-	"sync/atomic"
 
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/transport"
 )
@@ -30,7 +30,7 @@ func runInputReader(
 	eventCh chan<- Event,
 	controlCh chan<- ControlMsg,
 	aligner *BarrierAligner,
-	watermark *atomic.Int64,
+	tracker *InputWatermarkTracker,
 	log zerolog.Logger,
 ) error {
 	// Use a goroutine to read from the stream, enabling context cancellation
@@ -65,6 +65,7 @@ func runInputReader(
 		switch m := result.msg.(type) {
 		case *protocol.DataRecordMsg:
 			event := EventFromProto(m)
+			tracker.RecordActivity(inputIndex)
 			if aligner.IsAligning(inputIndex) {
 				if err := aligner.BufferEvent(ctx, inputIndex, event); err != nil {
 					log.Warn().Err(err).Int("input", inputIndex).Msg("side buffer full, blocking")
@@ -101,16 +102,7 @@ func runInputReader(
 			}
 
 		case *protocol.WatermarkMsg:
-			// CAS loop: only advance the watermark.
-			for {
-				cur := watermark.Load()
-				if m.Timestamp <= cur {
-					break
-				}
-				if watermark.CompareAndSwap(cur, m.Timestamp) {
-					break
-				}
-			}
+			tracker.AdvanceWatermark(inputIndex, m.Timestamp)
 
 		case *protocol.EndOfPartitionMsg:
 			ctrl := ControlMsg{

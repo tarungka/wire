@@ -11,7 +11,7 @@
 The 5 Canon docs (vision, architecture, execution-model, state-backend, operations) are strong internal engineering specs. They cover:
 - Core guarantees (EOS, deterministic recovery, strict ordering)
 - Fault tolerance model (ABS/Chandy-Lamport) with step-by-step barrier alignment
-- State backend design (Pebble, key encoding, async snapshot protocol, S3 layout)
+- State backend design (Pebble, key encoding, async snapshot protocol, checkpoint layout)
 - Event/time/watermark semantics
 - Backpressure cascade
 - Task lifecycle state machine
@@ -51,7 +51,7 @@ These topics are mentioned but lack enough detail to code from.
 
 10. **RPC Interface** — architecture.md lists 4 RPC functions (`SubmitJob`, `UpdateTaskStatus`, `TriggerCheckpoint`, `AcknowledgeCheckpoint`) but provides no signatures, request/response types, or error semantics.
 
-11. **Coordinator HA** — The coordinator is "lightweight and generally stateless (relying on an external metadata store or leader election for HA)" — but which metadata store? What leader election? Raft is in go.mod but not in the docs.
+11. **Coordinator HA** — ~~The coordinator is "lightweight and generally stateless (relying on an external metadata store or leader election for HA)" — but which metadata store? What leader election? Raft is in go.mod but not in the docs.~~ **Resolved (WIP-09).** WIP-09 defines a phased HA strategy: Phase A (PebbleDB persistence), Phase B (pluggable leader election), Phase C (fencing tokens), Phase D (embedded Raft, deferred).
 
 12. **Two-Phase Commit for Sinks** — execution-model.md says exactly-once requires "transactional or idempotent" sinks but never defines the 2PC protocol, pre-commit/commit hooks, or how it integrates with checkpointing.
 
@@ -65,7 +65,7 @@ These topics are mentioned but lack enough detail to code from.
 
 17. **Heartbeat Configuration** — "Timeout triggers Job Failure" but what interval? What timeout? Configurable?
 
-18. **Checkpoint Metadata Format** — `metadata.json` referenced in the S3 layout but its schema is never defined.
+18. **Checkpoint Metadata Format** — `metadata.json` referenced in the checkpoint layout but its schema is never defined.
 
 19. **Broadcast State** — Listed as a state type in state-backend.md ("Configuration data sent to all parallel instances") but no API, no update mechanism, no consistency guarantees.
 
@@ -84,7 +84,7 @@ This file is labeled Draft v0.1.0 but is functionally an outline, not documentat
 
 ### Category 4: Docs vs. Code Contradictions
 
-22. **Pebble vs. actual dependencies** — Docs commit to Pebble as the state backend, but go.mod imports BadgerDB (`dgraph-io/badger/v4`) and BoltDB (`go.etcd.io/bbolt`). The code that used these was deleted in the rewrite commits, but go.mod still lists them. The docs don't acknowledge multiple backend options.
+22. **Pebble vs. actual dependencies** — ~~Docs commit to Pebble as the state backend, but go.mod imports BadgerDB (`dgraph-io/badger/v4`) and BoltDB (`go.etcd.io/bbolt`). The code that used these was deleted in the rewrite commits, but go.mod still lists them. The docs don't acknowledge multiple backend options.~~ **Partially resolved (WIP-09).** WIP-09 standardizes on PebbleDB for Coordinator metadata. BoltDB/BadgerDB/Raft in go.mod are legacy dependencies from the pre-rewrite codebase; they will only be relevant if Phase D (embedded Raft) is implemented.
 
 23. **AGENTS.md references non-existent code** — References `internal/service/http/`, `internal/service/cluster/`, and other paths that don't exist. This file is stale.
 
@@ -102,7 +102,7 @@ This file is labeled Draft v0.1.0 but is functionally an outline, not documentat
 | **P0** | Job lifecycle / submission | Can't submit or manage jobs |
 | **P1** | RPC interface spec | Can't implement coordinator-worker communication |
 | **P1** | Wire protocol / serialization | Can't implement inter-node data transport |
-| **P1** | Coordinator HA | Can't run Wire in production |
+| **P1** | ~~Coordinator HA~~ Addressed (WIP-09) | ~~Can't run Wire in production~~ Phased HA strategy documented |
 | **P1** | 2PC for transactional sinks | Can't deliver exactly-once to external systems |
 | **P1** | Security (mTLS, auth) | Can't run Wire in production |
 | **P2** | Barrier alignment timeout | Edge case but affects correctness |

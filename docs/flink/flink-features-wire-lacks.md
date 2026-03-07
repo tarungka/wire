@@ -83,7 +83,7 @@ Flink has leader/standby JobManager failover:
 - **Kubernetes mode:** Lease objects for leader election, ConfigMaps for metadata
 - **JobResultStore:** Persists completed job results to filesystem for recovery
 
-**Wire gap:** Coordinator has no documented HA mechanism. If it dies, there is no automatic failover.
+**Wire gap (addressed):** WIP-09 documents a Flink-inspired phased HA strategy: Phase A (PebbleDB metadata persistence), Phase B (pluggable leader election), Phase C (fencing tokens for split-brain prevention), Phase D (embedded Raft, deferred). Phases A-C provide the core HA mechanism; automatic failover depends on deployment infrastructure (systemd, Kubernetes) until Phase D is implemented.
 
 ### 9. Broadcast State Pattern
 
@@ -211,7 +211,7 @@ Flink has configurable retention: `RETAIN_ON_CANCELLATION` (keep checkpoints aft
 | Priority | Count | Items |
 |----------|-------|-------|
 | **Critical** | 4 | User API, Job submission, Connectors, Savepoints |
-| **High** | 5 | Unaligned checkpoints, At-least-once, Side outputs, HA, Broadcast state |
+| **High** | 5 | Unaligned checkpoints, At-least-once, Side outputs, ~~HA~~ (addressed — WIP-09), Broadcast state |
 | **Medium** | 8 | Slot sharing, Concurrent snapshots, Multiple backends, Extra state types, Changelog, Count windows, Async I/O, Client |
 | **Lower** | 8 | WebUI, REST metrics, Multi-job, Cluster modes, Batch mode, Glossary, Compression, Retention policies |
 

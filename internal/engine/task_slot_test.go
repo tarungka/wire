@@ -3,7 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
-	"sync/atomic"
+	"fmt"
 	"testing"
 	"time"
 
@@ -84,10 +84,12 @@ func TestTaskSlot_StreamThrough(t *testing.T) {
 		}
 	}
 	// Send EoP.
-	inputWriter.WriteMessage(&protocol.EndOfPartitionMsg{
+	if err := inputWriter.WriteMessage(&protocol.EndOfPartitionMsg{
 		SourceID: "test",
 		Reason:   protocol.EndReasonExhausted,
-	})
+	}); err != nil {
+		t.Fatalf("WriteMessage EoP: %v", err)
+	}
 
 	// Read output events.
 	var dataCount int
@@ -157,10 +159,18 @@ func TestTaskSlot_CheckpointBarrier(t *testing.T) {
 	}()
 
 	// Write data, barrier, more data, then EoP.
-	inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("before"), EventTime: 1})
-	inputWriter.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 42, EpochID: 7, Timestamp: 1000})
-	inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("after"), EventTime: 2})
-	inputWriter.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "test", Reason: protocol.EndReasonExhausted})
+	if err := inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("before"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage before: %v", err)
+	}
+	if err := inputWriter.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 42, EpochID: 7, Timestamp: 1000}); err != nil {
+		t.Fatalf("WriteMessage barrier: %v", err)
+	}
+	if err := inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("after"), EventTime: 2}); err != nil {
+		t.Fatalf("WriteMessage after: %v", err)
+	}
+	if err := inputWriter.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "test", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP: %v", err)
+	}
 
 	// Read output.
 	var foundBarrier bool
@@ -208,8 +218,12 @@ func TestTaskSlot_OperatorPanic(t *testing.T) {
 	}()
 
 	// Send events — the panic map will panic on the 2nd event.
-	inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("1"), EventTime: 1})
-	inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("2"), EventTime: 2})
+	if err := inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("1"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage 1: %v", err)
+	}
+	if err := inputWriter.WriteMessage(&protocol.DataRecordMsg{Value: []byte("2"), EventTime: 2}); err != nil {
+		t.Fatalf("WriteMessage 2: %v", err)
+	}
 
 	select {
 	case err := <-done:
@@ -244,17 +258,31 @@ func TestTaskSlot_BarrierAlignment(t *testing.T) {
 	}()
 
 	// Input 0: data, barrier, data (side-buffered).
-	iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-before"), EventTime: 1})
-	iw0.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000})
-	iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-after"), EventTime: 2})
+	if err := iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-before"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage i0-before: %v", err)
+	}
+	if err := iw0.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000}); err != nil {
+		t.Fatalf("WriteMessage barrier i0: %v", err)
+	}
+	if err := iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-after"), EventTime: 2}); err != nil {
+		t.Fatalf("WriteMessage i0-after: %v", err)
+	}
 
 	// Input 1: data, barrier.
-	iw1.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i1-before"), EventTime: 3})
-	iw1.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000})
+	if err := iw1.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i1-before"), EventTime: 3}); err != nil {
+		t.Fatalf("WriteMessage i1-before: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000}); err != nil {
+		t.Fatalf("WriteMessage barrier i1: %v", err)
+	}
 
 	// Both EoPs.
-	iw0.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s0", Reason: protocol.EndReasonExhausted})
-	iw1.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s1", Reason: protocol.EndReasonExhausted})
+	if err := iw0.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s0", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP s0: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s1", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP s1: %v", err)
+	}
 
 	// Read output — should get:
 	// i0-before, i1-before (in some order), barrier, i0-after (drained), EoP.
@@ -380,9 +408,15 @@ func TestTaskSlot_BarrierAbort(t *testing.T) {
 	}()
 
 	// Input 0: data, barrier, more data (side-buffered).
-	iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-before"), EventTime: 1})
-	iw0.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000})
-	iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-after"), EventTime: 2})
+	if err := iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-before"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage i0-before: %v", err)
+	}
+	if err := iw0.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000}); err != nil {
+		t.Fatalf("WriteMessage barrier i0: %v", err)
+	}
+	if err := iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i0-after"), EventTime: 2}); err != nil {
+		t.Fatalf("WriteMessage i0-after: %v", err)
+	}
 
 	// Small delay to let the input reader process messages before sending abort.
 	time.Sleep(50 * time.Millisecond)
@@ -392,12 +426,20 @@ func TestTaskSlot_BarrierAbort(t *testing.T) {
 	// is an internal control type, we test abort via the operator chain directly.
 	// For the integration test, we complete alignment normally and then send
 	// additional data + EoPs.
-	iw1.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i1-data"), EventTime: 3})
-	iw1.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000})
+	if err := iw1.WriteMessage(&protocol.DataRecordMsg{Value: []byte("i1-data"), EventTime: 3}); err != nil {
+		t.Fatalf("WriteMessage i1-data: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000}); err != nil {
+		t.Fatalf("WriteMessage barrier i1: %v", err)
+	}
 
 	// Both EoPs.
-	iw0.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s0", Reason: protocol.EndReasonExhausted})
-	iw1.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s1", Reason: protocol.EndReasonExhausted})
+	if err := iw0.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s0", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP s0: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s1", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP s1: %v", err)
+	}
 
 	// Read output — all data events must come through (including side-buffered ones).
 	var dataValues []string
@@ -441,7 +483,6 @@ func TestWatermarkEmitter_MonotonicAdvance(t *testing.T) {
 	defer cancel()
 
 	source := newMockSource(nil)
-	var wm atomic.Int64
 	outputCh := make(chan OutputMsg, 100)
 
 	source.SetWatermark(100)
@@ -458,12 +499,13 @@ func TestWatermarkEmitter_MonotonicAdvance(t *testing.T) {
 		source.SetWatermark(200)
 	}()
 
-	_ = runWatermarkEmitter(ctx, source, &wm, outputCh, 50*time.Millisecond, testLogger())
+	_ = runWatermarkEmitter(ctx, newLegacySourceStrategy(source), outputCh, 50*time.Millisecond, testLogger())
 
 	close(outputCh)
 
 	// Verify monotonic watermark values.
 	var prev int64
+	var last int64
 	for msg := range outputCh {
 		if msg.Type != OutputWatermark {
 			continue
@@ -473,10 +515,11 @@ func TestWatermarkEmitter_MonotonicAdvance(t *testing.T) {
 			t.Errorf("non-monotonic watermark: %d after %d", ts, prev)
 		}
 		prev = ts
+		last = ts
 	}
 
-	if wm.Load() < 200 {
-		t.Errorf("final watermark: got %d, want >= 200", wm.Load())
+	if last < 200 {
+		t.Errorf("final emitted watermark: got %d, want >= 200", last)
 	}
 }
 
@@ -486,7 +529,6 @@ func TestWatermarkEmitter_ConcurrentAccess(t *testing.T) {
 	defer cancel()
 
 	source := newMockSource(nil)
-	var wm atomic.Int64
 	outputCh := make(chan OutputMsg, 1000)
 
 	// Concurrent watermark updates from multiple goroutines.
@@ -499,7 +541,7 @@ func TestWatermarkEmitter_ConcurrentAccess(t *testing.T) {
 		}(int64(i * 1000))
 	}
 
-	_ = runWatermarkEmitter(ctx, source, &wm, outputCh, 10*time.Millisecond, testLogger())
+	_ = runWatermarkEmitter(ctx, newLegacySourceStrategy(source), outputCh, 10*time.Millisecond, testLogger())
 	// No panic or race condition = success.
 }
 
@@ -508,14 +550,13 @@ func TestWatermarkEmitter_OutputChannelFull_UnblocksOnCancel(t *testing.T) {
 
 	source := newMockSource(nil)
 	source.SetWatermark(100)
-	var wm atomic.Int64
 	outputCh := make(chan OutputMsg, 1)
 	// Fill the channel so sends block.
 	outputCh <- OutputMsg{Type: OutputData}
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runWatermarkEmitter(ctx, source, &wm, outputCh, 10*time.Millisecond, testLogger())
+		done <- runWatermarkEmitter(ctx, newLegacySourceStrategy(source), outputCh, 10*time.Millisecond, testLogger())
 	}()
 
 	// Let it try to send a couple of times, then cancel.
@@ -803,4 +844,369 @@ func TestDefaultTaskSlotConfig_MatchesDefaults(t *testing.T) {
 	if cfg.WatermarkInterval != DefaultWatermarkInterval {
 		t.Errorf("WatermarkInterval: got %v, want %v", cfg.WatermarkInterval, DefaultWatermarkInterval)
 	}
+}
+
+func TestTaskSlot_BoundedOOOStrategy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	batches := [][]Event{
+		{{Value: []byte("a"), EventTime: 10000}},
+		{{Value: []byte("b"), EventTime: 20000}},
+	}
+	source := newMockSource(batches)
+
+	cfg := DefaultTaskSlotConfig()
+	cfg.WatermarkInterval = 50 * time.Millisecond
+	cfg.Watermark.Strategy = StrategyBoundedOOO
+	cfg.Watermark.MaxOOO = 5 * time.Second
+
+	ow, or := newTestStreamPair(t)
+	outputs := []*transport.FrameStream{ow}
+
+	ts := NewTaskSlot(cfg, nil, outputs, []Operator{&noopMap{}}, source)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ts.Run(ctx)
+	}()
+
+	// Read output — should get data + watermarks + EoP.
+	var watermarks []int64
+	var gotEnd bool
+	for i := 0; i < 50; i++ {
+		msg, err := or.ReadMessage()
+		if err != nil {
+			break
+		}
+		switch m := msg.(type) {
+		case *protocol.WatermarkMsg:
+			watermarks = append(watermarks, m.Timestamp)
+		case *protocol.EndOfPartitionMsg:
+			gotEnd = true
+		}
+		if gotEnd {
+			break
+		}
+	}
+
+	if !gotEnd {
+		t.Error("expected EndOfPartition")
+	}
+
+	// Watermarks should be monotonically non-decreasing.
+	for i := 1; i < len(watermarks); i++ {
+		if watermarks[i] < watermarks[i-1] {
+			t.Errorf("non-monotonic watermark at index %d: %d < %d", i, watermarks[i], watermarks[i-1])
+		}
+	}
+
+	// Final watermark should be max(0, 20000-5000) = 15000.
+	if len(watermarks) > 0 {
+		last := watermarks[len(watermarks)-1]
+		if last > 15000 {
+			t.Errorf("final watermark too high: got %d, want <= 15000", last)
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+func TestTaskSlot_MonotonicStrategy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	batches := [][]Event{
+		{{Value: []byte("a"), EventTime: 1000}},
+		{{Value: []byte("b"), EventTime: 2000}},
+	}
+	source := newMockSource(batches)
+
+	cfg := DefaultTaskSlotConfig()
+	cfg.WatermarkInterval = 50 * time.Millisecond
+	cfg.Watermark.Strategy = StrategyMonotonic
+
+	ow, or := newTestStreamPair(t)
+	outputs := []*transport.FrameStream{ow}
+
+	ts := NewTaskSlot(cfg, nil, outputs, []Operator{&noopMap{}}, source)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ts.Run(ctx)
+	}()
+
+	var watermarks []int64
+	var gotEnd bool
+	for i := 0; i < 50; i++ {
+		msg, err := or.ReadMessage()
+		if err != nil {
+			break
+		}
+		switch m := msg.(type) {
+		case *protocol.WatermarkMsg:
+			watermarks = append(watermarks, m.Timestamp)
+		case *protocol.EndOfPartitionMsg:
+			gotEnd = true
+		}
+		if gotEnd {
+			break
+		}
+	}
+
+	if !gotEnd {
+		t.Error("expected EndOfPartition")
+	}
+
+	// Monotonic: watermark = maxObserved, so final should reach 2000.
+	if len(watermarks) > 0 {
+		last := watermarks[len(watermarks)-1]
+		if last < 2000 {
+			t.Errorf("final watermark: got %d, want >= 2000", last)
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+func TestTaskSlot_IngestionTimeStrategy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Use a slow source so the emitter has time to fire before the
+	// operator chain finishes.
+	batches := [][]Event{
+		{{Value: []byte("a"), EventTime: 1}},
+		{{Value: []byte("b"), EventTime: 2}},
+	}
+	source := newSlowMockSource(batches, 30*time.Millisecond)
+
+	cfg := DefaultTaskSlotConfig()
+	cfg.WatermarkInterval = 10 * time.Millisecond // Fast interval so we get watermarks quickly.
+	cfg.Watermark.Strategy = StrategyIngestionTime
+
+	ow, or := newTestStreamPair(t)
+	outputs := []*transport.FrameStream{ow}
+
+	ts := NewTaskSlot(cfg, nil, outputs, []Operator{&noopMap{}}, source)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ts.Run(ctx)
+	}()
+
+	var watermarks []int64
+	var gotEnd bool
+	for i := 0; i < 100; i++ {
+		msg, err := or.ReadMessage()
+		if err != nil {
+			break
+		}
+		switch m := msg.(type) {
+		case *protocol.WatermarkMsg:
+			watermarks = append(watermarks, m.Timestamp)
+		case *protocol.EndOfPartitionMsg:
+			gotEnd = true
+		}
+		if gotEnd {
+			break
+		}
+	}
+
+	if !gotEnd {
+		t.Error("expected EndOfPartition")
+	}
+
+	// Ingestion time watermarks should be wall-clock values (non-zero, monotonic).
+	if len(watermarks) == 0 {
+		t.Fatal("expected at least one watermark emission")
+	}
+	for i, wm := range watermarks {
+		if wm <= 0 {
+			t.Errorf("watermark[%d] should be positive wall-clock value, got %d", i, wm)
+		}
+		if i > 0 && wm < watermarks[i-1] {
+			t.Errorf("non-monotonic watermark at index %d: %d < %d", i, wm, watermarks[i-1])
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+func TestTaskSlot_WatermarkPropagation_TwoInputs(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cfg := DefaultTaskSlotConfig()
+	cfg.Watermark.EmitInterval = 50 * time.Millisecond
+	cfg.Watermark.IdleTimeout = 0 // Disable idle detection.
+
+	// Create two input stream pairs.
+	iw0, ir0 := newTestStreamPair(t)
+	iw1, ir1 := newTestStreamPair(t)
+	ow, or := newTestStreamPair(t)
+
+	inputs := []*transport.FrameStream{ir0, ir1}
+	outputs := []*transport.FrameStream{ow}
+
+	ts := NewTaskSlot(cfg, inputs, outputs, []Operator{&noopMap{}}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ts.Run(ctx)
+	}()
+
+	// Send watermarks on both inputs.
+	if err := iw0.WriteMessage(&protocol.WatermarkMsg{Timestamp: 100, SourceID: "s0"}); err != nil {
+		t.Fatalf("WriteMessage wm s0: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.WatermarkMsg{Timestamp: 200, SourceID: "s1"}); err != nil {
+		t.Fatalf("WriteMessage wm s1: %v", err)
+	}
+
+	// Send data to trigger activity recording.
+	if err := iw0.WriteMessage(&protocol.DataRecordMsg{Value: []byte("d0"), EventTime: 1}); err != nil {
+		t.Fatalf("WriteMessage d0: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.DataRecordMsg{Value: []byte("d1"), EventTime: 2}); err != nil {
+		t.Fatalf("WriteMessage d1: %v", err)
+	}
+
+	// Wait for propagation.
+	time.Sleep(200 * time.Millisecond)
+
+	// Send EoPs to terminate.
+	if err := iw0.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s0", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP s0: %v", err)
+	}
+	if err := iw1.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "s1", Reason: protocol.EndReasonExhausted}); err != nil {
+		t.Fatalf("WriteMessage EoP s1: %v", err)
+	}
+
+	// Read output — should get watermarks with min value.
+	var watermarks []int64
+	var gotEnd bool
+	for i := 0; i < 50; i++ {
+		msg, err := or.ReadMessage()
+		if err != nil {
+			break
+		}
+		switch m := msg.(type) {
+		case *protocol.WatermarkMsg:
+			watermarks = append(watermarks, m.Timestamp)
+		case *protocol.EndOfPartitionMsg:
+			gotEnd = true
+		}
+		if gotEnd {
+			break
+		}
+	}
+
+	if !gotEnd {
+		t.Error("expected EndOfPartition")
+	}
+
+	// Propagated watermark should be min(100, 200) = 100.
+	if len(watermarks) == 0 {
+		t.Error("expected at least one watermark")
+	} else {
+		for _, wm := range watermarks {
+			if wm > 200 {
+				t.Errorf("watermark too high: got %d, want <= 200", wm)
+			}
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+func TestTaskSlot_LegacySourceBackwardCompat(t *testing.T) {
+	// Verify that existing sources with GenerateWatermark() still work
+	// when no explicit strategy is configured.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sink := &atomicCountingSink{}
+	batches := [][]Event{
+		{{Value: []byte("a"), EventTime: 1}},
+	}
+	source := newMockSource(batches)
+	source.SetWatermark(500)
+
+	cfg := DefaultTaskSlotConfig()
+	cfg.WatermarkInterval = 50 * time.Millisecond
+	// No Watermark.Strategy set — should use legacy.
+
+	ts := NewTaskSlot(cfg, nil, nil, []Operator{&noopMap{}, sink}, source)
+
+	err := ts.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if sink.count.Load() != 1 {
+		t.Fatalf("sink count: got %d, want 1", sink.count.Load())
+	}
+}
+
+func TestTaskSlot_ResolveStrategy(t *testing.T) {
+	source := newMockSource(nil)
+
+	tests := []struct {
+		name     string
+		config   WatermarkConfig
+		strategy WatermarkStrategy // pre-set on TaskSlot
+		wantType string
+	}{
+		{
+			name:     "default/legacy",
+			config:   WatermarkConfig{},
+			wantType: "*engine.legacySourceStrategy",
+		},
+		{
+			name:     "bounded-ooo",
+			config:   WatermarkConfig{Strategy: StrategyBoundedOOO, MaxOOO: 3 * time.Second},
+			wantType: "*engine.BoundedOutOfOrdernessStrategy",
+		},
+		{
+			name:     "monotonic",
+			config:   WatermarkConfig{Strategy: StrategyMonotonic},
+			wantType: "*engine.BoundedOutOfOrdernessStrategy",
+		},
+		{
+			name:     "ingestion-time",
+			config:   WatermarkConfig{Strategy: StrategyIngestionTime},
+			wantType: "*engine.IngestionTimeStrategy",
+		},
+		{
+			name:     "explicit-strategy-overrides-config",
+			config:   WatermarkConfig{Strategy: StrategyMonotonic},
+			strategy: NewBoundedOutOfOrdernessStrategy(1 * time.Second),
+			wantType: "*engine.BoundedOutOfOrdernessStrategy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultTaskSlotConfig()
+			cfg.Watermark = tt.config
+
+			ts := NewTaskSlot(cfg, nil, nil, nil, source)
+			ts.Strategy = tt.strategy
+
+			s := ts.resolveStrategy()
+			gotType := typeString(s)
+			if gotType != tt.wantType {
+				t.Errorf("strategy type: got %s, want %s", gotType, tt.wantType)
+			}
+		})
+	}
+}
+
+func typeString(v interface{}) string {
+	return fmt.Sprintf("%T", v)
 }

@@ -1,12 +1,18 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"syscall"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/tarungka/wire/internal/cmd"
+	"github.com/tarungka/wire/internal/config"
+	"github.com/tarungka/wire/internal/coordinator"
 	"github.com/tarungka/wire/internal/logger"
 )
 
@@ -34,7 +40,8 @@ func main() {
 	// Handle signals first, so signal handling is established before anything else.
 	sigCh := HandleSignals(syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	// Main context
-	mainCtx, _ := CreateContext(sigCh)
+	mainCtx, mainCancel := CreateContext(sigCh)
+	defer mainCancel()
 
 	// Setup logging
 	// logs will be written to both server.log and stdout
@@ -42,9 +49,9 @@ func main() {
 	if err != nil {
 		fmt.Printf("failed to create log file")
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 
-	cfg, err := initFlags(name, desc, &BuildInfo{
+	cliCfg, flagSet, err := initFlags(name, desc, &BuildInfo{
 		Version: cmd.Version,
 		Commit:  cmd.Commit,
 		Branch:  cmd.Branch,
@@ -54,18 +61,96 @@ func main() {
 	}
 	fmt.Print(logo)
 
-	logger.SetDevelopment(cfg.DebugMode)
+	// Load config files, apply CLI flag overrides, and validate.
+	wireCfg, err := config.Load(cliCfg.ConfigPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		os.Exit(1)
+	}
+	if err := config.ApplyFlags(&wireCfg, flagSet); err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		os.Exit(1)
+	}
+	if err := wireCfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		os.Exit(1)
+	}
+
+	logger.SetDevelopment(wireCfg.Node.Debug)
 	logger.SetLogFile(logFile)
 
 	log.Logger = logger.GetLogger("main")
 
-	if cfg.DebugMode {
+	if wireCfg.Node.Debug {
 		log.Debug().Msgf("PID: %v | PPID: %v", os.Getpid(), os.Getppid())
 	}
 
 	log.Info().Msg("Starting wire...")
 
-	// Block until context is canceled by signal.
-	<-mainCtx.Done()
+	// Resolve coordinator node ID.
+	nodeID := wireCfg.Node.ID
+	if nodeID == "" {
+		nodeID, _ = os.Hostname()
+		if nodeID == "" {
+			nodeID = "wire-node-1"
+		}
+	}
+
+	// Create metadata store (PebbleDB).
+	store, err := coordinator.NewPebbleStore(wireCfg.Node.DataDir)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to open coordinator metadata store")
+	}
+	defer func() { _ = store.Close() }()
+
+	// Create leader election backend.
+	var election coordinator.LeaderElection
+	switch wireCfg.Election.Backend {
+	case "filelock":
+		election = coordinator.NewFileLockElection(wireCfg.Election.LockPath, wireCfg.HTTP.Addr)
+	case "noop", "":
+		// Single-node mode: no election needed.
+	default:
+		log.Fatal().Str("backend", wireCfg.Election.Backend).Msg("unknown election backend")
+	}
+
+	// Create coordinator.
+	coordCfg := coordinator.CoordinatorConfig{
+		DataDir:    wireCfg.Node.DataDir,
+		NodeID:     nodeID,
+		ListenAddr: wireCfg.HTTP.Addr,
+	}
+	coord := coordinator.New(coordCfg, store, election, log.Logger)
+
+	// Create HTTP server.
+	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger)
+
+	// Start everything in an errgroup.
+	g, gCtx := errgroup.WithContext(mainCtx)
+
+	g.Go(func() error {
+		return coord.Run(gCtx)
+	})
+
+	g.Go(func() error {
+		err := httpSrv.ListenAndServe()
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
+	})
+
+	g.Go(func() error {
+		<-gCtx.Done()
+		log.Info().Msg("Shutting down...")
+		_ = coord.Shutdown(context.Background())
+		_ = httpSrv.Shutdown(context.Background())
+		return nil
+	})
+
+	if err := g.Wait(); err != nil && err != context.Canceled {
+		log.Fatal().Err(err).Msg("wire exited with error")
+	}
+
 	log.Info().Msg("Shutting down.")
 }

@@ -11,7 +11,7 @@
 Wire implements a classic **Master-Worker** distributed architecture.
 
 ### 1.1 The Coordinator (Control Plane)
-The central brain of the cluster. It is lightweight and generally stateless (relying on an external metadata store or leader election for HA).
+The central brain of the cluster. It persists metadata locally via PebbleDB and supports a phased HA strategy: pluggable leader election, fencing tokens for split-brain prevention, and recovery from durable storage (see WIP-09).
 
 **Responsibilities:**
 *   **Job Management:** Accepts JobGraphs, optimizes them, and schedules execution.
