@@ -25,7 +25,9 @@ func startTestHTTPServer(t *testing.T, c *Coordinator) *HTTPServer {
 	}()
 
 	t.Cleanup(func() {
-		srv.Shutdown(context.Background())
+		if err := srv.Shutdown(context.Background()); err != nil {
+			t.Logf("srv.Shutdown: %v", err)
+		}
 		<-done
 	})
 	return srv
@@ -33,7 +35,7 @@ func startTestHTTPServer(t *testing.T, c *Coordinator) *HTTPServer {
 
 func TestHTTP_Healthz(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 	srv := startTestHTTPServer(t, c)
@@ -42,7 +44,7 @@ func TestHTTP_Healthz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -51,7 +53,7 @@ func TestHTTP_Healthz(t *testing.T) {
 
 func TestHTTP_Readyz_Standby(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Coordinator in STANDBY (not ready), no leader info available.
 	// Without a known leader address, falls back to 503.
@@ -69,7 +71,7 @@ func TestHTTP_Readyz_Standby(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /readyz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Single-node with no leader address → 503 (no redirect target).
 	if resp.StatusCode != http.StatusServiceUnavailable {
@@ -79,11 +81,13 @@ func TestHTTP_Readyz_Standby(t *testing.T) {
 
 func TestHTTP_Readyz_StandbyRedirect(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Use a NoopElection so GetLeaderInfo returns a known leader address.
 	election := NewNoopElection("leader-host:4001")
-	election.Campaign(context.Background(), "leader-node")
+	if _, err := election.Campaign(context.Background(), "leader-node"); err != nil {
+		t.Fatalf("Campaign: %v", err)
+	}
 
 	c := New(CoordinatorConfig{
 		NodeID:     "standby-node",
@@ -104,7 +108,7 @@ func TestHTTP_Readyz_StandbyRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /readyz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusTemporaryRedirect {
 		t.Fatalf("expected 307 for standby with leader, got %d", resp.StatusCode)
@@ -126,14 +130,14 @@ func TestHTTP_Readyz_StandbyRedirect(t *testing.T) {
 
 func TestHTTP_Readyz_Leader(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{
 		NodeID:                 "n1",
 		HeartbeatFlushInterval: time.Hour, // don't flush in test
 	}, store, nil, zerolog.Nop())
 
-	go c.Run(t.Context())
+	go func() { _ = c.Run(t.Context()) }()
 	time.Sleep(100 * time.Millisecond)
 
 	srv := startTestHTTPServer(t, c)
@@ -142,7 +146,7 @@ func TestHTTP_Readyz_Leader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /readyz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for leader, got %d", resp.StatusCode)
@@ -151,7 +155,7 @@ func TestHTTP_Readyz_Leader(t *testing.T) {
 
 func TestHTTP_LeaderInfo(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	c := New(CoordinatorConfig{
 		NodeID:                 "n1",
@@ -159,7 +163,7 @@ func TestHTTP_LeaderInfo(t *testing.T) {
 		HeartbeatFlushInterval: time.Hour,
 	}, store, nil, zerolog.Nop())
 
-	go c.Run(t.Context())
+	go func() { _ = c.Run(t.Context()) }()
 	time.Sleep(100 * time.Millisecond)
 
 	srv := startTestHTTPServer(t, c)
@@ -168,7 +172,7 @@ func TestHTTP_LeaderInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/v1/cluster/leader: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -194,7 +198,7 @@ func TestHTTP_LeaderInfo(t *testing.T) {
 
 func TestHTTP_LeaderInfo_NoLeader(t *testing.T) {
 	store := NewMemoryStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Coordinator in STANDBY (no leader).
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
@@ -204,7 +208,7 @@ func TestHTTP_LeaderInfo_NoLeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/v1/cluster/leader: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Single-node mode with no Run() → still returns info (epoch=0).
 	if resp.StatusCode != http.StatusOK {

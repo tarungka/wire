@@ -8,11 +8,12 @@ import (
 	"syscall"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/tarungka/wire/internal/cmd"
 	"github.com/tarungka/wire/internal/config"
 	"github.com/tarungka/wire/internal/coordinator"
 	"github.com/tarungka/wire/internal/logger"
-	"golang.org/x/sync/errgroup"
 )
 
 // Need to make up my mind on some of these:
@@ -48,7 +49,7 @@ func main() {
 	if err != nil {
 		fmt.Printf("failed to create log file")
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 
 	cliCfg, flagSet, err := initFlags(name, desc, &BuildInfo{
 		Version: cmd.Version,
@@ -66,7 +67,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
-	config.ApplyFlags(&wireCfg, flagSet)
+	if err := config.ApplyFlags(&wireCfg, flagSet); err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		os.Exit(1)
+	}
 	if err := wireCfg.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
@@ -97,7 +101,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to open coordinator metadata store")
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create leader election backend.
 	var election coordinator.LeaderElection
@@ -139,8 +143,8 @@ func main() {
 	g.Go(func() error {
 		<-gCtx.Done()
 		log.Info().Msg("Shutting down...")
-		coord.Shutdown(context.Background())
-		httpSrv.Shutdown(context.Background())
+		_ = coord.Shutdown(context.Background())
+		_ = httpSrv.Shutdown(context.Background())
 		return nil
 	})
 

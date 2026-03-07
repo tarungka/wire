@@ -11,7 +11,7 @@ func TestFileLockElection_Campaign(t *testing.T) {
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "leader.lock")
 	e := NewFileLockElection(lockPath, ":4001")
-	defer e.Close()
+	defer func() { _ = e.Close() }()
 
 	lctx, err := e.Campaign(context.Background(), "node-1")
 	if err != nil {
@@ -29,7 +29,7 @@ func TestFileLockElection_GetLeader(t *testing.T) {
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "leader.lock")
 	e := NewFileLockElection(lockPath, ":4001")
-	defer e.Close()
+	defer func() { _ = e.Close() }()
 
 	// Before campaign, no leader.
 	_, _, err := e.GetLeader(context.Background())
@@ -38,7 +38,9 @@ func TestFileLockElection_GetLeader(t *testing.T) {
 	}
 
 	// After campaign, returns self.
-	e.Campaign(context.Background(), "node-1")
+	if _, err = e.Campaign(context.Background(), "node-1"); err != nil {
+		t.Fatalf("Campaign: %v", err)
+	}
 	nodeID, addr, err := e.GetLeader(context.Background())
 	if err != nil {
 		t.Fatalf("GetLeader: %v", err)
@@ -73,13 +75,13 @@ func TestFileLockElection_EpochMonotonicity(t *testing.T) {
 	e1 := NewFileLockElection(lockPath, ":4001")
 	lctx1, _ := e1.Campaign(context.Background(), "node-1")
 	epoch1 := lctx1.Epoch
-	e1.Close()
+	_ = e1.Close()
 
 	// Second election.
 	e2 := NewFileLockElection(lockPath, ":4002")
 	lctx2, _ := e2.Campaign(context.Background(), "node-2")
 	epoch2 := lctx2.Epoch
-	e2.Close()
+	_ = e2.Close()
 
 	if epoch2 <= epoch1 {
 		t.Fatalf("epoch should be monotonically increasing: %d <= %d", epoch2, epoch1)
@@ -92,7 +94,7 @@ func TestFileLockElection_SecondProcessBlocked(t *testing.T) {
 
 	// First process acquires lock.
 	e1 := NewFileLockElection(lockPath, ":4001")
-	defer e1.Close()
+	defer func() { _ = e1.Close() }()
 	_, err := e1.Campaign(context.Background(), "node-1")
 	if err != nil {
 		t.Fatalf("Campaign e1: %v", err)
@@ -100,7 +102,7 @@ func TestFileLockElection_SecondProcessBlocked(t *testing.T) {
 
 	// Second process should time out trying to acquire.
 	e2 := NewFileLockElection(lockPath, ":4002")
-	defer e2.Close()
+	defer func() { _ = e2.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()

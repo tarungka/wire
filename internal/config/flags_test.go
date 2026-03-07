@@ -16,9 +16,13 @@ func TestApplyFlags_ChangedOverrides(t *testing.T) {
 	fs.Bool("debug", false, "")
 
 	// Simulate: --http-listen :8080 --debug
-	fs.Parse([]string{"--http-listen", ":8080", "--debug"})
+	if err := fs.Parse([]string{"--http-listen", ":8080", "--debug"}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
 
-	ApplyFlags(&cfg, fs)
+	if err := ApplyFlags(&cfg, fs); err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.HTTP.Addr != ":8080" {
 		t.Errorf("HTTP.Addr = %q, want :8080 (CLI should override config file)", cfg.HTTP.Addr)
@@ -39,9 +43,13 @@ func TestApplyFlags_UnchangedPreservesConfig(t *testing.T) {
 	fs.Bool("debug", false, "")
 
 	// No flags passed on command line.
-	fs.Parse([]string{})
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
 
-	ApplyFlags(&cfg, fs)
+	if err := ApplyFlags(&cfg, fs); err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.HTTP.Addr != ":9001" {
 		t.Errorf("HTTP.Addr = %q, want :9001 (unchanged flag should not override config file)", cfg.HTTP.Addr)
@@ -66,7 +74,7 @@ func TestApplyFlags_AllFlags(t *testing.T) {
 	fs.String("election-backend", "noop", "")
 	fs.String("election-lock-path", "data/coordinator/leader.lock", "")
 
-	fs.Parse([]string{
+	if err := fs.Parse([]string{
 		"--node-id", "node-A",
 		"--coordinator-data-dir", "/data/custom",
 		"--debug",
@@ -77,9 +85,13 @@ func TestApplyFlags_AllFlags(t *testing.T) {
 		"--node-verify-client",
 		"--election-backend", "filelock",
 		"--election-lock-path", "/tmp/leader.lock",
-	})
+	}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
 
-	ApplyFlags(&cfg, fs)
+	if err := ApplyFlags(&cfg, fs); err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.Node.ID != "node-A" {
 		t.Errorf("Node.ID = %q", cfg.Node.ID)
@@ -113,9 +125,38 @@ func TestApplyFlags_AllFlags(t *testing.T) {
 	}
 }
 
+func TestApplyFlags_UnmappedFlagsIgnored(t *testing.T) {
+	cfg := DefaultConfig()
+	orig := cfg // snapshot
+
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.String("http-listen", ":4001", "")
+	fs.String("unknown-flag", "some-value", "")
+	fs.Int("another-unknown", 42, "")
+
+	// Set unmapped flags on the command line.
+	if err := fs.Parse([]string{"--unknown-flag", "boom", "--another-unknown", "99"}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if err := ApplyFlags(&cfg, fs); err != nil {
+		t.Fatal(err)
+	}
+
+	// Config should be unchanged — unmapped flags must not affect it.
+	if cfg.HTTP.Addr != orig.HTTP.Addr {
+		t.Errorf("HTTP.Addr = %q, want %q (unmapped flags should not change config)", cfg.HTTP.Addr, orig.HTTP.Addr)
+	}
+	if cfg.Node.Debug != orig.Node.Debug {
+		t.Errorf("Node.Debug changed unexpectedly")
+	}
+}
+
 func TestApplyFlags_NilFlagSet(t *testing.T) {
 	cfg := DefaultConfig()
-	ApplyFlags(&cfg, nil) // should not panic
+	if err := ApplyFlags(&cfg, nil); err != nil {
+		t.Fatal(err)
+	}
 	if cfg.HTTP.Addr != ":4001" {
 		t.Errorf("HTTP.Addr = %q, want :4001", cfg.HTTP.Addr)
 	}
