@@ -128,6 +128,11 @@ func (s *Session) IsClosed() bool {
 	return s.closed
 }
 
+// YamuxSession returns the underlying yamux.Session.
+func (s *Session) YamuxSession() *yamux.Session {
+	return s.yamux
+}
+
 // Addr returns the remote address of this session.
 func (s *Session) Addr() string {
 	return s.addr

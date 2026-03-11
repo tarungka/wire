@@ -11,6 +11,8 @@ import (
 
 // flagToKey maps CLI flag names to koanf dotted key paths.
 var flagToKey = map[string]string{
+	"mode":                 "mode",
+	"listen":               "listen",
 	"debug":                "node.debug",
 	"node-id":              "node.id",
 	"coordinator-data-dir": "node.data_dir",
@@ -21,6 +23,10 @@ var flagToKey = map[string]string{
 	"node-verify-client":   "node_tls.verify_client",
 	"election-backend":     "election.backend",
 	"election-lock-path":   "election.lock_path",
+	"coordinator-addr":     "worker.coordinator_addr",
+	"worker-id":            "worker.worker_id",
+	"worker-listen":        "worker.listen_addr",
+	"task-slots":           "worker.task_slots",
 }
 
 // ApplyFlags overlays CLI flag values onto cfg, but only for flags that

@@ -16,6 +16,9 @@ type Config struct {
 	// DebugMode enables additional logs and other metadata to be printed.
 	DebugMode bool
 
+	// Mode selects the operating mode: "coordinator" or "worker".
+	Mode string
+
 	// ListenAddr is the wire protocol listen address.
 	ListenAddr string
 
@@ -48,6 +51,18 @@ type Config struct {
 
 	// ElectionLockPath is the path to the lock file for the filelock election backend.
 	ElectionLockPath string
+
+	// CoordinatorAddr is the coordinator address for worker mode.
+	CoordinatorAddr string
+
+	// WorkerID is the unique identifier for this worker node.
+	WorkerID string
+
+	// WorkerListenAddr is the worker's data-plane listen address.
+	WorkerListenAddr string
+
+	// TaskSlots is the number of task slots available on this worker.
+	TaskSlots int
 }
 
 // BuildInfo holds version metadata populated at build time.
@@ -76,6 +91,7 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, *pflag.FlagSet, er
 
 	// Misc configs
 	f.BoolVar(&config.DebugMode, "debug", false, "run in debug mode - better logs")
+	f.StringVar(&config.Mode, "mode", "coordinator", "operating mode: coordinator or worker")
 
 	// Transport flags
 	f.StringVar(&config.ListenAddr, "listen", ":4002", "wire protocol listen address")
@@ -91,6 +107,12 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, *pflag.FlagSet, er
 	f.StringVar(&config.HTTPListenAddr, "http-listen", ":4001", "HTTP API listen address")
 	f.StringVar(&config.ElectionBackend, "election-backend", "noop", "leader election backend (noop, filelock)")
 	f.StringVar(&config.ElectionLockPath, "election-lock-path", "data/coordinator/leader.lock", "file path for filelock election backend")
+
+	// Worker flags
+	f.StringVar(&config.CoordinatorAddr, "coordinator-addr", "", "coordinator address to connect to (worker mode)")
+	f.StringVar(&config.WorkerID, "worker-id", "", "worker node ID (defaults to hostname)")
+	f.StringVar(&config.WorkerListenAddr, "worker-listen", ":4003", "worker data-plane listen address")
+	f.IntVar(&config.TaskSlots, "task-slots", 4, "number of task slots (worker mode)")
 
 	f.Usage = func() {
 		fmt.Fprintf(os.Stderr, "\n%s\n\n", desc)

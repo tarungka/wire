@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tarungka/wire/internal/protocol"
+	"github.com/tarungka/wire/internal/rpc"
 )
 
 // generateJobID returns a unique job identifier in the form "job-<hex32>".
@@ -118,7 +119,22 @@ func (c *Coordinator) CancelJob(jobID string) (*JobMeta, error) {
 	}
 
 	c.log.Info().Str("job_id", jobID).Msg("job canceling")
-	// TODO: issue CmdCancelTask to workers
+
+	// Load task assignments and enqueue cancel commands to workers.
+	data, err := c.store.Get(JobAssignmentsKey(jobID))
+	if err == nil && data != nil {
+		var tam TaskAssignmentMap
+		if err := protocol.DecodeMsgPack(data, &tam); err == nil {
+			for taskID, workerID := range tam.Assignments {
+				c.EnqueueCommand(workerID, rpc.WorkerCommand{
+					Type:   rpc.CommandTypeCancelTask,
+					JobID:  jobID,
+					TaskID: taskID,
+				})
+			}
+		}
+	}
+
 	return job, nil
 }
 

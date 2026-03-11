@@ -7,8 +7,8 @@ import (
 
 // validTransitions defines the set of legal job state transitions.
 var validTransitions = map[JobStatus][]JobStatus{
-	JobCreated:   {JobDeploying},
-	JobDeploying: {JobRunning, JobFailing},
+	JobCreated:   {JobDeploying, JobCanceling},
+	JobDeploying: {JobRunning, JobFailing, JobCanceling},
 	JobRunning:   {JobFinishing, JobPaused, JobFailing, JobCanceling},
 	JobPaused:    {JobDeploying},
 	JobFinishing: {JobFinished},

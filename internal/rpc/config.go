@@ -10,6 +10,7 @@ const (
 	DefaultAcknowledgeCheckpointTimeout    = 5 * time.Second
 	DefaultRequestTaskSlotsTimeout         = 5 * time.Second
 	DefaultHeartbeatTimeout                = 2 * time.Second
+	DefaultRegisterWorkerTimeout           = 10 * time.Second
 	DefaultMaxRetries                      = 3
 	DefaultHeartbeatInterval               = 5 * time.Second
 	DefaultSuspectThreshold                = 3
@@ -27,6 +28,7 @@ type Config struct {
 	AcknowledgeCheckpointTimeout    time.Duration
 	RequestTaskSlotsTimeout         time.Duration
 	HeartbeatTimeout                time.Duration
+	RegisterWorkerTimeout           time.Duration
 	MaxRetries                      int
 	HeartbeatInterval               time.Duration
 	SuspectThreshold                int
@@ -45,6 +47,7 @@ func DefaultConfig() Config {
 		AcknowledgeCheckpointTimeout:    DefaultAcknowledgeCheckpointTimeout,
 		RequestTaskSlotsTimeout:         DefaultRequestTaskSlotsTimeout,
 		HeartbeatTimeout:                DefaultHeartbeatTimeout,
+		RegisterWorkerTimeout:           DefaultRegisterWorkerTimeout,
 		MaxRetries:                      DefaultMaxRetries,
 		HeartbeatInterval:               DefaultHeartbeatInterval,
 		SuspectThreshold:                DefaultSuspectThreshold,
@@ -70,6 +73,8 @@ func (c Config) methodTimeout(method MethodID) time.Duration {
 		return c.RequestTaskSlotsTimeout
 	case MethodHeartbeat:
 		return c.HeartbeatTimeout
+	case MethodRegisterWorker:
+		return c.RegisterWorkerTimeout
 	default:
 		return DefaultSubmitJobTimeout
 	}
