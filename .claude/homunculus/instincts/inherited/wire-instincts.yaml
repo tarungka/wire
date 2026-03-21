@@ -1,0 +1,279 @@
+# Instincts generated from https://github.com/tarungka/wire
+# Generated: 2026-03-21T08:54:43.210Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: wire-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Commit Length
+
+## Action
+
+Keep commit messages concise (~44 characters)
+
+## Evidence
+
+- Average commit message length: 44 chars
+- Based on 50 commits
+
+---
+id: wire-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: wire-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: wire-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: wire-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: wire-workflow-feature-development
+trigger: "when implementing a new feature"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Workflow Feature Development
+
+## Action
+
+Follow the feature-development workflow:
+1. Add feature implementation
+2. Add tests for feature
+3. Update documentation
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~11x per month
+- Files: docs/*, **/*.test.*
+
+---
+id: wire-workflow-refactoring
+trigger: "when refactoring code"
+confidence: 0.7
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Workflow Refactoring
+
+## Action
+
+Follow the refactoring workflow:
+1. Ensure tests pass before refactor
+2. Refactor code structure
+3. Verify tests still pass
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~4x per month
+- Files: src/**/*
+
+---
+id: wire-workflow-add-or-update-technical-documentation
+trigger: "when doing add or update technical documentation"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Workflow Add Or Update Technical Documentation
+
+## Action
+
+Follow the add-or-update-technical-documentation workflow:
+1. Create or update one or more markdown files in docs/ (e.g., TECHNICAL_DOCUMENTATION.md, ARCHITECTURE_DIAGRAMS.md, LOW_LEVEL_DESIGN.md)
+2. Optionally add or update SVG, Mermaid, or PlantUML diagrams in docs/
+3. Optionally update or add AGENTS.md, CONTRIBUTING.md, or ROADMAP.md
+4. Commit with a message starting with 'docs:'
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: docs/*.md, docs/*.svg, docs/*.puml
+
+---
+id: wire-workflow-add-or-update-ci-cd-workflows
+trigger: "when doing add or update ci cd workflows"
+confidence: 0.55
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Workflow Add Or Update Ci Cd Workflows
+
+## Action
+
+Follow the add-or-update-ci-cd-workflows workflow:
+1. Create or update YAML files in .github/workflows/
+2. Optionally add or update Makefile, scripts, or config files related to CI/CD
+3. Commit with message mentioning 'ci', 'build', 'workflow', or 'lint'
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~1x per month
+- Files: .github/workflows/*.yml, .github/workflows/*.yaml, Makefile
+
+---
+id: wire-workflow-feature-development-with-multi-file-changes
+trigger: "when doing feature development with multi file changes"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Workflow Feature Development With Multi File Changes
+
+## Action
+
+Follow the feature-development-with-multi-file-changes workflow:
+1. Edit or add files in internal/, pipeline/, sinks/, sources/, or cmd/
+2. Update go.mod and go.sum for dependencies
+3. Optionally add or update tests (e.g., *_test.go)
+4. Optionally update documentation in docs/
+5. Commit with message starting with 'feat:' or 'refactor:'
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: internal/**/*.go, pipeline/**/*.go, sinks/**/*.go
+
+---
+id: wire-workflow-add-or-update-readme-or-contributing
+trigger: "when doing add or update readme or contributing"
+confidence: 0.55
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Workflow Add Or Update Readme Or Contributing
+
+## Action
+
+Follow the add-or-update-readme-or-contributing workflow:
+1. Edit or add README.md and/or CONTRIBUTING.md
+2. Optionally update docs/ or add links to documentation
+3. Commit with message starting with 'docs:' or mentioning 'readme', 'contributing'
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~1x per month
+- Files: README.md, CONTRIBUTING.md
+
+---
+id: wire-workflow-add-new-source-or-sink-connector
+trigger: "when doing add new source or sink connector"
+confidence: 0.55
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Workflow Add New Source Or Sink Connector
+
+## Action
+
+Follow the add-new-source-or-sink-connector workflow:
+1. Add or update files in sources/ or sinks/ (e.g., kafka.go, mongo.go, elasticsearch.go)
+2. Update .config/config.json or .config/config.yaml with new examples
+3. Optionally update pipeline/pipeline.go and related config files
+4. Optionally update README.md to document new connector
+5. Commit with message starting with 'feat:'
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~1x per month
+- Files: sources/*.go, sinks/*.go, .config/config.json
+
