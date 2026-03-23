@@ -91,6 +91,12 @@ Ordered by build dependency: engine core first, then runtime infrastructure, the
 | [WIP-15](WIP-15/README.md) | Job Lifecycle & REST API | Draft |
 | [WIP-16](WIP-16/README.md) | Connector SDK & Built-in Connectors | Draft |
 
+### Query Layer
+
+| WIP | Title | Status |
+|-----|-------|--------|
+| [WIP-21](WIP-21/README.md) | Streaming SQL Engine | Draft |
+
 ### Cross-Cutting & Reference
 
 | WIP | Title | Status |
