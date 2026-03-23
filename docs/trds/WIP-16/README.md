@@ -145,6 +145,31 @@ stateDiagram-v2
 5. On checkpoint, runtime persists the latest `Offset` in the checkpoint.
 6. On shutdown, runtime calls `source.Close()`.
 
+```mermaid
+sequenceDiagram
+    participant R as Runtime
+    participant S as Source
+    participant D as Durable Storage
+
+    R->>S: Open(ctx, config)
+    opt Recovery
+        R->>S: RestoreOffset(ctx, offset)
+    end
+
+    loop Processing
+        R->>S: ReadBatch(ctx, maxBatch)
+        S->>R: []Event + Offset
+    end
+
+    R->>S: GenerateWatermark()
+    S->>R: Watermark
+
+    Note over R,D: On checkpoint
+    R->>D: Persist latest Offset
+
+    R->>S: Close()
+```
+
 **Sink data flow (standard):**
 1. Runtime calls `sink.Open(ctx, config)`.
 2. Runtime batches events and calls `sink.WriteBatch(ctx, events)`.

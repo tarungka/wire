@@ -77,6 +77,47 @@ Define the goroutine model per Task Slot: one main processing goroutine per oper
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+```mermaid
+flowchart LR
+    subgraph TaskSlot["Task Slot (errgroup)"]
+        subgraph Input["Input I/O"]
+            YR1[Yamux Stream Reader 1]
+            YR2[Yamux Stream Reader 2]
+            YRn[Yamux Stream Reader N]
+        end
+        IC[inputChan<br/>buffered channel]
+        subgraph Operator["Operator Chain Goroutine"]
+            SEL{"select{}"}
+            CM[Control Mailbox]
+        end
+        OC[outputChan<br/>buffered channel]
+        subgraph Output["Output I/O"]
+            YW1[Yamux Stream Writer 1]
+            YW2[Yamux Stream Writer 2]
+            YWn[Yamux Stream Writer N]
+        end
+        CU[Checkpoint Upload<br/>spawned on-demand]
+        WM[Watermark<br/>atomic.Int64]
+    end
+
+    YR1 --> IC
+    YR2 --> IC
+    YRn --> IC
+    IC --> SEL
+    CM --> SEL
+    SEL --> OC
+    OC --> YW1
+    OC --> YW2
+    OC --> YWn
+    SEL -.-> CU
+    WM -.->|read| SEL
+
+    style TaskSlot fill:#fafafa
+    style Input fill:#e3f2fd
+    style Output fill:#fff3e0
+    style Operator fill:#e8f5e9
+```
+
 ### 2.2 Goroutine Inventory per Task Slot
 
 | Goroutine | Count | Lifecycle | Purpose |

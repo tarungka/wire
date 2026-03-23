@@ -136,6 +136,48 @@ flowchart TD
 
 ### 3.1 metadata.json Schema
 
+**Checkpoint Metadata Class Diagram:**
+
+```mermaid
+classDiagram
+    class CheckpointMetadata {
+        +int schema_version
+        +string type
+        +uint64 checkpoint_id
+        +string job_id
+        +string trigger_time
+        +string completion_time
+    }
+    class JobGraph {
+        +int num_key_groups
+        +Operator[] operators
+    }
+    class Operator {
+        +string operator_id
+        +string type
+        +int parallelism
+        +string chained_to
+    }
+    class Task {
+        +string task_id
+        +string operator_id
+        +int subtask_index
+        +int[] key_group_range
+        +string state_path
+        +StateFile[] state_files
+        +SourceOffset[] source_offsets
+    }
+    class SinkTransaction {
+        +string task_id
+        +uint64 committed_checkpoint
+        +string transaction_id
+    }
+    CheckpointMetadata "1" --> "1" JobGraph
+    CheckpointMetadata "1" --> "*" Task
+    CheckpointMetadata "1" --> "*" SinkTransaction
+    JobGraph "1" --> "*" Operator
+```
+
 ```json
 {
   "schema_version": 1,
