@@ -1,0 +1,153 @@
+# Instincts generated from https://github.com/tarungka/wire
+# Generated: 2026-03-24T04:52:38.867Z
+# Version: 2.0
+
+---
+id: wire-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: feat, docs, fix, update, chore
+
+## Evidence
+
+- 102 commits analyzed
+- Detected conventional commit pattern
+- Examples: docs: add WIP-21 Streaming SQL Engine proposal, merge: resolve conflicts with refactor/rewrite
+
+---
+id: wire-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Commit Length
+
+## Action
+
+Keep commit messages concise (under 50 characters)
+
+## Evidence
+
+- Average commit message length: 39 chars
+- Based on 102 commits
+
+---
+id: wire-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Naming Files
+
+## Action
+
+Use snake_case naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: snake_case
+
+---
+id: wire-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Export Style
+
+## Action
+
+Prefer mixed exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: mixed
+
+---
+id: wire-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: wire-workflow-feature-development
+trigger: "when implementing a new feature"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Workflow Feature Development
+
+## Action
+
+Follow the feature-development workflow:
+1. Add feature implementation
+2. Add tests for feature
+3. Update documentation
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~24x per month
+- Files: docs/old/*, **/*.test.*, **/api/**
+
+---
+id: wire-workflow-refactoring
+trigger: "when refactoring code"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Workflow Refactoring
+
+## Action
+
+Follow the refactoring workflow:
+1. Ensure tests pass before refactor
+2. Refactor code structure
+3. Verify tests still pass
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: src/**/*
+
