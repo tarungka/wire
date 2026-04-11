@@ -4,12 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/protocol"
 )
+
+// eventSlicePool reuses []Event slices in the processEvent hot path to avoid
+// per-event heap allocations. Stores *[]Event (pointer to slice) to avoid
+// interface allocation on Put, matching the pattern in protocol/frame.go.
+var eventSlicePool = sync.Pool{
+	New: func() any {
+		s := make([]Event, 0, 8)
+		return &s
+	},
+}
 
 // errChainDone is a sentinel returned by handleControl to signal the operator
 // chain should exit cleanly. It is never surfaced to the caller.
@@ -179,16 +190,21 @@ func isZeroEvent(e Event) bool {
 // When an operator has a non-zero ErrorHandlerConfig, errors are handled via
 // invokeWithRetry (retry/DLQ/drop); otherwise errors fail the job immediately.
 func processEvent(cc *chainContext, event Event) error {
-	// Start with the input event. For FlatMap we may fan out to multiple events.
-	events := []Event{event}
+	// Get two pooled slices: one for current events, one for the next stage.
+	eventsPtr := eventSlicePool.Get().(*[]Event)
+	events := (*eventsPtr)[:0]
+	events = append(events, event)
+
+	nextPtr := eventSlicePool.Get().(*[]Event)
 
 	for _, link := range cc.links {
-		var next []Event
+		next := (*nextPtr)[:0]
 		for _, e := range events {
 			switch o := link.Operator.(type) {
 			case MapOperator:
 				result, err := invokeMapWithRetry(cc, link, e, o)
 				if err != nil {
+					putEventSlices(eventsPtr, events, nextPtr, next)
 					return err
 				}
 				if result != nil {
@@ -197,16 +213,20 @@ func processEvent(cc *chainContext, event Event) error {
 			case FlatMapOperator:
 				emitted, err := invokeFlatMapWithRetry(cc, link, e, o)
 				if err != nil {
+					putEventSlices(eventsPtr, events, nextPtr, next)
 					return err
 				}
 				next = append(next, emitted...)
 			case SinkOperator:
 				if err := invokeSinkWithRetry(cc, link, e, o); err != nil {
+					putEventSlices(eventsPtr, events, nextPtr, next)
 					return err
 				}
 			}
 		}
-		events = next
+		// Swap: next becomes events, old events buffer becomes next.
+		events, next = next, events
+		eventsPtr, nextPtr = nextPtr, eventsPtr
 	}
 
 	// Send surviving events to output.
@@ -214,10 +234,28 @@ func processEvent(cc *chainContext, event Event) error {
 		select {
 		case cc.outputCh <- OutputMsg{Type: OutputData, Event: e}:
 		case <-cc.ctx.Done():
+			putEventSlices(eventsPtr, events, nextPtr, (*nextPtr)[:0])
 			return cc.ctx.Err()
 		}
 	}
+
+	putEventSlices(eventsPtr, events, nextPtr, (*nextPtr)[:0])
 	return nil
+}
+
+// putEventSlices zeroes event references and returns slices to the pool.
+func putEventSlices(aPtr *[]Event, a []Event, bPtr *[]Event, b []Event) {
+	for i := range a {
+		a[i] = Event{}
+	}
+	*aPtr = a
+	eventSlicePool.Put(aPtr)
+
+	for i := range b {
+		b[i] = Event{}
+	}
+	*bPtr = b
+	eventSlicePool.Put(bPtr)
 }
 
 // invokeMapWithRetry wraps a MapOperator call with error handling.

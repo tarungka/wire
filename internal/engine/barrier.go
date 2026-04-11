@@ -97,7 +97,16 @@ func (ba *BarrierAligner) DrainAll(checkpointID uint64) []Event {
 		return nil
 	}
 
-	var all []Event
+	// Pre-compute total size for a single allocation.
+	total := 0
+	for i := 0; i < ba.numInputs; i++ {
+		total += len(ba.sideBuffers[i])
+	}
+	if total == 0 {
+		return nil
+	}
+
+	all := make([]Event, 0, total)
 	for i := 0; i < ba.numInputs; i++ {
 		buf := ba.sideBuffers[i]
 		all = append(all, buf...)

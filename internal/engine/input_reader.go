@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"io"
+	"runtime"
 
 	"github.com/rs/zerolog"
 
@@ -69,11 +70,12 @@ func runInputReader(
 			if aligner.IsAligning(inputIndex) {
 				if err := aligner.BufferEvent(ctx, inputIndex, event); err != nil {
 					log.Warn().Err(err).Int("input", inputIndex).Msg("side buffer full, blocking")
-					// Spin-wait with context check when buffer is full.
+					// Yield and retry when buffer is full.
 					for {
 						if ctx.Err() != nil {
 							return ctx.Err()
 						}
+						runtime.Gosched()
 						if err := aligner.BufferEvent(ctx, inputIndex, event); err == nil {
 							break
 						}
