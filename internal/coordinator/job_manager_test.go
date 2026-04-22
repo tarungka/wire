@@ -156,10 +156,17 @@ func TestCancelJob_InvalidState(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
-	// Job is CREATED, which cannot transition to CANCELING.
-	_, err := c.CancelJob(job.ID)
+	// Cancel the CREATED job (now allowed), then try canceling a terminal job.
+	canceled, err := c.CancelJob(job.ID)
+	if err != nil {
+		t.Fatalf("CancelJob from CREATED: %v", err)
+	}
+	if err := c.transitionJob(canceled, JobCanceled); err != nil {
+		t.Fatalf("transitionJob to CANCELED: %v", err)
+	}
+	_, err = c.CancelJob(job.ID)
 	if !errors.Is(err, ErrInvalidTransition) {
-		t.Fatalf("expected ErrInvalidTransition, got: %v", err)
+		t.Fatalf("expected ErrInvalidTransition for terminal state, got: %v", err)
 	}
 }
 

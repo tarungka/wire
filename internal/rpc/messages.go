@@ -514,6 +514,24 @@ type RunningTaskSummary struct {
 	Metrics  *TaskMetrics `codec:"met,omitempty"`
 }
 
+// ---------- RegisterWorker RPC ----------
+
+// RegisterWorkerRequest is sent from Worker to Coordinator to register or re-register.
+type RegisterWorkerRequest struct {
+	WorkerID         string   `codec:"wid"`
+	Address          string   `codec:"addr"`
+	TaskSlotsTotal   int      `codec:"tst"`
+	HighestSeenEpoch uint64   `codec:"hse"`
+	RunningTasks     []string `codec:"rt,omitempty"`
+}
+
+// RegisterWorkerResponse is the Coordinator's reply to RegisterWorker.
+type RegisterWorkerResponse struct {
+	Epoch         uint64   `codec:"eid"`
+	TasksToCancel []string `codec:"ttc,omitempty"`
+	MissingTasks  []string `codec:"mt,omitempty"`
+}
+
 // WorkerCommand carries a command from Coordinator to Worker via heartbeat.
 type WorkerCommand struct {
 	Type   CommandType `codec:"t"`

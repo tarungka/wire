@@ -11,6 +11,24 @@ import (
 func (c *WireConfig) Validate() error {
 	var errs []error
 
+	// Mode validation.
+	switch c.Mode {
+	case "coordinator", "worker", "":
+		// valid
+	default:
+		errs = append(errs, fmt.Errorf("mode must be \"coordinator\", \"worker\", or \"\", got %q", c.Mode))
+	}
+
+	// Worker-specific validation.
+	if c.Mode == "worker" {
+		if c.Worker.CoordinatorAddr == "" {
+			errs = append(errs, fmt.Errorf("worker.coordinator_addr is required in worker mode"))
+		}
+		if c.Worker.TaskSlots <= 0 {
+			errs = append(errs, fmt.Errorf("worker.task_slots must be > 0, got %d", c.Worker.TaskSlots))
+		}
+	}
+
 	// TLS cert/key pairing — http.tls
 	if err := validateTLSPair("http.tls", &c.HTTP.TLS); err != nil {
 		errs = append(errs, err)

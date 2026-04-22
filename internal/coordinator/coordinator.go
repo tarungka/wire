@@ -10,6 +10,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/protocol"
+	"github.com/tarungka/wire/internal/rpc"
 )
 
 // Default configuration values.
@@ -53,6 +54,12 @@ type Coordinator struct {
 	jobs    map[string]*JobMeta
 	workers map[string]*WorkerMeta
 
+	// Per-worker pending command queue (coordinator → worker via heartbeat).
+	pendingCmds map[string][]rpc.WorkerCommand
+
+	// Task status cache (taskID → status).
+	taskStatuses map[string]rpc.TaskStatus
+
 	// Leadership context — canceled when leadership is lost.
 	leaderCtx    context.Context
 	leaderCancel context.CancelFunc
@@ -65,14 +72,16 @@ type Coordinator struct {
 func New(cfg CoordinatorConfig, store MetadataStore, election LeaderElection, log zerolog.Logger) *Coordinator {
 	cfg.resolve()
 	return &Coordinator{
-		state:    StateStandby,
-		nodeID:   cfg.NodeID,
-		config:   cfg,
-		store:    store,
-		election: election,
-		log:      log.With().Str("component", "coordinator").Logger(),
-		jobs:     make(map[string]*JobMeta),
-		workers:  make(map[string]*WorkerMeta),
+		state:        StateStandby,
+		nodeID:       cfg.NodeID,
+		config:       cfg,
+		store:        store,
+		election:     election,
+		log:          log.With().Str("component", "coordinator").Logger(),
+		jobs:         make(map[string]*JobMeta),
+		workers:      make(map[string]*WorkerMeta),
+		pendingCmds:  make(map[string][]rpc.WorkerCommand),
+		taskStatuses: make(map[string]rpc.TaskStatus),
 	}
 }
 
@@ -167,6 +176,8 @@ func (c *Coordinator) runMultiNode(ctx context.Context) error {
 			c.recovered = false
 			c.jobs = make(map[string]*JobMeta)
 			c.workers = make(map[string]*WorkerMeta)
+			c.pendingCmds = make(map[string][]rpc.WorkerCommand)
+			c.taskStatuses = make(map[string]rpc.TaskStatus)
 			c.mu.Unlock()
 
 			if ctx.Err() != nil {
@@ -233,8 +244,10 @@ func (c *Coordinator) recover() error {
 	return nil
 }
 
-// serve runs the main coordinator service loop: heartbeat flushing.
+// serve runs the main coordinator service loop: heartbeat flushing and scheduling.
 func (c *Coordinator) serve(ctx context.Context) error {
+	go c.runScheduler(ctx)
+
 	ticker := time.NewTicker(c.config.HeartbeatFlushInterval)
 	defer ticker.Stop()
 
@@ -249,6 +262,46 @@ func (c *Coordinator) serve(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// EnqueueCommand appends a command to the pending queue for a worker.
+func (c *Coordinator) EnqueueCommand(workerID string, cmd rpc.WorkerCommand) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pendingCmds[workerID] = append(c.pendingCmds[workerID], cmd)
+}
+
+// DrainCommands returns and clears all pending commands for a worker.
+func (c *Coordinator) DrainCommands(workerID string) []rpc.WorkerCommand {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cmds := c.pendingCmds[workerID]
+	if len(cmds) > 0 {
+		delete(c.pendingCmds, workerID)
+	}
+	return cmds
+}
+
+// allTasksInStatus checks if all tasks for a job have the given status.
+func (c *Coordinator) allTasksInStatus(jobID string, status rpc.TaskStatus) bool {
+	// Must be called with c.mu held (at least RLock).
+	data, err := c.store.Get(JobAssignmentsKey(jobID))
+	if err != nil || data == nil {
+		return false
+	}
+	var assignments TaskAssignmentMap
+	if err := protocol.DecodeMsgPack(data, &assignments); err != nil {
+		return false
+	}
+	if len(assignments.Assignments) == 0 {
+		return false
+	}
+	for taskID := range assignments.Assignments {
+		if c.taskStatuses[taskID] != status {
+			return false
+		}
+	}
+	return true
 }
 
 // flushHeartbeats persists worker heartbeat summaries to the metadata store.

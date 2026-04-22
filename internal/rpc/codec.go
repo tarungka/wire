@@ -45,6 +45,7 @@ const (
 	MethodAcknowledgeCheckpoint MethodID = 0x0004
 	MethodRequestTaskSlots      MethodID = 0x0005
 	MethodHeartbeat             MethodID = 0x0006
+	MethodRegisterWorker        MethodID = 0x0007
 	MethodError                 MethodID = 0x00FF
 )
 
@@ -184,6 +185,8 @@ func MethodName(id MethodID) string {
 		return "RequestTaskSlots"
 	case MethodHeartbeat:
 		return "Heartbeat"
+	case MethodRegisterWorker:
+		return "RegisterWorker"
 	case MethodError:
 		return "Error"
 	default:

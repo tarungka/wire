@@ -7,6 +7,7 @@ import (
 	"os"
 	"syscall"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/errgroup"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/tarungka/wire/internal/config"
 	"github.com/tarungka/wire/internal/coordinator"
 	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/internal/worker"
 )
 
 // Need to make up my mind on some of these:
@@ -87,6 +89,22 @@ func main() {
 
 	log.Info().Msg("Starting wire...")
 
+	var runErr error
+	switch wireCfg.Mode {
+	case "worker":
+		runErr = runWorker(mainCtx, &wireCfg, log.Logger)
+	default:
+		runErr = runCoordinator(mainCtx, &wireCfg, log.Logger)
+	}
+
+	if runErr != nil && runErr != context.Canceled {
+		log.Fatal().Err(runErr).Msg("wire exited with error")
+	}
+
+	log.Info().Msg("Shutting down.")
+}
+
+func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger) error {
 	// Resolve coordinator node ID.
 	nodeID := wireCfg.Node.ID
 	if nodeID == "" {
@@ -125,8 +143,11 @@ func main() {
 	// Create HTTP server.
 	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger)
 
+	// Create transport server for worker RPC connections.
+	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger)
+
 	// Start everything in an errgroup.
-	g, gCtx := errgroup.WithContext(mainCtx)
+	g, gCtx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
 		return coord.Run(gCtx)
@@ -141,16 +162,40 @@ func main() {
 	})
 
 	g.Go(func() error {
+		return transportSrv.ListenAndServe(gCtx)
+	})
+
+	g.Go(func() error {
 		<-gCtx.Done()
 		log.Info().Msg("Shutting down...")
 		_ = coord.Shutdown(context.Background())
 		_ = httpSrv.Shutdown(context.Background())
+		_ = transportSrv.Shutdown(context.Background())
 		return nil
 	})
 
-	if err := g.Wait(); err != nil && err != context.Canceled {
-		log.Fatal().Err(err).Msg("wire exited with error")
-	}
+	return g.Wait()
+}
 
-	log.Info().Msg("Shutting down.")
+func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger) error {
+	w := worker.New(worker.Config{
+		WorkerID:        wireCfg.Worker.WorkerID,
+		CoordinatorAddr: wireCfg.Worker.CoordinatorAddr,
+		ListenAddr:      wireCfg.Worker.ListenAddr,
+		TaskSlots:       wireCfg.Worker.TaskSlots,
+	}, log.Logger)
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		return w.Run(gCtx)
+	})
+
+	g.Go(func() error {
+		<-gCtx.Done()
+		log.Info().Msg("Shutting down worker...")
+		return w.Shutdown(context.Background())
+	})
+
+	return g.Wait()
 }

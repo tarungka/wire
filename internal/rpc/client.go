@@ -203,3 +203,12 @@ func (c *Client) Heartbeat(ctx context.Context, req *HeartbeatRequest) (*Heartbe
 	}
 	return &resp, nil
 }
+
+// RegisterWorker sends a RegisterWorker RPC.
+func (c *Client) RegisterWorker(ctx context.Context, req *RegisterWorkerRequest) (*RegisterWorkerResponse, error) {
+	var resp RegisterWorkerResponse
+	if err := c.Call(ctx, MethodRegisterWorker, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}

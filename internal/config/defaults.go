@@ -6,6 +6,8 @@ import "time"
 // These defaults match the current pflag defaults in cmd/init.go.
 func DefaultConfig() WireConfig {
 	return WireConfig{
+		Mode:   "coordinator",
+		Listen: ":4002",
 		Node: NodeConfig{
 			DataDir: "data/coordinator",
 			StoreDB: "pebble",
@@ -21,6 +23,10 @@ func DefaultConfig() WireConfig {
 		Election: ElectionConfig{
 			Backend:  "noop",
 			LockPath: "data/coordinator/leader.lock",
+		},
+		Worker: WorkerConfig{
+			ListenAddr: ":4003",
+			TaskSlots:  4,
 		},
 	}
 }

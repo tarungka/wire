@@ -80,6 +80,7 @@ Ordered by build dependency: engine core first, then runtime infrastructure, the
 | [WIP-10](WIP-10/README.md) | Two-Phase Commit for Transactional Sinks | Draft |
 | [WIP-11](WIP-11/README.md) | Error Handling & Dead Letter Queues | Draft |
 | [WIP-12](WIP-12/README.md) | Late Data & Allowed Lateness | Draft |
+| [WIP-20](WIP-20/README.md) | Task Execution Engine | Draft |
 
 ### User-Facing Layer
 
