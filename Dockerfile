@@ -50,9 +50,9 @@ COPY --from=builder /app/wire /bin
 # Copy the config folder
 # COPY ./.config ./.config
 
-RUN mkdir -p /badger/file
-VOLUME /badger/file
-EXPOSE 4001 4001
+RUN mkdir -p /data/wire
+VOLUME /data/wire
+EXPOSE 4002 4002
 
 # Command to run the application with the config file argument
 ENTRYPOINT ["docker-entrypoint.sh"]

@@ -35,6 +35,9 @@ tmp/
 # Log files
 *.log
 
+# Pal MCP config
+.mcp.json
+
 # misc files
 wsnapshots/
 raft/
@@ -48,3 +51,4 @@ raft_database2/
 raft_database3/
 raft.db
 wire
+data/
