@@ -1,376 +1,99 @@
-# Wire Agents and Tools Documentation
+# AGENTS.md
 
-## Overview
+A navigation guide for AI agents and new contributors working in this repository.
 
-Wire is a real-time data streaming platform designed for efficient data ingestion, transformation, and distribution. It provides a modular architecture with various agents and tools that work together to create powerful data pipelines.
+> **Status note:** An earlier version of this file described a pre-rewrite, pipeline-based architecture with many built-in connectors. That architecture no longer exists. The codebase was fully rewritten (merged March 2026, PR [#148](https://github.com/tarungka/wire/pull/148)). This file reflects the current layout.
 
-### Core Architecture
-- **Pipeline-based processing** with configurable sources and sinks
-- **Distributed architecture** with clustering support
-- **Multi-protocol support** for various data sources and destinations
-- **Real-time data transformation** capabilities
+## What Wire is
 
-## Main Executable
+Wire is a distributed stream processing engine: a Master–Worker system that runs streaming jobs with exactly-once semantics, embedded state (PebbleDB), and Asynchronous Barrier Snapshot checkpointing. Read [`docs/vision.md`](docs/vision.md) first for goals and non-goals, then [`docs/architecture.md`](docs/architecture.md) for the runtime topology.
 
-### Wire CLI (`cmd/wire/main.go`)
-The main entry point for the Wire application. Handles initialization, configuration loading, and service orchestration.
+## Repository layout
 
-**Key responsibilities:**
-- Configuration management
-- Service initialization (HTTP, Cluster, Store)
-- Pipeline lifecycle management
-- Graceful shutdown handling
+```
+cmd/                     Single binary entry point (runs as coordinator or worker)
+  main.go                Mode selection (runCoordinator / runWorker)
+  init.go                CLI flag parsing
+  signals.go             Signal handling
 
-**Usage:**
+internal/
+  cmd/                   Build metadata (version/commit/branch)
+  config/                Config loading, validation, flag merging
+  coordinator/           Control plane: job manager, scheduler, checkpoint
+                         coordinator, HTTP API, leader election, Pebble
+                         metadata store, recovery
+  engine/                Stream processing engine: operators, barriers,
+                         checkpoint coordination, state backends, DLQ,
+                         watermarks, windowing
+  keygroup/              Key-group assignment (state sharding primitive)
+  logger/                zerolog wrappers
+  protocol/              Wire protocol framing and message types (msgpack)
+  rpc/                   Coordinator ↔ Worker RPC implementations
+  transport/             TCP transport (Yamux multiplexing)
+  worker/                Data plane: task slot management, registration,
+                         heartbeats, RPC client
+
+sdk/                     User-facing Go SDK: DataStream API, Source/Sink
+                         interfaces, environments, test harness
+
+docs/                    Canon design docs + WIP/TRD proposals
+```
+
+## Core interfaces
+
+- **`sdk.Source`** (`sdk/source.go`): `Open`, `ReadBatch`, `Close`, `GenerateWatermark`.
+- **`sdk.Sink`** (`sdk/sink.go`): `Open`, `Write`, `Close`.
+- No reference connector implementations ship yet. Design for reference connectors and a connector SDK is under [WIP-16](docs/trds/WIP-16/README.md).
+
+## Configuration
+
+Wire loads a YAML/JSON config file (default: `.config/config.json`) and applies CLI flag overrides. See [`internal/config/`](internal/config/) for the types. A formal schema is being defined in [WIP-13](docs/trds/WIP-13/README.md).
+
+## Build, run, test
+
 ```bash
-wire [flags]
+make build      # build the wire binary
+make test       # full test suite
+make unittest   # unit tests only
+make lint       # golangci-lint
+make format     # gofmt
 ```
 
-## Core Services
+Run modes (see [`docs/usage.md`](docs/usage.md) for the full flag reference):
 
-### HTTP Service (`internal/service/http/`)
-REST API and web interface for Wire management and monitoring.
-
-**Endpoints:**
-- Pipeline management (CRUD operations)
-- Health checks and metrics
-- Configuration management
-- Real-time monitoring
-
-**Key files:**
-- `server.go` - HTTP server implementation
-- `handlers/` - Request handlers for various endpoints
-- `middleware/` - Authentication, logging, and other middleware
-
-### Cluster Service (`internal/service/cluster/`)
-Distributed coordination service for multi-node Wire deployments.
-
-**Features:**
-- Node discovery and registration
-- Leader election
-- Distributed configuration sync
-- Health monitoring across nodes
-
-**Key components:**
-- Cluster manager
-- Node registry
-- Consensus protocol implementation
-
-### Store Service (`internal/service/store/`)
-Persistence layer abstraction for Wire's data and metadata.
-
-**Supported backends:**
-- SQLite (default for development)
-- PostgreSQL (recommended for production)
-- MySQL
-
-**Key interfaces:**
-- `Store` - Main storage interface
-- `Transaction` - Transactional operations
-- `Migration` - Database schema management
-
-## Pipeline Architecture
-
-### Pipeline Manager (`internal/pipeline/`)
-Core component managing data flow from sources to sinks.
-
-**Components:**
-- **Pipeline** - Main orchestrator for data flow
-- **Worker Pool** - Concurrent processing of data
-- **Transformer** - Data transformation logic
-- **Router** - Intelligent data routing between components
-
-**Pipeline lifecycle:**
-1. Configuration parsing
-2. Source initialization
-3. Sink preparation
-4. Worker pool creation
-5. Data flow orchestration
-6. Graceful shutdown
-
-## Data Connectors
-
-### Sources (`internal/sources/`)
-Input connectors for data ingestion.
-
-#### Available Sources:
-- **FileWatch** - Monitor files for changes
-  - Supports multiple file patterns
-  - Configurable polling intervals
-  - File rotation handling
-
-- **HTTP** - REST API endpoint for data ingestion
-  - Webhook support
-  - Authentication options
-  - Request validation
-
-- **Kafka** - Apache Kafka consumer
-  - Topic subscription
-  - Consumer group management
-  - Offset management
-
-- **RabbitMQ** - AMQP message queue consumer
-  - Queue binding
-  - Exchange configuration
-  - Message acknowledgment
-
-- **SQS** - AWS Simple Queue Service
-  - Long polling support
-  - Dead letter queue handling
-  - Batch processing
-
-- **Webhook** - Incoming webhook receiver
-  - Custom endpoint configuration
-  - Request authentication
-  - Payload validation
-
-### Sinks (`internal/sinks/`)
-Output connectors for data distribution.
-
-#### Available Sinks:
-- **Elasticsearch** - Search and analytics engine
-  - Index management
-  - Bulk operations
-  - Document mapping
-
-- **File** - File system writer
-  - Rotation policies
-  - Compression options
-  - Custom formatting
-
-- **HTTP** - REST API caller
-  - Retry logic
-  - Authentication
-  - Request batching
-
-- **Kafka** - Apache Kafka producer
-  - Topic routing
-  - Partitioning strategies
-  - Compression
-
-- **MongoDB** - NoSQL database
-  - Collection management
-  - Bulk operations
-  - Index creation
-
-- **PostgreSQL** - Relational database
-  - Table management
-  - Batch inserts
-  - Transaction support
-
-- **Redis** - In-memory data store
-  - Key patterns
-  - TTL management
-  - Pub/sub support
-
-- **S3** - AWS S3 object storage
-  - Bucket management
-  - Multipart uploads
-  - Object tagging
-
-- **Webhook** - Outgoing webhook sender
-  - Custom headers
-  - Retry policies
-  - Response handling
-
-## Network Components
-
-### TCP Multiplexing (`internal/pkg/mux/`)
-Efficient network communication layer.
-
-**Features:**
-- Connection pooling
-- Stream multiplexing
-- Protocol negotiation
-- Compression support
-
-### Transport Layer (`internal/pkg/transport/`)
-Abstraction for various transport protocols.
-
-**Supported protocols:**
-- TCP
-- HTTP/HTTPS
-- WebSocket
-- gRPC
-
-## Key Interfaces
-
-### Pipeline Interface
-```go
-type Pipeline interface {
-    Start(ctx context.Context) error
-    Stop() error
-    GetStatus() Status
-    GetMetrics() Metrics
-}
-```
-
-### Source Interface
-```go
-type Source interface {
-    Connect() error
-    Read() (<-chan Message, error)
-    Close() error
-}
-```
-
-### Sink Interface
-```go
-type Sink interface {
-    Connect() error
-    Write(messages []Message) error
-    Close() error
-}
-```
-
-### Store Interface
-```go
-type Store interface {
-    Get(key string) ([]byte, error)
-    Put(key string, value []byte) error
-    Delete(key string) error
-    Transaction(fn func(tx Transaction) error) error
-}
-```
-
-## Background Processes
-
-### Health Monitor
-- Periodic health checks for all components
-- Automatic recovery attempts
-- Alert generation
-
-### Metrics Collector
-- Performance metrics gathering
-- Resource utilization tracking
-- Custom metric support
-
-### Configuration Watcher
-- Dynamic configuration updates
-- Hot reload support
-- Validation before applying changes
-
-## Usage Examples
-
-### Creating a Simple Pipeline
-```yaml
-name: "file-to-elasticsearch"
-source:
-  type: "filewatch"
-  config:
-    path: "/var/log/app.log"
-    pattern: "*.log"
-sink:
-  type: "elasticsearch"
-  config:
-    url: "http://localhost:9200"
-    index: "app-logs"
-```
-
-### Multi-Source Pipeline
-```yaml
-name: "multi-source-aggregator"
-sources:
-  - type: "kafka"
-    config:
-      brokers: ["localhost:9092"]
-      topic: "events"
-  - type: "http"
-    config:
-      port: 8080
-      path: "/ingest"
-sinks:
-  - type: "postgresql"
-    config:
-      connection: "postgres://user:pass@localhost/db"
-      table: "events"
-  - type: "s3"
-    config:
-      bucket: "data-archive"
-      region: "us-east-1"
-```
-
-### Cluster Configuration
-```yaml
-cluster:
-  enabled: true
-  node_id: "node-1"
-  listen_address: ":7946"
-  peers:
-    - "node-2:7946"
-    - "node-3:7946"
-```
-
-## Development Guidelines
-
-### Adding New Sources/Sinks
-1. Implement the appropriate interface (`Source` or `Sink`)
-2. Add configuration struct with validation
-3. Register with the factory
-4. Add documentation and examples
-5. Write comprehensive tests
-
-### Testing Components
-- Unit tests for individual components
-- Integration tests for end-to-end flows
-- Performance benchmarks for critical paths
-- Chaos testing for distributed scenarios
-
-### Debugging Tools
-- Detailed logging with configurable levels
-- Metrics exposition for monitoring
-- Debug endpoints for component inspection
-- Trace propagation for distributed debugging
-
-## Best Practices
-
-1. **Configuration Management**
-   - Use environment variables for sensitive data
-   - Validate all configuration before applying
-   - Provide sensible defaults
-
-2. **Error Handling**
-   - Implement retry logic with backoff
-   - Log errors with context
-   - Fail fast for unrecoverable errors
-
-3. **Performance Optimization**
-   - Use connection pooling
-   - Implement batching where applicable
-   - Monitor resource usage
-
-4. **Security**
-   - Encrypt data in transit
-   - Use secure credential storage
-   - Implement proper authentication/authorization
-
-## Troubleshooting
-
-### Common Issues
-1. **Pipeline not starting**: Check configuration validity and source/sink connectivity
-2. **Data loss**: Verify acknowledgment settings and retry policies
-3. **Performance degradation**: Monitor metrics and adjust worker pool sizes
-4. **Cluster split-brain**: Check network connectivity between nodes
-
-### Debug Commands
 ```bash
-# Check pipeline status
-curl http://localhost:8080/api/pipelines
+./wire --mode coordinator --http-listen :4001 --listen :4002 \
+       --election-backend noop --coordinator-data-dir data/coordinator
 
-# View cluster members
-curl http://localhost:8080/api/cluster/members
-
-# Export metrics
-curl http://localhost:8080/metrics
+./wire --mode worker --coordinator-addr localhost:4002 --task-slots 4
 ```
 
-## Contributing
+## Making changes
 
-When adding new agents or tools:
-1. Follow the existing code structure
-2. Include comprehensive documentation
-3. Add unit and integration tests
-4. Update this AGENTS.md file
-5. Submit PR with clear description
+- **Bug fixes and small refactors:** open a PR directly.
+- **New subsystems, public interfaces, connectors, or changes to the execution model:** write a WIP under [`docs/trds/`](docs/trds/README.md) first. The WIP lifecycle is `Draft → In Review → Approved → Implemented`.
+- **Stale or conflicting documentation:** see [`docs/docs-todo.md`](docs/docs-todo.md) for the tracked gap list.
 
-For more information, see the main project documentation and contribution guidelines.
+## Canon doc map
+
+| Topic | Doc |
+|-------|-----|
+| Vision, principles | [`docs/vision.md`](docs/vision.md) |
+| Runtime topology, RPC surface | [`docs/architecture.md`](docs/architecture.md) |
+| Event time, checkpointing, backpressure | [`docs/execution-model.md`](docs/execution-model.md) |
+| State, Pebble, snapshots | [`docs/state-backend.md`](docs/state-backend.md) |
+| Deployment and operations | [`docs/operations.md`](docs/operations.md) |
+| CLI flags and getting started | [`docs/usage.md`](docs/usage.md) |
+| Glossary (Barrier, Key Group, Epoch, …) | [`docs/glossary.md`](docs/glossary.md) |
+| Active design proposals | [`docs/trds/`](docs/trds/) |
+
+## What is intentionally *not* in Wire (yet)
+
+These are mentioned in some older notes but are not in the codebase today:
+
+- Built-in connectors (Kafka, MongoDB, Elasticsearch, Redis, S3, etc.) — deleted in the rewrite; reintroduction is scoped under [WIP-16](docs/trds/WIP-16/README.md).
+- Raft consensus — replaced with PebbleDB + pluggable leader election ([WIP-09](docs/trds/WIP-09/README.md)). Raft is kept as a deferred option (Phase D).
+- YAML pipeline DSL — proposed in [WIP-19](docs/trds/WIP-19/README.md); not yet implemented.
+- SQL interface, Web UI, Helm charts, Kubernetes operator — not on the near-term roadmap.
+
+When in doubt, trust the code under `internal/` over any older documentation.
