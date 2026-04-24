@@ -28,6 +28,8 @@ func (g *StreamGraph) toJobGraph(defaultParallelism int) rpc.JobGraph {
 			Name:        node.Name,
 			Type:        nodeTypeToRPC(node.Type),
 			Parallelism: int32(p),
+			ClassName:   node.ClassName,
+			Config:      node.Config,
 		})
 	}
 

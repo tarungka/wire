@@ -121,6 +121,28 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 				c.log.Info().Str("job_id", req.JobID).Msg("task failed, job is FAILING")
 			}
 		}
+
+	case rpc.TaskStatusFinished:
+		c.mu.RLock()
+		allFinished := c.allTasksInStatus(req.JobID, rpc.TaskStatusFinished)
+		currentStatus := job.Status
+		c.mu.RUnlock()
+
+		// JobRunning → JobFinishing → JobFinished. The Finishing stage is a
+		// synchronous pass-through for Phase 1 since there is no coordinated
+		// flush/commit step yet; the 2PC sink path in Phase 4 will linger
+		// here until PreCommit/Commit acks arrive.
+		if allFinished && currentStatus == JobRunning {
+			if err := c.transitionJob(job, JobFinishing); err != nil {
+				c.log.Warn().Err(err).Str("job_id", req.JobID).Msg("failed to transition job to FINISHING")
+				break
+			}
+			if err := c.transitionJob(job, JobFinished); err != nil {
+				c.log.Warn().Err(err).Str("job_id", req.JobID).Msg("failed to transition job to FINISHED")
+			} else {
+				c.log.Info().Str("job_id", req.JobID).Msg("all tasks finished, job is FINISHED")
+			}
+		}
 	}
 
 	return &rpc.UpdateTaskStatusResponse{Accepted: true}, nil

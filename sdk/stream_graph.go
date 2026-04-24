@@ -34,7 +34,16 @@ type StreamNode struct {
 	Type        StreamNodeType
 	Parallelism int
 
-	// Operator function pointers — exactly one is set.
+	// ClassName identifies a registered operator factory on the worker.
+	// Required for Cluster mode (see worker.Registry); unused in Embedded.
+	ClassName string
+	// Config carries the operator-specific configuration bytes that are
+	// passed verbatim to the worker factory at deploy time. Typically
+	// msgpack-encoded. Only meaningful in Cluster mode.
+	Config []byte
+
+	// Operator function pointers — exactly one is set in Embedded mode.
+	// In Cluster mode these are nil and ClassName is used instead.
 	MapFn      MapFunc
 	FlatMapFn  FlatMapFunc
 	FilterFn   FilterFunc
@@ -96,6 +105,24 @@ func (g *StreamGraph) addEdge(sourceID, targetID int, shuffle ShuffleType) {
 		TargetID: targetID,
 		Shuffle:  shuffle,
 	})
+}
+
+// validateForCluster checks that every node has a ClassName populated.
+// In Cluster mode, operators are resolved by name from the worker's registry;
+// inline closures (MapFn/FilterFn/...) cannot be serialized across the RPC
+// boundary and so are not allowed in a Cluster-mode graph.
+func (g *StreamGraph) validateForCluster() error {
+	for _, node := range g.nodes {
+		if node.ClassName == "" {
+			return fmt.Errorf(
+				"%w: cluster-mode graph requires ClassName on every node; "+
+					"node %q (type %d) has no ClassName — did you use .Map(closure) "+
+					"instead of .MapNamed(name, cfg)?",
+				ErrInvalidConfig, node.Name, node.Type,
+			)
+		}
+	}
+	return nil
 }
 
 // validate checks the graph for structural errors.

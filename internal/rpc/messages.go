@@ -273,14 +273,20 @@ type EdgeDescriptor struct {
 }
 
 // TaskDescriptor describes a single task instance to deploy.
+//
+// OperatorChain carries the linear sub-chain of operators this task should
+// fuse and execute locally. For Phase 1 (linear pipelines, no shuffle), this
+// is the full source→ops→sink chain. In later phases, it's the slice of
+// operators between two shuffle boundaries.
 type TaskDescriptor struct {
-	TaskID       string                  `codec:"tid"`
-	OperatorID   string                  `codec:"oid"`
-	SubtaskIndex int32                   `codec:"si"`
-	Parallelism  int32                   `codec:"p"`
-	KeyGroup     KeyGroupRange           `codec:"kg"`
-	Upstream     []UpstreamChannelInfo   `codec:"up,omitempty"`
-	Downstream   []DownstreamChannelInfo `codec:"dn,omitempty"`
+	TaskID        string                  `codec:"tid"`
+	OperatorID    string                  `codec:"oid"`
+	SubtaskIndex  int32                   `codec:"si"`
+	Parallelism   int32                   `codec:"p"`
+	KeyGroup      KeyGroupRange           `codec:"kg"`
+	OperatorChain []OperatorDescriptor    `codec:"oc,omitempty"`
+	Upstream      []UpstreamChannelInfo   `codec:"up,omitempty"`
+	Downstream    []DownstreamChannelInfo `codec:"dn,omitempty"`
 }
 
 // KeyGroupRange defines the key-group range assigned to a task.

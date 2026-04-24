@@ -52,6 +52,62 @@ func (ds *DataStream) flatMapWithName(fn FlatMapFunc, name string) *DataStream {
 	return &DataStream{env: ds.env, nodeID: id}
 }
 
+// MapNamed adds a Cluster-mode map operator identified by className. The
+// worker's Registry must have a MapFactory registered under this name. The
+// config bytes are passed verbatim to the factory at deploy time.
+func (ds *DataStream) MapNamed(name, className string, config []byte) *DataStream {
+	node := &StreamNode{
+		Name:      name,
+		Type:      NodeMap,
+		ClassName: className,
+		Config:    config,
+	}
+	id := ds.env.graph.addNode(node)
+	ds.env.graph.addEdge(ds.nodeID, id, ShuffleForward)
+	return &DataStream{env: ds.env, nodeID: id}
+}
+
+// FlatMapNamed adds a Cluster-mode flat-map operator identified by className.
+func (ds *DataStream) FlatMapNamed(name, className string, config []byte) *DataStream {
+	node := &StreamNode{
+		Name:      name,
+		Type:      NodeFlatMap,
+		ClassName: className,
+		Config:    config,
+	}
+	id := ds.env.graph.addNode(node)
+	ds.env.graph.addEdge(ds.nodeID, id, ShuffleForward)
+	return &DataStream{env: ds.env, nodeID: id}
+}
+
+// FilterNamed adds a Cluster-mode filter operator identified by className.
+// (Filters are registered as MapFactory instances: the factory returns an
+// engine.MapOperator whose Map returns a zero event for filtered records.)
+func (ds *DataStream) FilterNamed(name, className string, config []byte) *DataStream {
+	node := &StreamNode{
+		Name:      name,
+		Type:      NodeFilter,
+		ClassName: className,
+		Config:    config,
+	}
+	id := ds.env.graph.addNode(node)
+	ds.env.graph.addEdge(ds.nodeID, id, ShuffleForward)
+	return &DataStream{env: ds.env, nodeID: id}
+}
+
+// AddSinkNamed adds a Cluster-mode terminal sink identified by className.
+func (ds *DataStream) AddSinkNamed(name, className string, config []byte) *DataStream {
+	node := &StreamNode{
+		Name:      name,
+		Type:      NodeSink,
+		ClassName: className,
+		Config:    config,
+	}
+	id := ds.env.graph.addNode(node)
+	ds.env.graph.addEdge(ds.nodeID, id, ShuffleForward)
+	return &DataStream{env: ds.env, nodeID: id}
+}
+
 // Filter keeps only events that satisfy the predicate.
 func (ds *DataStream) Filter(fn FilterFunc) *DataStream {
 	return ds.filterWithName(fn, "")

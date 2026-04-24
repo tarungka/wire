@@ -40,15 +40,34 @@ func NewTransportServer(coord *Coordinator, listenAddr string, log zerolog.Logge
 	}
 }
 
-// ListenAndServe starts accepting TCP connections. It blocks until ctx is
-// canceled or an unrecoverable error occurs.
-func (ts *TransportServer) ListenAndServe(ctx context.Context) error {
+// Listen binds the server to its configured address without serving. Call
+// Serve() after (or use ListenAndServe for the combined flow). This split
+// lets callers use ":0" and retrieve the actual address via Addr().
+func (ts *TransportServer) Listen() error {
 	ln, err := net.Listen("tcp", ts.listenAddr)
 	if err != nil {
 		return fmt.Errorf("transport server: listen %s: %w", ts.listenAddr, err)
 	}
 	ts.listener = ln
-	ts.log.Info().Str("addr", ts.listenAddr).Msg("transport server listening")
+	ts.log.Info().Str("addr", ln.Addr().String()).Msg("transport server listening")
+	return nil
+}
+
+// Addr returns the listener address. Only valid after Listen() succeeds.
+func (ts *TransportServer) Addr() string {
+	if ts.listener == nil {
+		return ts.listenAddr
+	}
+	return ts.listener.Addr().String()
+}
+
+// Serve starts accepting TCP connections on the already-bound listener. It
+// blocks until ctx is canceled or an unrecoverable error occurs.
+func (ts *TransportServer) Serve(ctx context.Context) error {
+	if ts.listener == nil {
+		return fmt.Errorf("transport server: Serve called before Listen")
+	}
+	ln := ts.listener
 
 	// Close listener when context is canceled.
 	go func() {
@@ -74,6 +93,14 @@ func (ts *TransportServer) ListenAndServe(ctx context.Context) error {
 			ts.handleConn(ctx, c)
 		}(conn)
 	}
+}
+
+// ListenAndServe is a convenience wrapper around Listen() + Serve().
+func (ts *TransportServer) ListenAndServe(ctx context.Context) error {
+	if err := ts.Listen(); err != nil {
+		return err
+	}
+	return ts.Serve(ctx)
 }
 
 // handleConn wraps a raw TCP connection in a Yamux server session and

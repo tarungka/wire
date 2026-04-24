@@ -22,23 +22,46 @@ type Config struct {
 	TaskSlots       int
 }
 
-// Worker connects to a coordinator, registers, and runs a heartbeat loop.
-type Worker struct {
-	cfg     Config
-	client  *rpc.Client
-	session *transport.Session
-	epoch   uint64
-	mu      sync.RWMutex
-	tasks   map[string]context.CancelFunc // taskID -> cancel
-	log     zerolog.Logger
+// taskHandle tracks a running task so it can be cancelled on demand or
+// on worker shutdown.
+type taskHandle struct {
+	cancel context.CancelFunc
 }
 
-// New creates a new Worker.
+// Worker connects to a coordinator, registers, and runs a heartbeat loop.
+// Deployed tasks are resolved against the Worker's Registry and executed
+// via taskExecutor.
+type Worker struct {
+	cfg      Config
+	reg      *Registry
+	executor *taskExecutor
+	client   *rpc.Client
+	session  *transport.Session
+	epoch    uint64
+	mu       sync.RWMutex
+	tasks    map[string]*taskHandle // taskID -> handle
+	log      zerolog.Logger
+}
+
+// New creates a new Worker using the package-level default registry. User
+// code should call worker.RegisterSource/RegisterMap/RegisterSink before
+// constructing the Worker.
 func New(cfg Config, log zerolog.Logger) *Worker {
+	return NewWithRegistry(cfg, defaultRegistry, log)
+}
+
+// NewWithRegistry creates a new Worker with an explicit registry. Useful for
+// tests that need isolation from the package-level default registry.
+func NewWithRegistry(cfg Config, reg *Registry, log zerolog.Logger) *Worker {
+	if reg == nil {
+		reg = defaultRegistry
+	}
 	return &Worker{
-		cfg:   cfg,
-		tasks: make(map[string]context.CancelFunc),
-		log:   log.With().Str("component", "worker").Logger(),
+		cfg:      cfg,
+		reg:      reg,
+		executor: newTaskExecutor(reg),
+		tasks:    make(map[string]*taskHandle),
+		log:      log.With().Str("component", "worker").Logger(),
 	}
 }
 
@@ -120,9 +143,9 @@ func (w *Worker) Run(ctx context.Context) error {
 // Shutdown cancels running tasks and closes the transport session.
 func (w *Worker) Shutdown(_ context.Context) error {
 	w.mu.Lock()
-	for taskID, cancel := range w.tasks {
+	for taskID, h := range w.tasks {
 		w.log.Info().Str("task_id", taskID).Msg("canceling task")
-		cancel()
+		h.cancel()
 	}
 	w.mu.Unlock()
 
@@ -151,6 +174,9 @@ func (w *Worker) buildHeartbeatRequest() *rpc.HeartbeatRequest {
 }
 
 // handleDeployTask processes a DeployTask command from the coordinator.
+// It decodes the TaskDescriptor, instantiates the operator chain via the
+// registry, and drives execution in a background goroutine. Task status
+// transitions are reported back to the coordinator via UpdateTaskStatus.
 func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 	// Idempotent: ignore if task already exists.
 	w.mu.RLock()
@@ -165,43 +191,81 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 	var desc rpc.TaskDescriptor
 	if err := protocol.DecodeMsgPack(cmd.Data, &desc); err != nil {
 		w.log.Error().Err(err).Str("task_id", cmd.TaskID).Msg("failed to decode task descriptor")
+		w.reportTaskFailed(cmd.JobID, cmd.TaskID, fmt.Errorf("decode descriptor: %w", err))
 		return
 	}
 
-	// Create task context.
 	taskCtx, cancel := context.WithCancel(context.Background())
 	w.mu.Lock()
-	w.tasks[cmd.TaskID] = cancel
+	w.tasks[cmd.TaskID] = &taskHandle{cancel: cancel}
 	w.mu.Unlock()
 
-	w.log.Info().
+	taskLog := w.log.With().
 		Str("task_id", cmd.TaskID).
 		Str("job_id", cmd.JobID).
 		Str("operator_id", desc.OperatorID).
 		Int32("subtask_index", desc.SubtaskIndex).
-		Msg("deployed task")
+		Logger()
 
-	// Send UpdateTaskStatus(RUNNING) to coordinator.
-	go func() {
-		defer func() {
-			// When the task context is canceled, the task is done.
-			<-taskCtx.Done()
-		}()
+	taskLog.Info().Int("chain_len", len(desc.OperatorChain)).Msg("deployed task")
 
-		w.mu.RLock()
-		epoch := w.epoch
-		w.mu.RUnlock()
+	go w.runTask(taskCtx, cmd.JobID, cmd.TaskID, desc, taskLog)
+}
 
-		statusReq := &rpc.UpdateTaskStatusRequest{
-			JobID:   cmd.JobID,
-			TaskID:  cmd.TaskID,
-			Status:  rpc.TaskStatusRunning,
-			EpochID: epoch,
-		}
-		if _, err := w.client.UpdateTaskStatus(context.Background(), statusReq); err != nil {
-			w.log.Error().Err(err).Str("task_id", cmd.TaskID).Msg("failed to send UpdateTaskStatus")
-		}
+// runTask reports Running on entry, drives the executor, and reports
+// Finished/Failed on exit. Always removes the task from w.tasks when done.
+func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor, log zerolog.Logger) {
+	defer func() {
+		w.mu.Lock()
+		delete(w.tasks, taskID)
+		w.mu.Unlock()
 	}()
+
+	w.reportTaskStatus(jobID, taskID, rpc.TaskStatusRunning, nil)
+
+	err := w.executor.run(ctx, jobID, taskID, desc, log)
+
+	switch {
+	case err == nil:
+		log.Info().Msg("task finished")
+		w.reportTaskStatus(jobID, taskID, rpc.TaskStatusFinished, nil)
+	case ctx.Err() != nil:
+		log.Info().Msg("task canceled")
+		w.reportTaskStatus(jobID, taskID, rpc.TaskStatusCanceled, nil)
+	default:
+		log.Error().Err(err).Msg("task failed")
+		w.reportTaskFailed(jobID, taskID, err)
+	}
+}
+
+// reportTaskStatus sends an UpdateTaskStatus RPC with no failure info.
+func (w *Worker) reportTaskStatus(jobID, taskID string, status rpc.TaskStatus, failure *rpc.TaskFailureInfo) {
+	w.mu.RLock()
+	epoch := w.epoch
+	w.mu.RUnlock()
+
+	req := &rpc.UpdateTaskStatusRequest{
+		JobID:   jobID,
+		TaskID:  taskID,
+		Status:  status,
+		EpochID: epoch,
+		Failure: failure,
+	}
+	if _, err := w.client.UpdateTaskStatus(context.Background(), req); err != nil {
+		w.log.Error().Err(err).
+			Str("task_id", taskID).
+			Str("status", status.String()).
+			Msg("failed to send UpdateTaskStatus")
+	}
+}
+
+// reportTaskFailed sends an UpdateTaskStatus RPC with status=Failed and the
+// error message populated in the failure info.
+func (w *Worker) reportTaskFailed(jobID, taskID string, err error) {
+	w.reportTaskStatus(jobID, taskID, rpc.TaskStatusFailed, &rpc.TaskFailureInfo{
+		ErrorMessage: err.Error(),
+		Timestamp:    time.Now().UnixMilli(),
+	})
 }
 
 // handleCommands dispatches coordinator commands received via heartbeat responses.
@@ -213,13 +277,13 @@ func (w *Worker) handleCommands(cmds []rpc.WorkerCommand) {
 		case rpc.CommandTypeCancelTask:
 			w.log.Info().Str("task_id", cmd.TaskID).Msg("received CancelTask command")
 			w.mu.Lock()
-			if cancel, ok := w.tasks[cmd.TaskID]; ok {
-				cancel()
-				delete(w.tasks, cmd.TaskID)
+			if h, ok := w.tasks[cmd.TaskID]; ok {
+				h.cancel()
+				// Don't delete here — runTask's defer cleans up.
 			}
 			w.mu.Unlock()
 		case rpc.CommandTypeTakeSnapshot:
-			w.log.Info().Str("task_id", cmd.TaskID).Msg("received TakeSnapshot command (stub)")
+			w.log.Info().Str("task_id", cmd.TaskID).Msg("received TakeSnapshot command (stub — Phase 4)")
 		default:
 			w.log.Warn().Uint8("type", uint8(cmd.Type)).Msg("unknown command type")
 		}
