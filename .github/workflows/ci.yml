@@ -20,10 +20,9 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.61.0
-          args: --timeout=5m
+          version: v2.4.0
 
   test:
     name: Test
@@ -47,4 +46,4 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
       - name: Build
-        run: go build -v ./cmd/...
+        run: go build -v -o /dev/null ./cmd/...
