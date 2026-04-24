@@ -1,232 +1,59 @@
-# Wire Project Roadmap
+# Wire Roadmap
 
-## Project Vision
-Wire aims to be the go-to distributed stream processing framework for building reliable, scalable, and performant real-time data pipelines with strong consistency guarantees.
+> **Status note:** An earlier version of this file listed dated quarterly milestones (Q1–Q4 2025) and features from a pre-rewrite architecture (Raft, BadgerDB, MongoDB/Kafka/Elasticsearch connectors). Those milestones never landed and the architecture that would have carried them no longer exists. The codebase was fully rewritten (merged March 2026, PR [#148](https://github.com/tarungka/wire/pull/148)). This file now tracks real, in-flight work.
+>
+> Individual proposals (and all design decisions) live under [`docs/trds/`](docs/trds/). This file is only a shortcut view.
 
----
+## Current state
 
-## 🎯 Current State (v0.1.0-alpha)
+- Pre-`v0.1.0`, alpha.
+- Coordinator (control plane), Worker (data plane), engine, state backend, and checkpoint coordinator are implemented.
+- User-facing surfaces (config schema, Go SDK, REST API, connector SDK, security model) are being specified via Wire Improvement Proposals (WIPs) before implementation.
+- There are no built-in connectors yet.
 
-### ✅ Completed Features
-- [x] Core Raft consensus implementation with multi-database backend support
-- [x] Basic pipeline architecture with source/sink abstractions
-- [x] HTTP API with Gin framework
-- [x] Support for MongoDB and Kafka sources
-- [x] Support for Elasticsearch, Kafka, and File sinks
-- [x] Job-based processing model with UUID v7
-- [x] TCP multiplexing for inter-node communication
-- [x] Basic cluster management (join, leave, status)
-- [x] Comprehensive technical documentation
+## In-flight WIPs
 
-### 🚧 In Progress
-- [ ] Complete FSM snapshot/restore functionality
-- [ ] TLS/mTLS support for secure communication
-- [ ] Pipeline state persistence
+The full index lives in [`docs/trds/README.md`](docs/trds/README.md). Status reflects the state of each WIP at the time of writing; read the WIP itself for the latest.
 
----
+| WIP | Topic | Status |
+|-----|-------|--------|
+| [WIP-01](docs/trds/WIP-01/README.md) | Wire Protocol & Serialization Format | Draft |
+| [WIP-02](docs/trds/WIP-02/README.md) | Goroutine & Concurrency Model | Draft |
+| [WIP-03](docs/trds/WIP-03/README.md) | Key Group Assignment & State Sharding | Draft |
+| [WIP-04](docs/trds/WIP-04/README.md) | Watermark Generation Algorithm | Draft |
+| [WIP-05](docs/trds/WIP-05/README.md) | Barrier Alignment Timeout & Failure Handling | Draft |
+| [WIP-06](docs/trds/WIP-06/README.md) | Checkpoint Metadata Schema | Draft |
+| [WIP-07](docs/trds/WIP-07/README.md) | RPC Interface Specification | Draft |
+| [WIP-08](docs/trds/WIP-08/README.md) | Heartbeat & Health Monitoring | Draft |
+| [WIP-09](docs/trds/WIP-09/README.md) | Coordinator High Availability | Draft |
+| [WIP-10](docs/trds/WIP-10/README.md) | Two-Phase Commit for Transactional Sinks | Draft |
+| [WIP-11](docs/trds/WIP-11/README.md) | Error Handling & Dead Letter Queues | Draft |
+| [WIP-12](docs/trds/WIP-12/README.md) | Late Data & Allowed Lateness | Draft |
+| [WIP-13](docs/trds/WIP-13/README.md) | Configuration Reference | Draft |
+| [WIP-14](docs/trds/WIP-14/README.md) | User API & Go SDK | Draft |
+| [WIP-15](docs/trds/WIP-15/README.md) | Job Lifecycle & REST API | Draft |
+| [WIP-16](docs/trds/WIP-16/README.md) | Connector SDK & Built-in Connectors | Draft |
+| [WIP-17](docs/trds/WIP-17/README.md) | Security Model | Draft |
+| [WIP-18](docs/trds/WIP-18/README.md) | Multiple State Backends | Draft |
+| [WIP-19](docs/trds/WIP-19/README.md) | YAML Pipeline Parser | Proposed |
+| [WIP-20](docs/trds/WIP-20/README.md) | Task Execution Engine | Draft |
 
-## 📅 Q1 2025: Foundation & Stability (v0.2.0)
+## Near-term focus (in priority order)
 
-### Core Infrastructure
-- [ ] **Complete Snapshot/Restore Implementation**
-  - Implement full FSM snapshot functionality
-  - Add snapshot scheduling and retention policies
-  - Optimize snapshot performance for large datasets
+These are the items most worth tackling before a `v0.1.0` release. They are intentionally short-term and pragmatic — each unblocks either contributors or end users.
 
-- [ ] **Security Enhancements**
-  - Complete TLS/mTLS implementation for all communication
-  - Add authentication and authorization framework
-  - Implement API key management
-  - Add role-based access control (RBAC)
+1. **Finish the four coordinator TODOs** that block end-to-end fault tolerance and rescaling:
+   - Pebble state backend wiring (`internal/engine/state_backend_factory.go`, [WIP-18](docs/trds/WIP-18/README.md))
+   - Savepoint restore (`internal/coordinator/job_manager.go`)
+   - Barrier injection via RPC (`internal/coordinator/savepoint_manager.go`)
+   - Task rescheduling on worker removal (`internal/coordinator/http_cluster.go`)
 
-- [ ] **Observability & Monitoring**
-  - Integrate OpenTelemetry for distributed tracing
-  - Add Prometheus metrics export
-  - Implement structured logging with log levels
-  - Create health check endpoints with detailed status
+2. **Promote WIP-13, WIP-14, WIP-15, WIP-16 from Draft to Approved.** These are the user-facing surfaces (config, SDK, REST API, connector SDK) that unblock anyone actually running Wire.
 
-### Pipeline Improvements
-- [ ] **Pipeline State Management**
-  - Persist pipeline configurations in Raft store
-  - Implement pipeline versioning
-  - Add pipeline pause/resume functionality
-  - Support pipeline hot-reloading
+3. **Ship a reference source/sink pair** (e.g. stdin source, file sink) as the first in-tree connector. Smallest change that makes Wire runnable end-to-end, and validates the `Source`/`Sink` interfaces in [`sdk/`](sdk/) against real code.
 
-- [ ] **Error Handling & Recovery**
-  - Implement dead letter queues
-  - Add retry mechanisms with exponential backoff
-  - Create error reporting and alerting hooks
-  - Support partial pipeline failures
+4. **Close P1 gaps in [`docs/docs-todo.md`](docs/docs-todo.md):** RPC spec, wire protocol spec, 2PC for transactional sinks, security model. All have corresponding WIPs.
 
----
+## How to propose new work
 
-## 📅 Q2 2025: Scale & Performance (v0.3.0)
-
-### Performance Optimizations
-- [ ] **Processing Enhancements**
-  - Implement adaptive batching
-  - Add backpressure handling
-  - Optimize memory usage with object pooling
-  - Support pipeline parallelism configuration
-
-- [ ] **Storage Optimizations**
-  - Implement data compression for Raft logs
-  - Add compaction strategies for different backends
-  - Optimize BadgerDB settings for production
-  - Support tiered storage
-
-### Scalability Features
-- [ ] **Dynamic Cluster Management**
-  - Implement auto-scaling based on load
-  - Add node health monitoring and auto-recovery
-  - Support rolling upgrades
-  - Implement load balancing for pipeline distribution
-
-- [ ] **Multi-Region Support**
-  - Add geo-replication capabilities
-  - Implement region-aware data routing
-  - Support cross-region failover
-  - Add latency-based routing
-
----
-
-## 📅 Q3 2025: Enterprise Features (v0.4.0)
-
-### Advanced Processing
-- [ ] **Complex Event Processing (CEP)**
-  - Add windowing operations (tumbling, sliding, session)
-  - Implement event-time processing
-  - Support watermarks for late data handling
-  - Add stateful transformations
-
-- [ ] **SQL Interface**
-  - Implement SQL parser for pipeline definitions
-  - Add SQL-based transformations
-  - Support JOIN operations across streams
-  - Create materialized views
-
-### Enterprise Integration
-- [ ] **Additional Sources/Sinks**
-  - Apache Pulsar source/sink
-  - RabbitMQ source/sink
-  - AWS Kinesis source/sink
-  - Google Pub/Sub source/sink
-  - PostgreSQL CDC source
-  - S3/GCS/Azure Blob sinks
-
-- [ ] **Schema Management**
-  - Add schema registry integration
-  - Implement schema evolution support
-  - Support Avro, Protobuf, and JSON Schema
-  - Add data validation framework
-
----
-
-## 📅 Q4 2025: Production Ready (v1.0.0)
-
-### Production Features
-- [ ] **Operations & Maintenance**
-  - Implement backup and restore tools
-  - Add disaster recovery procedures
-  - Create operation runbooks
-  - Support zero-downtime migrations
-
-- [ ] **Performance Guarantees**
-  - Implement exactly-once processing semantics
-  - Add SLA monitoring and reporting
-  - Support throughput guarantees
-  - Implement adaptive performance tuning
-
-### Ecosystem & Tools
-- [ ] **Developer Experience**
-  - Create Wire CLI for cluster management
-  - Add Visual Pipeline Designer (Web UI)
-  - Implement pipeline testing framework
-  - Create pipeline templates library
-
-- [ ] **Integration & Extensions**
-  - Develop Kubernetes operator
-  - Create Helm charts
-  - Add Terraform provider
-  - Implement plugin system for custom sources/sinks
-
----
-
-## 🚀 Future Vision (v2.0.0+)
-
-### Advanced Features
-- [ ] **Machine Learning Integration**
-  - Support for ML model serving in pipelines
-  - Real-time feature engineering
-  - A/B testing framework
-  - Model performance monitoring
-
-- [ ] **Advanced Analytics**
-  - Real-time analytics dashboard
-  - Anomaly detection capabilities
-  - Predictive analytics support
-  - Custom metrics and KPIs
-
-### Platform Evolution
-- [ ] **Wire Cloud**
-  - Managed Wire service
-  - Multi-tenancy support
-  - Usage-based billing
-  - Global deployment options
-
-- [ ] **Wire Studio**
-  - Visual development environment
-  - Drag-and-drop pipeline builder
-  - Real-time debugging tools
-  - Performance profiler
-
----
-
-## 📊 Success Metrics
-
-### Technical Metrics
-- **Performance**: 100k+ messages/second per node
-- **Latency**: < 10ms p99 end-to-end
-- **Availability**: 99.99% uptime
-- **Scalability**: Support 100+ node clusters
-
-### Community Metrics
-- **Adoption**: 1000+ production deployments
-- **Contributors**: 50+ active contributors
-- **Ecosystem**: 20+ community plugins
-- **Documentation**: Comprehensive guides and tutorials
-
----
-
-## 🤝 How to Contribute
-
-1. **Code Contributions**
-   - Check open issues labeled "good first issue"
-   - Follow contribution guidelines
-   - Write tests for new features
-   - Update documentation
-
-2. **Non-Code Contributions**
-   - Report bugs and feature requests
-   - Improve documentation
-   - Create tutorials and blog posts
-   - Help other users in discussions
-
-3. **Priority Areas**
-   - Security improvements
-   - Performance optimizations
-   - Additional source/sink connectors
-   - Documentation and examples
-
----
-
-## 📞 Get Involved
-
-- **GitHub**: [github.com/tarungka/wire](https://github.com/tarungka/wire)
-- **Discussions**: GitHub Discussions for Q&A
-- **Issues**: Report bugs and request features
-- **Pull Requests**: Contribute code and documentation
-
----
-
-*This roadmap is subject to change based on community feedback and project priorities. Last updated: January 2025*
+See [`docs/trds/README.md`](docs/trds/README.md) for the WIP process. Small changes do not need a WIP; anything that touches public surfaces, the execution model, or multiple modules does.
