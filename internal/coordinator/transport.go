@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/hashicorp/yamux"
 	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/rpc"
@@ -20,6 +21,13 @@ type TransportServer struct {
 	listener   net.Listener
 	log        zerolog.Logger
 	wg         sync.WaitGroup
+
+	// sessionsMu guards the active session set used at shutdown to drop
+	// blocked rpc.ServeSession callers. A worker's Yamux AcceptStream call
+	// otherwise blocks indefinitely even after the listener is closed and
+	// the context is canceled.
+	sessionsMu sync.Mutex
+	sessions   map[*yamux.Session]struct{}
 }
 
 // NewTransportServer creates a TransportServer that bridges worker RPC
@@ -37,6 +45,7 @@ func NewTransportServer(coord *Coordinator, listenAddr string, log zerolog.Logge
 		listenAddr: listenAddr,
 		rpcServer:  srv,
 		log:        log.With().Str("component", "transport-server").Logger(),
+		sessions:   make(map[*yamux.Session]struct{}),
 	}
 }
 
@@ -114,17 +123,36 @@ func (ts *TransportServer) handleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	ymx := session.YamuxSession()
+	ts.sessionsMu.Lock()
+	ts.sessions[ymx] = struct{}{}
+	ts.sessionsMu.Unlock()
+	defer func() {
+		ts.sessionsMu.Lock()
+		delete(ts.sessions, ymx)
+		ts.sessionsMu.Unlock()
+	}()
+
 	ts.log.Info().Str("remote", session.Addr()).Msg("worker connected")
-	ts.rpcServer.ServeSession(ctx, session.YamuxSession())
+	ts.rpcServer.ServeSession(ctx, ymx)
 	ts.log.Info().Str("remote", session.Addr()).Msg("worker disconnected")
 }
 
-// Shutdown closes the listener and waits for all connections to drain.
+// Shutdown closes the listener, drops every active worker session so any
+// rpc.ServeSession call blocked on AcceptStream returns, then waits for the
+// connection goroutines to drain. Order matters: closing the listener alone
+// prevents *new* connections but does not unblock existing ones, so we must
+// close the sessions first.
 func (ts *TransportServer) Shutdown(_ context.Context) error {
 	if ts.listener != nil {
 		_ = ts.listener.Close()
 	}
-	ts.wg.Wait()
+	ts.sessionsMu.Lock()
+	for s := range ts.sessions {
+		_ = s.Close()
+	}
+	ts.sessionsMu.Unlock()
 	ts.rpcServer.Stop()
+	ts.wg.Wait()
 	return nil
 }
