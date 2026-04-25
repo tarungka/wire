@@ -21,9 +21,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/rs/zerolog"
-
 	"github.com/tarungka/wire/internal/engine"
+	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/worker"
 	"github.com/tarungka/wire/sdk/connectors/memory"
 )
@@ -37,9 +36,10 @@ func main() {
 	)
 	flag.Parse()
 
-	log := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).
-		Level(zerolog.InfoLevel).
-		With().Timestamp().Logger()
+	// Use the same logger configuration as the wire CLI so both processes
+	// produce identical output. We don't open a file — logger.GetLogger
+	// handles a nil log file gracefully (writes only to the console).
+	log := logger.GetLogger("worker-example")
 
 	// Register the operators this worker can run. In a real deployment,
 	// users add their own factories alongside (or instead of) these.
