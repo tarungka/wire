@@ -61,16 +61,17 @@ func (c *Coordinator) scheduleTick(ctx context.Context) {
 func (c *Coordinator) scheduleJob(job *JobMeta) {
 	tasks, err := generateTaskDescriptors(job)
 	if err != nil {
-		c.log.Error().Err(err).Str("job_id", job.ID).Msg("cannot generate task descriptors")
-		// Transition to Failing so the job doesn't retry forever with a broken graph.
-		c.mu.Lock()
-		if job.Status == JobCreated {
-			_ = ValidateTransition(job.Status, JobFailing)
-			job.Status = JobFailing
-			job.UpdatedAt = time.Now().UTC()
-			_ = c.persistJobLocked(job)
+		c.log.Error().Err(err).Str("job_id", job.ID).Msg("cannot generate task descriptors; failing job")
+		// Permanent failure (e.g. malformed graph from a legacy submission).
+		// Walk Created -> Failing -> Failed so the job ends in a terminal
+		// state and never re-enters the scheduler queue.
+		if terr := c.transitionJob(job, JobFailing); terr != nil {
+			c.log.Warn().Err(terr).Str("job_id", job.ID).Msg("could not transition to FAILING")
+			return
 		}
-		c.mu.Unlock()
+		if terr := c.transitionJob(job, JobFailed); terr != nil {
+			c.log.Warn().Err(terr).Str("job_id", job.ID).Msg("could not finalize FAILED transition")
+		}
 		return
 	}
 

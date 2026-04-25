@@ -3,6 +3,9 @@ package coordinator
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
@@ -157,6 +160,46 @@ func TestGenerateTaskDescriptors_RejectsDanglingEdge(t *testing.T) {
 	_, err := generateTaskDescriptors(job)
 	if err == nil {
 		t.Fatal("expected error for edge referencing unknown operator")
+	}
+}
+
+// TestScheduleJob_BadConfigGoesToFailed verifies that a job whose Config
+// can't be decoded (e.g. legacy or pre-Phase-1 submission) is transitioned
+// all the way to JobFailed instead of being left in JobFailing forever.
+func TestScheduleJob_BadConfigGoesToFailed(t *testing.T) {
+	store := NewMemoryStore()
+	c := New(CoordinatorConfig{NodeID: "n1", ListenAddr: ":0"}, store, nil, zerolog.Nop())
+
+	// Manually drive the coordinator into the leader state without starting
+	// the scheduler goroutine — we want to call scheduleJob directly.
+	c.mu.Lock()
+	c.state = StateLeader
+	c.epoch = 1
+	c.mu.Unlock()
+
+	job := &JobMeta{
+		ID:          "job-bad",
+		Name:        "legacy",
+		Status:      JobCreated,
+		Parallelism: 1,
+		Config:      []byte("not msgpack"),
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+	}
+	c.mu.Lock()
+	c.jobs[job.ID] = job
+	c.mu.Unlock()
+	if err := c.persistJob(job); err != nil {
+		t.Fatalf("persistJob: %v", err)
+	}
+
+	c.scheduleJob(job)
+
+	if job.Status != JobFailed {
+		t.Fatalf("status = %s, want %s", job.Status, JobFailed)
+	}
+	if job.FinishedAt.IsZero() {
+		t.Errorf("FinishedAt should be set on terminal state")
 	}
 }
 
