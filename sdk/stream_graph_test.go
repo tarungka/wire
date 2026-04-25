@@ -2,8 +2,37 @@ package sdk
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
+
+func TestValidateForCluster_AllNodesNamed(t *testing.T) {
+	g := newStreamGraph()
+	g.addNode(&StreamNode{Name: "src", Type: NodeSource, ClassName: "memory-source"})
+	g.addNode(&StreamNode{Name: "snk", Type: NodeSink, ClassName: "memory-sink"})
+	if err := g.validateForCluster(); err != nil {
+		t.Fatalf("validateForCluster: unexpected error: %v", err)
+	}
+}
+
+func TestValidateForCluster_RejectsEmptyClassName(t *testing.T) {
+	g := newStreamGraph()
+	g.addNode(&StreamNode{Name: "src", Type: NodeSource, ClassName: "memory-source"})
+	g.addNode(&StreamNode{Name: "m", Type: NodeMap}) // no ClassName -> closure-style
+	g.addNode(&StreamNode{Name: "snk", Type: NodeSink, ClassName: "memory-sink"})
+
+	err := g.validateForCluster()
+	if err == nil {
+		t.Fatal("expected validateForCluster to reject node with empty ClassName")
+	}
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("error %v should wrap ErrInvalidConfig", err)
+	}
+	// Error message should hint at the fix.
+	if !strings.Contains(err.Error(), "MapNamed") && !strings.Contains(err.Error(), "ClassName") {
+		t.Fatalf("error %q should hint at the fix", err)
+	}
+}
 
 func TestGraphValidateEmptyPipeline(t *testing.T) {
 	g := newStreamGraph()

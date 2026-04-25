@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/hashicorp/yamux"
 	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/rpc"
@@ -20,6 +21,13 @@ type TransportServer struct {
 	listener   net.Listener
 	log        zerolog.Logger
 	wg         sync.WaitGroup
+
+	// sessionsMu guards the active session set used at shutdown to drop
+	// blocked rpc.ServeSession callers. A worker's Yamux AcceptStream call
+	// otherwise blocks indefinitely even after the listener is closed and
+	// the context is canceled.
+	sessionsMu sync.Mutex
+	sessions   map[*yamux.Session]struct{}
 }
 
 // NewTransportServer creates a TransportServer that bridges worker RPC
@@ -37,18 +45,38 @@ func NewTransportServer(coord *Coordinator, listenAddr string, log zerolog.Logge
 		listenAddr: listenAddr,
 		rpcServer:  srv,
 		log:        log.With().Str("component", "transport-server").Logger(),
+		sessions:   make(map[*yamux.Session]struct{}),
 	}
 }
 
-// ListenAndServe starts accepting TCP connections. It blocks until ctx is
-// canceled or an unrecoverable error occurs.
-func (ts *TransportServer) ListenAndServe(ctx context.Context) error {
+// Listen binds the server to its configured address without serving. Call
+// Serve() after (or use ListenAndServe for the combined flow). This split
+// lets callers use ":0" and retrieve the actual address via Addr().
+func (ts *TransportServer) Listen() error {
 	ln, err := net.Listen("tcp", ts.listenAddr)
 	if err != nil {
 		return fmt.Errorf("transport server: listen %s: %w", ts.listenAddr, err)
 	}
 	ts.listener = ln
-	ts.log.Info().Str("addr", ts.listenAddr).Msg("transport server listening")
+	ts.log.Info().Str("addr", ln.Addr().String()).Msg("transport server listening")
+	return nil
+}
+
+// Addr returns the listener address. Only valid after Listen() succeeds.
+func (ts *TransportServer) Addr() string {
+	if ts.listener == nil {
+		return ts.listenAddr
+	}
+	return ts.listener.Addr().String()
+}
+
+// Serve starts accepting TCP connections on the already-bound listener. It
+// blocks until ctx is canceled or an unrecoverable error occurs.
+func (ts *TransportServer) Serve(ctx context.Context) error {
+	if ts.listener == nil {
+		return fmt.Errorf("transport server: Serve called before Listen")
+	}
+	ln := ts.listener
 
 	// Close listener when context is canceled.
 	go func() {
@@ -76,6 +104,14 @@ func (ts *TransportServer) ListenAndServe(ctx context.Context) error {
 	}
 }
 
+// ListenAndServe is a convenience wrapper around Listen() + Serve().
+func (ts *TransportServer) ListenAndServe(ctx context.Context) error {
+	if err := ts.Listen(); err != nil {
+		return err
+	}
+	return ts.Serve(ctx)
+}
+
 // handleConn wraps a raw TCP connection in a Yamux server session and
 // serves RPCs on it.
 func (ts *TransportServer) handleConn(ctx context.Context, conn net.Conn) {
@@ -87,17 +123,36 @@ func (ts *TransportServer) handleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	ymx := session.YamuxSession()
+	ts.sessionsMu.Lock()
+	ts.sessions[ymx] = struct{}{}
+	ts.sessionsMu.Unlock()
+	defer func() {
+		ts.sessionsMu.Lock()
+		delete(ts.sessions, ymx)
+		ts.sessionsMu.Unlock()
+	}()
+
 	ts.log.Info().Str("remote", session.Addr()).Msg("worker connected")
-	ts.rpcServer.ServeSession(ctx, session.YamuxSession())
+	ts.rpcServer.ServeSession(ctx, ymx)
 	ts.log.Info().Str("remote", session.Addr()).Msg("worker disconnected")
 }
 
-// Shutdown closes the listener and waits for all connections to drain.
+// Shutdown closes the listener, drops every active worker session so any
+// rpc.ServeSession call blocked on AcceptStream returns, then waits for the
+// connection goroutines to drain. Order matters: closing the listener alone
+// prevents *new* connections but does not unblock existing ones, so we must
+// close the sessions first.
 func (ts *TransportServer) Shutdown(_ context.Context) error {
 	if ts.listener != nil {
 		_ = ts.listener.Close()
 	}
-	ts.wg.Wait()
+	ts.sessionsMu.Lock()
+	for s := range ts.sessions {
+		_ = s.Close()
+	}
+	ts.sessionsMu.Unlock()
 	ts.rpcServer.Stop()
+	ts.wg.Wait()
 	return nil
 }

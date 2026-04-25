@@ -1,26 +1,47 @@
 package coordinator
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 )
 
 // submitJobRequest is the JSON body for POST /api/v1/jobs.
+//
+// Exactly one of Config or GraphBytes should be populated:
+//   - GraphBytes: base64-encoded msgpack rpc.JobGraph (preferred; produced by
+//     the SDK's clusterExecutor). Persisted verbatim as the job's config
+//     bytes, then parsed by the scheduler to produce task descriptors.
+//   - Config: arbitrary opaque bytes (legacy path; ignored by the scheduler).
 type submitJobRequest struct {
 	Name        string `json:"name"`
 	Parallelism int    `json:"parallelism"`
-	Config      string `json:"config"`
+	Config      string `json:"config,omitempty"`
+	GraphBytes  string `json:"graph_bytes,omitempty"`
 }
 
 func (s *HTTPServer) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB limit
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20) // 4 MiB limit
 	var req submitJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
 		return
 	}
 
-	job, err := s.coord.SubmitJob(req.Name, req.Parallelism, []byte(req.Config))
+	var configBytes []byte
+	switch {
+	case req.GraphBytes != "":
+		decoded, err := base64.StdEncoding.DecodeString(req.GraphBytes)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "graph_bytes is not valid base64")
+			return
+		}
+		configBytes = decoded
+	case req.Config != "":
+		configBytes = []byte(req.Config)
+	}
+
+	job, err := s.coord.SubmitJob(req.Name, req.Parallelism, configBytes)
 	if err != nil {
 		writeJobError(w, err)
 		return

@@ -2,6 +2,7 @@ package logger
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,9 +53,16 @@ func GetLogger(serviceName string) zerolog.Logger {
 			PartsExclude: []string{
 				zerolog.TimestampFieldName,
 			}}
-		// Use multi-writer for file and readable console output
-		multiDev := zerolog.MultiLevelWriter(consoleWriter, logFile)
-		globalLogger = zerolog.New(multiDev).Level(zerolog.TraceLevel).With().Timestamp().Str("service", serviceName).Caller().Logger()
+		// Use multi-writer for file and readable console output. logFile is
+		// only attached if a caller has set it via SetLogFile — passing a nil
+		// *os.File into MultiLevelWriter causes EINVAL on every write and
+		// prints "zerolog: could not write event: invalid argument" to
+		// stderr, which is the user-visible noise pre-fix.
+		var writer io.Writer = consoleWriter
+		if logFile != nil {
+			writer = zerolog.MultiLevelWriter(consoleWriter, logFile)
+		}
+		globalLogger = zerolog.New(writer).Level(zerolog.TraceLevel).With().Timestamp().Str("service", serviceName).Caller().Logger()
 	})
 
 	return globalLogger

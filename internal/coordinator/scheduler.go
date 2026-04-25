@@ -59,7 +59,21 @@ func (c *Coordinator) scheduleTick(ctx context.Context) {
 
 // scheduleJob attempts to schedule a single CREATED job.
 func (c *Coordinator) scheduleJob(job *JobMeta) {
-	tasks := generateTaskDescriptors(job)
+	tasks, err := generateTaskDescriptors(job)
+	if err != nil {
+		c.log.Error().Err(err).Str("job_id", job.ID).Msg("cannot generate task descriptors; failing job")
+		// Permanent failure (e.g. malformed graph from a legacy submission).
+		// Walk Created -> Failing -> Failed so the job ends in a terminal
+		// state and never re-enters the scheduler queue.
+		if terr := c.transitionJob(job, JobFailing); terr != nil {
+			c.log.Warn().Err(terr).Str("job_id", job.ID).Msg("could not transition to FAILING")
+			return
+		}
+		if terr := c.transitionJob(job, JobFailed); terr != nil {
+			c.log.Warn().Err(terr).Str("job_id", job.ID).Msg("could not finalize FAILED transition")
+		}
+		return
+	}
 
 	assignments, err := c.assignTasks(tasks)
 	if err != nil {
@@ -151,9 +165,36 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		Msg("job scheduled")
 }
 
-// generateTaskDescriptors creates task descriptors for a job.
-// MVP: single implicit "pipeline" operator with parallelism tasks.
-func generateTaskDescriptors(job *JobMeta) []rpc.TaskDescriptor {
+// generateTaskDescriptors creates task descriptors for a job by decoding
+// the persisted JobGraph (stored verbatim as job.Config, msgpack-encoded)
+// and producing one descriptor per subtask.
+//
+// Phase 1: linear pipelines only. Every subtask carries the full operator
+// chain (topo-sorted from the graph). Cross-worker shuffle comes in Phase 2,
+// at which point this splits the graph at shuffle boundaries and populates
+// Upstream/Downstream channel info.
+func generateTaskDescriptors(job *JobMeta) ([]rpc.TaskDescriptor, error) {
+	if len(job.Config) == 0 {
+		return nil, fmt.Errorf("job %q has no graph (config is empty)", job.ID)
+	}
+
+	var graph rpc.JobGraph
+	if err := protocol.DecodeMsgPack(job.Config, &graph); err != nil {
+		return nil, fmt.Errorf("decode job graph: %w", err)
+	}
+
+	sorted, err := topoSortOperators(graph)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(sorted) == 0 {
+		return nil, fmt.Errorf("job %q has no operators", job.ID)
+	}
+	if hasShuffleEdge(graph) {
+		return nil, fmt.Errorf("job %q has shuffle edges; cross-worker shuffle is not yet supported (Phase 2)", job.ID)
+	}
+
 	p := job.Parallelism
 	if p < 1 {
 		p = 1
@@ -163,6 +204,17 @@ func generateTaskDescriptors(job *JobMeta) []rpc.TaskDescriptor {
 	groupsPerTask := totalKeyGroups / p
 	remainder := totalKeyGroups % p
 
+	// The task's OperatorID is the first non-source operator's ID, or the
+	// source itself if the chain is source-only. This preserves the
+	// "one task per subtask of a logical operator" shape for Phase 2.
+	primaryOpID := sorted[0].OperatorID
+	for _, od := range sorted {
+		if od.Type != rpc.OperatorTypeSource {
+			primaryOpID = od.OperatorID
+			break
+		}
+	}
+
 	offset := int32(0)
 	for i := 0; i < p; i++ {
 		size := int32(groupsPerTask)
@@ -170,18 +222,81 @@ func generateTaskDescriptors(job *JobMeta) []rpc.TaskDescriptor {
 			size++
 		}
 		tasks[i] = rpc.TaskDescriptor{
-			TaskID:       fmt.Sprintf("%s/op0/%d", job.ID, i),
-			OperatorID:   "op0",
+			TaskID:       fmt.Sprintf("%s/%s/%d", job.ID, primaryOpID, i),
+			OperatorID:   primaryOpID,
 			SubtaskIndex: int32(i),
 			Parallelism:  int32(p),
 			KeyGroup: rpc.KeyGroupRange{
 				Start: offset,
 				End:   offset + size - 1,
 			},
+			OperatorChain: sorted,
 		}
 		offset += size
 	}
-	return tasks
+	return tasks, nil
+}
+
+// topoSortOperators returns the operators of the graph in topological order.
+// Assumes a valid DAG; returns an error on cycles.
+func topoSortOperators(graph rpc.JobGraph) ([]rpc.OperatorDescriptor, error) {
+	byID := make(map[string]rpc.OperatorDescriptor, len(graph.Operators))
+	inDegree := make(map[string]int, len(graph.Operators))
+	adj := make(map[string][]string, len(graph.Operators))
+	for _, op := range graph.Operators {
+		byID[op.OperatorID] = op
+		inDegree[op.OperatorID] = 0
+	}
+	for _, edge := range graph.Edges {
+		if _, ok := byID[edge.SourceOperatorID]; !ok {
+			return nil, fmt.Errorf("edge references unknown source operator %q", edge.SourceOperatorID)
+		}
+		if _, ok := byID[edge.TargetOperatorID]; !ok {
+			return nil, fmt.Errorf("edge references unknown target operator %q", edge.TargetOperatorID)
+		}
+		adj[edge.SourceOperatorID] = append(adj[edge.SourceOperatorID], edge.TargetOperatorID)
+		inDegree[edge.TargetOperatorID]++
+	}
+
+	// Kahn's algorithm. To keep output deterministic, push onto the ready
+	// queue in insertion order of graph.Operators rather than map order.
+	var queue []string
+	seen := make(map[string]bool)
+	for _, op := range graph.Operators {
+		if inDegree[op.OperatorID] == 0 && !seen[op.OperatorID] {
+			queue = append(queue, op.OperatorID)
+			seen[op.OperatorID] = true
+		}
+	}
+
+	result := make([]rpc.OperatorDescriptor, 0, len(graph.Operators))
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		result = append(result, byID[id])
+		for _, next := range adj[id] {
+			inDegree[next]--
+			if inDegree[next] == 0 {
+				queue = append(queue, next)
+			}
+		}
+	}
+	if len(result) != len(graph.Operators) {
+		return nil, fmt.Errorf("job graph has a cycle")
+	}
+	return result, nil
+}
+
+// hasShuffleEdge returns true if any edge requires partitioning (Hash /
+// Rebalance / Broadcast). Forward edges are safe for Phase 1.
+func hasShuffleEdge(graph rpc.JobGraph) bool {
+	for _, edge := range graph.Edges {
+		switch edge.Shuffle {
+		case rpc.ShuffleStrategyHash, rpc.ShuffleStrategyRebalance, rpc.ShuffleStrategyBroadcast:
+			return true
+		}
+	}
+	return false
 }
 
 // assignTasks distributes tasks across available workers.

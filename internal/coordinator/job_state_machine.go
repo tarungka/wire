@@ -6,8 +6,12 @@ import (
 )
 
 // validTransitions defines the set of legal job state transitions.
+//
+// JobCreated -> JobFailing is allowed for permanent pre-deployment failures
+// (e.g. malformed graph, missing operator factory) so the scheduler can move
+// such a job out of the queue immediately rather than retrying forever.
 var validTransitions = map[JobStatus][]JobStatus{
-	JobCreated:   {JobDeploying, JobCanceling},
+	JobCreated:   {JobDeploying, JobFailing, JobCanceling},
 	JobDeploying: {JobRunning, JobFailing, JobCanceling},
 	JobRunning:   {JobFinishing, JobPaused, JobFailing, JobCanceling},
 	JobPaused:    {JobDeploying},

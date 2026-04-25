@@ -14,6 +14,7 @@ type StreamExecutionEnvironment struct {
 	checkpointTimeout  time.Duration
 	restartStrategy    RestartStrategy
 	mode               ExecutionMode
+	coordinatorURL     string
 	graph              *StreamGraph
 	executed           bool
 }
@@ -59,6 +60,13 @@ func (env *StreamExecutionEnvironment) SetMode(mode ExecutionMode) *StreamExecut
 	return env
 }
 
+// SetCoordinator sets the coordinator base URL for Cluster mode (e.g.
+// "http://localhost:4001"). Ignored in Embedded mode.
+func (env *StreamExecutionEnvironment) SetCoordinator(url string) *StreamExecutionEnvironment {
+	env.coordinatorURL = url
+	return env
+}
+
 // AddSource adds a source to the pipeline, returning a DataStream.
 func (env *StreamExecutionEnvironment) AddSource(source Source) *DataStream {
 	return env.AddSourceWithName("", source)
@@ -70,6 +78,20 @@ func (env *StreamExecutionEnvironment) AddSourceWithName(name string, source Sou
 		Name:   name,
 		Type:   NodeSource,
 		Source: source,
+	}
+	id := env.graph.addNode(node)
+	return &DataStream{env: env, nodeID: id}
+}
+
+// AddSourceNamed adds a Cluster-mode source identified by className. The
+// worker's Registry must have a SourceFactory registered under this name.
+// The config bytes are passed verbatim to the factory at deploy time.
+func (env *StreamExecutionEnvironment) AddSourceNamed(name, className string, config []byte) *DataStream {
+	node := &StreamNode{
+		Name:      name,
+		Type:      NodeSource,
+		ClassName: className,
+		Config:    config,
 	}
 	id := env.graph.addNode(node)
 	return &DataStream{env: env, nodeID: id}
@@ -96,7 +118,10 @@ func (env *StreamExecutionEnvironment) ExecuteWithName(ctx context.Context, jobN
 		executor := &embeddedExecutor{env: env}
 		return executor.run(ctx, jobName)
 	case Cluster:
-		executor := &clusterExecutor{}
+		if err := env.graph.validateForCluster(); err != nil {
+			return nil, err
+		}
+		executor := &clusterExecutor{env: env}
 		return executor.run(ctx, jobName)
 	default:
 		return nil, fmt.Errorf("%w: unknown execution mode %d", ErrInvalidConfig, env.mode)
