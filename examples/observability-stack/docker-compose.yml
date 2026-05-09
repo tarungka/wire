@@ -132,7 +132,55 @@ services:
       coordinator:
         condition: service_healthy
 
+  # Init container: produces the static graph_bytes blob the k6 service
+  # uses as its request body. Writes to a shared volume that the k6
+  # service mounts read-only. Runs once per `up` (or `docker compose run`).
+  k6-graph-init:
+    image: wire:local
+    container_name: wire-k6-graph-init
+    profiles: ["k6"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - "print-uppercase-graph > /shared/graph_bytes.txt && echo wrote /shared/graph_bytes.txt"
+    volumes:
+      - k6-shared:/shared
+    depends_on:
+      coordinator:
+        condition: service_healthy
+
+  # k6 load generator. Reads GRAPH_BYTES from the shared volume produced
+  # by k6-graph-init, then drives POST /api/v1/jobs at a configurable
+  # arrival rate.
+  #
+  # Run with:
+  #   docker compose --profile k6 run --rm k6
+  # Override knobs:
+  #   docker compose --profile k6 run --rm -e RPS=50 -e DURATION=1m k6
+  k6:
+    image: grafana/k6:0.54.0
+    container_name: wire-k6
+    profiles: ["k6"]
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      k6-graph-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./k6:/scripts:ro
+      - k6-shared:/shared:ro
+    environment:
+      WIRE_API: "http://coordinator:4001"
+      RPS: "${RPS:-20}"
+      DURATION: "${DURATION:-30s}"
+    entrypoint: ["/bin/sh", "-c"]
+    # The shell reads graph_bytes.txt and forwards it as a k6 --env so
+    # the script's __ENV.GRAPH_BYTES sees it. The double-$$ escapes the
+    # variable from compose's own interpolation.
+    command:
+      - 'k6 run --env GRAPH_BYTES=$$(cat /shared/graph_bytes.txt) /scripts/submit_jobs.js'
+
 volumes:
   coordinator-data:
   prometheus-data:
   grafana-data:
+  k6-shared:

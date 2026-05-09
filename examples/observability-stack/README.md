@@ -14,6 +14,7 @@ health and latency distributions from the OTel instrumentation.
 | `prometheus` | `9091` | Scrapes wire `/metrics` every 5 s |
 | `grafana` | `3000` | Pre-provisioned `Wire / coordinator overview` dashboard (anonymous viewer enabled) |
 | `load` | — | Optional short-runner that submits sample jobs (profile `load`) |
+| `k6` | — | Optional k6 load generator that drives `POST /api/v1/jobs` at a configurable arrival rate (profile `k6`) |
 
 ## Prerequisites
 
@@ -97,6 +98,52 @@ go run ../../examples/submit-uppercase-job \
 You should see `wire_rpc_server_requests_total{method="SubmitJob"}` tick
 up in the dashboard, and the corresponding job appear in
 `GET /api/v1/jobs`.
+
+## Load testing with k6
+
+The `k6` profile drives sustained `POST /api/v1/jobs` traffic against the
+coordinator and reports p50/p95/p99 latency, RPS, and error rate.
+
+```sh
+# 30 s at 20 jobs/s (defaults)
+docker compose --profile k6 run --rm k6
+
+# 1 min at 50 jobs/s
+RPS=50 DURATION=1m docker compose --profile k6 run --rm k6
+```
+
+**What is being measured.** k6 records the HTTP RTT for the submit
+endpoint — JSON parse + name-uniqueness check + two PebbleDB writes
+(job meta + config) + scheduler kick + JSON encode of the response. This
+is bounded below by the Pebble fsync floor (~6 ms on most disks).
+
+**What this is NOT.** k6 cannot see the full POST → worker-receives-DeployTask
+dispatch path on its own. To watch that, leave the Grafana dashboard
+open during the run and look at the `wire_rpc_*` and `wire_pebble_*`
+histograms — those reflect what the coordinator and worker actually
+spent time on.
+
+**How it works.** A short-lived `k6-graph-init` container runs
+`print-uppercase-graph` once and writes the base64-encoded
+`Source -> Map(upper) -> Sink` graph to a shared volume. The k6
+container reads that file and feeds it into every request body via
+`--env GRAPH_BYTES=...`, so each submission is a real graph the worker
+actually deploys. With 4 task slots on the worker and `parallelism=1`,
+beyond ~4 concurrent in-flight jobs the scheduler queues the rest in
+`CREATED` state — that's expected and doesn't change the HTTP latency
+distribution.
+
+**Tuning knobs (env vars):**
+
+| Var | Default | Notes |
+|---|---|---|
+| `RPS` | `20` | Target arrival rate (jobs/s) |
+| `DURATION` | `30s` | k6 duration string (e.g. `2m`, `5m`) |
+| `PRE_VUS` | `20` | Pre-allocated virtual users |
+| `MAX_VUS` | `200` | Hard cap on VU pool growth |
+
+The script asserts `p95 < 500 ms` and `p99 < 1 s` on the submit endpoint;
+exceeding those flags the run as failed in k6's exit code.
 
 ## Iterating on wire
 

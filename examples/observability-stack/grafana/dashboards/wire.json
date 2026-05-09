@@ -3,7 +3,7 @@
   "uid": "wire-coordinator",
   "tags": ["wire"],
   "schemaVersion": 39,
-  "version": 1,
+  "version": 3,
   "refresh": "5s",
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
@@ -20,20 +20,34 @@
     },
     {
       "type": "timeseries",
-      "title": "HTTP requests/sec by route",
+      "title": "HTTP requests/sec by route (avg vs peak)",
       "id": 10,
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Two views of the same metric: the 1-minute smoothed rate (steady-state) and the 15-second instantaneous rate (catches bursts). Short tests at high RPS will show the peak line spiking while the avg line lags.",
       "targets": [
         {
           "expr": "sum(rate(wire_http_requests_total[1m])) by (route)",
-          "legendFormat": "{{route}}",
+          "legendFormat": "{{route}} (1m avg)",
           "refId": "A"
+        },
+        {
+          "expr": "sum(rate(wire_http_requests_total[15s])) by (route)",
+          "legendFormat": "{{route}} (15s peak)",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*\\(15s peak\\)$" },
+            "properties": [
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 5] } },
+              { "id": "custom.fillOpacity", "value": 0 }
+            ]
+          }
+        ]
       },
       "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
     },
@@ -231,6 +245,216 @@
         { "expr": "rate(process_cpu_seconds_total{job=\"wire-coordinator\"}[1m])", "legendFormat": "cores", "refId": "A" }
       ],
       "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "OS threads (GOMAXPROCS reference)",
+      "id": 43,
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 52 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Total OS threads created by the Go runtime. Spikes above GOMAXPROCS usually mean blocking syscalls (e.g. cgo, file I/O); steady growth is a thread leak.",
+      "targets": [
+        { "expr": "go_threads{job=\"wire-coordinator\"}", "legendFormat": "threads", "refId": "A" },
+        { "expr": "go_sched_gomaxprocs_threads{job=\"wire-coordinator\"}", "legendFormat": "GOMAXPROCS", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Open file descriptors",
+      "id": 44,
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 52 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Open FDs vs. the soft limit. Steady growth without bound is a leak (unclosed conns / files); approaching max means EMFILE incoming.",
+      "targets": [
+        { "expr": "process_open_fds{job=\"wire-coordinator\"}", "legendFormat": "open", "refId": "A" },
+        { "expr": "process_max_fds{job=\"wire-coordinator\"}", "legendFormat": "max (rlimit)", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+    {
+      "type": "stat",
+      "title": "Process uptime",
+      "id": 45,
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 52 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        { "expr": "time() - process_start_time_seconds{job=\"wire-coordinator\"}", "legendFormat": "uptime", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area", "colorMode": "value" }
+    },
+
+    {
+      "type": "row",
+      "title": "Go GC",
+      "id": 5,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 58 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "GC pause latency (p50 / p75 / max)",
+      "id": 50,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 59 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Stop-the-world pause time per GC cycle. The Go collector exposes a 5-bucket summary {0, .25, .5, .75, 1}; max above ~10 ms sustained means tail latency is GC-bound.",
+      "targets": [
+        { "expr": "go_gc_duration_seconds{quantile=\"0.5\",job=\"wire-coordinator\"}", "legendFormat": "p50", "refId": "A" },
+        { "expr": "go_gc_duration_seconds{quantile=\"0.75\",job=\"wire-coordinator\"}", "legendFormat": "p75", "refId": "B" },
+        { "expr": "go_gc_duration_seconds{quantile=\"1\",job=\"wire-coordinator\"}", "legendFormat": "max", "refId": "C" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0, "axisScale": "log" } }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "GC cycles/sec & time since last GC",
+      "id": 51,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 59 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Frequency of full GC cycles, and seconds since the last cycle finished. High cycles/sec + low pauses is fine; rising cycle rate without rising allocation usually means heap fragmentation.",
+      "targets": [
+        { "expr": "rate(go_gc_duration_seconds_count{job=\"wire-coordinator\"}[1m])", "legendFormat": "cycles/sec", "refId": "A" },
+        { "expr": "time() - go_memstats_last_gc_time_seconds{job=\"wire-coordinator\"}", "legendFormat": "since last GC (s)", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Heap usage vs next-GC trigger",
+      "id": 52,
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 67 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "When heap_alloc approaches next_gc, the GC fires and heap_alloc drops. The gap between them is your headroom.",
+      "targets": [
+        { "expr": "go_memstats_heap_alloc_bytes{job=\"wire-coordinator\"}", "legendFormat": "heap_alloc", "refId": "A" },
+        { "expr": "go_memstats_next_gc_bytes{job=\"wire-coordinator\"}", "legendFormat": "next_gc trigger", "refId": "B" },
+        { "expr": "go_gc_gomemlimit_bytes{job=\"wire-coordinator\"}", "legendFormat": "GOMEMLIMIT", "refId": "C" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "GC stop-the-world overhead (% of wall time)",
+      "id": 53,
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 67 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Fraction of wall-clock time spent inside GC stop-the-world phases. Sustained > 5% is the classic 'tune the heap' signal — bump GOGC or GOMEMLIMIT.",
+      "targets": [
+        { "expr": "rate(go_gc_duration_seconds_sum{job=\"wire-coordinator\"}[1m])", "legendFormat": "GC STW fraction", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+
+    {
+      "type": "row",
+      "title": "Go memory",
+      "id": 6,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 74 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Heap composition",
+      "id": 60,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 75 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Heap memory split into live (heap_alloc), in-use spans (heap_inuse), idle (heap_idle), and released-to-OS (heap_released). heap_inuse - heap_alloc is fragmentation overhead.",
+      "targets": [
+        { "expr": "go_memstats_heap_alloc_bytes{job=\"wire-coordinator\"}", "legendFormat": "live (heap_alloc)", "refId": "A" },
+        { "expr": "go_memstats_heap_inuse_bytes{job=\"wire-coordinator\"}", "legendFormat": "in-use (heap_inuse)", "refId": "B" },
+        { "expr": "go_memstats_heap_idle_bytes{job=\"wire-coordinator\"}", "legendFormat": "idle (heap_idle)", "refId": "C" },
+        { "expr": "go_memstats_heap_released_bytes{job=\"wire-coordinator\"}", "legendFormat": "released to OS", "refId": "D" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Non-heap memory (stack / metadata)",
+      "id": 61,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 75 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Stack memory grows with goroutine count; mspan/mcache grow with heap size. A goroutine leak shows here as steadily climbing stack_inuse.",
+      "targets": [
+        { "expr": "go_memstats_stack_inuse_bytes{job=\"wire-coordinator\"}", "legendFormat": "stack_inuse", "refId": "A" },
+        { "expr": "go_memstats_mspan_inuse_bytes{job=\"wire-coordinator\"}", "legendFormat": "mspan_inuse", "refId": "B" },
+        { "expr": "go_memstats_mcache_inuse_bytes{job=\"wire-coordinator\"}", "legendFormat": "mcache_inuse", "refId": "C" },
+        { "expr": "go_memstats_gc_sys_bytes{job=\"wire-coordinator\"}", "legendFormat": "gc metadata", "refId": "D" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Allocation rate (bytes/sec)",
+      "id": 62,
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 83 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Bytes allocated per second on the heap. Higher = more GC pressure. Pair with the allocations/sec panel to spot allocation-heavy hot paths.",
+      "targets": [
+        { "expr": "rate(go_memstats_alloc_bytes_total{job=\"wire-coordinator\"}[1m])", "legendFormat": "bytes/sec", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "Bps", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Allocations & frees / sec",
+      "id": 63,
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 83 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Object-level alloc/free rate. heap_objects (live) is the steady-state live-object count.",
+      "targets": [
+        { "expr": "rate(go_memstats_mallocs_total{job=\"wire-coordinator\"}[1m])", "legendFormat": "mallocs/sec", "refId": "A" },
+        { "expr": "rate(go_memstats_frees_total{job=\"wire-coordinator\"}[1m])", "legendFormat": "frees/sec", "refId": "B" },
+        { "expr": "go_memstats_heap_objects{job=\"wire-coordinator\"}", "legendFormat": "live objects", "refId": "C" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+
+    {
+      "type": "row",
+      "title": "Network & memory map",
+      "id": 7,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 90 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Network throughput (rate)",
+      "id": 70,
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 91 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Bytes per second across all process sockets. Coordinator is typically: HTTP API ingress + worker RPC bidi + Prometheus scrape egress.",
+      "targets": [
+        { "expr": "rate(process_network_receive_bytes_total{job=\"wire-coordinator\"}[1m])", "legendFormat": "rx", "refId": "A" },
+        { "expr": "rate(process_network_transmit_bytes_total{job=\"wire-coordinator\"}[1m])", "legendFormat": "tx", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "Bps", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Resident vs virtual vs Go-sys memory",
+      "id": 71,
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 91 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "RSS is what the OS sees as resident; virtual is the address-space size (includes mmaped Pebble files). A big VSZ-RSS gap is normal for memory-mapped DBs. go_memstats_sys is what the Go runtime has obtained from the OS.",
+      "targets": [
+        { "expr": "process_resident_memory_bytes{job=\"wire-coordinator\"}", "legendFormat": "RSS", "refId": "A" },
+        { "expr": "process_virtual_memory_bytes{job=\"wire-coordinator\"}", "legendFormat": "virtual (VSZ)", "refId": "B" },
+        { "expr": "go_memstats_sys_bytes{job=\"wire-coordinator\"}", "legendFormat": "Go runtime sys", "refId": "C" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
     }
   ]
 }
