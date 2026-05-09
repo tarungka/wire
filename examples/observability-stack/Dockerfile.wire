@@ -27,6 +27,10 @@ RUN go build -o /out/wire-worker-example ./examples/wire-worker-example/.
 # Build the example submitter so the stack can drive load.
 RUN go build -o /out/submit-uppercase-job ./examples/submit-uppercase-job/.
 
+# Build the graph-bytes printer used by the k6 load service to seed the
+# request body with a real (msgpack-encoded) JobGraph.
+RUN go build -o /out/print-uppercase-graph ./examples/print-uppercase-graph/.
+
 #######################################################################
 FROM alpine:3.20
 
@@ -36,6 +40,7 @@ WORKDIR /app
 COPY --from=builder /out/wire /usr/local/bin/wire
 COPY --from=builder /out/wire-worker-example /usr/local/bin/wire-worker-example
 COPY --from=builder /out/submit-uppercase-job /usr/local/bin/submit-uppercase-job
+COPY --from=builder /out/print-uppercase-graph /usr/local/bin/print-uppercase-graph
 
 RUN mkdir -p /data
 VOLUME /data
