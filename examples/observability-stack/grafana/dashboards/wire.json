@@ -3,7 +3,7 @@
   "uid": "wire-coordinator",
   "tags": ["wire"],
   "schemaVersion": 39,
-  "version": 4,
+  "version": 5,
   "refresh": "5s",
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
@@ -454,6 +454,55 @@
         { "expr": "go_memstats_sys_bytes{job=\"wire-coordinator\"}", "legendFormat": "Go runtime sys", "refId": "C" }
       ],
       "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+
+    {
+      "type": "row",
+      "title": "Coordinator jobs",
+      "id": 8,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 98 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Active jobs by status",
+      "id": 80,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 99 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Live count of jobs in each lifecycle status. CREATED rising = scheduler is queueing; DEPLOYING rising = workers slow to ack; RUNNING is steady-state in-flight load. Terminal counts (FINISHED, FAILED, CANCELED) accumulate over the coordinator's lifetime.",
+      "targets": [
+        { "expr": "wire_coordinator_jobs_by_status{job=\"wire-coordinator\"}", "legendFormat": "{{status}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Job duration percentiles by terminal status",
+      "id": 81,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 99 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "End-to-end job duration: time from POST /api/v1/jobs to terminal state (FINISHED, FAILED, CANCELED). Buckets span 10 ms to 1 h.",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(wire_coordinator_job_duration_seconds_bucket[5m])) by (terminal_status, le))", "legendFormat": "p50 {{terminal_status}}", "refId": "A" },
+        { "expr": "histogram_quantile(0.99, sum(rate(wire_coordinator_job_duration_seconds_bucket[5m])) by (terminal_status, le))", "legendFormat": "p99 {{terminal_status}}", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Job completion rate by terminal status",
+      "id": 82,
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 107 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "description": "Jobs reaching a terminal state per second. FINISHED/FAILED/CANCELED stacked. Sustained FAILED > 0 is a regression signal.",
+      "targets": [
+        { "expr": "sum(rate(wire_coordinator_job_duration_seconds_count[1m])) by (terminal_status)", "legendFormat": "{{terminal_status}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 70, "stacking": { "mode": "normal" } } } },
       "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
     }
   ]
