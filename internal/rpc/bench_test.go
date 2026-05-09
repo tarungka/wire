@@ -2,7 +2,14 @@ package rpc
 
 import (
 	"bytes"
+	"context"
+	"io"
+	"net"
 	"testing"
+
+	"github.com/hashicorp/yamux"
+
+	"github.com/tarungka/wire/internal/protocol"
 )
 
 // BenchmarkWriteRPCFrame measures the per-frame encode cost — header build
@@ -125,6 +132,69 @@ func BenchmarkMethodName(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = MethodName(MethodHeartbeat)
+	}
+}
+
+// benchYamuxPair mirrors testYamuxPair but for benchmarks.
+func benchYamuxPair(b *testing.B) (client, server *yamux.Session) {
+	b.Helper()
+	c1, c2 := net.Pipe()
+	cfg := yamux.DefaultConfig()
+	cfg.LogOutput = io.Discard
+
+	done := make(chan struct{})
+	var sErr, cErr error
+	go func() {
+		server, sErr = yamux.Server(c1, cfg)
+		close(done)
+	}()
+	client, cErr = yamux.Client(c2, cfg)
+	<-done
+	if sErr != nil || cErr != nil {
+		b.Fatalf("yamux setup: %v / %v", sErr, cErr)
+	}
+	b.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+	return client, server
+}
+
+// BenchmarkClientCall_Heartbeat exercises the full Client.Call → Server
+// dispatch → response round-trip for a Heartbeat RPC. This is the floor
+// for any worker→coordinator (or vice-versa) call latency on a single
+// host (everything in-memory; no kernel TCP, no real network).
+func BenchmarkClientCall_Heartbeat(b *testing.B) {
+	client, server := benchYamuxPair(b)
+	cfg := DefaultConfig()
+
+	srv := &Server{
+		cfg:      cfg,
+		handlers: make(map[MethodID]Handler),
+		log:      testLogger(),
+	}
+	srv.Register(MethodHeartbeat, func(ctx context.Context, reqID uint64, payload []byte) (any, *RPCError) {
+		var req HeartbeatRequest
+		if err := protocol.DecodeMsgPack(payload, &req); err != nil {
+			return nil, NewRPCError(ErrCodeSerializationError, err.Error())
+		}
+		return &HeartbeatResponse{Accepted: true, EpochID: req.EpochID}, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.ServeSession(ctx, server)
+
+	rpcClient := &Client{session: client, cfg: cfg, log: testLogger()}
+	req := &HeartbeatRequest{WorkerID: "worker-bench", EpochID: 42}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		if _, err := rpcClient.Heartbeat(ctx, req); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

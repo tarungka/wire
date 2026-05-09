@@ -3,9 +3,20 @@ package coordinator
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math/rand"
 	"testing"
 )
+
+// silentPebbleLogger satisfies pebble.Logger and drops everything. Used
+// only in benchmarks so WAL-replay / compaction info logs don't pollute
+// the bench output stream.
+type silentPebbleLogger struct{}
+
+func (silentPebbleLogger) Infof(string, ...interface{}) {}
+func (silentPebbleLogger) Fatalf(format string, args ...interface{}) {
+	log.Fatalf(format, args...)
+}
 
 // newPebbleBench opens a fresh PebbleStore on a tmpdir for a benchmark and
 // returns a cleanup func. PebbleDB is fsync-bound on Set/WriteBatch, so
@@ -13,7 +24,7 @@ import (
 func newPebbleBench(b *testing.B) (*PebbleStore, func()) {
 	b.Helper()
 	dir := b.TempDir()
-	s, err := NewPebbleStore(dir)
+	s, err := NewPebbleStore(dir, WithLogger(silentPebbleLogger{}))
 	if err != nil {
 		b.Fatalf("NewPebbleStore: %v", err)
 	}
@@ -181,6 +192,140 @@ func BenchmarkMemoryStore_WriteBatch(b *testing.B) {
 					idx++
 				}
 				if err := s.WriteBatch(pairs); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkPebbleStore_Delete measures the per-key delete cost. Like Set,
+// each Delete fsyncs (pebble.Sync), so this is fsync-bound.
+func BenchmarkPebbleStore_Delete(b *testing.B) {
+	s, cleanup := newPebbleBench(b)
+	defer cleanup()
+
+	// Pre-populate via WriteBatch so setup doesn't dominate the bench.
+	const populated = 5_000
+	val := make([]byte, 64)
+	batch := make([]KVPair, populated)
+	for i := 0; i < populated; i++ {
+		k := make([]byte, 16)
+		binary.BigEndian.PutUint64(k, uint64(i))
+		batch[i] = KVPair{Key: k, Value: val}
+	}
+	if err := s.WriteBatch(batch); err != nil {
+		b.Fatalf("populate: %v", err)
+	}
+	key := make([]byte, 16)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		binary.BigEndian.PutUint64(key, uint64(i%populated))
+		if err := s.Delete(key); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkPebbleStore_PrefixScan iterates jobs/* keys with a callback.
+// This is the path the coordinator uses for `GET /api/v1/jobs` and similar
+// listings. Time should grow with N keys under the prefix.
+func BenchmarkPebbleStore_PrefixScan(b *testing.B) {
+	for _, n := range []int{10, 100, 1_000} {
+		b.Run(fmt.Sprintf("keys=%d", n), func(b *testing.B) {
+			s, cleanup := newPebbleBench(b)
+			defer cleanup()
+
+			val := make([]byte, 256)
+			batch := make([]KVPair, n)
+			for i := 0; i < n; i++ {
+				batch[i] = KVPair{Key: JobMetaKey(fmt.Sprintf("job-%06d", i)), Value: val}
+			}
+			if err := s.WriteBatch(batch); err != nil {
+				b.Fatalf("populate: %v", err)
+			}
+			prefix := []byte("jobs/")
+
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				count := 0
+				if err := s.PrefixScan(prefix, func(_, _ []byte) bool {
+					count++
+					return true
+				}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkPebbleStore_Open measures cold-start latency: opening a store
+// directory that already has SSTables on disk. This is the recovery path.
+func BenchmarkPebbleStore_Open(b *testing.B) {
+	dir := b.TempDir()
+
+	// Seed the store with some data, then close it so the next Open does
+	// real work (LSM scan, manifest replay).
+	s, err := NewPebbleStore(dir, WithLogger(silentPebbleLogger{}))
+	if err != nil {
+		b.Fatal(err)
+	}
+	val := make([]byte, 256)
+	batch := make([]KVPair, 1000)
+	for i := 0; i < 1000; i++ {
+		k := make([]byte, 16)
+		binary.BigEndian.PutUint64(k, uint64(i))
+		batch[i] = KVPair{Key: k, Value: val}
+	}
+	if err := s.WriteBatch(batch); err != nil {
+		b.Fatal(err)
+	}
+	_ = s.Close()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		s, err := NewPebbleStore(dir, WithLogger(silentPebbleLogger{}))
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = s.Close()
+	}
+}
+
+// BenchmarkMemoryStore_PrefixScan is the no-fsync reference for PrefixScan.
+// MemoryStore uses a sorted slice, so scan cost is O(n) regardless of
+// prefix size — useful for spotting algorithmic regressions.
+func BenchmarkMemoryStore_PrefixScan(b *testing.B) {
+	for _, n := range []int{10, 100, 1_000} {
+		b.Run(fmt.Sprintf("keys=%d", n), func(b *testing.B) {
+			s := NewMemoryStore()
+			val := make([]byte, 256)
+			batch := make([]KVPair, n)
+			for i := 0; i < n; i++ {
+				batch[i] = KVPair{Key: JobMetaKey(fmt.Sprintf("job-%06d", i)), Value: val}
+			}
+			if err := s.WriteBatch(batch); err != nil {
+				b.Fatalf("populate: %v", err)
+			}
+			prefix := []byte("jobs/")
+
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				count := 0
+				if err := s.PrefixScan(prefix, func(_, _ []byte) bool {
+					count++
+					return true
+				}); err != nil {
 					b.Fatal(err)
 				}
 			}

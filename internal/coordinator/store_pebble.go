@@ -11,6 +11,7 @@ type pebbleConfig struct {
 	memTableSize          int
 	l0CompactionThreshold int
 	cacheSize             int64
+	logger                pebble.Logger
 }
 
 func defaultPebbleConfig() pebbleConfig {
@@ -34,6 +35,12 @@ func WithL0CompactionThreshold(n int) PebbleOption {
 // WithCacheSize sets the block cache size in bytes.
 func WithCacheSize(size int64) PebbleOption {
 	return func(c *pebbleConfig) { c.cacheSize = size }
+}
+
+// WithLogger overrides Pebble's default logger. Pass pebble.DiscardLogger to
+// silence WAL replay / compaction info logs (useful for tests/benchmarks).
+func WithLogger(l pebble.Logger) PebbleOption {
+	return func(c *pebbleConfig) { c.logger = l }
 }
 
 // PebbleStore is a MetadataStore backed by PebbleDB.
@@ -60,6 +67,7 @@ func NewPebbleStore(dataDir string, opts ...PebbleOption) (*PebbleStore, error) 
 		WALDir:                   "", // same as data dir
 		DisableWAL:               false,
 		MaxConcurrentCompactions: func() int { return 1 },
+		Logger:                   cfg.logger,
 	}
 
 	db, err := pebble.Open(dataDir, pOpts)
