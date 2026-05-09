@@ -57,18 +57,51 @@ jobs:
           go install github.com/securego/gosec/v2/cmd/gosec@latest
           gosec -no-fail -fmt json -out gosec-results.json ./... || true
 
-          if [ -f gosec-results.json ]; then
-            ISSUES=$(jq '[.Issues // [] | length] | add // 0' gosec-results.json)
-            HIGH=$(jq '[.Issues // [] | map(select(.severity == "HIGH")) | length] | add // 0' gosec-results.json)
-            MEDIUM=$(jq '[.Issues // [] | map(select(.severity == "MEDIUM")) | length] | add // 0' gosec-results.json)
-            LOW=$(jq '[.Issues // [] | map(select(.severity == "LOW")) | length] | add // 0' gosec-results.json)
+          [ -f gosec-results.json ] || exit 0
 
+          ISSUES=$(jq '[.Issues // []] | flatten | length' gosec-results.json)
+          HIGH=$(jq '[.Issues // []] | flatten | map(select(.severity == "HIGH")) | length' gosec-results.json)
+          MEDIUM=$(jq '[.Issues // []] | flatten | map(select(.severity == "MEDIUM")) | length' gosec-results.json)
+          LOW=$(jq '[.Issues // []] | flatten | map(select(.severity == "LOW")) | length' gosec-results.json)
+
+          {
+            echo "### 🔒 Security Scan Results"
+            echo ""
+            echo "| Severity | Count |"
+            echo "| --- | --- |"
+            echo "| 🔴 High   | $HIGH |"
+            echo "| 🟠 Medium | $MEDIUM |"
+            echo "| 🟡 Low    | $LOW |"
+            echo "| **Total** | **$ISSUES** |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Build a per-finding table for the workflow summary. Sort by
+          # severity (HIGH first), trim absolute paths to repo-relative,
+          # and cap at 100 rows so the summary stays readable.
+          if [ "$ISSUES" -gt 0 ]; then
             {
-              echo "### 🔒 Security Scan Results"
-              echo "- Total Issues: $ISSUES"
-              echo "- High Severity: $HIGH"
-              echo "- Medium Severity: $MEDIUM"
-              echo "- Low Severity: $LOW"
+              echo "<details><summary>📋 Findings ($ISSUES total — first 100 shown)</summary>"
+              echo ""
+              echo "| Severity | Rule | File:Line | Message |"
+              echo "| --- | --- | --- | --- |"
+              jq -r '
+                ([.Issues // []] | flatten) as $issues
+                | $issues
+                | sort_by(
+                    if .severity == "HIGH" then 0
+                    elif .severity == "MEDIUM" then 1
+                    else 2 end,
+                    .file, (.line | tonumber? // 0)
+                  )
+                | .[:100]
+                | .[]
+                | "| \(.severity) | \(.rule_id)\(if .cwe.id then " (CWE-\(.cwe.id))" else "" end) | \(.file | sub("^/github/workspace/"; "") | sub("^.*/wire/"; "")):\(.line) | \(.details | gsub("\\|"; "\\|") | gsub("\n"; " ")) |"
+              ' gosec-results.json
+              echo ""
+              echo "</details>"
+              echo ""
+              echo "Full SARIF report uploaded to the repo's Security tab."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
       
@@ -113,27 +146,58 @@ jobs:
         with:
           script: |
             const fs = require('fs');
+            const SEV_RANK = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+            const SEV_EMOJI = { HIGH: '🔴', MEDIUM: '🟠', LOW: '🟡' };
+            // Cap the per-finding table so the comment stays under
+            // GitHub's 65k-character body limit even on noisy PRs.
+            const MAX_TABLE_ROWS = 25;
+
+            // Strip the runner's workspace prefix so paths render as
+            // repo-relative (clickable in the GitHub UI).
+            const trimPath = (p) =>
+              (p || '').replace(/^\/github\/workspace\//, '').replace(/^.*\/wire\//, '');
+
             let comment = '### 🔒 Security Scan Results\n\n';
-            
+
             try {
               const gosecResults = JSON.parse(fs.readFileSync('gosec-results.json', 'utf8'));
               const issues = gosecResults.Issues || [];
-              const high = issues.filter(i => i.severity === 'HIGH').length;
-              const medium = issues.filter(i => i.severity === 'MEDIUM').length;
-              
+
               if (issues.length === 0) {
                 comment += '✅ **No security issues found!**\n';
               } else {
-                comment += `⚠️ **Found ${issues.length} security issues:**\n`;
-                comment += `- High: ${high}\n`;
-                comment += `- Medium: ${medium}\n`;
-                comment += `- Low: ${issues.length - high - medium}\n\n`;
-                comment += 'Please review the security scan results in the workflow logs.\n';
+                const counts = { HIGH: 0, MEDIUM: 0, LOW: 0 };
+                for (const i of issues) counts[i.severity] = (counts[i.severity] || 0) + 1;
+
+                comment += `Found **${issues.length}** issues `;
+                comment += `(🔴 ${counts.HIGH} high · 🟠 ${counts.MEDIUM} medium · 🟡 ${counts.LOW} low).\n\n`;
+
+                const sorted = [...issues].sort((a, b) => {
+                  const r = (SEV_RANK[a.severity] ?? 99) - (SEV_RANK[b.severity] ?? 99);
+                  if (r !== 0) return r;
+                  if (a.file !== b.file) return a.file.localeCompare(b.file);
+                  return (parseInt(a.line, 10) || 0) - (parseInt(b.line, 10) || 0);
+                });
+
+                const rows = sorted.slice(0, MAX_TABLE_ROWS);
+                comment += '<details open><summary>Findings</summary>\n\n';
+                comment += '| Severity | Rule | File:Line | Message |\n';
+                comment += '| --- | --- | --- | --- |\n';
+                for (const i of rows) {
+                  const path = trimPath(i.file);
+                  const cwe = i.cwe && i.cwe.id ? ` (CWE-${i.cwe.id})` : '';
+                  const msg = (i.details || '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+                  comment += `| ${SEV_EMOJI[i.severity] || ''} ${i.severity} | \`${i.rule_id}\`${cwe} | \`${path}:${i.line}\` | ${msg} |\n`;
+                }
+                if (sorted.length > MAX_TABLE_ROWS) {
+                  comment += `\n_…and ${sorted.length - MAX_TABLE_ROWS} more. Full SARIF report on the repo's Security tab._\n`;
+                }
+                comment += '\n</details>\n';
               }
             } catch (e) {
-              comment += '✅ Security scan completed. Check workflow for details.\n';
+              comment += `⚠️ Could not parse gosec results: \`${e.message}\`\n`;
             }
-            
+
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
