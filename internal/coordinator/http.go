@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -53,6 +54,10 @@ func NewHTTPServer(coord *Coordinator, listenAddr string, log zerolog.Logger) *H
 	s.server = &http.Server{
 		Addr:    listenAddr,
 		Handler: observability.HTTPMiddleware(mux),
+		// Bound the time a client can hold open a connection while
+		// dribbling out request headers — without this the server is
+		// vulnerable to Slowloris-style resource exhaustion (gosec G112).
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	return s
