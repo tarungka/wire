@@ -134,7 +134,7 @@ How the new pieces sit in the existing topology. **Bold** boxes are new in WIP-2
 flowchart LR
     subgraph SDK["SDK / submitter"]
         SDKsub[POST /jobs]
-        SDKpoll[GET /jobs/{id}]
+        SDKpoll["GET /jobs/:id"]
     end
 
     subgraph CoordProc["Coordinator process"]
