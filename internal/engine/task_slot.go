@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -190,6 +192,16 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 
 	// Launch operator chain (the main processing goroutine).
 	// When it finishes, cancel the run context to shut down all other goroutines.
+	//
+	// chainErr captures the chain's terminal error before runCancel()
+	// propagates: errgroup picks the FIRST non-nil error any goroutine
+	// returns, and the chain's defer runCancel() can race other
+	// goroutines into returning context.Canceled before the chain's
+	// own ErrOperatorPanic reaches errOnce.Do. Storing the chain error
+	// in straight-line code (before any defers fire) makes the
+	// chain's verdict authoritative regardless of who wins the
+	// errgroup race. See docs/trds/WIP-24.
+	var chainErr atomic.Pointer[error]
 	producerWg.Add(1)
 	g.Go(func() error {
 		defer producerWg.Done()
@@ -197,7 +209,11 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		if dlqCh != nil {
 			defer close(dlqCh)
 		}
-		return runOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics)
+		err := runOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics)
+		if err != nil {
+			chainErr.Store(&err)
+		}
+		return err
 	})
 
 	// Goroutine to close outputCh when all producers are done.
@@ -216,8 +232,20 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	}
 
 	err := g.Wait()
+	// Prefer the chain's error over errgroup's verdict — but only when
+	// it's a real chain-side error (e.g. ErrOperatorPanic), not a
+	// context.Canceled produced because a peer goroutine errored first
+	// and errgroup cancelled gctx underneath us. errgroup returns
+	// whichever goroutine's error wins errOnce.Do; the chain's
+	// runCancel() defer can lose that race to a peer returning
+	// context.Canceled, which would otherwise mask the chain's error.
+	// Conversely, if the chain bowed out because a peer errored, that
+	// peer's error is what should bubble up — defer to errgroup.
+	if e := chainErr.Load(); e != nil && !errors.Is(*e, context.Canceled) {
+		return *e
+	}
 	// Filter out context.Canceled — this is expected when the operator chain
-	// finishes and triggers cancellation of the group.
+	// finishes cleanly and triggers cancellation of the group.
 	if err == context.Canceled {
 		return nil
 	}
