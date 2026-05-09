@@ -1,0 +1,138 @@
+# Observability simulation for wire.
+#
+# Boots one coordinator + one worker, scrapes both with Prometheus, and
+# auto-provisions a Grafana dashboard. A short-running load-generator
+# container submits a few jobs after startup so the dashboards have data.
+#
+# From this directory:
+#   docker compose up --build
+#
+# Then open:
+#   - Grafana:    http://localhost:3000   (admin / admin)
+#   - Prometheus: http://localhost:9091
+#   - Coordinator API: http://localhost:4001
+#
+# To regenerate traffic without restarting:
+#   docker compose run --rm load
+#
+# The load service is "profiles: load" so it doesn't auto-start with `up`.
+# Use `docker compose --profile load up` to include it.
+
+name: wire-observability
+
+services:
+  coordinator:
+    build:
+      # Build from the repo root so the Dockerfile can see go.mod etc.
+      context: ../..
+      dockerfile: examples/observability-stack/Dockerfile.wire
+    image: wire:local
+    container_name: wire-coordinator
+    command:
+      - "--mode=coordinator"
+      - "--http-listen=:4001"
+      - "--listen=:4002"
+      - "--coordinator-data-dir=/data/coordinator"
+      - "--election-backend=noop"
+      - "--metrics-addr=:9090"
+      - "--node-id=coordinator-1"
+    ports:
+      - "4001:4001"   # HTTP API
+      - "4002:4002"   # RPC
+      - "9090:9090"   # Prometheus scrape
+    volumes:
+      - coordinator-data:/data/coordinator
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4001/healthz"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+
+  worker:
+    # Same build context as coordinator so the layer cache is reused —
+    # without this, compose would try to pull `wire:local` from a registry.
+    build:
+      context: ../..
+      dockerfile: examples/observability-stack/Dockerfile.wire
+    image: wire:local
+    container_name: wire-worker
+    # Override the entrypoint so we can run the example worker binary
+    # which has the operator factories registered.
+    entrypoint: /usr/local/bin/wire-worker-example
+    command:
+      - "--coordinator-addr=coordinator:4002"
+      - "--worker-id=worker-1"
+      - "--task-slots=4"
+    depends_on:
+      coordinator:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: wire-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=2h"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      # 9091 (host) → 9090 (container) so it doesn't collide with wire's own
+      # /metrics endpoint published on host port 9090.
+      - "9091:9090"
+    depends_on:
+      - coordinator
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: wire-grafana
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  # Short-running container that submits a few jobs so the dashboards have
+  # data the moment you open Grafana. Started only when --profile load is
+  # passed, or via `docker compose run --rm load`.
+  load:
+    build:
+      context: ../..
+      dockerfile: examples/observability-stack/Dockerfile.wire
+    image: wire:local
+    container_name: wire-load
+    profiles: ["load"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "waiting for coordinator..."
+        until curl -fsS http://coordinator:4001/healthz >/dev/null; do sleep 1; done
+        echo "submitting jobs"
+        for i in 1 2 3 4 5; do
+          submit-uppercase-job \
+            --coordinator-url http://coordinator:4001 \
+            --message "hello-$$i" --message "wire-$$i" --message "obs-$$i" || true
+          sleep 1
+        done
+        echo "done"
+    depends_on:
+      coordinator:
+        condition: service_healthy
+
+volumes:
+  coordinator-data:
+  prometheus-data:
+  grafana-data:

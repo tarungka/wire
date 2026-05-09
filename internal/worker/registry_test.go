@@ -15,11 +15,11 @@ import (
 // stubSource is a no-op SourceOperator for registry tests.
 type stubSource struct{}
 
-func (*stubSource) Open(_ context.Context) error                    { return nil }
-func (*stubSource) Close() error                                    { return nil }
-func (*stubSource) Checkpoint(_ uint64) ([]byte, error)             { return nil, nil }
+func (*stubSource) Open(_ context.Context) error                        { return nil }
+func (*stubSource) Close() error                                        { return nil }
+func (*stubSource) Checkpoint(_ uint64) ([]byte, error)                 { return nil, nil }
 func (*stubSource) ReadBatch(_ context.Context) ([]engine.Event, error) { return nil, nil }
-func (*stubSource) GenerateWatermark() int64                        { return 0 }
+func (*stubSource) GenerateWatermark() int64                            { return 0 }
 
 type stubMap struct{}
 
@@ -41,10 +41,10 @@ func (*stubFlatMap) FlatMap(_ context.Context, _ engine.Event, _ func(engine.Eve
 
 type stubSink struct{}
 
-func (*stubSink) Open(_ context.Context) error                            { return nil }
-func (*stubSink) Close() error                                            { return nil }
-func (*stubSink) Checkpoint(_ uint64) ([]byte, error)                     { return nil, nil }
-func (*stubSink) Write(_ context.Context, _ engine.Event) error           { return nil }
+func (*stubSink) Open(_ context.Context) error                  { return nil }
+func (*stubSink) Close() error                                  { return nil }
+func (*stubSink) Checkpoint(_ uint64) ([]byte, error)           { return nil, nil }
+func (*stubSink) Write(_ context.Context, _ engine.Event) error { return nil }
 
 func newTC() TaskContext { return TaskContext{Log: zerolog.Nop()} }
 

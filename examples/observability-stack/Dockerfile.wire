@@ -1,0 +1,46 @@
+# Build wire from the repo root. Build context is `..` (the repo root)
+# so the COPY can see go.mod / cmd / internal.
+FROM golang:1.25-alpine AS builder
+
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BRANCH=unknown
+ARG DATE=unknown
+
+RUN apk add --no-cache gcc git make musl-dev pkgconf
+
+WORKDIR /src
+COPY . .
+
+ENV CGO_ENABLED=1
+RUN go build -o /out/wire \
+    -ldflags="-w -s \
+      -X github.com/tarungka/wire/internal/cmd.Version=${VERSION} \
+      -X github.com/tarungka/wire/internal/cmd.Commit=${COMMIT} \
+      -X github.com/tarungka/wire/internal/cmd.Branch=${BRANCH} \
+      -X github.com/tarungka/wire/internal/cmd.Buildtime=${DATE}" \
+    ./cmd/.
+
+# Build the example worker so the stack is self-contained.
+RUN go build -o /out/wire-worker-example ./examples/wire-worker-example/.
+
+# Build the example submitter so the stack can drive load.
+RUN go build -o /out/submit-uppercase-job ./examples/submit-uppercase-job/.
+
+#######################################################################
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates curl
+WORKDIR /app
+
+COPY --from=builder /out/wire /usr/local/bin/wire
+COPY --from=builder /out/wire-worker-example /usr/local/bin/wire-worker-example
+COPY --from=builder /out/submit-uppercase-job /usr/local/bin/submit-uppercase-job
+
+RUN mkdir -p /data
+VOLUME /data
+
+# Coordinator HTTP API, wire-protocol RPC, Prometheus /metrics scrape.
+EXPOSE 4001 4002 9090
+
+ENTRYPOINT ["/usr/local/bin/wire"]

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -15,6 +16,7 @@ import (
 	"github.com/tarungka/wire/internal/config"
 	"github.com/tarungka/wire/internal/coordinator"
 	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/internal/observability"
 	"github.com/tarungka/wire/internal/worker"
 )
 
@@ -86,6 +88,27 @@ func main() {
 	if wireCfg.Node.Debug {
 		log.Debug().Msgf("PID: %v | PPID: %v", os.Getpid(), os.Getppid())
 	}
+
+	// Initialize observability (OTel meter provider + Prometheus scrape
+	// endpoint). Safe to call when --metrics-enabled=false; falls back to
+	// a no-op meter so call sites stay clean.
+	obsShutdown, err := observability.Init(mainCtx, observability.Config{
+		Enabled:        cliCfg.MetricsEnabled,
+		ServiceName:    "wire-" + wireCfg.Mode,
+		ServiceVersion: cmd.Version,
+		NodeID:         wireCfg.Node.ID,
+		MetricsAddr:    cliCfg.MetricsAddr,
+	}, log.Logger)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to initialize observability")
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := obsShutdown(shutdownCtx); err != nil {
+			log.Warn().Err(err).Msg("observability shutdown error")
+		}
+	}()
 
 	log.Info().Msg("Starting wire...")
 

@@ -5,13 +5,29 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/yamux"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/internal/observability"
 	"github.com/tarungka/wire/internal/protocol"
 )
+
+// recordRPCServerOp records duration + count + error metrics for a single
+// RPC handler dispatch. Method label is bounded to the MethodName enum.
+func recordRPCServerOp(method string, start time.Time, err error) {
+	hist, count, errs := observability.RPCInstruments()
+	attrs := metric.WithAttributes(attribute.String("method", method))
+	hist.Record(context.Background(), time.Since(start).Seconds(), attrs)
+	count.Add(context.Background(), 1, attrs)
+	if err != nil {
+		errs.Add(context.Background(), 1, attrs)
+	}
+}
 
 // Handler is the function signature for RPC method handlers.
 // It receives the raw payload bytes; the handler decodes into its specific request type.
@@ -109,12 +125,22 @@ func (s *Server) serveStream(ctx context.Context, stream *yamux.Stream) {
 		Uint64("request_id", frame.RequestID).
 		Msg("received RPC request")
 
+	// Time the handler dispatch + response write so the metric reflects
+	// the full server-side cost a worker observes via Client.Call.
+	dispatchStart := time.Now()
+	method := MethodName(frame.MethodID)
+	var dispatchErr error
+	defer func() {
+		recordRPCServerOp(method, dispatchStart, dispatchErr)
+	}()
+
 	// 2. Look up handler.
 	handler := s.getHandler(frame.MethodID)
 	if handler == nil {
 		rpcErr := NewRPCError(ErrCodeUnknownMethod,
 			fmt.Sprintf("no handler registered for method %s", MethodName(frame.MethodID)))
 		s.writeErrorResponse(stream, frame.RequestID, rpcErr)
+		dispatchErr = rpcErr
 		return
 	}
 
@@ -124,6 +150,7 @@ func (s *Server) serveStream(ctx context.Context, stream *yamux.Stream) {
 	// 4. Write response.
 	if rpcErr != nil {
 		s.writeErrorResponse(stream, frame.RequestID, rpcErr)
+		dispatchErr = rpcErr
 		return
 	}
 

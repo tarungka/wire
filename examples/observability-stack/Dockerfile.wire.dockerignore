@@ -1,0 +1,22 @@
+# Keep the build context lean. Build context is the repo root; everything
+# we don't need to compile a binary should be excluded so docker build
+# doesn't snapshot bench data, prior runs, vendored caches, etc.
+.git
+.github
+.idea
+.vscode
+.claude
+**/*.test
+**/*.out
+**/*.prof
+bench.out
+trace.out
+cpu.prof
+mem.prof
+data
+docs/benchmarks/runs
+docs/observability
+node_modules
+**/.DS_Store
+**/coverage.out
+**/coverage.html

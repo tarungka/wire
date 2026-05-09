@@ -1,0 +1,236 @@
+{
+  "title": "Wire — coordinator overview",
+  "uid": "wire-coordinator",
+  "tags": ["wire"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "type": "row",
+      "title": "HTTP API",
+      "id": 1,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP requests/sec by route",
+      "id": 10,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        {
+          "expr": "sum(rate(wire_http_requests_total[1m])) by (route)",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP p50 / p99 latency by route",
+      "id": 11,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(wire_http_request_duration_seconds_bucket[1m])) by (route, le))",
+          "legendFormat": "p50 {{route}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(wire_http_request_duration_seconds_bucket[1m])) by (route, le))",
+          "legendFormat": "p99 {{route}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP status class distribution",
+      "id": 12,
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        {
+          "expr": "sum(rate(wire_http_requests_total[1m])) by (status_class)",
+          "legendFormat": "{{status_class}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "bars", "fillOpacity": 70, "stacking": { "mode": "normal" } } }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Total HTTP requests (15m)",
+      "id": 13,
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        { "expr": "sum(increase(wire_http_requests_total[15m]))", "refId": "A" }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue" }] } } }
+    },
+
+    {
+      "type": "row",
+      "title": "PebbleDB metadata store",
+      "id": 2,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Pebble ops/sec by op",
+      "id": 20,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        { "expr": "sum(rate(wire_pebble_ops_total[1m])) by (op)", "legendFormat": "{{op}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pebble p99 latency by op (log scale shows fsync floor)",
+      "id": 21,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(wire_pebble_op_duration_seconds_bucket[1m])) by (op, le))",
+          "legendFormat": "p99 {{op}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0, "scaleDistribution": { "type": "log", "log": 10 } } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pebble errors/sec",
+      "id": 22,
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        { "expr": "sum(rate(wire_pebble_errors_total[1m])) by (op)", "legendFormat": "{{op}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "bars", "fillOpacity": 70 } } }
+    },
+
+    {
+      "type": "row",
+      "title": "RPC server",
+      "id": 3,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "RPC requests/sec by method",
+      "id": 30,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        { "expr": "sum(rate(wire_rpc_server_requests_total[1m])) by (method)", "legendFormat": "{{method}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "RPC p99 latency by method",
+      "id": 31,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(wire_rpc_server_duration_seconds_bucket[1m])) by (method, le))",
+          "legendFormat": "p99 {{method}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "RPC error rate by method",
+      "id": 32,
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 39 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        {
+          "expr": "sum(rate(wire_rpc_server_errors_total[5m])) by (method) / clamp_min(sum(rate(wire_rpc_server_requests_total[5m])) by (method), 1)",
+          "legendFormat": "{{method}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+
+    {
+      "type": "row",
+      "title": "Process",
+      "id": 4,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Goroutines",
+      "id": 40,
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        { "expr": "go_goroutines{job=\"wire-coordinator\"}", "legendFormat": "goroutines", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Resident memory",
+      "id": 41,
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        { "expr": "process_resident_memory_bytes{job=\"wire-coordinator\"}", "legendFormat": "RSS", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU seconds/sec",
+      "id": 42,
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "targets": [
+        { "expr": "rate(process_cpu_seconds_total{job=\"wire-coordinator\"}[1m])", "legendFormat": "cores", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    }
+  ]
+}

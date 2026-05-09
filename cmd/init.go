@@ -63,6 +63,15 @@ type Config struct {
 
 	// TaskSlots is the number of task slots available on this worker.
 	TaskSlots int
+
+	// MetricsEnabled gates the OTel/Prometheus stack. When false, Init
+	// is still called (to set globals to no-op providers) but no scrape
+	// endpoint is bound.
+	MetricsEnabled bool
+
+	// MetricsAddr is the bind address for the Prometheus /metrics scrape
+	// endpoint. Default ":9090".
+	MetricsAddr string
 }
 
 // BuildInfo holds version metadata populated at build time.
@@ -113,6 +122,10 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, *pflag.FlagSet, er
 	f.StringVar(&config.WorkerID, "worker-id", "", "worker node ID (defaults to hostname)")
 	f.StringVar(&config.WorkerListenAddr, "worker-listen", ":4003", "worker data-plane listen address")
 	f.IntVar(&config.TaskSlots, "task-slots", 4, "number of task slots (worker mode)")
+
+	// Observability flags.
+	f.BoolVar(&config.MetricsEnabled, "metrics-enabled", true, "expose Prometheus /metrics scrape endpoint")
+	f.StringVar(&config.MetricsAddr, "metrics-addr", ":9090", "bind address for the Prometheus /metrics scrape endpoint")
 
 	f.Usage = func() {
 		fmt.Fprintf(os.Stderr, "\n%s\n\n", desc)

@@ -20,9 +20,12 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: v1.61.0
+          # v1.61.0 was built with Go 1.23 and rejects Go 1.25 source.
+          # Match the version pinned in the local Makefile.
+          # @v7 is required for golangci-lint v2.x; @v6 only supports v1.
+          version: v2.5.0
           args: --timeout=5m
 
   test:
@@ -47,4 +50,6 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
       - name: Build
-        run: go build -v ./cmd/...
+        # `go build ./cmd/...` would write a binary named "cmd" which
+        # collides with the existing cmd/ directory; use an explicit -o.
+        run: go build -v -o /tmp/wire ./cmd/.
