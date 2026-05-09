@@ -89,6 +89,12 @@ func main() {
 
 	log.Info().Msg("Starting the application...")
 
+	if cfg.ProfileExtra {
+		runtime.SetMutexProfileFraction(1)
+		runtime.SetBlockProfileRate(1)
+		log.Info().Msg("mutex and block contention profiling enabled (full rate)")
+	}
+
 	// Create internode network mux and configure.
 	muxListener, err := net.Listen("tcp", cfg.RaftAddr)
 	if err != nil {

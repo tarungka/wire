@@ -564,6 +564,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handlePprof(c.Writer, c.Request)
 	})
 
+	engine.GET("/debug/trace", func(c *gin.Context) {
+		s.handleTrace(c.Writer, c.Request)
+	})
+
 	// Handle all GET, POST, PUT, DELETE under /connector/*
 	engine.GET("/connector/*any", s.handleConnector)
 	engine.POST("/connector/*any", s.createPipeline)
@@ -1449,9 +1453,22 @@ func (s *Service) handlePprof(w http.ResponseWriter, r *http.Request) {
 		pprof.Profile(w, r)
 	case "/debug/pprof/symbol":
 		pprof.Symbol(w, r)
+	case "/debug/pprof/trace":
+		pprof.Trace(w, r)
 	default:
 		pprof.Index(w, r)
 	}
+}
+
+// handleTrace serves a runtime execution trace over HTTP. The capture
+// duration is controlled by the ?seconds=N query parameter (default 1s).
+// Open the result with `go tool trace`.
+func (s *Service) handleTrace(w http.ResponseWriter, r *http.Request) {
+	if !s.CheckRequestPerm(r, auth.PermStatus) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	pprof.Trace(w, r)
 }
 
 // Addr returns the address on which the Service is listening

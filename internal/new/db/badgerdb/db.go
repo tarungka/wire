@@ -49,7 +49,8 @@ func (db *DB) Open() (*badger.DB, error) {
 		db.dbPath = "/tmp/badger"
 	}
 
-	badgerDB, err := badger.Open(badger.DefaultOptions(db.dbPath))
+	opts := badger.DefaultOptions(db.dbPath).WithLoggingLevel(badger.WARNING)
+	badgerDB, err := badger.Open(opts)
 	db.db = badgerDB
 	if err != nil {
 		return nil, err
@@ -65,7 +66,8 @@ func (db *DB) OpenInMemory() (*badger.DB, error) {
 	if db.open.Is() {
 		return nil, dberrors.ErrDBOpen
 	}
-	badgerInMemory, err := badger.Open(badger.DefaultOptions("").WithInMemory(true))
+	opts := badger.DefaultOptions("").WithInMemory(true).WithLoggingLevel(badger.WARNING)
+	badgerInMemory, err := badger.Open(opts)
 	if err != nil {
 		return nil, err
 	}

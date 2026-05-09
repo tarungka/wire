@@ -4,6 +4,11 @@ COMMIT=$(shell git rev-parse --short HEAD)
 DATE=$(shell date +"%Y-%m-%dT%H:%M:%S")
 VERSION=$(shell git describe --tags --always --dirty)
 
+# Packages that participate in benchmarks. The legacy internal/store and
+# internal/pipeline packages do not currently compile on master; scope the
+# bench targets to packages that are clean so `make bench` is reliable.
+BENCH_PKGS ?= ./internal/new/... ./internal/command/... ./internal/cluster/... ./internal/tcp/... ./internal/http/... ./internal/snapshot/... ./internal/db/...
+
 # Help command
 help:
 	@echo "Available commands:"
@@ -15,6 +20,12 @@ help:
 	@echo "  test-fast -           Run quick unit tests (for pre-commit)"
 	@echo "  test-full -           Run full test suite with race detection"
 	@echo "  test-coverage -       Run tests with coverage report"
+	@echo "  bench -               Run all benchmarks (3 iterations, 3s each)"
+	@echo "  bench-save -          Run benchmarks (5 iterations) and archive to docs/benchmarks/runs/"
+	@echo "  profile-cpu -         Capture a CPU profile from the bench suite (cpu.prof)"
+	@echo "  profile-mem -         Capture a memory profile from the bench suite (mem.prof)"
+	@echo "  trace -               Capture a runtime/trace from BenchmarkApply (trace.out)"
+	@echo "  profile-live -        Open a 30s pprof CPU profile from a running server"
 	@echo "  build-docker -        Build docker image"
 	@echo "  lint -                Run linter"
 	@echo "  lint-fast -           Run linter on changed files only"
@@ -108,6 +119,48 @@ ci-local:
 	@echo "💡 To run full tests, use: make test-full"
 	@echo "💡 To run security scan, add [security] to commit message"
 	@echo "💡 To build binaries, add [build] to commit message"
+
+# Run all benchmarks. Override BENCH_PKGS or BENCH to scope further.
+# Examples:
+#   make bench BENCH=BenchmarkApply
+#   make bench BENCH_PKGS=./internal/new/db/badgerdb/...
+BENCH ?= .
+# Strip any non-bench framework chatter so bench.out only contains real
+# Benchmark*/PASS/ok/header lines that benchstat can parse.
+BENCH_FILTER = grep -E '^(Benchmark|goos|goarch|cpu|pkg|PASS|FAIL|ok |---)'
+bench:
+	@echo "Running benchmarks: $(BENCH) over $(BENCH_PKGS)"
+	go test -run=^$$ -bench=$(BENCH) -benchmem -benchtime=3s -count=3 $(BENCH_PKGS) 2>/dev/null | $(BENCH_FILTER) | tee bench.out
+
+# Archive benchmark results into a timestamped file under docs/benchmarks/runs/.
+bench-save:
+	@mkdir -p docs/benchmarks/runs
+	@OUT="docs/benchmarks/runs/$$(date +%Y%m%d-%H%M%S).txt"; \
+	echo "Archiving to $$OUT"; \
+	go test -run=^$$ -bench=$(BENCH) -benchmem -benchtime=3s -count=5 $(BENCH_PKGS) 2>/dev/null | $(BENCH_FILTER) > $$OUT && \
+	echo "Saved $$OUT"
+
+# Capture a CPU profile from the bench suite.
+profile-cpu:
+	go test -run=^$$ -bench=$(BENCH) -benchtime=10s -cpuprofile=cpu.prof $(BENCH_PKGS)
+	@echo "Open with: go tool pprof -http=:6060 cpu.prof"
+
+# Capture a memory profile from the bench suite.
+profile-mem:
+	go test -run=^$$ -bench=$(BENCH) -benchtime=10s -memprofile=mem.prof $(BENCH_PKGS)
+	@echo "Open with: go tool pprof -http=:6060 mem.prof"
+
+# Capture a runtime execution trace from a single representative benchmark.
+trace:
+	go test -run=^$$ -bench=BenchmarkApply -benchtime=5s -trace=trace.out ./internal/new/store/...
+	@echo "Open with: go tool trace trace.out"
+
+# Capture a 30s CPU profile from a running server. Override DURATION or PPROF_HOST.
+DURATION ?= 30
+PPROF_HOST ?= http://localhost:8081
+profile-live:
+	@echo "Capturing $(DURATION)s CPU profile from $(PPROF_HOST)"
+	go tool pprof -http=:6060 $(PPROF_HOST)/debug/pprof/profile?seconds=$(DURATION)
 
 # Default target
 all: build

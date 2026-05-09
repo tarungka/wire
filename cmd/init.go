@@ -230,6 +230,11 @@ type Config struct {
 	// TraceProfile enables trace profiling.
 	TraceProfile string
 
+	// ProfileExtra enables full-rate mutex and block contention profiling.
+	// Adds roughly 5% overhead per profile, so it is off by default. When
+	// enabled, /debug/pprof/mutex and /debug/pprof/block return useful data.
+	ProfileExtra bool
+
 	// DebugMode enables additional logs and other metadata to be printed
 	DebugMode bool
 
@@ -583,6 +588,7 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, error) {
 	f.StringVar(&config.CPUProfile, "cpu-profile", "", "Path to file for CPU profiling information")
 	f.StringVar(&config.MemProfile, "mem-profile", "", "Path to file for memory profiling information")
 	f.StringVar(&config.TraceProfile, "trace-profile", "", "Path to file for trace profiling information")
+	f.BoolVar(&config.ProfileExtra, "profile-extra", false, "Enable mutex and block contention profiling at full rate (~5% overhead each)")
 	// Misc configs
 	f.BoolVar(&config.DebugMode, "debug", false, "run in debug mode - better logs")
 
