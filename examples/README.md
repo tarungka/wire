@@ -7,6 +7,7 @@ practice.
 |---------|---------|
 | [`wire-worker-example`](wire-worker-example/) | A custom worker binary that registers operators and connects to a coordinator. |
 | [`submit-uppercase-job`](submit-uppercase-job/) | An SDK client that builds a `Source → Map → Sink` graph and submits it in Cluster mode. |
+| [`observability-stack`](observability-stack/) | Docker Compose stack with coordinator + worker + Prometheus + Grafana. Pre-provisioned dashboard for HTTP/PebbleDB/RPC metrics. |
 
 The architectural split is deliberate: user-defined functions can't be
 serialized across an RPC boundary, so workers run a binary that imports

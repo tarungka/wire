@@ -1,0 +1,30 @@
+# Prometheus scrape config for the wire observability stack.
+
+global:
+  scrape_interval: 5s
+  scrape_timeout: 4s
+  external_labels:
+    stack: wire-observability
+
+scrape_configs:
+  # Wire coordinator exposes /metrics on its dedicated metrics-addr port.
+  - job_name: wire-coordinator
+    static_configs:
+      - targets: ["coordinator:9090"]
+        labels:
+          role: coordinator
+          node: coordinator-1
+
+  # The example worker doesn't yet expose /metrics — that's a follow-up
+  # phase once we wire observability.Init into the worker example. When
+  # that lands, uncomment this block.
+  # - job_name: wire-worker
+  #   static_configs:
+  #     - targets: ["worker:9090"]
+  #       labels:
+  #         role: worker
+
+  # Prometheus scrapes itself for sanity.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
