@@ -55,22 +55,22 @@ nearly simultaneously. Whichever one reaches `errOnce.Do` first wins.
 ```mermaid
 sequenceDiagram
     participant Op as panicMap.Map
-    participant Chain as Goroutine A<br/>(operator chain)
-    participant Writer as Goroutine B<br/>(output writer)
+    participant Chain as Goroutine A (chain)
+    participant Writer as Goroutine B (writer)
     participant EG as errgroup
     participant Run as TaskSlot.Run
 
-    Op->>Chain: panic("intentional...")
-    Note over Chain: defer #2 runs (close ops)
-    Note over Chain: defer #1 runs (recover)<br/>retErr = ErrOperatorPanic
+    Op->>Chain: panic intentional
+    Note over Chain: defer 2 runs, closes ops
+    Note over Chain: defer 1 runs, recover sets retErr to ErrOperatorPanic
     Chain-->>Chain: runOperatorChain returns retErr
-    Note over Chain: wrapper defers run<br/>runCancel() fires
-    Writer-->>Writer: gctx.Done() fires
-    Chain->>EG: errOnce.Do(set g.err = ErrOperatorPanic) ✓
+    Note over Chain: wrapper defers run, runCancel fires
+    Writer-->>Writer: gctx.Done fires
+    Chain->>EG: errOnce.Do sets g.err to ErrOperatorPanic
     Writer-->>Writer: returns context.Canceled
-    Writer->>EG: errOnce.Do (no-op, already won)
-    Run->>EG: g.Wait() → ErrOperatorPanic
-    Run-->>Run: filter sees != Canceled, returns it
+    Writer->>EG: errOnce.Do no-op, already won
+    Run->>EG: g.Wait returns ErrOperatorPanic
+    Run-->>Run: filter sees not-Canceled, returns it
     Note over Run: PASS
 ```
 
@@ -79,24 +79,24 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Op as panicMap.Map
-    participant Chain as Goroutine A<br/>(operator chain)
-    participant Writer as Goroutine B<br/>(output writer)
+    participant Chain as Goroutine A (chain)
+    participant Writer as Goroutine B (writer)
     participant EG as errgroup
     participant Run as TaskSlot.Run
 
-    Op->>Chain: panic("intentional...")
-    Note over Chain: defer #2 runs (close ops)
-    Note over Chain: defer #1 runs (recover)<br/>retErr = ErrOperatorPanic
+    Op->>Chain: panic intentional
+    Note over Chain: defer 2 runs, closes ops
+    Note over Chain: defer 1 runs, recover sets retErr to ErrOperatorPanic
     Chain-->>Chain: runOperatorChain returns retErr
-    Note over Chain: wrapper defers run<br/>runCancel() fires
-    Writer-->>Writer: gctx.Done() fires
-    Note over Chain: -race injects scheduler<br/>perturbation; A is preempted
+    Note over Chain: wrapper defers run, runCancel fires
+    Writer-->>Writer: gctx.Done fires
+    Note over Chain: race detector preempts A here
     Writer-->>Writer: returns context.Canceled
-    Writer->>EG: errOnce.Do(set g.err = context.Canceled) ✓
-    Chain->>EG: errOnce.Do (no-op, already lost)
-    Run->>EG: g.Wait() → context.Canceled
-    Note over Run: filter: err == Canceled → return nil
-    Note over Run: FAIL: expected ErrOperatorPanic, got nil
+    Writer->>EG: errOnce.Do sets g.err to context.Canceled
+    Chain->>EG: errOnce.Do no-op, already lost
+    Run->>EG: g.Wait returns context.Canceled
+    Note over Run: filter, err equals Canceled, returns nil
+    Note over Run: FAIL, expected ErrOperatorPanic, got nil
 ```
 
 The race is asymmetric: A has more work to do (one extra defer plus a
@@ -134,22 +134,22 @@ verdict, sidestepping the errOnce race entirely.
 ```mermaid
 sequenceDiagram
     participant Op as panicMap.Map
-    participant Chain as Goroutine A<br/>(operator chain)
-    participant Side as atomic.Pointer<br/>chainErr
-    participant Writer as Goroutine B
+    participant Chain as Goroutine A (chain)
+    participant Side as atomic chainErr
+    participant Writer as Goroutine B (writer)
     participant EG as errgroup
     participant Run as TaskSlot.Run
 
     Op->>Chain: panic
-    Note over Chain: recover sets retErr = ErrOperatorPanic
+    Note over Chain: recover sets retErr to ErrOperatorPanic
     Chain-->>Chain: runOperatorChain returns retErr
-    Chain->>Side: chainErr.Store(&retErr) ✓<br/>(straight-line code, BEFORE defers)
-    Note over Chain: wrapper defers run<br/>runCancel() fires
-    Writer-->>Writer: gctx.Done() → returns Canceled
-    Note over EG: errOnce race still happens,<br/>but result no longer matters
-    Run->>EG: g.Wait()
-    Run->>Side: chainErr.Load() → ErrOperatorPanic ✓
-    Note over Run: returns chainErr,<br/>ignores g.Wait()'s result
+    Chain->>Side: chainErr.Store(retErr) in straight-line code, before defers
+    Note over Chain: wrapper defers run, runCancel fires
+    Writer-->>Writer: gctx.Done fires, returns context.Canceled
+    Note over EG: errOnce race still happens but result no longer matters
+    Run->>EG: g.Wait
+    Run->>Side: chainErr.Load returns ErrOperatorPanic
+    Note over Run: returns chainErr, ignores g.Wait result
     Note over Run: PASS, deterministically
 ```
 
