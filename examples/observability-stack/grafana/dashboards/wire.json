@@ -3,7 +3,7 @@
   "uid": "wire-coordinator",
   "tags": ["wire"],
   "schemaVersion": 39,
-  "version": 3,
+  "version": 4,
   "refresh": "5s",
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
@@ -168,7 +168,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "targets": [
-        { "expr": "sum(rate(wire_rpc_server_requests_total[1m])) by (method)", "legendFormat": "{{method}}", "refId": "A" }
+        { "expr": "sum(rate(wire_rpc_server_requests_total{kind=\"unary\"}[1m])) by (method)", "legendFormat": "{{method}}", "refId": "A" }
       ],
       "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
       "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
@@ -181,7 +181,7 @@
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum(rate(wire_rpc_server_duration_seconds_bucket[1m])) by (method, le))",
+          "expr": "histogram_quantile(0.99, sum(rate(wire_rpc_server_duration_seconds_bucket{kind=\"unary\"}[1m])) by (method, le))",
           "legendFormat": "p99 {{method}}",
           "refId": "A"
         }
@@ -197,7 +197,7 @@
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "targets": [
         {
-          "expr": "sum(rate(wire_rpc_server_errors_total[5m])) by (method) / clamp_min(sum(rate(wire_rpc_server_requests_total[5m])) by (method), 1)",
+          "expr": "sum(rate(wire_rpc_server_errors_total{kind=\"unary\"}[5m])) by (method) / clamp_min(sum(rate(wire_rpc_server_requests_total{kind=\"unary\"}[5m])) by (method), 1)",
           "legendFormat": "{{method}}",
           "refId": "A"
         }

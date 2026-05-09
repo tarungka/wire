@@ -18,11 +18,24 @@ import (
 )
 
 // recordRPCServerOp records duration + count + error metrics for a single
-// RPC handler dispatch. Method label is bounded to the MethodName enum.
-func recordRPCServerOp(method string, start time.Time, err error) {
+// RPC handler dispatch. Method label is bounded to the MethodName enum;
+// kind is "unary" or "streaming".
+//
+// Duration is recorded ONLY for unary RPCs. For streaming RPCs the
+// "duration" between handler entry and return is the stream lifetime
+// (often the worker's session — minutes to hours), which has nothing to
+// do with request latency and would pin histogram_quantile to the top
+// finite bucket. The count and error counters still receive streaming
+// samples so dashboards can distinguish "stream opened" events.
+func recordRPCServerOp(method, kind string, start time.Time, err error) {
 	hist, count, errs := observability.RPCInstruments()
-	attrs := metric.WithAttributes(attribute.String("method", method))
-	hist.Record(context.Background(), time.Since(start).Seconds(), attrs)
+	attrs := metric.WithAttributes(
+		attribute.String("method", method),
+		attribute.String("kind", kind),
+	)
+	if kind == "unary" {
+		hist.Record(context.Background(), time.Since(start).Seconds(), attrs)
+	}
 	count.Add(context.Background(), 1, attrs)
 	if err != nil {
 		errs.Add(context.Background(), 1, attrs)
@@ -154,17 +167,21 @@ func (s *Server) serveStream(ctx context.Context, stream *yamux.Stream) {
 		Msg("received RPC request")
 
 	// Time the handler dispatch + response write so the metric reflects
-	// the full server-side cost a worker observes via Client.Call.
+	// the full server-side cost a worker observes via Client.Call. For
+	// streaming handlers the duration is meaningless (stream lifetime),
+	// so recordRPCServerOp skips the histogram when kind != "unary".
 	dispatchStart := time.Now()
 	method := MethodName(frame.MethodID)
+	kind := "unary"
 	var dispatchErr error
 	defer func() {
-		recordRPCServerOp(method, dispatchStart, dispatchErr)
+		recordRPCServerOp(method, kind, dispatchStart, dispatchErr)
 	}()
 
 	// 2. Streaming handler? (server-streaming RPC — handler owns the
 	// stream and writes its own response frames.)
 	if sh := s.getStreamHandler(frame.MethodID); sh != nil {
+		kind = "streaming"
 		if err := sh(ctx, frame.RequestID, frame.Payload, stream); err != nil {
 			s.log.Debug().Err(err).Str("method", method).Msg("stream handler ended with error")
 			dispatchErr = err
