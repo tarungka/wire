@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/http/pprof"
 
 	"github.com/rs/zerolog"
 )
@@ -47,6 +48,17 @@ func NewHTTPServer(coord *Coordinator, listenAddr string, log zerolog.Logger) *H
 	// Cluster endpoints.
 	mux.HandleFunc("GET /api/v1/cluster", s.handleClusterStatus)
 	mux.HandleFunc("DELETE /api/v1/cluster/nodes/{node_id}", s.leaderOnly(s.handleRemoveNode))
+
+	// Profiling endpoints. Exposed on the standard /debug/pprof/* paths so
+	// `go tool pprof` and `go tool trace` work without extra config.
+	// /debug/pprof/mutex and /debug/pprof/block return useful data only when
+	// the process was started with --profile-extra (full-rate profiling has
+	// non-trivial overhead and is opt-in).
+	mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+	mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
 
 	s.server = &http.Server{
 		Addr:    listenAddr,

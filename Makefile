@@ -15,6 +15,12 @@ help:
 	@echo "  test-fast -           Run quick unit tests (for pre-commit)"
 	@echo "  test-full -           Run full test suite with race detection"
 	@echo "  test-coverage -       Run tests with coverage report"
+	@echo "  bench -               Run all benchmarks (3 iterations, 3s each)"
+	@echo "  bench-save -          Run benchmarks (5 iterations) and archive to docs/benchmarks/runs/"
+	@echo "  profile-cpu -         Capture a CPU profile from the bench suite (cpu.prof)"
+	@echo "  profile-mem -         Capture a memory profile from the bench suite (mem.prof)"
+	@echo "  trace -               Capture a runtime/trace from a representative bench (trace.out)"
+	@echo "  profile-live -        Open a 30s pprof CPU profile from a running coordinator"
 	@echo "  build-docker -        Build docker image"
 	@echo "  lint -                Run linter"
 	@echo "  lint-fast -           Run linter on changed files only"
@@ -114,6 +120,44 @@ ci-local:
 
 # Full CI target
 ci: lint test-full
+
+# Benchmark suite. Override BENCH or BENCH_PKGS to scope.
+#   make bench BENCH=BenchmarkOperatorChain
+#   make bench BENCH_PKGS=./internal/keygroup/...
+BENCH ?= .
+BENCH_PKGS ?= ./...
+# Strip framework chatter so bench.out only contains parseable benchstat lines.
+# --line-buffered forces grep to flush per line so bench.out grows live.
+BENCH_FILTER = grep --line-buffered -E '^(Benchmark|goos|goarch|cpu|pkg|PASS|FAIL|ok |---)'
+
+bench:
+	@echo "Running benchmarks: $(BENCH) over $(BENCH_PKGS)"
+	go test -run=^$$ -bench=$(BENCH) -benchmem -benchtime=3s -count=3 -timeout=30m $(BENCH_PKGS) 2>/dev/null | $(BENCH_FILTER) | tee bench.out
+
+bench-save:
+	@mkdir -p docs/benchmarks/runs
+	@OUT="docs/benchmarks/runs/$$(date +%Y%m%d-%H%M%S).txt"; \
+	echo "Archiving to $$OUT"; \
+	go test -run=^$$ -bench=$(BENCH) -benchmem -benchtime=3s -count=5 -timeout=60m $(BENCH_PKGS) 2>/dev/null | $(BENCH_FILTER) > $$OUT && \
+	echo "Saved $$OUT"
+
+profile-cpu:
+	go test -run=^$$ -bench=$(BENCH) -benchtime=10s -cpuprofile=cpu.prof $(BENCH_PKGS)
+	@echo "Open with: go tool pprof -http=:6060 cpu.prof"
+
+profile-mem:
+	go test -run=^$$ -bench=$(BENCH) -benchtime=10s -memprofile=mem.prof $(BENCH_PKGS)
+	@echo "Open with: go tool pprof -http=:6060 mem.prof"
+
+trace:
+	go test -run=^$$ -bench=BenchmarkOperatorChain_MapPassthrough -benchtime=5s -trace=trace.out ./internal/engine/...
+	@echo "Open with: go tool trace trace.out"
+
+DURATION ?= 30
+PPROF_HOST ?= http://localhost:4001
+profile-live:
+	@echo "Capturing $(DURATION)s CPU profile from $(PPROF_HOST)"
+	go tool pprof -http=:6060 $(PPROF_HOST)/debug/pprof/profile?seconds=$(DURATION)
 
 # Default target
 all: build

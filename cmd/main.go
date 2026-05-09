@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime"
 	"syscall"
 
 	"github.com/rs/zerolog"
@@ -85,6 +86,12 @@ func main() {
 
 	if wireCfg.Node.Debug {
 		log.Debug().Msgf("PID: %v | PPID: %v", os.Getpid(), os.Getppid())
+	}
+
+	if cliCfg.ProfileExtra {
+		runtime.SetMutexProfileFraction(1)
+		runtime.SetBlockProfileRate(1)
+		log.Info().Msg("mutex and block contention profiling enabled (full rate)")
 	}
 
 	log.Info().Msg("Starting wire...")

@@ -1,0 +1,200 @@
+PASS
+ok  	github.com/tarungka/wire/internal/config	0.003s
+goos: linux
+goarch: amd64
+pkg: github.com/tarungka/wire/internal/coordinator
+cpu: AMD Ryzen 7 5700X 8-Core Processor             
+BenchmarkPebbleStore_Set/value=64B-16 	     594	   6178523 ns/op	   0.01 MB/s	      76 B/op	       0 allocs/op
+BenchmarkPebbleStore_Set/value=64B-16 	     597	   5983376 ns/op	   0.01 MB/s	      76 B/op	       0 allocs/op
+BenchmarkPebbleStore_Set/value=64B-16 	     579	   5982848 ns/op	   0.01 MB/s	      78 B/op	       0 allocs/op
+BenchmarkPebbleStore_Set/value=1024B-16         	     602	   6191198 ns/op	   0.17 MB/s	     273 B/op	       0 allocs/op
+BenchmarkPebbleStore_Set/value=1024B-16         	     614	   6131057 ns/op	   0.17 MB/s	     267 B/op	       0 allocs/op
+BenchmarkPebbleStore_Set/value=1024B-16         	     566	   6123002 ns/op	   0.17 MB/s	     287 B/op	       0 allocs/op
+BenchmarkPebbleStore_Set/value=16384B-16        	     571	   6221580 ns/op	   2.63 MB/s	    1587 B/op	       1 allocs/op
+BenchmarkPebbleStore_Set/value=16384B-16        	     579	   6460144 ns/op	   2.54 MB/s	    1458 B/op	       1 allocs/op
+BenchmarkPebbleStore_Set/value=16384B-16        	     552	   6349395 ns/op	   2.58 MB/s	    1580 B/op	       1 allocs/op
+BenchmarkPebbleStore_Get/value=64B-16           	 7442979	       480.3 ns/op	 133.26 MB/s	     240 B/op	       2 allocs/op
+BenchmarkPebbleStore_Get/value=64B-16           	 7393258	       471.8 ns/op	 135.66 MB/s	     240 B/op	       2 allocs/op
+BenchmarkPebbleStore_Get/value=64B-16           	 7494788	       480.1 ns/op	 133.30 MB/s	     240 B/op	       2 allocs/op
+BenchmarkPebbleStore_Get/value=1024B-16         	 1513785	      2353 ns/op	 435.24 MB/s	    1091 B/op	       2 allocs/op
+BenchmarkPebbleStore_Get/value=1024B-16         	 1638298	      2428 ns/op	 421.76 MB/s	    1091 B/op	       2 allocs/op
+BenchmarkPebbleStore_Get/value=1024B-16         	 1581523	      2306 ns/op	 444.11 MB/s	    1091 B/op	       2 allocs/op
+BenchmarkPebbleStore_Get/value=16384B-16        	 1010374	      6664 ns/op	2458.57 MB/s	   16489 B/op	       2 allocs/op
+BenchmarkPebbleStore_Get/value=16384B-16        	  930298	      7823 ns/op	2094.46 MB/s	   16485 B/op	       2 allocs/op
+BenchmarkPebbleStore_Get/value=16384B-16        	  945584	      6626 ns/op	2472.57 MB/s	   16486 B/op	       2 allocs/op
+BenchmarkPebbleStore_WriteBatch/batch=1-16      	     578	   6016782 ns/op	   0.05 MB/s	      91 B/op	       1 allocs/op
+BenchmarkPebbleStore_WriteBatch/batch=1-16      	     588	   6159405 ns/op	   0.04 MB/s	      92 B/op	       1 allocs/op
+BenchmarkPebbleStore_WriteBatch/batch=1-16      	     561	   5984555 ns/op	   0.05 MB/s	      96 B/op	       1 allocs/op
+BenchmarkPebbleStore_WriteBatch/batch=16-16     	     566	   6030971 ns/op	   0.72 MB/s	     956 B/op	      16 allocs/op
+BenchmarkPebbleStore_WriteBatch/batch=16-16     	     583	   6182510 ns/op	   0.70 MB/s	     990 B/op	      16 allocs/op
+BenchmarkPebbleStore_WriteBatch/batch=16-16     	     592	   6187840 ns/op	   0.70 MB/s	     927 B/op	      16 allocs/op
+BenchmarkPebbleStore_WriteBatch/batch=256-16    	     674	   4763899 ns/op	  14.62 MB/s	   10335 B/op	     261 allocs/op
+BenchmarkPebbleStore_WriteBatch/batch=256-16    	     666	   4747280 ns/op	  14.67 MB/s	   10407 B/op	     261 allocs/op
+BenchmarkPebbleStore_WriteBatch/batch=256-16    	     649	   5009632 ns/op	  13.90 MB/s	   10620 B/op	     261 allocs/op
+BenchmarkMemoryStore_Set-16                     	 9168063	       414.2 ns/op	 618.02 MB/s	     492 B/op	       2 allocs/op
+BenchmarkMemoryStore_Set-16                     	15916723	       414.7 ns/op	 617.25 MB/s	     519 B/op	       2 allocs/op
+BenchmarkMemoryStore_Set-16                     	15886771	       348.1 ns/op	 735.36 MB/s	     520 B/op	       2 allocs/op
+BenchmarkMemoryStore_Get-16                     	19232250	       191.2 ns/op	1338.66 MB/s	     256 B/op	       1 allocs/op
+BenchmarkMemoryStore_Get-16                     	17464594	       192.0 ns/op	1333.64 MB/s	     256 B/op	       1 allocs/op
+BenchmarkMemoryStore_Get-16                     	17603008	       193.2 ns/op	1325.01 MB/s	     256 B/op	       1 allocs/op
+BenchmarkMemoryStore_WriteBatch/batch=1-16      	 7098613	       497.0 ns/op	     515 B/op	       3 allocs/op
+BenchmarkMemoryStore_WriteBatch/batch=1-16      	12720063	       505.7 ns/op	     536 B/op	       3 allocs/op
+BenchmarkMemoryStore_WriteBatch/batch=1-16      	13027851	       495.8 ns/op	     530 B/op	       3 allocs/op
+BenchmarkMemoryStore_WriteBatch/batch=16-16     	  739455	      7195 ns/op	    8022 B/op	      48 allocs/op
+BenchmarkMemoryStore_WriteBatch/batch=16-16     	  659050	      7135 ns/op	    8439 B/op	      48 allocs/op
+BenchmarkMemoryStore_WriteBatch/batch=16-16     	  885994	      7615 ns/op	    8170 B/op	      48 allocs/op
+BenchmarkMemoryStore_WriteBatch/batch=256-16    	   50977	    110037 ns/op	  135652 B/op	     768 allocs/op
+BenchmarkMemoryStore_WriteBatch/batch=256-16    	   53014	    111257 ns/op	  133273 B/op	     768 allocs/op
+BenchmarkMemoryStore_WriteBatch/batch=256-16    	   46389	    110483 ns/op	  128159 B/op	     768 allocs/op
+BenchmarkValidateTransition-16                  	150951621	        23.87 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValidateTransition-16                  	150579970	        23.86 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValidateTransition-16                  	151035048	        23.69 ns/op	       0 B/op	       0 allocs/op
+BenchmarkKeyConstruction/JobMetaKey-16          	25318173	       131.3 ns/op	      48 B/op	       2 allocs/op
+BenchmarkKeyConstruction/JobMetaKey-16          	25709115	       126.3 ns/op	      48 B/op	       2 allocs/op
+BenchmarkKeyConstruction/JobMetaKey-16          	27252342	       124.7 ns/op	      48 B/op	       2 allocs/op
+BenchmarkKeyConstruction/CheckpointKey-16       	14964486	       234.2 ns/op	      88 B/op	       3 allocs/op
+BenchmarkKeyConstruction/CheckpointKey-16       	14987091	       215.4 ns/op	      88 B/op	       3 allocs/op
+BenchmarkKeyConstruction/CheckpointKey-16       	16083765	       214.4 ns/op	      88 B/op	       3 allocs/op
+BenchmarkKeyConstruction/WorkerMetaKey-16       	26705042	       128.1 ns/op	      48 B/op	       2 allocs/op
+BenchmarkKeyConstruction/WorkerMetaKey-16       	27063416	       131.5 ns/op	      48 B/op	       2 allocs/op
+BenchmarkKeyConstruction/WorkerMetaKey-16       	26946741	       137.1 ns/op	      48 B/op	       2 allocs/op
+PASS
+ok  	github.com/tarungka/wire/internal/coordinator	323.380s
+goos: linux
+goarch: amd64
+pkg: github.com/tarungka/wire/internal/engine
+cpu: AMD Ryzen 7 5700X 8-Core Processor             
+BenchmarkOperatorChain_MapPassthrough-16                     	 9441559	       384.8 ns/op	     133 B/op	       3 allocs/op
+BenchmarkOperatorChain_MapPassthrough-16                     	 9212155	       373.9 ns/op	     133 B/op	       3 allocs/op
+BenchmarkOperatorChain_MapPassthrough-16                     	 9306690	       393.5 ns/op	     133 B/op	       3 allocs/op
+BenchmarkOperatorChain_FlatMap-16                            	 5460876	       668.6 ns/op	     365 B/op	       6 allocs/op
+BenchmarkOperatorChain_FlatMap-16                            	 5679344	       636.7 ns/op	     365 B/op	       6 allocs/op
+BenchmarkOperatorChain_FlatMap-16                            	 5729593	       626.1 ns/op	     365 B/op	       6 allocs/op
+BenchmarkOperatorChain_Sink-16                               	23501444	       157.3 ns/op	       5 B/op	       1 allocs/op
+BenchmarkOperatorChain_Sink-16                               	21780867	       162.6 ns/op	       5 B/op	       1 allocs/op
+BenchmarkOperatorChain_Sink-16                               	22247522	       162.3 ns/op	       5 B/op	       1 allocs/op
+BenchmarkOperatorChain_MapPassthrough_WithErrorHandler-16    	 9501877	       393.0 ns/op	     133 B/op	       3 allocs/op
+BenchmarkOperatorChain_MapPassthrough_WithErrorHandler-16    	 9286218	       397.9 ns/op	     133 B/op	       3 allocs/op
+BenchmarkOperatorChain_MapPassthrough_WithErrorHandler-16    	 8936592	       395.8 ns/op	     133 B/op	       3 allocs/op
+BenchmarkBarrierAligner_BufferDrain-16                       	   44791	     82076 ns/op	  531585 B/op	     109 allocs/op
+BenchmarkBarrierAligner_BufferDrain-16                       	   43958	     84035 ns/op	  531586 B/op	     109 allocs/op
+BenchmarkBarrierAligner_BufferDrain-16                       	   42274	     80963 ns/op	  531585 B/op	     109 allocs/op
+PASS
+ok  	github.com/tarungka/wire/internal/engine	67.783s
+goos: linux
+goarch: amd64
+pkg: github.com/tarungka/wire/internal/keygroup
+cpu: AMD Ryzen 7 5700X 8-Core Processor             
+BenchmarkKeyGroup_128-16       	348504842	        10.44 ns/op	       0 B/op	       0 allocs/op
+BenchmarkKeyGroup_128-16       	348163676	        10.44 ns/op	       0 B/op	       0 allocs/op
+BenchmarkKeyGroup_128-16       	340835454	        10.42 ns/op	       0 B/op	       0 allocs/op
+BenchmarkKeyGroup_32768-16     	336770977	        10.53 ns/op	       0 B/op	       0 allocs/op
+BenchmarkKeyGroup_32768-16     	345590998	        10.49 ns/op	       0 B/op	       0 allocs/op
+BenchmarkKeyGroup_32768-16     	349849110	        10.30 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAssignedTask-16       	1000000000	         0.3079 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAssignedTask-16       	1000000000	         0.2843 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAssignedTask-16       	1000000000	         0.2900 ns/op	       0 B/op	       0 allocs/op
+BenchmarkEncodePebbleKey-16    	139381759	        25.72 ns/op	      32 B/op	       1 allocs/op
+BenchmarkEncodePebbleKey-16    	141238644	        25.55 ns/op	      32 B/op	       1 allocs/op
+BenchmarkEncodePebbleKey-16    	139439046	        26.19 ns/op	      32 B/op	       1 allocs/op
+BenchmarkDecodePebbleKey-16    	1000000000	         3.000 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDecodePebbleKey-16    	1000000000	         3.000 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDecodePebbleKey-16    	1000000000	         3.000 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/tarungka/wire/internal/keygroup	42.454s
+goos: linux
+goarch: amd64
+pkg: github.com/tarungka/wire/internal/protocol
+cpu: AMD Ryzen 7 5700X 8-Core Processor             
+BenchmarkWriteFrame_DataRecord_1KB-16       	 2904526	      1185 ns/op	    3461 B/op	       8 allocs/op
+BenchmarkWriteFrame_DataRecord_1KB-16       	 3083409	      1224 ns/op	    3461 B/op	       8 allocs/op
+BenchmarkWriteFrame_DataRecord_1KB-16       	 2992015	      1201 ns/op	    3461 B/op	       8 allocs/op
+BenchmarkReadFrame_DataRecord_1KB-16        	11087595	       322.7 ns/op	    1209 B/op	       4 allocs/op
+BenchmarkReadFrame_DataRecord_1KB-16        	10979434	       328.6 ns/op	    1209 B/op	       4 allocs/op
+BenchmarkReadFrame_DataRecord_1KB-16        	11801154	       319.4 ns/op	    1209 B/op	       4 allocs/op
+BenchmarkCRC32C_1KB-16                      	70019916	        52.89 ns/op	19359.16 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCRC32C_1KB-16                      	69424647	        52.67 ns/op	19443.01 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCRC32C_1KB-16                      	68972629	        52.53 ns/op	19493.66 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCRC32C_16MB-16                     	    5014	    748803 ns/op	22405.37 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCRC32C_16MB-16                     	    4942	    738714 ns/op	22711.39 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCRC32C_16MB-16                     	    4966	    750940 ns/op	22341.63 MB/s	       0 B/op	       0 allocs/op
+BenchmarkEncodeMsgPack_DataRecord-16        	 3406624	      1075 ns/op	    3445 B/op	       6 allocs/op
+BenchmarkEncodeMsgPack_DataRecord-16        	 3289792	      1106 ns/op	    3445 B/op	       6 allocs/op
+BenchmarkEncodeMsgPack_DataRecord-16        	 3280132	      1104 ns/op	    3445 B/op	       6 allocs/op
+BenchmarkDecodeMsgPack_DataRecord-16        	 6028132	       612.9 ns/op	    1443 B/op	       5 allocs/op
+BenchmarkDecodeMsgPack_DataRecord-16        	 5825728	       604.4 ns/op	    1443 B/op	       5 allocs/op
+BenchmarkDecodeMsgPack_DataRecord-16        	 5852726	       611.5 ns/op	    1443 B/op	       5 allocs/op
+BenchmarkWriteFrame_CheckpointBarrier-16    	 6878886	       479.4 ns/op	     448 B/op	       7 allocs/op
+BenchmarkWriteFrame_CheckpointBarrier-16    	 7449938	       485.5 ns/op	     448 B/op	       7 allocs/op
+BenchmarkWriteFrame_CheckpointBarrier-16    	 6928730	       484.7 ns/op	     448 B/op	       7 allocs/op
+BenchmarkReadFrame_Concurrent-16            	15071223	       257.3 ns/op	    1210 B/op	       4 allocs/op
+BenchmarkReadFrame_Concurrent-16            	14601337	       255.9 ns/op	    1210 B/op	       4 allocs/op
+BenchmarkReadFrame_Concurrent-16            	14364493	       264.4 ns/op	    1210 B/op	       4 allocs/op
+BenchmarkCRC32C_Concurrent-16               	18466678	       196.5 ns/op	5211.03 MB/s	      48 B/op	       1 allocs/op
+BenchmarkCRC32C_Concurrent-16               	18291363	       199.8 ns/op	5125.04 MB/s	      48 B/op	       1 allocs/op
+BenchmarkCRC32C_Concurrent-16               	18756523	       198.7 ns/op	5153.25 MB/s	      48 B/op	       1 allocs/op
+PASS
+ok  	github.com/tarungka/wire/internal/protocol	111.384s
+goos: linux
+goarch: amd64
+pkg: github.com/tarungka/wire/internal/rpc
+cpu: AMD Ryzen 7 5700X 8-Core Processor             
+BenchmarkWriteRPCFrame/payload=empty-16         	147954110	        26.75 ns/op	 448.59 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteRPCFrame/payload=empty-16         	133862420	        27.09 ns/op	 442.91 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteRPCFrame/payload=empty-16         	131442666	        26.89 ns/op	 446.28 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteRPCFrame/payload=64B-16           	100000000	        31.35 ns/op	2424.56 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteRPCFrame/payload=64B-16           	100000000	        30.83 ns/op	2465.34 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteRPCFrame/payload=64B-16           	100000000	        32.26 ns/op	2355.54 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteRPCFrame/payload=1KB-16           	61358370	        52.43 ns/op	19759.60 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteRPCFrame/payload=1KB-16           	67855260	        51.03 ns/op	20303.15 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteRPCFrame/payload=1KB-16           	69392158	        49.19 ns/op	21061.07 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteRPCFrame/payload=16KB-16          	 6820114	       573.2 ns/op	28604.01 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteRPCFrame/payload=16KB-16          	 6865706	       571.1 ns/op	28707.87 MB/s	       0 B/op	       0 allocs/op
+BenchmarkWriteRPCFrame/payload=16KB-16          	 6510994	       583.7 ns/op	28087.45 MB/s	       0 B/op	       0 allocs/op
+BenchmarkReadRPCFrame/payload=empty-16          	40803861	        87.03 ns/op	 137.88 MB/s	      64 B/op	       3 allocs/op
+BenchmarkReadRPCFrame/payload=empty-16          	44489124	        88.38 ns/op	 135.78 MB/s	      64 B/op	       3 allocs/op
+BenchmarkReadRPCFrame/payload=empty-16          	41506093	        86.49 ns/op	 138.74 MB/s	      64 B/op	       3 allocs/op
+BenchmarkReadRPCFrame/payload=64B-16            	25798125	       128.2 ns/op	 592.77 MB/s	     128 B/op	       4 allocs/op
+BenchmarkReadRPCFrame/payload=64B-16            	24318796	       128.8 ns/op	 590.20 MB/s	     128 B/op	       4 allocs/op
+BenchmarkReadRPCFrame/payload=64B-16            	32927856	       128.8 ns/op	 590.27 MB/s	     128 B/op	       4 allocs/op
+BenchmarkReadRPCFrame/payload=1KB-16            	11947971	       303.9 ns/op	3408.72 MB/s	    1088 B/op	       4 allocs/op
+BenchmarkReadRPCFrame/payload=1KB-16            	11638317	       301.0 ns/op	3442.04 MB/s	    1088 B/op	       4 allocs/op
+BenchmarkReadRPCFrame/payload=1KB-16            	14374369	       225.7 ns/op	4589.92 MB/s	    1088 B/op	       4 allocs/op
+BenchmarkReadRPCFrame/payload=16KB-16           	 1775145	      2056 ns/op	7975.02 MB/s	   16448 B/op	       4 allocs/op
+BenchmarkReadRPCFrame/payload=16KB-16           	 1783855	      2058 ns/op	7966.97 MB/s	   16448 B/op	       4 allocs/op
+BenchmarkReadRPCFrame/payload=16KB-16           	 1743266	      2146 ns/op	7641.04 MB/s	   16448 B/op	       4 allocs/op
+BenchmarkEncodeRPCRequest-16                    	 4063670	       885.5 ns/op	     449 B/op	       5 allocs/op
+BenchmarkEncodeRPCRequest-16                    	 4092246	       887.3 ns/op	     449 B/op	       5 allocs/op
+BenchmarkEncodeRPCRequest-16                    	 4078252	       891.2 ns/op	     449 B/op	       5 allocs/op
+BenchmarkDecodeRPCPayload-16                    	 8288569	       421.4 ns/op	     456 B/op	       4 allocs/op
+BenchmarkDecodeRPCPayload-16                    	 7807456	       422.5 ns/op	     456 B/op	       4 allocs/op
+BenchmarkDecodeRPCPayload-16                    	 8029969	       423.5 ns/op	     456 B/op	       4 allocs/op
+BenchmarkMethodName-16                          	1000000000	         2.571 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMethodName-16                          	1000000000	         2.643 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMethodName-16                          	1000000000	         2.568 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/tarungka/wire/internal/rpc	139.381s
+goos: linux
+goarch: amd64
+pkg: github.com/tarungka/wire/internal/transport
+cpu: AMD Ryzen 7 5700X 8-Core Processor             
+BenchmarkFrameStream_WriteRead/size=64B-16         	   50534	     70929 ns/op	   0.90 MB/s	    1239 B/op	      19 allocs/op
+BenchmarkFrameStream_WriteRead/size=64B-16         	   51433	     69758 ns/op	   0.92 MB/s	    1240 B/op	      19 allocs/op
+BenchmarkFrameStream_WriteRead/size=64B-16         	   50458	     68975 ns/op	   0.93 MB/s	    1239 B/op	      19 allocs/op
+BenchmarkFrameStream_WriteRead/size=1KB-16         	   54724	     67101 ns/op	  15.26 MB/s	    6258 B/op	      20 allocs/op
+BenchmarkFrameStream_WriteRead/size=1KB-16         	   53137	     64702 ns/op	  15.83 MB/s	    6259 B/op	      20 allocs/op
+BenchmarkFrameStream_WriteRead/size=1KB-16         	   53728	     65815 ns/op	  15.56 MB/s	    6260 B/op	      20 allocs/op
+BenchmarkFrameStream_WriteRead/size=16KB-16        	   40226	     91448 ns/op	 179.16 MB/s	  101801 B/op	      24 allocs/op
+BenchmarkFrameStream_WriteRead/size=16KB-16        	   39759	     87680 ns/op	 186.86 MB/s	  101809 B/op	      24 allocs/op
+BenchmarkFrameStream_WriteRead/size=16KB-16        	   40530	     89787 ns/op	 182.48 MB/s	  101825 B/op	      24 allocs/op
+BenchmarkFrameStream_StreamSetup-16                	   27339	    125877 ns/op	    7433 B/op	      75 allocs/op
+BenchmarkFrameStream_StreamSetup-16                	   28810	    124164 ns/op	    7434 B/op	      75 allocs/op
+BenchmarkFrameStream_StreamSetup-16                	   28833	    123868 ns/op	    7436 B/op	      75 allocs/op
+PASS
+ok  	github.com/tarungka/wire/internal/transport	53.482s
+PASS
+ok  	github.com/tarungka/wire/internal/worker	0.006s
+PASS
+ok  	github.com/tarungka/wire/sdk	0.004s
+PASS
+ok  	github.com/tarungka/wire/sdk/connectors/memory	0.003s

@@ -16,6 +16,11 @@ type Config struct {
 	// DebugMode enables additional logs and other metadata to be printed.
 	DebugMode bool
 
+	// ProfileExtra enables full-rate mutex and block contention profiling.
+	// Adds roughly 5% overhead per profile, so it is off by default. When
+	// enabled, /debug/pprof/mutex and /debug/pprof/block return useful data.
+	ProfileExtra bool
+
 	// Mode selects the operating mode: "coordinator" or "worker".
 	Mode string
 
@@ -91,6 +96,7 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, *pflag.FlagSet, er
 
 	// Misc configs
 	f.BoolVar(&config.DebugMode, "debug", false, "run in debug mode - better logs")
+	f.BoolVar(&config.ProfileExtra, "profile-extra", false, "enable full-rate mutex and block profiling (~5% overhead each, off by default)")
 	f.StringVar(&config.Mode, "mode", "coordinator", "operating mode: coordinator or worker")
 
 	// Transport flags
