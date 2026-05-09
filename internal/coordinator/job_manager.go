@@ -48,9 +48,17 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 		return nil, fmt.Errorf("encoding job %s: %w", job.ID, err)
 	}
 
-	// Atomic check+insert under a single lock to prevent TOCTOU races:
-	// two concurrent SubmitJob calls with the same name could both pass a
-	// separate read-only duplicate check before either persists.
+	// Reserve the name + ID in c.jobs under the lock, then persist
+	// outside the lock so worker RPCs (Heartbeat, UpdateTaskStatus) do
+	// NOT queue behind submit fsync. The reservation is what serialises
+	// concurrent same-name submits — the duplicate check sees the
+	// already-inserted entry and rejects.
+	//
+	// Trade-off: a crash between the in-memory insert and the disk
+	// commit drops the job. c.jobs is rebuilt from Pebble on restart
+	// (see recovery_test.go), so the submitter sees "201 created" but
+	// the job is gone — same failure mode as a network-partitioned ACK,
+	// recoverable by client retry.
 	c.mu.Lock()
 	for _, j := range c.jobs {
 		if j.Name == name && !j.Status.IsTerminal() {
@@ -58,16 +66,23 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 			return nil, fmt.Errorf("%w: active job with name %q", ErrJobExists, name)
 		}
 	}
-	if err := c.store.Set(JobMetaKey(job.ID), data); err != nil {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("persisting job %s: %w", job.ID, err)
-	}
 	c.jobs[job.ID] = job
 	c.mu.Unlock()
 
-	// Persist raw config separately for large configs.
-	if err := c.store.Set(JobConfigKey(job.ID), config); err != nil {
-		return nil, fmt.Errorf("persisting config for job %s: %w", job.ID, err)
+	// Persist meta + config in a single WriteBatch so the submit pays
+	// one fsync, not two. Recovery already treats the pair as a unit
+	// (a meta row without a config row is rejected by the scheduler),
+	// so atomic batching matches that invariant.
+	if err := c.store.WriteBatch([]KVPair{
+		{Key: JobMetaKey(job.ID), Value: data},
+		{Key: JobConfigKey(job.ID), Value: config},
+	}); err != nil {
+		// Roll back the reservation so a retry can succeed and the
+		// in-memory state stays consistent with disk.
+		c.mu.Lock()
+		delete(c.jobs, job.ID)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("persisting job %s: %w", job.ID, err)
 	}
 
 	c.log.Info().Str("job_id", job.ID).Str("name", name).Int("parallelism", parallelism).Msg("job submitted")
