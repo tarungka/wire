@@ -51,6 +51,12 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 	// Atomic check+insert under a single lock to prevent TOCTOU races:
 	// two concurrent SubmitJob calls with the same name could both pass a
 	// separate read-only duplicate check before either persists.
+	//
+	// Persist meta + config in a single WriteBatch so the submit pays one
+	// fsync, not two. Halves the disk floor for the hot path; recovery
+	// already treats the pair as a unit (a meta row without a config row
+	// is rejected by the scheduler), so atomic batching matches that
+	// invariant.
 	c.mu.Lock()
 	for _, j := range c.jobs {
 		if j.Name == name && !j.Status.IsTerminal() {
@@ -58,17 +64,15 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 			return nil, fmt.Errorf("%w: active job with name %q", ErrJobExists, name)
 		}
 	}
-	if err := c.store.Set(JobMetaKey(job.ID), data); err != nil {
+	if err := c.store.WriteBatch([]KVPair{
+		{Key: JobMetaKey(job.ID), Value: data},
+		{Key: JobConfigKey(job.ID), Value: config},
+	}); err != nil {
 		c.mu.Unlock()
 		return nil, fmt.Errorf("persisting job %s: %w", job.ID, err)
 	}
 	c.jobs[job.ID] = job
 	c.mu.Unlock()
-
-	// Persist raw config separately for large configs.
-	if err := c.store.Set(JobConfigKey(job.ID), config); err != nil {
-		return nil, fmt.Errorf("persisting config for job %s: %w", job.ID, err)
-	}
 
 	c.log.Info().Str("job_id", job.ID).Str("name", name).Int("parallelism", parallelism).Msg("job submitted")
 
