@@ -83,7 +83,12 @@ func (c *Coordinator) GetJob(jobID string) (*JobMeta, error) {
 	if !ok {
 		return nil, ErrJobNotFound
 	}
-	return job, nil
+	// Return a copy: the live *JobMeta is mutated under c.mu by the
+	// scheduler/job manager; callers (HTTP handlers especially) read it
+	// after this method returns, outside the lock. Without this snapshot
+	// the read races with concurrent Status/UpdatedAt writes.
+	snapshot := *job
+	return &snapshot, nil
 }
 
 // ListJobs returns all jobs, optionally filtered by status.
@@ -96,7 +101,9 @@ func (c *Coordinator) ListJobs(statusFilter *JobStatus) []*JobMeta {
 		if statusFilter != nil && j.Status != *statusFilter {
 			continue
 		}
-		result = append(result, j)
+		// Snapshot per the same reasoning as GetJob.
+		snapshot := *j
+		result = append(result, &snapshot)
 	}
 	return result
 }

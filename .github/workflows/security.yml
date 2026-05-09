@@ -15,6 +15,10 @@ jobs:
     permissions:
       security-events: write
       contents: read
+      # PRs from forks run with read-only token by default; granting
+      # pull-requests: write here lets the "Comment on PR" step post the
+      # gosec summary comment instead of failing with a 403.
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       
