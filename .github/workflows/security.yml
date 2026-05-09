@@ -46,25 +46,30 @@ jobs:
           sarif_file: gosec-results.sarif
       
       - name: Run Gosec for Summary
+        # gosec's install.sh stopped accepting "latest" as a version arg
+        # (https://github.com/securego/gosec/blob/master/install.sh) and now
+        # exits 1 with "unable to find 'latest'", which fails the step
+        # under `bash -e`. Install via `go install` instead so we get a
+        # version pinned to whatever's compatible with the repo's Go
+        # toolchain. Also re-emit the JSON to the same file the on-PR
+        # comment step parses below.
         run: |
-          # Install gosec
-          curl -sfL https://raw.githubusercontent.com/securego/gosec/master/install.sh | sh -s latest
-          
-          # Run gosec and capture results
-          ./gosec -fmt json -out gosec-results.json ./... || true
-          
-          # Parse results for summary
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -no-fail -fmt json -out gosec-results.json ./... || true
+
           if [ -f gosec-results.json ]; then
-            ISSUES=$(jq '.Issues | length' gosec-results.json)
-            HIGH=$(jq '[.Issues[] | select(.severity == "HIGH")] | length' gosec-results.json)
-            MEDIUM=$(jq '[.Issues[] | select(.severity == "MEDIUM")] | length' gosec-results.json)
-            LOW=$(jq '[.Issues[] | select(.severity == "LOW")] | length' gosec-results.json)
-            
-            echo "### 🔒 Security Scan Results" >> $GITHUB_STEP_SUMMARY
-            echo "- Total Issues: $ISSUES" >> $GITHUB_STEP_SUMMARY
-            echo "- High Severity: $HIGH" >> $GITHUB_STEP_SUMMARY
-            echo "- Medium Severity: $MEDIUM" >> $GITHUB_STEP_SUMMARY
-            echo "- Low Severity: $LOW" >> $GITHUB_STEP_SUMMARY
+            ISSUES=$(jq '[.Issues // [] | length] | add // 0' gosec-results.json)
+            HIGH=$(jq '[.Issues // [] | map(select(.severity == "HIGH")) | length] | add // 0' gosec-results.json)
+            MEDIUM=$(jq '[.Issues // [] | map(select(.severity == "MEDIUM")) | length] | add // 0' gosec-results.json)
+            LOW=$(jq '[.Issues // [] | map(select(.severity == "LOW")) | length] | add // 0' gosec-results.json)
+
+            {
+              echo "### 🔒 Security Scan Results"
+              echo "- Total Issues: $ISSUES"
+              echo "- High Severity: $HIGH"
+              echo "- Medium Severity: $MEDIUM"
+              echo "- Low Severity: $LOW"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
       
       - name: Check Go Vulnerabilities
