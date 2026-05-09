@@ -13,8 +13,13 @@ linters:
   exclusions:
     generated: lax
     rules:
+      # errcheck on defer'd Close/Write/Shutdown/Sync is the standard
+      # idiom in this repo; exclude it. The original pattern was written
+      # against v1's "of (Close)" output and doesn't match v2's
+      # backtick-quoted form ("of `resp.Body.Close`"). This pattern
+      # matches both by anchoring on the suffix method-call shape.
       - path: (.+)\.go$
-        text: Error return value of .((Close|Write).*) is not checked
+        text: 'Error return value of .*\.(Close|Write|Shutdown|Sync)`? is not checked'
       - path: (.+)\.go$
         text: 'SA1019:'
     paths:
