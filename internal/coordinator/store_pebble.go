@@ -1,8 +1,28 @@
 package coordinator
 
 import (
+	"context"
+	"time"
+
 	"github.com/cockroachdb/pebble"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
+	"github.com/tarungka/wire/internal/observability"
 )
+
+// recordPebbleOp records duration + count + error metrics for a single
+// store operation. Cardinality is bounded: op label is always one of a
+// fixed enum (set/get/delete/...), never user input.
+func recordPebbleOp(op string, start time.Time, err error) {
+	hist, count, errs := observability.PebbleInstruments()
+	attrs := metric.WithAttributes(attribute.String("op", op))
+	hist.Record(context.Background(), time.Since(start).Seconds(), attrs)
+	count.Add(context.Background(), 1, attrs)
+	if err != nil && err != pebble.ErrNotFound {
+		errs.Add(context.Background(), 1, attrs)
+	}
+}
 
 // PebbleOption is a functional option for configuring the PebbleDB store.
 type PebbleOption func(*pebbleConfig)
@@ -71,7 +91,10 @@ func NewPebbleStore(dataDir string, opts ...PebbleOption) (*PebbleStore, error) 
 	return &PebbleStore{db: db, cache: cache}, nil
 }
 
-func (s *PebbleStore) Get(key []byte) ([]byte, error) {
+func (s *PebbleStore) Get(key []byte) (result []byte, err error) {
+	start := time.Now()
+	defer func() { recordPebbleOp("get", start, err) }()
+
 	val, closer, err := s.db.Get(key)
 	if err == pebble.ErrNotFound {
 		return nil, nil
@@ -80,21 +103,28 @@ func (s *PebbleStore) Get(key []byte) ([]byte, error) {
 		return nil, err
 	}
 	// Copy value before closing.
-	result := make([]byte, len(val))
+	result = make([]byte, len(val))
 	copy(result, val)
 	_ = closer.Close()
 	return result, nil
 }
 
-func (s *PebbleStore) Set(key, value []byte) error {
+func (s *PebbleStore) Set(key, value []byte) (err error) {
+	start := time.Now()
+	defer func() { recordPebbleOp("set", start, err) }()
 	return s.db.Set(key, value, pebble.Sync)
 }
 
-func (s *PebbleStore) Delete(key []byte) error {
+func (s *PebbleStore) Delete(key []byte) (err error) {
+	start := time.Now()
+	defer func() { recordPebbleOp("delete", start, err) }()
 	return s.db.Delete(key, pebble.Sync)
 }
 
-func (s *PebbleStore) WriteBatch(batch []KVPair) error {
+func (s *PebbleStore) WriteBatch(batch []KVPair) (err error) {
+	start := time.Now()
+	defer func() { recordPebbleOp("write_batch", start, err) }()
+
 	b := s.db.NewBatch()
 	for _, kv := range batch {
 		if err := b.Set(kv.Key, kv.Value, nil); err != nil {
@@ -109,7 +139,10 @@ func (s *PebbleStore) WriteBatch(batch []KVPair) error {
 	return b.Close()
 }
 
-func (s *PebbleStore) PrefixScan(prefix []byte, fn func(key, value []byte) bool) error {
+func (s *PebbleStore) PrefixScan(prefix []byte, fn func(key, value []byte) bool) (err error) {
+	start := time.Now()
+	defer func() { recordPebbleOp("prefix_scan", start, err) }()
+
 	upper := prefixSuccessor(prefix)
 	iterOpts := &pebble.IterOptions{
 		LowerBound: prefix,

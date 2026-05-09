@@ -7,6 +7,8 @@ import (
 	"net/http"
 
 	"github.com/rs/zerolog"
+
+	"github.com/tarungka/wire/internal/observability"
 )
 
 // HTTPServer serves the coordinator's HTTP API.
@@ -50,7 +52,7 @@ func NewHTTPServer(coord *Coordinator, listenAddr string, log zerolog.Logger) *H
 
 	s.server = &http.Server{
 		Addr:    listenAddr,
-		Handler: mux,
+		Handler: observability.HTTPMiddleware(mux),
 	}
 
 	return s
