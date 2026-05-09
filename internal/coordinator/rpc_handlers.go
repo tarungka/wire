@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/yamux"
+
+	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
 )
 
@@ -68,6 +71,76 @@ func (c *Coordinator) HandleHeartbeat(_ context.Context, _ uint64, payload []byt
 		EpochID:  epoch,
 		Commands: cmds,
 	}, nil
+}
+
+// HandleWatchCommands is the server-streaming handler that pushes
+// WorkerCommand frames to the worker as they're enqueued by the
+// scheduler. The worker opens this stream once after RegisterWorker and
+// keeps it alive for the lifetime of its session — replacing the old
+// pull-on-heartbeat dispatch model.
+//
+// The handler returns when the stream is closed (worker disconnect or
+// session shutdown), which deregisters the channel; subsequent
+// EnqueueCommand calls fall back to the heartbeat slice queue until
+// the worker reconnects.
+func (c *Coordinator) HandleWatchCommands(ctx context.Context, requestID uint64, payload []byte, stream *yamux.Stream) error {
+	var req rpc.WatchCommandsRequest
+	if err := rpc.DecodeRPCPayload(rpc.RPCFrame{Payload: payload}, &req); err != nil {
+		return c.writeStreamError(stream, requestID, rpc.ErrCodeSerializationError,
+			fmt.Sprintf("decode WatchCommandsRequest: %v", err))
+	}
+	if req.WorkerID == "" {
+		return c.writeStreamError(stream, requestID, rpc.ErrCodeInternalError, "WorkerID is required")
+	}
+
+	ch, cleanup := c.RegisterCommandStream(req.WorkerID)
+	defer cleanup()
+
+	c.log.Info().
+		Str("worker_id", req.WorkerID).
+		Uint64("epoch", req.EpochID).
+		Msg("worker opened command-watch stream")
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case cmd, ok := <-ch:
+			if !ok {
+				// Channel closed — coordinator deregistered (e.g. on
+				// shutdown or because a newer stream replaced this one).
+				return nil
+			}
+			payload, err := protocol.EncodeMsgPack(cmd)
+			if err != nil {
+				c.log.Error().Err(err).Str("worker_id", req.WorkerID).Msg("encode WorkerCommand")
+				continue
+			}
+			if err := rpc.WriteRPCFrame(stream, rpc.RPCFrame{
+				MethodID:  rpc.MethodWatchCommands,
+				RequestID: requestID,
+				Payload:   payload,
+			}); err != nil {
+				// Worker disconnected or stream errored — exit so
+				// cleanup() drains the registration.
+				c.log.Debug().Err(err).Str("worker_id", req.WorkerID).Msg("command-watch stream write failed")
+				return err
+			}
+		}
+	}
+}
+
+func (c *Coordinator) writeStreamError(stream *yamux.Stream, requestID uint64, code rpc.ErrorCode, msg string) error {
+	rpcErr := rpc.NewRPCError(code, msg)
+	payload, encErr := protocol.EncodeMsgPack(rpcErr)
+	if encErr != nil {
+		return encErr
+	}
+	return rpc.WriteRPCFrame(stream, rpc.RPCFrame{
+		MethodID:  rpc.MethodError,
+		RequestID: requestID,
+		Payload:   payload,
+	})
 }
 
 // HandleUpdateTaskStatus is an RPC handler that processes task status updates

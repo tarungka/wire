@@ -97,6 +97,83 @@ func (c *Client) Call(ctx context.Context, method MethodID, request any, respons
 	return nil
 }
 
+// CallStream opens a server-streaming RPC. It opens a fresh yamux stream,
+// writes the request frame, and returns a channel that yields each
+// response frame as the server pushes it. Closing the returned cancel
+// function tears down the stream.
+//
+// The channel is closed when:
+//   - the server closes the stream (clean EOF)
+//   - the underlying yamux session shuts down
+//   - the caller invokes cancel()
+//
+// Errors received during reading are surfaced via StreamFrame.Err and
+// terminate the channel. The caller MUST drain or call cancel().
+func (c *Client) CallStream(ctx context.Context, method MethodID, request any) (<-chan StreamFrame, func(), error) {
+	stream, err := c.session.OpenStream()
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", ErrRPCClosed, err)
+	}
+
+	reqID := c.nextRequestID()
+	c.log.Debug().
+		Str("method", MethodName(method)).
+		Uint64("request_id", reqID).
+		Msg("opening stream RPC")
+
+	if err := EncodeRPCRequest(stream, method, reqID, request); err != nil {
+		_ = stream.Close()
+		return nil, nil, err
+	}
+
+	out := make(chan StreamFrame, 16)
+	streamCtx, cancel := context.WithCancel(ctx)
+
+	go func() {
+		defer close(out)
+		for {
+			frame, readErr := ReadRPCFrame(stream, c.cfg.MaxPayloadSize)
+			if readErr != nil {
+				if streamCtx.Err() == nil {
+					select {
+					case out <- StreamFrame{Err: readErr}:
+					case <-streamCtx.Done():
+					}
+				}
+				return
+			}
+			if frame.MethodID == MethodError {
+				var rpcErr RPCError
+				if decErr := protocol.DecodeMsgPack(frame.Payload, &rpcErr); decErr != nil {
+					out <- StreamFrame{Err: fmt.Errorf("%w: %v", ErrRPCDecodeFailed, decErr)}
+					return
+				}
+				out <- StreamFrame{Err: &rpcErr}
+				return
+			}
+			select {
+			case out <- StreamFrame{Frame: frame}:
+			case <-streamCtx.Done():
+				return
+			}
+		}
+	}()
+
+	cleanup := func() {
+		cancel()
+		_ = stream.Close()
+	}
+	return out, cleanup, nil
+}
+
+// StreamFrame is one element from a server-streaming RPC. Either Frame is
+// populated with a successful payload or Err is set with the read/decode
+// failure that ended the stream.
+type StreamFrame struct {
+	Frame RPCFrame
+	Err   error
+}
+
 // CallWithRetry wraps Call with exponential backoff retry logic.
 // Only retryable errors are retried.
 func (c *Client) CallWithRetry(ctx context.Context, method MethodID, request any, response any, maxRetries int) error {
