@@ -67,7 +67,121 @@ Measured against `examples/observability-stack` running 5 sequential `submit-upp
 
 ---
 
+## 1.5 Before / After at a Glance
+
+### Pre-WIP-21: heartbeat-pull dispatch (~4 s p50)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SDK as SDK / submitter
+    participant Coord as Coordinator
+    participant Sched as Scheduler (2 s tick)
+    participant W as Worker
+
+    SDK->>Coord: POST /api/v1/jobs
+    Coord->>Coord: Pebble Set(JobMeta) ~6 ms
+    Coord-->>SDK: 200 OK
+    Note over Coord,Sched: Job sits in JobCreated, waiting for next tick
+    Sched-->>Coord: Tick (0–2 s after submit)
+    Coord->>Coord: scheduleJob<br/>EnqueueCommand(workerID, DeployTask)
+    Note over Coord,W: Command sits in pendingCmds[],<br/>worker has no way to learn about it
+    W->>Coord: Heartbeat (every 5 s)
+    Coord-->>W: HeartbeatResponse{Commands: [DeployTask]}
+    W->>W: handleDeployTask → run pipeline
+    W->>Coord: UpdateTaskStatus(FINISHED)
+    SDK->>Coord: GET /jobs/{id} (poll 100 ms)
+    Coord-->>SDK: status: FINISHED
+```
+
+### Post-WIP-21: streaming push + scheduler kick (~114 ms p50)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SDK as SDK / submitter
+    participant Coord as Coordinator
+    participant Sched as Scheduler<br/>(kicked + 10 ms coalesce)
+    participant Stream as cmdStreams[w]<br/>(per-worker channel)
+    participant W as Worker
+
+    Note over W,Coord: Worker opens MethodWatchCommands<br/>once after RegisterWorker (long-lived)
+    SDK->>Coord: POST /api/v1/jobs
+    Coord->>Coord: Pebble Set(JobMeta) ~6 ms
+    Coord->>Sched: kickScheduler() (non-blocking)
+    Coord-->>SDK: 200 OK
+    Sched->>Sched: 10 ms coalesce window
+    Sched->>Coord: scheduleJob<br/>EnqueueCommand(workerID, DeployTask)
+    Coord->>Stream: ch <- DeployTask  (non-blocking)
+    Stream->>W: WriteRPCFrame (yamux push, ~ms)
+    W->>W: handleDeployTask → run pipeline
+    W->>Coord: UpdateTaskStatus(FINISHED)
+    SDK->>Coord: GET /jobs/{id} (poll 100 ms)
+    Coord-->>SDK: status: FINISHED
+```
+
+The heartbeat-tick gap (worst case 5 s) is replaced by a single yamux frame round-trip. The scheduler-tick gap (worst case 2 s) is replaced by a goroutine wake-up plus a 10 ms coalesce window.
+
+---
+
 ## 2. Architecture & System Design
+
+### 2.0 Component View
+
+How the new pieces sit in the existing topology. **Bold** boxes are new in WIP-21; the rest existed before.
+
+```mermaid
+flowchart LR
+    subgraph SDK["SDK / submitter"]
+        SDKsub[POST /jobs]
+        SDKpoll[GET /jobs/{id}]
+    end
+
+    subgraph CoordProc["Coordinator process"]
+        HTTP[HTTP API<br/>:4001]
+        SubmitJob[SubmitJob]
+        Sched[Scheduler]
+        Enqueue[EnqueueCommand]
+        Pending[pendingCmds<br/>map slice fallback]
+        Streams[<b>cmdStreams</b><br/><b>workerID → chan</b>]
+        Pebble[(PebbleDB)]
+        RPC[RPC server :4002]
+        WCH[<b>HandleWatchCommands</b><br/><b>StreamHandler</b>]
+        HBH[HandleHeartbeat]
+    end
+
+    subgraph WorkerProc["Worker process"]
+        Reg[Register on connect]
+        WC[<b>runWatchCommands</b><br/><b>goroutine</b>]
+        HBs[Heartbeat sender<br/>5 s tick]
+        Handle[handleCommands]
+        Tasks[Task executor]
+    end
+
+    SDKsub --> HTTP
+    HTTP --> SubmitJob
+    SubmitJob --> Pebble
+    SubmitJob -.<b>kickScheduler</b>.-> Sched
+    Sched --> Enqueue
+    Enqueue -- prefer --> Streams
+    Enqueue -- fallback --> Pending
+    Streams --> WCH
+    Pending --> HBH
+    WCH -- <b>push frame</b> --> WC
+    HBH -- batched on tick --> HBs
+    WC --> Handle
+    HBs --> Handle
+    Handle --> Tasks
+    SDKpoll --> HTTP
+
+    Reg -.creates.-> WC
+    Reg -.creates.-> HBs
+```
+
+Key invariants:
+- **Single delivery channel per command.** `EnqueueCommand` picks `cmdStreams[w]` if present (non-blocking); only on backpressure does it fall back to `pendingCmds`.
+- **Cleanup is symmetric.** When the WatchCommands stream closes, `cmdStreams[w]` is removed; the next `EnqueueCommand` for that worker queues into `pendingCmds[w]` again.
+- **Backlog drain on connect.** The first call to `RegisterCommandStream` for a worker drains `pendingCmds[w]` into the new channel, so commands queued during a stream blip don't get stuck behind a heartbeat tick.
 
 ### 2.1 Streaming RPC Primitive
 
@@ -121,6 +235,30 @@ func (c *Client) CallStream(
 ```
 
 The channel closes when the server closes the stream, the underlying yamux session shuts down, or the caller invokes `cancel()`. Read or decode failures terminate the channel via `StreamFrame.Err`.
+
+### 2.1.1 Dispatch path state machine
+
+A single `WorkerCommand` chooses one of two paths based on whether the
+target worker has an open WatchCommands stream. The state diagram makes
+the fallback explicit:
+
+```mermaid
+stateDiagram-v2
+    [*] --> EnqueueCalled: scheduler.scheduleJob<br/>or test cmd
+    EnqueueCalled --> StreamLookup: take c.mu.Lock
+    StreamLookup --> StreamPath: cmdStreams w exists
+    StreamLookup --> SlicePath: no stream registered
+
+    StreamPath --> Pushed: select case ch<-cmd succeeded
+    StreamPath --> SlicePath: channel full<br/>fall through default
+
+    SlicePath --> Queued: pendingCmds w append cmd
+
+    Pushed --> WorkerHandle: yamux ReadRPCFrame<br/>~ms
+    Queued --> WorkerHandle: next heartbeat<br/>0-5 s
+
+    WorkerHandle --> [*]: handleCommands cmd
+```
 
 ### 2.2 WatchCommands RPC
 
@@ -338,7 +476,65 @@ Same pattern that landed for `GetJob`/`ListJobs` in WIP-19's PR (#172). The kick
 
 ## 3. Latency Budget After WIP-21
 
-Measured end-to-end from `POST /api/v1/jobs` to the SDK seeing `JobFinished` for a 3-event memory→upper→memory pipeline:
+Measured end-to-end from `POST /api/v1/jobs` to the SDK seeing `JobFinished` for a 3-event memory→upper→memory pipeline.
+
+### 3.0 Visual timeline (post-WIP-21, ~114 ms p50)
+
+```
+t=0     POST /api/v1/jobs received
+        │
+        ├──▶ SubmitJob: Pebble Set(JobMeta)+(Config)        ~12 ms (2× fsync)
+        │    │
+        │    └──▶ kickScheduler() (non-blocking)
+        │
+t≈12    │
+        ├──────────────── 200 OK back to SDK ───────────────────────────▶
+        │                                                       │
+        ▼                                                       │ SDK starts polling /jobs/{id}
+        Scheduler goroutine selects on schedulerKick           │ (100 ms ticker)
+        │
+        ├──▶ 10 ms coalesce window                              ~10 ms
+        │
+t≈22    ├──▶ scheduleJob: transitionJob CREATED→DEPLOYING       ~12 ms (2× fsync)
+        │    │
+        │    └──▶ EnqueueCommand → cmdStreams[w] <- DeployTask
+        │         │                                              <1 ms
+        │         └──▶ HandleWatchCommands writes RPC frame
+        │
+t≈35    ▼
+        Worker reads frame on yamux                             <1 ms
+        │
+        ├──▶ runWatchCommands → handleCommands → spawn task
+        │
+        ├──▶ Operator chain runs:                              <1 ms
+        │    Source(3 events) → upper Map → Sink → EOP
+        │
+        ├──▶ UpdateTaskStatus(RUNNING) RPC                     ~6 ms (1× fsync)
+        │    │
+        │    └──▶ coord transitions DEPLOYING→RUNNING
+        │
+        ├──▶ UpdateTaskStatus(FINISHED) RPC                    ~12 ms (2× fsync)
+        │    │
+        │    └──▶ coord transitions RUNNING→FINISHING→FINISHED
+        │
+t≈65    ▼
+        Job is now FINISHED in coord state, ~50 ms after submit
+        │
+        │  SDK is mid-poll-tick (100 ms ticker)
+        │
+        ├──▶ Next SDK poll picks up FINISHED                  0–100 ms
+        │
+t≈114   ▼
+        SDK exits with success ── total ~114 ms ──────────────────────▶
+```
+
+The dominant cost is now the SDK's 100 ms poll cadence, **not** the
+platform. Cutting that to 25 ms would push median latency below 80 ms.
+A `WatchJobStatus` server-streaming RPC built on the same primitive
+WIP-21 introduces would push it below 50 ms — flagged as future work
+in §6.
+
+### 3.1 Step-by-step
 
 | Step | Cost |
 | -- | -- |
@@ -354,6 +550,52 @@ Measured end-to-end from `POST /api/v1/jobs` to the SDK seeing `JobFinished` for
 | **Total observed** | **~50–150 ms** (matches measured 114 ms avg) |
 
 The dominant cost is now SDK poll cadence (100 ms ticker in `sdk/cluster.go`). Cutting that to 25 ms would push median latency below 80 ms; switching the SDK to a server-streamed completion notification (the same primitive WIP-21 introduces) would push it below 50 ms — left as future work.
+
+---
+
+## 3.2 Reconnect handoff
+
+When the WatchCommands stream blips (network glitch, coord restart, worker process pause), commands enqueued during the gap go into `pendingCmds[w]` instead of the (now-closed) channel. On reconnect, the new stream's `RegisterCommandStream` drains that backlog into the freshly-created channel before resuming live pushes — so the worker receives every queued command in order with zero loss:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Sched as Scheduler
+    participant Coord as Coordinator
+    participant Pending as pendingCmds[w]
+    participant Streams as cmdStreams[w]
+    participant W as Worker
+
+    Note over Streams,W: t=0 Stream healthy, push delivery
+    Sched->>Coord: EnqueueCommand(w, A)
+    Coord->>Streams: ch <- A
+    Streams->>W: WriteRPCFrame(A)
+
+    Note over Streams,W: t=1 yamux session breaks
+    W-xStreams: read error
+    Streams-->>Coord: cleanup() → cmdStreams[w] removed
+
+    Note over Sched,Pending: Commands during the gap fall back to slice
+    Sched->>Coord: EnqueueCommand(w, B)
+    Coord->>Pending: append B
+    Sched->>Coord: EnqueueCommand(w, C)
+    Coord->>Pending: append C
+
+    Note over W,Coord: t=2 worker reconnects (200 ms backoff)
+    W->>Coord: CallStream(MethodWatchCommands)
+    Coord->>Streams: RegisterCommandStream(w)
+    Coord->>Pending: drain B, C into channel
+    Pending-->>Streams: B, C
+    Streams->>W: WriteRPCFrame(B)
+    Streams->>W: WriteRPCFrame(C)
+
+    Note over Sched,W: t=3 Live pushes resume
+    Sched->>Coord: EnqueueCommand(w, D)
+    Coord->>Streams: ch <- D
+    Streams->>W: WriteRPCFrame(D)
+```
+
+If the worker is offline when commands are enqueued, they accumulate in `pendingCmds[w]` (in-memory) and the heartbeat path is also unavailable. Persistent cross-coordinator-restart queues are explicitly out of scope (see §1.3).
 
 ---
 
