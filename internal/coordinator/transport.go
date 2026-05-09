@@ -39,6 +39,7 @@ func NewTransportServer(coord *Coordinator, listenAddr string, log zerolog.Logge
 	srv.Register(rpc.MethodRegisterWorker, coord.HandleRegisterWorker)
 	srv.Register(rpc.MethodHeartbeat, coord.HandleHeartbeat)
 	srv.Register(rpc.MethodUpdateTaskStatus, coord.HandleUpdateTaskStatus)
+	srv.RegisterStream(rpc.MethodWatchCommands, coord.HandleWatchCommands)
 
 	return &TransportServer{
 		coord:      coord,

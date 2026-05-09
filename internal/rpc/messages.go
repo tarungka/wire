@@ -538,6 +538,17 @@ type RegisterWorkerResponse struct {
 	MissingTasks  []string `codec:"mt,omitempty"`
 }
 
+// ---------- WatchCommands RPC (server-streaming) ----------
+
+// WatchCommandsRequest is the single request the worker sends to open a
+// command-push stream. The coordinator replies with a stream of
+// WorkerCommand frames sharing the same RequestID; the stream stays open
+// until either side closes it.
+type WatchCommandsRequest struct {
+	WorkerID string `codec:"wid"`
+	EpochID  uint64 `codec:"eid"`
+}
+
 // WorkerCommand carries a command from Coordinator to Worker via heartbeat.
 type WorkerCommand struct {
 	Type   CommandType `codec:"t"`

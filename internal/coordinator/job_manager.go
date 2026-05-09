@@ -71,7 +71,20 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 	}
 
 	c.log.Info().Str("job_id", job.ID).Str("name", name).Int("parallelism", parallelism).Msg("job submitted")
-	return job, nil
+
+	// Snapshot BEFORE kicking the scheduler — the scheduler mutates *job
+	// under c.mu, and the HTTP submit handler reads through this returned
+	// pointer. Taking a copy after the kick races the immediate
+	// scheduleJob write.
+	c.mu.RLock()
+	snapshot := *job
+	c.mu.RUnlock()
+
+	// Now wake the scheduler so it dispatches this job in the next
+	// goroutine turn instead of waiting up to 2s for the next tick.
+	c.kickScheduler()
+
+	return &snapshot, nil
 }
 
 // GetJob retrieves a job by ID from the in-memory cache.

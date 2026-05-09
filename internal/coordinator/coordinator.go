@@ -55,7 +55,21 @@ type Coordinator struct {
 	workers map[string]*WorkerMeta
 
 	// Per-worker pending command queue (coordinator → worker via heartbeat).
+	// Used as a fallback when no WatchCommands push stream is registered;
+	// otherwise EnqueueCommand pushes directly into cmdStreams[workerID]
+	// for low-latency dispatch.
 	pendingCmds map[string][]rpc.WorkerCommand
+
+	// Active server-streaming command channels per worker (populated when
+	// the worker has an open WatchCommands RPC). EnqueueCommand prefers
+	// these over the pendingCmds fallback so dispatch latency is bounded
+	// by a single yamux frame round-trip rather than the heartbeat tick.
+	cmdStreams map[string]chan rpc.WorkerCommand
+
+	// schedulerKick lets job submission wake the scheduler immediately
+	// instead of waiting for its 2s tick. Buffered so bursts of
+	// submissions coalesce into one wake-up.
+	schedulerKick chan struct{}
 
 	// Task status cache (taskID → status).
 	taskStatuses map[string]rpc.TaskStatus
@@ -72,16 +86,18 @@ type Coordinator struct {
 func New(cfg CoordinatorConfig, store MetadataStore, election LeaderElection, log zerolog.Logger) *Coordinator {
 	cfg.resolve()
 	return &Coordinator{
-		state:        StateStandby,
-		nodeID:       cfg.NodeID,
-		config:       cfg,
-		store:        store,
-		election:     election,
-		log:          log.With().Str("component", "coordinator").Logger(),
-		jobs:         make(map[string]*JobMeta),
-		workers:      make(map[string]*WorkerMeta),
-		pendingCmds:  make(map[string][]rpc.WorkerCommand),
-		taskStatuses: make(map[string]rpc.TaskStatus),
+		state:         StateStandby,
+		nodeID:        cfg.NodeID,
+		config:        cfg,
+		store:         store,
+		election:      election,
+		log:           log.With().Str("component", "coordinator").Logger(),
+		jobs:          make(map[string]*JobMeta),
+		workers:       make(map[string]*WorkerMeta),
+		pendingCmds:   make(map[string][]rpc.WorkerCommand),
+		cmdStreams:    make(map[string]chan rpc.WorkerCommand),
+		taskStatuses:  make(map[string]rpc.TaskStatus),
+		schedulerKick: make(chan struct{}, 1),
 	}
 }
 
@@ -264,11 +280,27 @@ func (c *Coordinator) serve(ctx context.Context) error {
 	}
 }
 
-// EnqueueCommand appends a command to the pending queue for a worker.
+// EnqueueCommand routes a command to a worker. If the worker has an
+// active WatchCommands push stream, the command is sent on that stream
+// (non-blocking — falls back to the heartbeat queue if the channel is
+// full). Otherwise it appends to the heartbeat-tick queue.
 func (c *Coordinator) EnqueueCommand(workerID string, cmd rpc.WorkerCommand) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if ch, ok := c.cmdStreams[workerID]; ok {
+		c.mu.Unlock()
+		select {
+		case ch <- cmd:
+			return
+		default:
+			// Push channel backed up — fall through to slice queue so the
+			// next heartbeat picks it up. This is a defensive fallback;
+			// in steady state the stream drains as fast as the worker
+			// reads.
+		}
+		c.mu.Lock()
+	}
 	c.pendingCmds[workerID] = append(c.pendingCmds[workerID], cmd)
+	c.mu.Unlock()
 }
 
 // DrainCommands returns and clears all pending commands for a worker.
@@ -280,6 +312,56 @@ func (c *Coordinator) DrainCommands(workerID string) []rpc.WorkerCommand {
 		delete(c.pendingCmds, workerID)
 	}
 	return cmds
+}
+
+// RegisterCommandStream creates a per-worker channel for the
+// WatchCommands push handler. Any commands queued in pendingCmds before
+// the stream opened are drained into the channel so the worker doesn't
+// miss its initial backlog. The returned cleanup func removes the
+// registration and closes the channel; call it from a defer.
+//
+// The channel buffer is intentionally small — backpressure here means
+// the worker isn't reading fast enough, and EnqueueCommand falls back
+// to the heartbeat slice rather than blocking the scheduler.
+func (c *Coordinator) RegisterCommandStream(workerID string) (<-chan rpc.WorkerCommand, func()) {
+	const bufSize = 64
+	ch := make(chan rpc.WorkerCommand, bufSize)
+
+	c.mu.Lock()
+	// If a previous stream is still registered (e.g. worker reconnected),
+	// close the old one so its goroutine exits.
+	if old, ok := c.cmdStreams[workerID]; ok {
+		close(old)
+	}
+	c.cmdStreams[workerID] = ch
+	backlog := c.pendingCmds[workerID]
+	delete(c.pendingCmds, workerID)
+	c.mu.Unlock()
+
+	// Best-effort drain of the heartbeat backlog into the new stream.
+	for _, cmd := range backlog {
+		select {
+		case ch <- cmd:
+		default:
+			// Buffer full already (would only happen with a huge backlog);
+			// re-queue the rest in pendingCmds.
+			c.mu.Lock()
+			c.pendingCmds[workerID] = append(c.pendingCmds[workerID], cmd)
+			c.mu.Unlock()
+		}
+	}
+
+	cleanup := func() {
+		c.mu.Lock()
+		// Only delete if it's still our channel — guards against the
+		// reconnect-replace path above.
+		if cur, ok := c.cmdStreams[workerID]; ok && cur == ch {
+			delete(c.cmdStreams, workerID)
+			close(ch)
+		}
+		c.mu.Unlock()
+	}
+	return ch, cleanup
 }
 
 // allTasksInStatus checks if all tasks for a job have the given status.

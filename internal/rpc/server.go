@@ -34,23 +34,34 @@ func recordRPCServerOp(method string, start time.Time, err error) {
 // It returns a response struct on success, or an *RPCError on failure.
 type Handler func(ctx context.Context, requestID uint64, payload []byte) (any, *RPCError)
 
+// StreamHandler is the function signature for server-streaming RPCs. The
+// handler decodes the request payload, then writes zero or more response
+// frames directly to the underlying yamux stream using WriteRPCFrame
+// (sharing the inbound RequestID). Returning ends the stream — the
+// surrounding serveStream closes the connection. Use this for long-lived
+// pushes (e.g. command dispatch) where one request fans out to many
+// responses.
+type StreamHandler func(ctx context.Context, requestID uint64, payload []byte, stream *yamux.Stream) error
+
 // Server accepts Yamux streams and dispatches RPCs to registered handlers.
 type Server struct {
-	cfg      Config
-	handlers map[MethodID]Handler
-	log      zerolog.Logger
-	mu       sync.RWMutex
-	wg       sync.WaitGroup
-	cancel   context.CancelFunc
-	session  *yamux.Session
+	cfg            Config
+	handlers       map[MethodID]Handler
+	streamHandlers map[MethodID]StreamHandler
+	log            zerolog.Logger
+	mu             sync.RWMutex
+	wg             sync.WaitGroup
+	cancel         context.CancelFunc
+	session        *yamux.Session
 }
 
 // NewServer creates a new RPC server with the given configuration.
 func NewServer(cfg Config) *Server {
 	return &Server{
-		cfg:      cfg,
-		handlers: make(map[MethodID]Handler),
-		log:      logger.GetLogger("rpc-server"),
+		cfg:            cfg,
+		handlers:       make(map[MethodID]Handler),
+		streamHandlers: make(map[MethodID]StreamHandler),
+		log:            logger.GetLogger("rpc-server"),
 	}
 }
 
@@ -61,11 +72,28 @@ func (s *Server) Register(method MethodID, handler Handler) {
 	s.handlers[method] = handler
 }
 
+// RegisterStream registers a server-streaming handler. The handler owns
+// the stream once invoked — it must use WriteRPCFrame to push response
+// frames and return when done.
+func (s *Server) RegisterStream(method MethodID, handler StreamHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streamHandlers[method] = handler
+}
+
 // getHandler returns the handler for the given method ID, or nil if not registered.
 func (s *Server) getHandler(method MethodID) Handler {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.handlers[method]
+}
+
+// getStreamHandler returns the streaming handler for the given method ID,
+// or nil if not registered.
+func (s *Server) getStreamHandler(method MethodID) StreamHandler {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.streamHandlers[method]
 }
 
 // ServeSession accepts streams from the Yamux session and dispatches each to a goroutine.
@@ -134,7 +162,17 @@ func (s *Server) serveStream(ctx context.Context, stream *yamux.Stream) {
 		recordRPCServerOp(method, dispatchStart, dispatchErr)
 	}()
 
-	// 2. Look up handler.
+	// 2. Streaming handler? (server-streaming RPC — handler owns the
+	// stream and writes its own response frames.)
+	if sh := s.getStreamHandler(frame.MethodID); sh != nil {
+		if err := sh(ctx, frame.RequestID, frame.Payload, stream); err != nil {
+			s.log.Debug().Err(err).Str("method", method).Msg("stream handler ended with error")
+			dispatchErr = err
+		}
+		return
+	}
+
+	// 3. Unary handler.
 	handler := s.getHandler(frame.MethodID)
 	if handler == nil {
 		rpcErr := NewRPCError(ErrCodeUnknownMethod,
@@ -144,10 +182,10 @@ func (s *Server) serveStream(ctx context.Context, stream *yamux.Stream) {
 		return
 	}
 
-	// 3. Call handler.
+	// 4. Call handler.
 	result, rpcErr := handler(ctx, frame.RequestID, frame.Payload)
 
-	// 4. Write response.
+	// 5. Write response.
 	if rpcErr != nil {
 		s.writeErrorResponse(stream, frame.RequestID, rpcErr)
 		dispatchErr = rpcErr

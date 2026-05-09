@@ -16,6 +16,12 @@ const (
 )
 
 // runScheduler periodically scans for CREATED jobs and deploys them to workers.
+//
+// The ticker is the fallback poll for cases where a wake-up was missed
+// (e.g. a job became schedulable because a worker registered, not because
+// a job was submitted). The hot path goes through Coordinator.kickScheduler
+// — submitting a job notifies the scheduler so dispatch is bounded by a
+// single goroutine wake-up rather than the tick interval.
 func (c *Coordinator) runScheduler(ctx context.Context) {
 	ticker := time.NewTicker(schedulerInterval)
 	defer ticker.Stop()
@@ -29,7 +35,38 @@ func (c *Coordinator) runScheduler(ctx context.Context) {
 			return
 		case <-ticker.C:
 			c.scheduleTick(ctx)
+		case <-c.schedulerKick:
+			// Coalesce a short burst of submissions into one tick. The
+			// pause is small enough that interactive job latency is
+			// dominated by Pebble fsync (~6 ms), but large enough that
+			// a thundering herd of same-name submits all reach the
+			// duplicate-check inside SubmitJob before the scheduler
+			// mutates the first job's status.
+			select {
+			case <-time.After(10 * time.Millisecond):
+			case <-ctx.Done():
+				return
+			}
+			// Drain any extra kicks that piled up during the window.
+			for drained := false; !drained; {
+				select {
+				case <-c.schedulerKick:
+				default:
+					drained = true
+				}
+			}
+			c.scheduleTick(ctx)
 		}
+	}
+}
+
+// kickScheduler nudges the scheduler to run immediately rather than wait
+// for the next tick. Non-blocking — drops the wake-up if one is already
+// pending (the buffered channel coalesces bursts).
+func (c *Coordinator) kickScheduler() {
+	select {
+	case c.schedulerKick <- struct{}{}:
+	default:
 	}
 }
 

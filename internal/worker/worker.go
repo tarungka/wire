@@ -123,7 +123,14 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.log.Warn().Str("task_id", taskID).Msg("coordinator requested task cancellation (orphaned)")
 	}
 
-	// 4. Start heartbeat loop.
+	// 4. Open the WatchCommands push stream BEFORE starting the heartbeat
+	// loop. The coordinator will push deploy/cancel commands directly on
+	// this stream — orders of magnitude faster than the heartbeat-tick
+	// dispatch model. Heartbeats still run for liveness and as a fallback
+	// when the stream is unavailable.
+	go w.runWatchCommands(ctx)
+
+	// 5. Start heartbeat loop.
 	heartbeat := rpc.NewHeartbeatSender(
 		w.client,
 		rpcCfg,
@@ -138,6 +145,84 @@ func (w *Worker) Run(ctx context.Context) error {
 	heartbeat.Run(ctx)
 
 	return nil
+}
+
+// runWatchCommands maintains a long-lived RPC stream to the coordinator
+// that delivers worker commands as soon as they're enqueued (instead of
+// waiting for the next heartbeat tick to pull them). It reconnects with
+// a small backoff if the stream errors so transient session blips don't
+// permanently stall command dispatch.
+func (w *Worker) runWatchCommands(ctx context.Context) {
+	const baseBackoff = 200 * time.Millisecond
+	const maxBackoff = 5 * time.Second
+	backoff := baseBackoff
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		w.mu.RLock()
+		epoch := w.epoch
+		w.mu.RUnlock()
+
+		req := &rpc.WatchCommandsRequest{
+			WorkerID: w.workerID(),
+			EpochID:  epoch,
+		}
+		frames, cancel, err := w.client.CallStream(ctx, rpc.MethodWatchCommands, req)
+		if err != nil {
+			w.log.Warn().Err(err).Msg("WatchCommands open failed, retrying")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < maxBackoff {
+				backoff *= 2
+			}
+			continue
+		}
+		w.log.Info().Msg("WatchCommands stream open")
+		backoff = baseBackoff
+
+	streamLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				cancel()
+				return
+			case sf, ok := <-frames:
+				if !ok {
+					// Stream closed cleanly — reconnect.
+					break streamLoop
+				}
+				if sf.Err != nil {
+					w.log.Warn().Err(sf.Err).Msg("WatchCommands stream error, reconnecting")
+					break streamLoop
+				}
+				var cmd rpc.WorkerCommand
+				if err := protocol.DecodeMsgPack(sf.Frame.Payload, &cmd); err != nil {
+					w.log.Error().Err(err).Msg("decode pushed WorkerCommand")
+					continue
+				}
+				// Reuse the same handler the heartbeat path uses so
+				// either delivery channel is interchangeable.
+				w.handleCommands([]rpc.WorkerCommand{cmd})
+			}
+		}
+		cancel()
+	}
+}
+
+// workerID returns the resolved worker ID — the explicit cfg.WorkerID
+// when set, otherwise the hostname (matching the registration path).
+func (w *Worker) workerID() string {
+	if w.cfg.WorkerID != "" {
+		return w.cfg.WorkerID
+	}
+	hn, _ := os.Hostname()
+	return hn
 }
 
 // Shutdown cancels running tasks and closes the transport session.
