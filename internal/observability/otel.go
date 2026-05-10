@@ -136,9 +136,34 @@ func Init(ctx context.Context, cfg Config, log zerolog.Logger) (shutdown func(co
 			},
 		)
 
+		// Job lifecycle durations span a much wider range than per-op
+		// latency: a stub uppercase pipeline finishes in milliseconds
+		// while a real streaming job runs for hours before cancellation.
+		// Override the catch-all latency view by name so this histogram
+		// gets buckets from 10 ms to 1 h. View resolution picks the
+		// FIRST matching view, so this must be registered before the
+		// kind-based latency view.
+		jobDurationBuckets := sdkmetric.NewView(
+			sdkmetric.Instrument{Name: "wire.coordinator.job.duration"},
+			sdkmetric.Stream{
+				Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+					Boundaries: []float64{
+						0.01, 0.05,
+						0.1, 0.5,
+						1, 5,
+						10, 30,
+						60, 300,
+						900, 1800,
+						3600,
+					},
+				},
+			},
+		)
+
 		provider = sdkmetric.NewMeterProvider(
 			sdkmetric.WithResource(res),
 			sdkmetric.WithReader(promExp),
+			sdkmetric.WithView(jobDurationBuckets),
 			sdkmetric.WithView(latencyBuckets),
 		)
 		otel.SetMeterProvider(provider)

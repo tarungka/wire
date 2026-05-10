@@ -1,8 +1,14 @@
 package coordinator
 
 import (
+	"context"
 	"fmt"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
+	"github.com/tarungka/wire/internal/observability"
 )
 
 // validTransitions defines the set of legal job state transitions.
@@ -57,9 +63,11 @@ func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
 		job.StartedAt = now
 	}
 
-	// Set FinishedAt on terminal states.
+	// Set FinishedAt on terminal states and release the name
+	// reservation so a future submission can reuse it.
 	if to.IsTerminal() {
 		job.FinishedAt = now
+		delete(c.activeJobNames, job.Name)
 	}
 
 	// Increment RestartCount on FAILING → DEPLOYING (restart).
@@ -70,5 +78,20 @@ func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
 	job.Status = to
 	job.UpdatedAt = now
 
-	return c.persistJobLocked(job)
+	if err := c.persistJobLocked(job); err != nil {
+		return err
+	}
+
+	// Record end-to-end job duration when the job reaches a terminal
+	// state. CreatedAt is set at submission time; this is the wall-clock
+	// time the job spent across the full lifecycle (queue + deploy + run).
+	if to.IsTerminal() && !job.CreatedAt.IsZero() {
+		observability.JobDurationHistogram().Record(
+			context.Background(),
+			now.Sub(job.CreatedAt).Seconds(),
+			metric.WithAttributes(attribute.String("terminal_status", to.String())),
+		)
+	}
+
+	return nil
 }

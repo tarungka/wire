@@ -60,12 +60,11 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 	// the job is gone — same failure mode as a network-partitioned ACK,
 	// recoverable by client retry.
 	c.mu.Lock()
-	for _, j := range c.jobs {
-		if j.Name == name && !j.Status.IsTerminal() {
-			c.mu.Unlock()
-			return nil, fmt.Errorf("%w: active job with name %q", ErrJobExists, name)
-		}
+	if _, exists := c.activeJobNames[name]; exists {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("%w: active job with name %q", ErrJobExists, name)
 	}
+	c.activeJobNames[name] = job.ID
 	c.jobs[job.ID] = job
 	c.mu.Unlock()
 
@@ -81,6 +80,7 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 		// in-memory state stays consistent with disk.
 		c.mu.Lock()
 		delete(c.jobs, job.ID)
+		delete(c.activeJobNames, name)
 		c.mu.Unlock()
 		return nil, fmt.Errorf("persisting job %s: %w", job.ID, err)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/tarungka/wire/internal/observability"
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
 )
@@ -54,6 +55,13 @@ type Coordinator struct {
 	jobs    map[string]*JobMeta
 	workers map[string]*WorkerMeta
 
+	// activeJobNames maps a non-terminal job's name to its ID, kept in
+	// sync with c.jobs. Provides O(1) duplicate-name detection in
+	// SubmitJob; without it the dup check is an O(N) scan over c.jobs
+	// that becomes the dominant submit-path cost once N reaches the
+	// tens of thousands. See docs/trds/WIP-25.
+	activeJobNames map[string]string
+
 	// Per-worker pending command queue (coordinator → worker via heartbeat).
 	// Used as a fallback when no WatchCommands push stream is registered;
 	// otherwise EnqueueCommand pushes directly into cmdStreams[workerID]
@@ -86,18 +94,19 @@ type Coordinator struct {
 func New(cfg CoordinatorConfig, store MetadataStore, election LeaderElection, log zerolog.Logger) *Coordinator {
 	cfg.resolve()
 	return &Coordinator{
-		state:         StateStandby,
-		nodeID:        cfg.NodeID,
-		config:        cfg,
-		store:         store,
-		election:      election,
-		log:           log.With().Str("component", "coordinator").Logger(),
-		jobs:          make(map[string]*JobMeta),
-		workers:       make(map[string]*WorkerMeta),
-		pendingCmds:   make(map[string][]rpc.WorkerCommand),
-		cmdStreams:    make(map[string]chan rpc.WorkerCommand),
-		taskStatuses:  make(map[string]rpc.TaskStatus),
-		schedulerKick: make(chan struct{}, 1),
+		state:          StateStandby,
+		nodeID:         cfg.NodeID,
+		config:         cfg,
+		store:          store,
+		election:       election,
+		log:            log.With().Str("component", "coordinator").Logger(),
+		jobs:           make(map[string]*JobMeta),
+		activeJobNames: make(map[string]string),
+		workers:        make(map[string]*WorkerMeta),
+		pendingCmds:    make(map[string][]rpc.WorkerCommand),
+		cmdStreams:     make(map[string]chan rpc.WorkerCommand),
+		taskStatuses:   make(map[string]rpc.TaskStatus),
+		schedulerKick:  make(chan struct{}, 1),
 	}
 }
 
@@ -244,6 +253,14 @@ func (c *Coordinator) recover() error {
 
 	c.jobs = state.jobs
 	c.workers = state.workers
+	// Rebuild the active-name index from the recovered jobs. Only
+	// non-terminal jobs reserve names, matching the SubmitJob check.
+	c.activeJobNames = make(map[string]string, len(state.jobs))
+	for _, j := range state.jobs {
+		if !j.Status.IsTerminal() {
+			c.activeJobNames[j.Name] = j.ID
+		}
+	}
 	if state.epoch > c.epoch {
 		c.epoch = state.epoch
 	}
@@ -264,6 +281,16 @@ func (c *Coordinator) recover() error {
 func (c *Coordinator) serve(ctx context.Context) error {
 	go c.runScheduler(ctx)
 
+	// Register the by-status job gauge. The callback is invoked once
+	// per metric scrape; safe to leave registered for the lifetime of
+	// this serve loop. Unregister on exit so a future re-leadership
+	// re-registers cleanly without duplicate observations.
+	if reg, err := observability.RegisterJobActiveGauge(c.jobStateCounts); err != nil {
+		c.log.Warn().Err(err).Msg("failed to register job-by-status gauge")
+	} else if reg != nil {
+		defer func() { _ = reg.Unregister() }()
+	}
+
 	ticker := time.NewTicker(c.config.HeartbeatFlushInterval)
 	defer ticker.Stop()
 
@@ -278,6 +305,20 @@ func (c *Coordinator) serve(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// jobStateCounts returns the number of jobs in each lifecycle status,
+// keyed by the JobStatus.String() name. Used by the
+// wire.coordinator.jobs.by_status observable gauge — invoked once per
+// scrape, so the RLock duration is bounded and uncontended in practice.
+func (c *Coordinator) jobStateCounts() map[string]int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	counts := make(map[string]int64, 8)
+	for _, j := range c.jobs {
+		counts[j.Status.String()]++
+	}
+	return counts
 }
 
 // EnqueueCommand routes a command to a worker. If the worker has an
