@@ -1,0 +1,454 @@
+# Instincts generated from https://github.com/tarungka/wire
+# Generated: 2026-05-10T12:25:40.412Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: wire-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Commit Length
+
+## Action
+
+Write moderate-length commit messages (~65 characters)
+
+## Evidence
+
+- Average commit message length: 65 chars
+- Based on 11 commits
+
+---
+id: wire-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: wire-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: wire-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: wire-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: wire-workflow-document-and-implement-technical-root-cause-analysis
+trigger: "when doing document and implement technical root cause analysis"
+confidence: 0.65
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Workflow Document And Implement Technical Root Cause Analysis
+
+## Action
+
+Follow the document-and-implement-technical-root-cause-analysis workflow:
+1. Create or update docs/trds/WIP-XX/README.md with analysis and plan.
+2. Implement code changes in relevant internal/* files as per the TRD.
+3. Update related tests if necessary.
+4. Optionally update observability dashboards if the change affects metrics.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~3x per month
+- Files: docs/trds/WIP-*/README.md, internal/*/*.go, examples/observability-stack/grafana/dashboards/wire.json
+
+---
+id: wire-workflow-observability-dashboard-and-metrics-update
+trigger: "when doing observability dashboard and metrics update"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Workflow Observability Dashboard And Metrics Update
+
+## Action
+
+Follow the observability-dashboard-and-metrics-update workflow:
+1. Modify or add metric definitions in internal/observability/*.go.
+2. Update or create relevant dashboard panels in examples/observability-stack/grafana/dashboards/wire.json.
+3. Document metric changes in the relevant TRD if part of a WIP.
+4. Test that metrics are correctly scraped and displayed.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: internal/observability/*.go, examples/observability-stack/grafana/dashboards/wire.json, docs/trds/WIP-*/README.md
+
+---
+id: wire-workflow-coordinator-job-manager-optimization
+trigger: "when doing coordinator job manager optimization"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/tarungka/wire
+---
+
+# Wire Workflow Coordinator Job Manager Optimization
+
+## Action
+
+Follow the coordinator-job-manager-optimization workflow:
+1. Edit internal/coordinator/job_manager.go to optimize job handling logic.
+2. Update related files such as job_state_machine.go, coordinator.go, or recovery.go if needed.
+3. Update or add tests in job_state_machine_test.go.
+4. Document the change in docs/trds/WIP-XX/README.md.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: internal/coordinator/job_manager.go, internal/coordinator/job_state_machine.go, internal/coordinator/coordinator.go
+
+---
+id: wire-coding-convention-file-naming
+trigger: "When creating or renaming a Go source file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Coding Convention File Naming
+
+## Action
+
+Use camelCase for file names
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.files
+
+---
+id: wire-coding-convention-function-naming
+trigger: "When defining a new function in Go"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Coding Convention Function Naming
+
+## Action
+
+Use camelCase for function names
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.functions
+
+---
+id: wire-coding-convention-class-naming
+trigger: "When defining a new struct or class in Go"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Coding Convention Class Naming
+
+## Action
+
+Use PascalCase for struct or class names
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.classes
+
+---
+id: wire-coding-convention-constant-naming
+trigger: "When declaring a constant in Go"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Coding Convention Constant Naming
+
+## Action
+
+Use SCREAMING_SNAKE_CASE for constant names
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.constants
+
+---
+id: wire-coding-convention-import-style
+trigger: "When importing Go packages"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Coding Convention Import Style
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in codeStyle.importStyle
+
+---
+id: wire-coding-convention-export-style
+trigger: "When exporting functions or types in Go"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Coding Convention Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in codeStyle.exportStyle
+
+---
+id: wire-testing-pattern-location
+trigger: "When adding or updating tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Testing Pattern Location
+
+## Action
+
+Place test files in a separate test directory (not inline with src)
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation
+- Example: internal/coordinator/job_state_machine_test.go
+
+---
+id: wire-testing-pattern-update-on-change
+trigger: "When implementing a code change as per a TRD/WIP"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Testing Pattern Update On Change
+
+## Action
+
+Update or add related tests to cover the change
+
+## Evidence
+
+- Workflow: document-and-implement-technical-root-cause-analysis
+- Commit sequence includes test updates
+
+---
+id: wire-git-commit-prefix
+trigger: "When writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Git Commit Prefix
+
+## Action
+
+Prefix the commit message with the type of change: perf, docs, or fix (optionally with scope in parentheses)
+
+## Evidence
+
+- Pattern in commits.prefixes
+- Examples: fix(rpc): ..., perf(coordinator): ...
+
+---
+id: wire-git-commit-length
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Git Commit Length
+
+## Action
+
+Keep the commit message concise, around 65 characters on average
+
+## Evidence
+
+- Pattern in commits.averageLength
+
+---
+id: wire-git-commit-wip-reference
+trigger: "When referencing work-in-progress or technical root cause documents in commits"
+confidence: 0.8
+domain: git
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Git Commit Wip Reference
+
+## Action
+
+Include WIP-XX or TRD reference in the commit message
+
+## Evidence
+
+- Examples: docs(trds): WIP-22 + WIP-23 deferred fix plans
+- fix(rpc): ... (WIP-22)
+
+---
+id: wire-workflow-trd-implementation
+trigger: "When a technical root cause analysis (TRD/WIP) is created or updated to address an issue"
+confidence: 0.95
+domain: workflow
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Workflow Trd Implementation
+
+## Action
+
+Create or update docs/trds/WIP-XX/README.md, implement code changes as per the TRD, update tests, and optionally update observability dashboards
+
+## Evidence
+
+- Workflow: document-and-implement-technical-root-cause-analysis
+- Commit examples updating docs/trds/WIP-*/README.md and internal/*/*.go
+
+---
+id: wire-workflow-metrics-dashboard-update
+trigger: "When adding or changing metrics or dashboard panels"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Workflow Metrics Dashboard Update
+
+## Action
+
+Modify internal/observability/*.go, update examples/observability-stack/grafana/dashboards/wire.json, and document changes in TRD if part of a WIP
+
+## Evidence
+
+- Workflow: observability-dashboard-and-metrics-update
+- Commit examples updating internal/observability/*.go and dashboards/wire.json
+
+---
+id: wire-workflow-coordinator-job-manager-optimization
+trigger: "When optimizing job management logic in the coordinator for performance or correctness"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: tarungka/wire
+---
+
+# Wire Workflow Coordinator Job Manager Optimization
+
+## Action
+
+Edit internal/coordinator/job_manager.go, update related coordinator files, update/add tests, and document in docs/trds/WIP-XX/README.md
+
+## Evidence
+
+- Workflow: coordinator-job-manager-optimization
+- Commit examples editing internal/coordinator/job_manager.go and related files
+
