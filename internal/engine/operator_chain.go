@@ -178,11 +178,60 @@ func isZeroEvent(e Event) bool {
 // MapOperator: one-to-one. FlatMapOperator: one-to-many. SinkOperator: terminal.
 // When an operator has a non-zero ErrorHandlerConfig, errors are handled via
 // invokeWithRetry (retry/DLQ/drop); otherwise errors fail the job immediately.
+//
+// Fast path: while no FlatMap fan-out has been seen, the current event is
+// tracked inline (cur + alive) without any per-event slice allocation.
+// On the first FlatMap with >1 emission, we promote to a slice and use
+// the original fan-out logic for the remaining links.
 func processEvent(cc *chainContext, event Event) error {
-	// Start with the input event. For FlatMap we may fan out to multiple events.
-	events := []Event{event}
+	var (
+		cur    Event = event
+		alive        = true
+		events []Event // promoted on FlatMap fan-out only
+	)
 
 	for _, link := range cc.links {
+		if events == nil {
+			// Single-event fast path.
+			if !alive {
+				return nil
+			}
+			switch o := link.Operator.(type) {
+			case MapOperator:
+				result, err := invokeMapWithRetry(cc, link, cur, o)
+				if err != nil {
+					return err
+				}
+				if result == nil {
+					alive = false
+					continue
+				}
+				cur = *result
+			case FlatMapOperator:
+				emitted, err := invokeFlatMapWithRetry(cc, link, cur, o)
+				if err != nil {
+					return err
+				}
+				switch len(emitted) {
+				case 0:
+					alive = false
+				case 1:
+					cur = emitted[0]
+				default:
+					// Promote to slice path for the remaining links.
+					events = emitted
+				}
+			case SinkOperator:
+				if err := invokeSinkWithRetry(cc, link, cur, o); err != nil {
+					return err
+				}
+				// Sink consumes the event; no further links should run.
+				alive = false
+			}
+			continue
+		}
+
+		// Slice path (post fan-out).
 		var next []Event
 		for _, e := range events {
 			switch o := link.Operator.(type) {
@@ -209,7 +258,18 @@ func processEvent(cc *chainContext, event Event) error {
 		events = next
 	}
 
-	// Send surviving events to output.
+	// Send surviving event(s) to output.
+	if events == nil {
+		if !alive {
+			return nil
+		}
+		select {
+		case cc.outputCh <- OutputMsg{Type: OutputData, Event: cur}:
+		case <-cc.ctx.Done():
+			return cc.ctx.Err()
+		}
+		return nil
+	}
 	for _, e := range events {
 		select {
 		case cc.outputCh <- OutputMsg{Type: OutputData, Event: e}:

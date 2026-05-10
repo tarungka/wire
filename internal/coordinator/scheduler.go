@@ -144,6 +144,10 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	}
 
 	now := time.Now().UTC()
+	c.jobStatusCounts[job.Status]--
+	c.jobStatusCounts[JobDeploying]++
+	c.unindexJobByStatus(job.Status, job.ID)
+	c.indexJobByStatus(JobDeploying, job)
 	job.Status = JobDeploying
 	job.UpdatedAt = now
 	if err := c.persistJobLocked(job); err != nil {
@@ -164,6 +168,9 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		c.log.Error().Err(err).Str("job_id", job.ID).Msg("failed to persist assignments")
 		return
 	}
+	// Populate the in-memory cache so allTasksInStatus and CancelJob
+	// avoid re-Get + re-DecodeMsgPack on every UpdateTaskStatus.
+	c.assignments[job.ID] = tam
 
 	// Update worker metadata: add running tasks and decrement available slots.
 	for workerID, wTasks := range assignments {

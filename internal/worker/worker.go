@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -40,7 +41,10 @@ type Worker struct {
 	epoch    uint64
 	mu       sync.RWMutex
 	tasks    map[string]*taskHandle // taskID -> handle
-	log      zerolog.Logger
+	// activeTasks mirrors len(tasks) so heartbeat construction does not
+	// need to take w.mu. Updated under w.mu when tasks are added/removed.
+	activeTasks atomic.Int32
+	log         zerolog.Logger
 }
 
 // New creates a new Worker using the package-level default registry. User
@@ -242,10 +246,12 @@ func (w *Worker) Shutdown(_ context.Context) error {
 
 // buildHeartbeatRequest constructs a HeartbeatRequest from the worker's current state.
 func (w *Worker) buildHeartbeatRequest() *rpc.HeartbeatRequest {
-	w.mu.RLock()
-	activeSlots := int32(len(w.tasks))
+	// activeTasks is an atomic mirror of len(w.tasks); reading it here
+	// avoids contending on w.mu with deploy/cancel handlers. epoch is
+	// also accessed without the lock — it is written exactly once at
+	// registration and read-only thereafter.
+	activeSlots := w.activeTasks.Load()
 	epoch := w.epoch
-	w.mu.RUnlock()
 
 	return &rpc.HeartbeatRequest{
 		WorkerID:  w.cfg.WorkerID,
@@ -283,6 +289,7 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 	taskCtx, cancel := context.WithCancel(context.Background())
 	w.mu.Lock()
 	w.tasks[cmd.TaskID] = &taskHandle{cancel: cancel}
+	w.activeTasks.Store(int32(len(w.tasks)))
 	w.mu.Unlock()
 
 	taskLog := w.log.With().
@@ -303,6 +310,7 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 	defer func() {
 		w.mu.Lock()
 		delete(w.tasks, taskID)
+		w.activeTasks.Store(int32(len(w.tasks)))
 		w.mu.Unlock()
 	}()
 

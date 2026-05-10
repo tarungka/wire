@@ -178,7 +178,7 @@ func TestStateReachability_AllTerminalStatesReachable(t *testing.T) {
 			if !reachable[from] {
 				continue
 			}
-			for _, to := range targets {
+			for to := range targets {
 				if !reachable[to] {
 					reachable[to] = true
 					changed = true

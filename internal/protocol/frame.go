@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
-	"sync"
 )
 
 // Frame layout constants per WIP-01 Section 3.1.
@@ -23,14 +22,6 @@ const (
 // Go automatically selects hardware acceleration (SSE4.2/ARM CRC) when available.
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
-// framePool reuses frame body buffers to reduce GC pressure at high throughput.
-var framePool = sync.Pool{
-	New: func() any {
-		b := make([]byte, 0, 4096)
-		return &b
-	},
-}
-
 // computeCRC32C computes the CRC32C checksum over MsgType || Payload.
 // Uses crc32.Update to avoid hash.Hash32 allocation per call.
 func computeCRC32C(msgType byte, payload []byte) uint32 {
@@ -47,6 +38,13 @@ type Frame struct {
 
 // ReadFrame reads a single frame from the reader.
 // It validates the length bounds and CRC32C checksum.
+//
+// The returned Frame.Payload is a slice into a freshly allocated body
+// buffer. There is exactly one allocation per frame and no payload
+// copy. (An earlier implementation pooled the body buffer, then copied
+// the payload out so the buffer could be returned — defeating the
+// pool. Removing the copy is a strictly larger win than the pool
+// reuse it enabled.)
 func ReadFrame(r io.Reader, maxFrameSize uint32) (Frame, error) {
 	// 1. Read length field (4 bytes, big-endian).
 	var lenBuf [LengthFieldSize]byte
@@ -63,33 +61,18 @@ func ReadFrame(r io.Reader, maxFrameSize uint32) (Frame, error) {
 		return Frame{}, ErrFrameTooLarge
 	}
 
-	// 3. Read the frame body using a pooled buffer to reduce GC pressure.
-	bufp := framePool.Get().(*[]byte)
-	buf := *bufp
-	if cap(buf) < int(frameLen) {
-		buf = make([]byte, frameLen)
-	} else {
-		buf = buf[:frameLen]
-	}
-
+	// 3. Allocate the body buffer and read directly into it. The
+	//    returned payload is a sub-slice of this buffer.
+	buf := make([]byte, frameLen)
 	if _, err := io.ReadFull(r, buf); err != nil {
-		// Return buffer to pool on error.
-		*bufp = buf
-		framePool.Put(bufp)
 		return Frame{}, err
 	}
 
-	// 4. Extract fields.
 	msgType := buf[0]
 	crcReceived := binary.BigEndian.Uint32(buf[1:5])
+	payload := buf[5:]
 
-	// 5. Copy payload out so the pooled buffer can be returned.
-	payload := make([]byte, len(buf[5:]))
-	copy(payload, buf[5:])
-	*bufp = buf
-	framePool.Put(bufp)
-
-	// 6. Verify CRC32C over MsgType || Payload.
+	// 4. Verify CRC32C over MsgType || Payload.
 	crcComputed := computeCRC32C(msgType, payload)
 	if crcReceived != crcComputed {
 		return Frame{}, ErrCRCMismatch

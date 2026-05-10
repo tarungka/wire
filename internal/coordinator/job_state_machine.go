@@ -16,14 +16,14 @@ import (
 // JobCreated -> JobFailing is allowed for permanent pre-deployment failures
 // (e.g. malformed graph, missing operator factory) so the scheduler can move
 // such a job out of the queue immediately rather than retrying forever.
-var validTransitions = map[JobStatus][]JobStatus{
-	JobCreated:   {JobDeploying, JobFailing, JobCanceling},
-	JobDeploying: {JobRunning, JobFailing, JobCanceling},
-	JobRunning:   {JobFinishing, JobPaused, JobFailing, JobCanceling},
-	JobPaused:    {JobDeploying},
-	JobFinishing: {JobFinished},
-	JobFailing:   {JobDeploying, JobFailed, JobCanceled},
-	JobCanceling: {JobCanceled},
+var validTransitions = map[JobStatus]map[JobStatus]struct{}{
+	JobCreated:   {JobDeploying: {}, JobFailing: {}, JobCanceling: {}},
+	JobDeploying: {JobRunning: {}, JobFailing: {}, JobCanceling: {}},
+	JobRunning:   {JobFinishing: {}, JobPaused: {}, JobFailing: {}, JobCanceling: {}},
+	JobPaused:    {JobDeploying: {}},
+	JobFinishing: {JobFinished: {}},
+	JobFailing:   {JobDeploying: {}, JobFailed: {}, JobCanceled: {}},
+	JobCanceling: {JobCanceled: {}},
 	// Terminal states have no outgoing transitions.
 	JobFinished: {},
 	JobFailed:   {},
@@ -36,10 +36,8 @@ func ValidateTransition(from, to JobStatus) error {
 	if !ok {
 		return fmt.Errorf("%w: unknown source state %s", ErrInvalidTransition, from)
 	}
-	for _, t := range targets {
-		if t == to {
-			return nil
-		}
+	if _, ok := targets[to]; ok {
+		return nil
 	}
 	return fmt.Errorf("%w: %s → %s", ErrInvalidTransition, from, to)
 }
@@ -73,6 +71,15 @@ func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
 	// Increment RestartCount on FAILING → DEPLOYING (restart).
 	if job.Status == JobFailing && to == JobDeploying {
 		job.RestartCount++
+	}
+
+	// Maintain the by-status counter and the by-status secondary index.
+	// Only mutate when the status actually changes.
+	if job.Status != to {
+		c.jobStatusCounts[job.Status]--
+		c.jobStatusCounts[to]++
+		c.unindexJobByStatus(job.Status, job.ID)
+		c.indexJobByStatus(to, job)
 	}
 
 	job.Status = to
