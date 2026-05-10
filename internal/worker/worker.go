@@ -289,7 +289,9 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 	taskCtx, cancel := context.WithCancel(context.Background())
 	w.mu.Lock()
 	w.tasks[cmd.TaskID] = &taskHandle{cancel: cancel}
-	w.activeTasks.Store(int32(len(w.tasks)))
+	// len(w.tasks) is bounded by w.cfg.TaskSlots (a small config int)
+	// and cannot realistically approach 2^31.
+	w.activeTasks.Store(int32(len(w.tasks))) // #nosec G115 -- bounded by TaskSlots
 	w.mu.Unlock()
 
 	taskLog := w.log.With().
@@ -310,7 +312,8 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 	defer func() {
 		w.mu.Lock()
 		delete(w.tasks, taskID)
-		w.activeTasks.Store(int32(len(w.tasks)))
+		// Bounded as in handleDeployTask.
+		w.activeTasks.Store(int32(len(w.tasks))) // #nosec G115 -- bounded by TaskSlots
 		w.mu.Unlock()
 	}()
 

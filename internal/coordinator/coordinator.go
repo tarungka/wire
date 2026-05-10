@@ -114,12 +114,12 @@ type Coordinator struct {
 func New(cfg CoordinatorConfig, store MetadataStore, election LeaderElection, log zerolog.Logger) *Coordinator {
 	cfg.resolve()
 	return &Coordinator{
-		state:          StateStandby,
-		nodeID:         cfg.NodeID,
-		config:         cfg,
-		store:          store,
-		election:       election,
-		log:            log.With().Str("component", "coordinator").Logger(),
+		state:           StateStandby,
+		nodeID:          cfg.NodeID,
+		config:          cfg,
+		store:           store,
+		election:        election,
+		log:             log.With().Str("component", "coordinator").Logger(),
 		jobs:            make(map[string]*JobMeta),
 		activeJobNames:  make(map[string]string),
 		workers:         make(map[string]*WorkerMeta),

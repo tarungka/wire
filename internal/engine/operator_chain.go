@@ -185,8 +185,8 @@ func isZeroEvent(e Event) bool {
 // the original fan-out logic for the remaining links.
 func processEvent(cc *chainContext, event Event) error {
 	var (
-		cur    Event = event
-		alive        = true
+		cur    Event   = event
+		alive          = true
 		events []Event // promoted on FlatMap fan-out only
 	)
 
