@@ -70,7 +70,7 @@ func (c *Coordinator) GetSavepoint(jobID, spID string) (*SavepointMeta, error) {
 
 // ListSavepoints returns all savepoints for a given job.
 func (c *Coordinator) ListSavepoints(jobID string) ([]*SavepointMeta, error) {
-	var result []*SavepointMeta
+	result := make([]*SavepointMeta, 0, 16)
 	var decodeErr error
 
 	err := c.store.PrefixScan(SavepointsPrefix(jobID), func(key, value []byte) bool {

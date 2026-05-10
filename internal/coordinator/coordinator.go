@@ -82,6 +82,26 @@ type Coordinator struct {
 	// Task status cache (taskID → status).
 	taskStatuses map[string]rpc.TaskStatus
 
+	// In-memory cache of task assignment maps (jobID → assignments).
+	// Populated when the scheduler persists assignments and on recovery.
+	// Avoids re-Get + re-DecodeMsgPack on every UpdateTaskStatus path,
+	// where allTasksInStatus is called twice per status update.
+	// Pebble remains the source of truth; on cache miss callers fall
+	// back to a store Get.
+	assignments map[string]TaskAssignmentMap
+
+	// jobStatusCounts is a maintained counter of jobs in each status,
+	// kept in sync with c.jobs via SubmitJob, transitionJob, and the
+	// recovery finaliser. Replaces the O(N) scan that the by-status
+	// gauge callback used to do on every Prometheus scrape.
+	jobStatusCounts map[JobStatus]int64
+
+	// jobsByStatus is a secondary index from JobStatus → set of *JobMeta,
+	// kept in sync with c.jobs via SubmitJob, transitionJob, and the
+	// recovery finaliser. Lets ListJobs(statusFilter) iterate only the
+	// matching bucket instead of scanning all jobs.
+	jobsByStatus map[JobStatus]map[string]*JobMeta
+
 	// Leadership context — canceled when leadership is lost.
 	leaderCtx    context.Context
 	leaderCancel context.CancelFunc
@@ -94,19 +114,22 @@ type Coordinator struct {
 func New(cfg CoordinatorConfig, store MetadataStore, election LeaderElection, log zerolog.Logger) *Coordinator {
 	cfg.resolve()
 	return &Coordinator{
-		state:          StateStandby,
-		nodeID:         cfg.NodeID,
-		config:         cfg,
-		store:          store,
-		election:       election,
-		log:            log.With().Str("component", "coordinator").Logger(),
-		jobs:           make(map[string]*JobMeta),
-		activeJobNames: make(map[string]string),
-		workers:        make(map[string]*WorkerMeta),
-		pendingCmds:    make(map[string][]rpc.WorkerCommand),
-		cmdStreams:     make(map[string]chan rpc.WorkerCommand),
-		taskStatuses:   make(map[string]rpc.TaskStatus),
-		schedulerKick:  make(chan struct{}, 1),
+		state:           StateStandby,
+		nodeID:          cfg.NodeID,
+		config:          cfg,
+		store:           store,
+		election:        election,
+		log:             log.With().Str("component", "coordinator").Logger(),
+		jobs:            make(map[string]*JobMeta),
+		activeJobNames:  make(map[string]string),
+		workers:         make(map[string]*WorkerMeta),
+		pendingCmds:     make(map[string][]rpc.WorkerCommand),
+		cmdStreams:      make(map[string]chan rpc.WorkerCommand),
+		taskStatuses:    make(map[string]rpc.TaskStatus),
+		assignments:     make(map[string]TaskAssignmentMap),
+		jobStatusCounts: make(map[JobStatus]int64, 8),
+		jobsByStatus:    make(map[JobStatus]map[string]*JobMeta, 8),
+		schedulerKick:   make(chan struct{}, 1),
 	}
 }
 
@@ -203,6 +226,9 @@ func (c *Coordinator) runMultiNode(ctx context.Context) error {
 			c.workers = make(map[string]*WorkerMeta)
 			c.pendingCmds = make(map[string][]rpc.WorkerCommand)
 			c.taskStatuses = make(map[string]rpc.TaskStatus)
+			c.assignments = make(map[string]TaskAssignmentMap)
+			c.jobStatusCounts = make(map[JobStatus]int64, 8)
+			c.jobsByStatus = make(map[JobStatus]map[string]*JobMeta, 8)
 			c.mu.Unlock()
 
 			if ctx.Err() != nil {
@@ -253,13 +279,20 @@ func (c *Coordinator) recover() error {
 
 	c.jobs = state.jobs
 	c.workers = state.workers
-	// Rebuild the active-name index from the recovered jobs. Only
-	// non-terminal jobs reserve names, matching the SubmitJob check.
+	c.assignments = state.assignments
+	// Rebuild the active-name index and the by-status counters from
+	// the recovered jobs. Only non-terminal jobs reserve names,
+	// matching the SubmitJob check; the counter tracks all statuses
+	// because the gauge reports terminal counts too.
 	c.activeJobNames = make(map[string]string, len(state.jobs))
+	c.jobStatusCounts = make(map[JobStatus]int64, 8)
+	c.jobsByStatus = make(map[JobStatus]map[string]*JobMeta, 8)
 	for _, j := range state.jobs {
 		if !j.Status.IsTerminal() {
 			c.activeJobNames[j.Name] = j.ID
 		}
+		c.jobStatusCounts[j.Status]++
+		c.indexJobByStatus(j.Status, j)
 	}
 	if state.epoch > c.epoch {
 		c.epoch = state.epoch
@@ -307,16 +340,37 @@ func (c *Coordinator) serve(ctx context.Context) error {
 	}
 }
 
+// indexJobByStatus inserts job into jobsByStatus[status]. Caller must hold
+// c.mu.Lock(). Lazily creates the inner map.
+func (c *Coordinator) indexJobByStatus(status JobStatus, job *JobMeta) {
+	bucket, ok := c.jobsByStatus[status]
+	if !ok {
+		bucket = make(map[string]*JobMeta)
+		c.jobsByStatus[status] = bucket
+	}
+	bucket[job.ID] = job
+}
+
+// unindexJobByStatus removes jobID from jobsByStatus[status]. Caller must
+// hold c.mu.Lock(). Empty buckets are kept (cheap, max ~10 statuses).
+func (c *Coordinator) unindexJobByStatus(status JobStatus, jobID string) {
+	if bucket := c.jobsByStatus[status]; bucket != nil {
+		delete(bucket, jobID)
+	}
+}
+
 // jobStateCounts returns the number of jobs in each lifecycle status,
 // keyed by the JobStatus.String() name. Used by the
-// wire.coordinator.jobs.by_status observable gauge — invoked once per
-// scrape, so the RLock duration is bounded and uncontended in practice.
+// wire.coordinator.jobs.by_status observable gauge. Reads from the
+// maintained jobStatusCounts counter so the cost is O(distinct
+// statuses) instead of O(jobs); the previous O(N) scan was paid on
+// every Prometheus scrape regardless of activity.
 func (c *Coordinator) jobStateCounts() map[string]int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	counts := make(map[string]int64, 8)
-	for _, j := range c.jobs {
-		counts[j.Status.String()]++
+	counts := make(map[string]int64, len(c.jobStatusCounts))
+	for status, n := range c.jobStatusCounts {
+		counts[status.String()] = n
 	}
 	return counts
 }
@@ -406,20 +460,26 @@ func (c *Coordinator) RegisterCommandStream(workerID string) (<-chan rpc.WorkerC
 }
 
 // allTasksInStatus checks if all tasks for a job have the given status.
+// Reads from the in-memory assignments cache populated at scheduling time
+// (see scheduler.scheduleJob) and during recovery. Falls back to a store
+// Get + DecodeMsgPack only on cache miss; the cache is not populated
+// from this read path because callers hold c.mu.RLock.
 func (c *Coordinator) allTasksInStatus(jobID string, status rpc.TaskStatus) bool {
 	// Must be called with c.mu held (at least RLock).
-	data, err := c.store.Get(JobAssignmentsKey(jobID))
-	if err != nil || data == nil {
+	tam, ok := c.assignments[jobID]
+	if !ok {
+		data, err := c.store.Get(JobAssignmentsKey(jobID))
+		if err != nil || data == nil {
+			return false
+		}
+		if err := protocol.DecodeMsgPack(data, &tam); err != nil {
+			return false
+		}
+	}
+	if len(tam.Assignments) == 0 {
 		return false
 	}
-	var assignments TaskAssignmentMap
-	if err := protocol.DecodeMsgPack(data, &assignments); err != nil {
-		return false
-	}
-	if len(assignments.Assignments) == 0 {
-		return false
-	}
-	for taskID := range assignments.Assignments {
+	for taskID := range tam.Assignments {
 		if c.taskStatuses[taskID] != status {
 			return false
 		}
@@ -438,7 +498,7 @@ func (c *Coordinator) flushHeartbeats(ctx context.Context) error {
 		return nil
 	}
 
-	var batch []KVPair
+	batch := make([]KVPair, 0, len(c.workers))
 	for id, w := range c.workers {
 		data, err := protocol.EncodeMsgPack(w)
 		if err != nil {
