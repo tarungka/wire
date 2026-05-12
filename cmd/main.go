@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"syscall"
 	"time"
 
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/errgroup"
 
@@ -20,10 +20,22 @@ import (
 	"github.com/tarungka/wire/internal/worker"
 )
 
-// Need to make up my mind on some of these:
-// The high-performance, distributed stream processing platform.
-// Seamless Streaming for Dynamic Workloads.
-// There is a new line at the start of this logo
+const (
+	name = "wire"
+	desc = `Wire is a powerful, distributed stream processing platform designed to handle real-time data flows with exceptional efficiency. Engineered for scalability and performance, Wire simplifies stream processing, enabling seamless, fault-tolerant data pipelines for even the most demanding workloads.
+
+Visit https://www.github.com/tarungka/wire to learn more.`
+
+	logFilePath           = "server.log"
+	shutdownTimeout       = 5 * time.Second
+	fallbackCoordinatorID = "wire-node-1"
+
+	modeCoordinator = "coordinator"
+	modeWorker      = "worker"
+
+	electionFileLock = "filelock"
+	electionNoop     = "noop"
+)
 
 const logo = `
  __      ___________________________
@@ -34,26 +46,22 @@ const logo = `
        \/              \/        \/
 `
 
-const name = `wire`
-const desc = `Wire is a powerful, distributed stream processing platform designed to handle real-time data flows with exceptional efficiency. Engineered for scalability and performance, Wire simplifies stream processing, enabling seamless, fault-tolerant data pipelines for even the most demanding workloads.
-
-Visit https://www.github.com/tarungka/wire to learn more.`
-
 func main() {
-
-	// Handle signals first, so signal handling is established before anything else.
-	sigCh := HandleSignals(syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
-	// Main context
-	mainCtx, mainCancel := CreateContext(sigCh)
-	defer mainCancel()
-
-	// Setup logging
-	// logs will be written to both server.log and stdout
-	logFile, err := os.OpenFile("server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		fmt.Printf("failed to create log file")
+	if err := run(); err != nil {
+		log.Fatal().Err(err).Msg("wire exited with error")
 	}
-	defer func() { _ = logFile.Close() }()
+	log.Info().Msg("Shutting down.")
+}
+
+func run() error {
+	sigCh := HandleSignals(syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
+	ctx, cancel := CreateContext(sigCh)
+	defer cancel()
+
+	logFile := openLogFile(logFilePath)
+	if logFile != nil {
+		defer func() { _ = logFile.Close() }()
+	}
 
 	cliCfg, flagSet, err := initFlags(name, desc, &BuildInfo{
 		Version: cmd.Version,
@@ -61,146 +69,107 @@ func main() {
 		Branch:  cmd.Branch,
 	})
 	if err != nil {
-		fmt.Printf("failed to parse command-line flags: %s", err.Error())
+		return fmt.Errorf("parse flags: %w", err)
 	}
+
 	fmt.Print(logo)
 
-	// Load config files, apply CLI flag overrides, and validate.
 	wireCfg, err := config.Load(cliCfg.ConfigPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("load config: %w", err)
 	}
 	if err := config.ApplyFlags(&wireCfg, flagSet); err != nil {
-		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("apply flag overrides: %w", err)
 	}
 	if err := wireCfg.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("validate config: %w", err)
 	}
 
 	logger.SetDevelopment(wireCfg.Node.Debug)
 	logger.SetLogFile(logFile)
-
 	log.Logger = logger.GetLogger("main")
 
 	if wireCfg.Node.Debug {
-		log.Debug().Msgf("PID: %v | PPID: %v", os.Getpid(), os.Getppid())
+		log.Debug().Int("pid", os.Getpid()).Int("ppid", os.Getppid()).Msg("debug mode")
 	}
 
-	// Initialize observability (OTel meter provider + Prometheus scrape
-	// endpoint). Safe to call when --metrics-enabled=false; falls back to
-	// a no-op meter so call sites stay clean.
-	obsShutdown, err := observability.Init(mainCtx, observability.Config{
-		Enabled:        cliCfg.MetricsEnabled,
-		ServiceName:    "wire-" + wireCfg.Mode,
-		ServiceVersion: cmd.Version,
-		NodeID:         wireCfg.Node.ID,
-		MetricsAddr:    cliCfg.MetricsAddr,
-	}, log.Logger)
+	shutdownObs, err := initObservability(ctx, cliCfg, &wireCfg)
 	if err != nil {
-		log.Fatal().Err(err).Msg("failed to initialize observability")
+		return fmt.Errorf("init observability: %w", err)
 	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := obsShutdown(shutdownCtx); err != nil {
-			log.Warn().Err(err).Msg("observability shutdown error")
-		}
-	}()
+	defer shutdownObs()
 
-	log.Info().Msg("Starting wire...")
+	log.Info().Str("mode", wireCfg.Mode).Msg("Starting wire...")
 
-	var runErr error
-	switch wireCfg.Mode {
-	case "worker":
-		runErr = runWorker(mainCtx, &wireCfg, log.Logger)
-	default:
-		runErr = runCoordinator(mainCtx, &wireCfg, log.Logger)
+	runErr := dispatch(ctx, &wireCfg)
+	if errors.Is(runErr, context.Canceled) {
+		return nil
 	}
-
-	if runErr != nil && runErr != context.Canceled {
-		log.Fatal().Err(runErr).Msg("wire exited with error")
-	}
-
-	log.Info().Msg("Shutting down.")
+	return runErr
 }
 
-func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger) error {
-	// Resolve coordinator node ID.
-	nodeID := wireCfg.Node.ID
-	if nodeID == "" {
-		nodeID, _ = os.Hostname()
-		if nodeID == "" {
-			nodeID = "wire-node-1"
-		}
+func dispatch(ctx context.Context, wireCfg *config.WireConfig) error {
+	switch wireCfg.Mode {
+	case modeWorker:
+		return runWorker(ctx, wireCfg)
+	case modeCoordinator, "":
+		return runCoordinator(ctx, wireCfg)
+	default:
+		return fmt.Errorf("unsupported mode %q", wireCfg.Mode)
 	}
+}
 
-	// Create metadata store (PebbleDB).
+func runCoordinator(ctx context.Context, wireCfg *config.WireConfig) error {
+	nodeID := resolveCoordinatorNodeID(wireCfg.Node.ID)
+
 	store, err := coordinator.NewPebbleStore(wireCfg.Node.DataDir)
 	if err != nil {
-		log.Fatal().Err(err).Msg("failed to open coordinator metadata store")
+		return fmt.Errorf("open coordinator metadata store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
 
-	// Create leader election backend.
-	var election coordinator.LeaderElection
-	switch wireCfg.Election.Backend {
-	case "filelock":
-		election = coordinator.NewFileLockElection(wireCfg.Election.LockPath, wireCfg.HTTP.Addr)
-	case "noop", "":
-		// Single-node mode: no election needed.
-	default:
-		log.Fatal().Str("backend", wireCfg.Election.Backend).Msg("unknown election backend")
+	election, err := newLeaderElection(wireCfg.Election, wireCfg.HTTP.Addr)
+	if err != nil {
+		return err
 	}
 
-	// Create coordinator.
-	coordCfg := coordinator.CoordinatorConfig{
+	coord := coordinator.New(coordinator.CoordinatorConfig{
 		DataDir:    wireCfg.Node.DataDir,
 		NodeID:     nodeID,
 		ListenAddr: wireCfg.HTTP.Addr,
-	}
-	coord := coordinator.New(coordCfg, store, election, log.Logger)
+	}, store, election, log.Logger)
 
-	// Create HTTP server.
 	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger)
-
-	// Create transport server for worker RPC connections.
 	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger)
 
-	// Start everything in an errgroup.
 	g, gCtx := errgroup.WithContext(ctx)
 
-	g.Go(func() error {
-		return coord.Run(gCtx)
-	})
+	g.Go(func() error { return coord.Run(gCtx) })
 
 	g.Go(func() error {
-		err := httpSrv.ListenAndServe()
-		if err == http.ErrServerClosed {
-			return nil
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("http server: %w", err)
 		}
-		return err
+		return nil
 	})
 
-	g.Go(func() error {
-		return transportSrv.ListenAndServe(gCtx)
-	})
+	g.Go(func() error { return transportSrv.ListenAndServe(gCtx) })
 
 	g.Go(func() error {
 		<-gCtx.Done()
-		log.Info().Msg("Shutting down...")
-		_ = coord.Shutdown(context.Background())
-		_ = httpSrv.Shutdown(context.Background())
-		_ = transportSrv.Shutdown(context.Background())
+		log.Info().Msg("Shutting down coordinator...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		_ = coord.Shutdown(shutdownCtx)
+		_ = httpSrv.Shutdown(shutdownCtx)
+		_ = transportSrv.Shutdown(shutdownCtx)
 		return nil
 	})
 
 	return g.Wait()
 }
 
-func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger) error {
+func runWorker(ctx context.Context, wireCfg *config.WireConfig) error {
 	w := worker.New(worker.Config{
 		WorkerID:        wireCfg.Worker.WorkerID,
 		CoordinatorAddr: wireCfg.Worker.CoordinatorAddr,
@@ -210,15 +179,65 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 
 	g, gCtx := errgroup.WithContext(ctx)
 
-	g.Go(func() error {
-		return w.Run(gCtx)
-	})
+	g.Go(func() error { return w.Run(gCtx) })
 
 	g.Go(func() error {
 		<-gCtx.Done()
 		log.Info().Msg("Shutting down worker...")
-		return w.Shutdown(context.Background())
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		return w.Shutdown(shutdownCtx)
 	})
 
 	return g.Wait()
+}
+
+func newLeaderElection(cfg config.ElectionConfig, advertiseAddr string) (coordinator.LeaderElection, error) {
+	switch cfg.Backend {
+	case electionFileLock:
+		return coordinator.NewFileLockElection(cfg.LockPath, advertiseAddr), nil
+	case electionNoop, "":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unknown election backend %q", cfg.Backend)
+	}
+}
+
+func resolveCoordinatorNodeID(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	if hostname, _ := os.Hostname(); hostname != "" {
+		return hostname
+	}
+	return fallbackCoordinatorID
+}
+
+func openLogFile(path string) *os.File {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o666)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to open log file %q: %v\n", path, err)
+		return nil
+	}
+	return f
+}
+
+func initObservability(ctx context.Context, cliCfg *Config, wireCfg *config.WireConfig) (func(), error) {
+	shutdown, err := observability.Init(ctx, observability.Config{
+		Enabled:        cliCfg.MetricsEnabled,
+		ServiceName:    "wire-" + wireCfg.Mode,
+		ServiceVersion: cmd.Version,
+		NodeID:         wireCfg.Node.ID,
+		MetricsAddr:    cliCfg.MetricsAddr,
+	}, log.Logger)
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := shutdown(shutdownCtx); err != nil {
+			log.Warn().Err(err).Msg("observability shutdown error")
+		}
+	}, nil
 }
