@@ -71,6 +71,11 @@ func (c *WireConfig) Validate() error {
 			c.Election.Backend))
 	}
 
+	// Observability requires a bind address when enabled.
+	if c.Observability.Enabled && c.Observability.MetricsAddr == "" {
+		errs = append(errs, fmt.Errorf("observability.metrics_addr is required when observability.enabled is true"))
+	}
+
 	if len(errs) == 0 {
 		return nil
 	}

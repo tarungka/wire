@@ -34,9 +34,6 @@ type Config struct {
 	// NodeVerifyClient enables mutual TLS (require client certificates).
 	NodeVerifyClient bool
 
-	// MaxFrameSize is the maximum wire protocol frame size in bytes.
-	MaxFrameSize uint32
-
 	// CoordinatorDataDir is the directory for coordinator metadata (PebbleDB).
 	CoordinatorDataDir string
 
@@ -64,13 +61,14 @@ type Config struct {
 	// TaskSlots is the number of task slots available on this worker.
 	TaskSlots int
 
-	// MetricsEnabled gates the OTel/Prometheus stack. When false, Init
-	// is still called (to set globals to no-op providers) but no scrape
-	// endpoint is bound.
+	// MetricsEnabled is a pflag binding sink for --metrics-enabled. The
+	// runtime value is consumed via WireConfig.Observability.Enabled
+	// after ApplyFlags; this field is only here so pflag has a target.
 	MetricsEnabled bool
 
-	// MetricsAddr is the bind address for the Prometheus /metrics scrape
-	// endpoint. Default ":9090".
+	// MetricsAddr is a pflag binding sink for --metrics-addr. See
+	// MetricsEnabled — the runtime value lives on
+	// WireConfig.Observability.MetricsAddr.
 	MetricsAddr string
 }
 
@@ -108,7 +106,6 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, *pflag.FlagSet, er
 	f.StringVar(&config.NodeKey, "node-key", "", "TLS private key file")
 	f.StringVar(&config.NodeCA, "node-ca", "", "CA certificate for peer verification")
 	f.BoolVar(&config.NodeVerifyClient, "node-verify-client", false, "require mutual TLS")
-	f.Uint32Var(&config.MaxFrameSize, "max-frame-size", 16777216, "max wire protocol frame size")
 
 	// Coordinator flags
 	f.StringVar(&config.CoordinatorDataDir, "coordinator-data-dir", "data/coordinator", "coordinator metadata storage directory")

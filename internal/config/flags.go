@@ -27,6 +27,8 @@ var flagToKey = map[string]string{
 	"worker-id":            "worker.worker_id",
 	"worker-listen":        "worker.listen_addr",
 	"task-slots":           "worker.task_slots",
+	"metrics-enabled":      "observability.enabled",
+	"metrics-addr":         "observability.metrics_addr",
 }
 
 // ApplyFlags overlays CLI flag values onto cfg, but only for flags that

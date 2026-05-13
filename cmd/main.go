@@ -93,7 +93,7 @@ func run() error {
 		log.Debug().Int("pid", os.Getpid()).Int("ppid", os.Getppid()).Msg("debug mode")
 	}
 
-	shutdownObs, err := initObservability(ctx, cliCfg, &wireCfg)
+	shutdownObs, err := initObservability(ctx, &wireCfg)
 	if err != nil {
 		return fmt.Errorf("init observability: %w", err)
 	}
@@ -222,13 +222,13 @@ func openLogFile(path string) *os.File {
 	return f
 }
 
-func initObservability(ctx context.Context, cliCfg *Config, wireCfg *config.WireConfig) (func(), error) {
+func initObservability(ctx context.Context, wireCfg *config.WireConfig) (func(), error) {
 	shutdown, err := observability.Init(ctx, observability.Config{
-		Enabled:        cliCfg.MetricsEnabled,
+		Enabled:        wireCfg.Observability.Enabled,
 		ServiceName:    "wire-" + wireCfg.Mode,
 		ServiceVersion: cmd.Version,
 		NodeID:         wireCfg.Node.ID,
-		MetricsAddr:    cliCfg.MetricsAddr,
+		MetricsAddr:    wireCfg.Observability.MetricsAddr,
 	}, log.Logger)
 	if err != nil {
 		return nil, err
