@@ -107,22 +107,57 @@ func (g *StreamGraph) addEdge(sourceID, targetID int, shuffle ShuffleType) {
 	})
 }
 
-// validateForCluster checks that every node has a ClassName populated.
-// In Cluster mode, operators are resolved by name from the worker's registry;
-// inline closures (MapFn/FilterFn/...) cannot be serialized across the RPC
-// boundary and so are not allowed in a Cluster-mode graph.
+// validateForCluster checks the subset of SDK graphs supported by the current
+// cluster runtime. Cluster mode resolves operators by ClassName from the
+// worker registry; inline closures cannot be serialized across the RPC
+// boundary. The current cluster scheduler also supports only forward, linear
+// chains. Keyed shuffle, stateful process/reduce, and windows are embedded-only
+// or target capabilities until distributed shuffle and managed state are wired
+// through the worker runtime.
 func (g *StreamGraph) validateForCluster() error {
 	for _, node := range g.nodes {
+		if !nodeTypeSupportedInCluster(node.Type) {
+			return fmt.Errorf(
+				"%w: cluster mode does not yet support %s operators; "+
+					"the current cluster runtime supports only named source/map/flatmap/filter/sink "+
+					"operators with forward edges. Run this graph in Embedded mode or remove %q until "+
+					"distributed shuffle and managed state land. See docs/current-capabilities.md",
+				ErrInvalidConfig, nodeTypeString(node.Type), nodeDisplayName(node),
+			)
+		}
 		if node.ClassName == "" {
 			return fmt.Errorf(
 				"%w: cluster-mode graph requires ClassName on every node; "+
-					"node %q (type %d) has no ClassName — did you use .Map(closure) "+
-					"instead of .MapNamed(name, cfg)?",
-				ErrInvalidConfig, node.Name, node.Type,
+					"node %q (%s) has no ClassName. Use AddSourceNamed, MapNamed, "+
+					"FlatMapNamed, FilterNamed, or AddSinkNamed, or run this graph in Embedded mode. "+
+					"See docs/current-capabilities.md",
+				ErrInvalidConfig, nodeDisplayName(node), nodeTypeString(node.Type),
+			)
+		}
+	}
+	for _, edge := range g.edges {
+		if edge.Shuffle != ShuffleForward {
+			return fmt.Errorf(
+				"%w: cluster mode does not yet support %s shuffle from %q to %q; "+
+					"only forward edges are supported. KeyBy creates hash shuffle and requires "+
+					"Milestone 1 distributed shuffle. See docs/current-capabilities.md",
+				ErrInvalidConfig,
+				shuffleTypeString(edge.Shuffle),
+				nodeDisplayName(g.nodes[edge.SourceID]),
+				nodeDisplayName(g.nodes[edge.TargetID]),
 			)
 		}
 	}
 	return nil
+}
+
+func nodeTypeSupportedInCluster(t StreamNodeType) bool {
+	switch t {
+	case NodeSource, NodeMap, NodeFlatMap, NodeFilter, NodeSink:
+		return true
+	default:
+		return false
+	}
 }
 
 // validate checks the graph for structural errors.
@@ -165,6 +200,31 @@ func (g *StreamGraph) validate() error {
 	}
 
 	return nil
+}
+
+func nodeDisplayName(node *StreamNode) string {
+	if node == nil {
+		return "<unknown>"
+	}
+	if node.Name != "" {
+		return node.Name
+	}
+	return fmt.Sprintf("%s-%d", nodeTypeString(node.Type), node.ID)
+}
+
+func shuffleTypeString(s ShuffleType) string {
+	switch s {
+	case ShuffleForward:
+		return "forward"
+	case ShuffleHash:
+		return "hash"
+	case ShuffleBroadcast:
+		return "broadcast"
+	case ShuffleRebalance:
+		return "rebalance"
+	default:
+		return "unknown"
+	}
 }
 
 // hasCycle performs a DFS-based cycle detection.

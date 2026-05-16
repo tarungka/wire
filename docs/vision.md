@@ -6,6 +6,12 @@
 
 ---
 
+> **Current implementation boundary:** This document describes Wire's target
+> system contract. For what the current codebase supports today, see
+> [current-capabilities.md](current-capabilities.md). Exactly-once cluster
+> execution, durable Pebble-backed engine state, savepoint restore, and
+> checkpoint-based job recovery are target capabilities until wired end to end.
+
 ## 1. What Wire Is
 
 Wire is a **cloud-native, distributed, stateful stream processing engine** written in Go.

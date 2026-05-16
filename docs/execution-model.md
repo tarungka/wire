@@ -6,6 +6,12 @@
 
 ---
 
+> **Current implementation boundary:** This document describes the target
+> execution model. Engine primitives for watermarks, barriers, checkpoint
+> metadata, and state exist, but the current cluster path does not yet provide
+> end-to-end keyed shuffle, checkpoint/restore, exactly-once semantics, or
+> distributed keyed windows. See [current-capabilities.md](current-capabilities.md).
+
 ## 1. Event Model
 
 In Wire, the atomic unit of processing is the **Event**.

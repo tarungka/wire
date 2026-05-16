@@ -6,6 +6,12 @@
 
 ---
 
+> **Current implementation boundary:** This document describes the intended
+> runtime architecture. The current cluster runtime supports only forward-only
+> named-operator chains; distributed shuffle, networked source/intermediate/sink
+> task roles, cluster checkpointing, and recovery are still target capabilities.
+> See [current-capabilities.md](current-capabilities.md).
+
 ## 1. High-Level Topology
 
 Wire implements a classic **Master-Worker** distributed architecture.
