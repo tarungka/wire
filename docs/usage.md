@@ -6,6 +6,12 @@
 
 ---
 
+> **Current implementation boundary:** Cluster mode currently supports
+> forward-only named source/map/flatmap/filter/sink chains. `KeyBy`, windows,
+> process/reduce operators, durable engine Pebble state, real savepoint restore,
+> and exactly-once cluster recovery are not wired end to end yet. See
+> [current-capabilities.md](current-capabilities.md).
+
 ## 1. Prerequisites
 
 * Go 1.21 or later
@@ -217,7 +223,8 @@ curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/cancel | jq
 
 ### Pause a Job
 
-Pausing a job triggers an automatic savepoint before suspending execution.
+Pausing a job currently creates savepoint metadata before suspending execution.
+It does not yet create a restorable state snapshot.
 
 ```bash
 curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/pause | jq
@@ -241,10 +248,8 @@ Response:
   "savepoint": {
     "id": "sp_xyz789",
     "job_id": "job_abc123",
-    "status": "COMPLETED",
-    "path": "data/savepoints/sp_xyz789",
-    "trigger_time": "2025-01-01T00:00:05Z",
-    "completion_time": "2025-01-01T00:00:05Z"
+    "status": "IN_PROGRESS",
+    "trigger_time": "2025-01-01T00:00:05Z"
   }
 }
 ```
@@ -258,6 +263,9 @@ curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/resume | jq
 ## 7. Savepoint API
 
 ### Trigger a Savepoint
+
+This endpoint currently records savepoint metadata only. Barrier injection,
+state snapshotting, and restore from savepoint are target capabilities.
 
 ```bash
 curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/savepoints | jq
@@ -364,7 +372,7 @@ import (
     "context"
     "fmt"
 
-    "github.com/widmogrod/wire/sdk"
+    "github.com/tarungka/wire/sdk"
 )
 
 func main() {
@@ -400,7 +408,7 @@ Key SDK types:
 
 * `StreamExecutionEnvironment` — entry point; create with `sdk.New()`
 * `DataStream` — returned by `AddSource()`; chain `Map`, `FlatMap`, `Filter`, `KeyBy`, `Union`, `AddSink`
-* `KeyedStream` — returned by `KeyBy()`; enables keyed state and windowing
+* `KeyedStream` — returned by `KeyBy()`; embedded/local API for keyed operations. Cluster mode does not support keyed shuffle yet.
 * `JobResult` — returned by `Execute()`; contains `JobID`, `Err`, and `Metrics`
 
 ## 11. Error Responses

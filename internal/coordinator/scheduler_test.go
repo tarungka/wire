@@ -117,8 +117,8 @@ func TestGenerateTaskDescriptors_RejectsShuffleEdge(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for shuffle edge in Phase 1")
 	}
-	if !strings.Contains(err.Error(), "shuffle") && !strings.Contains(err.Error(), "Phase 2") {
-		t.Fatalf("error %q should mention shuffle/Phase 2", err)
+	if !strings.Contains(err.Error(), "shuffle") || !strings.Contains(err.Error(), "current-capabilities") {
+		t.Fatalf("error %q should mention shuffle/current capabilities", err)
 	}
 }
 

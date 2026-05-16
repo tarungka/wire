@@ -34,6 +34,44 @@ func TestValidateForCluster_RejectsEmptyClassName(t *testing.T) {
 	}
 }
 
+func TestValidateForCluster_RejectsUnsupportedNodeType(t *testing.T) {
+	g := newStreamGraph()
+	src := g.addNode(&StreamNode{Name: "src", Type: NodeSource, ClassName: "memory-source"})
+	keyBy := g.addNode(&StreamNode{Name: "by-user", Type: NodeKeyBy})
+	sink := g.addNode(&StreamNode{Name: "snk", Type: NodeSink, ClassName: "memory-sink"})
+	g.addEdge(src, keyBy, ShuffleHash)
+	g.addEdge(keyBy, sink, ShuffleForward)
+
+	err := g.validateForCluster()
+	if err == nil {
+		t.Fatal("expected validateForCluster to reject KeyBy")
+	}
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("error %v should wrap ErrInvalidConfig", err)
+	}
+	if !strings.Contains(err.Error(), "keyby") || !strings.Contains(err.Error(), "current-capabilities") {
+		t.Fatalf("error %q should mention keyby/current capabilities", err)
+	}
+}
+
+func TestValidateForCluster_RejectsShuffleEdge(t *testing.T) {
+	g := newStreamGraph()
+	src := g.addNode(&StreamNode{Name: "src", Type: NodeSource, ClassName: "memory-source"})
+	sink := g.addNode(&StreamNode{Name: "snk", Type: NodeSink, ClassName: "memory-sink"})
+	g.addEdge(src, sink, ShuffleHash)
+
+	err := g.validateForCluster()
+	if err == nil {
+		t.Fatal("expected validateForCluster to reject hash shuffle")
+	}
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("error %v should wrap ErrInvalidConfig", err)
+	}
+	if !strings.Contains(err.Error(), "hash shuffle") || !strings.Contains(err.Error(), "KeyBy") {
+		t.Fatalf("error %q should mention hash shuffle/KeyBy", err)
+	}
+}
+
 func TestGraphValidateEmptyPipeline(t *testing.T) {
 	g := newStreamGraph()
 	err := g.validate()

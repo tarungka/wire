@@ -228,8 +228,15 @@ func generateTaskDescriptors(job *JobMeta) ([]rpc.TaskDescriptor, error) {
 	if len(sorted) == 0 {
 		return nil, fmt.Errorf("job %q has no operators", job.ID)
 	}
-	if hasShuffleEdge(graph) {
-		return nil, fmt.Errorf("job %q has shuffle edges; cross-worker shuffle is not yet supported (Phase 2)", job.ID)
+	if edge, ok := firstUnsupportedShuffleEdge(graph); ok {
+		return nil, fmt.Errorf(
+			"job %q uses %s shuffle from %q to %q; cluster scheduling currently supports only forward edges. "+
+				"KeyBy/hash shuffle requires Milestone 1 distributed shuffle; see docs/current-capabilities.md",
+			job.ID,
+			edge.Shuffle.String(),
+			edge.SourceOperatorID,
+			edge.TargetOperatorID,
+		)
 	}
 
 	p := job.Parallelism
@@ -324,16 +331,17 @@ func topoSortOperators(graph rpc.JobGraph) ([]rpc.OperatorDescriptor, error) {
 	return result, nil
 }
 
-// hasShuffleEdge returns true if any edge requires partitioning (Hash /
-// Rebalance / Broadcast). Forward edges are safe for Phase 1.
-func hasShuffleEdge(graph rpc.JobGraph) bool {
+// firstUnsupportedShuffleEdge returns the first edge that requires data
+// partitioning. Forward edges are the only cluster-supported strategy until
+// distributed shuffle is implemented.
+func firstUnsupportedShuffleEdge(graph rpc.JobGraph) (rpc.EdgeDescriptor, bool) {
 	for _, edge := range graph.Edges {
 		switch edge.Shuffle {
 		case rpc.ShuffleStrategyHash, rpc.ShuffleStrategyRebalance, rpc.ShuffleStrategyBroadcast:
-			return true
+			return edge, true
 		}
 	}
-	return false
+	return rpc.EdgeDescriptor{}, false
 }
 
 // assignTasks distributes tasks across available workers.

@@ -9,6 +9,7 @@ Central index for all Wire project documentation.
 | File | Description | Status |
 |------|-------------|--------|
 | [vision.md](vision.md) | System contract — what Wire is, its guarantees, and design principles | Canon v1.0.0 |
+| [current-capabilities.md](current-capabilities.md) | Current implementation boundary — what works today vs target capabilities | Reference v0.1.0 |
 | [architecture.md](architecture.md) | Runtime structure — Coordinator/Worker topology and components | Canon v1.0.0 |
 | [execution-model.md](execution-model.md) | Engine physics — events, time semantics, watermarks, and windowing | Canon v1.0.0 |
 | [state-backend.md](state-backend.md) | Persistence — state model, Pebble backend, and checkpointing | Canon v1.0.0 |
@@ -35,3 +36,5 @@ Each WIP gets its own folder (`WIP-01/`, `WIP-02/`, ...) containing a `README.md
 ## Flink Comparison
 
 The [`flink/`](flink/) folder contains a detailed side-by-side comparison of Wire's design against Apache Flink's architecture. See [wire-vs-flink-analysis.md](flink/wire-vs-flink-analysis.md).
+
+For the current senior architecture gap review and implementation roadmap, see [wire-flink-readiness-review.md](flink/wire-flink-readiness-review.md).

@@ -6,6 +6,11 @@
 
 ---
 
+> **Current implementation boundary:** This document describes the target state
+> backend architecture. Coordinator metadata is persisted in PebbleDB today, but
+> the engine Pebble state backend is not implemented yet; HashMap is the working
+> engine state backend. See [current-capabilities.md](current-capabilities.md).
+
 ## 1. State Model
 
 State in Wire is not a "sidecar" cache; it is a first-class citizen embedded in the processing pipeline.
