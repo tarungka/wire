@@ -6,17 +6,27 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-22`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** YAML/JSON system-config loading, ordered file merging, environment substitution, CLI overrides, and validation are implemented.
+- **Remaining:** Pipeline YAML is not implemented (WIP-19), and some configured features such as authentication/TLS remain unwired in the runtime. Reconcile historical flag and schema examples with the current loader.
+- **Evidence:** [loader.go](../../../internal/config/loader.go), [flags.go](../../../internal/config/flags.go), [main.go](../../../cmd/main.go).
 
 ---
 

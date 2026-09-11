@@ -6,11 +6,11 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-25`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
@@ -20,6 +20,16 @@
 | 0.2 | 2026-02-24 | Tarun Ashok | Add Handshake (0x00), CRC32C checksums, RecordBatch (0x06) reservation, StreamID clarification, message type range partitioning. Resolves open questions #1, #3, #5. |
 | 0.3 | 2026-02-24 | Tarun Ashok | Split handshake into session-level negotiation (SessionHandshake 0x07 on control stream) and per-stream declaration (StreamHeader 0x00). Based on Kafka/HTTP/2/HTTP/3 industry precedent. Resolves unidirectional stream contradiction. |
 | 0.4 | 2026-02-25 | Tarun Ashok | Add mermaid diagrams: frame reading state machine, data stream lifecycle state machine, session establishment sequence, backpressure flow sequence, message flow by stream type. |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Length-prefixed msgpack frames, CRC32C checks, core message codecs, and transport/fuzz tests are present.
+- **Remaining:** Reconcile the revised session-handshake and stream-header specification with the older per-stream handshake in code; task-to-task routing is not integrated. RecordBatch remains reserved.
+- **Evidence:** [message.go](../../../internal/protocol/message.go), [frame.go](../../../internal/protocol/frame.go), [stream.go](../../../internal/transport/stream.go).
 
 ---
 

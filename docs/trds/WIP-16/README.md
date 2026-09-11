@@ -6,11 +6,11 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-23`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
@@ -18,6 +18,16 @@
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
 | 0.2 | 2026-02-23 | Tarun Ashok | Scoped to HTTP API connector only |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Basic Source/Sink interfaces, operator factory registration, and memory test connectors are implemented.
+- **Remaining:** The proposed HTTP source/sink, replay/offset contracts, and transactional connector integration are absent. Production third-party connectors remain outside this proposal's HTTP-focused scope.
+- **Evidence:** [source.go](../../../sdk/source.go), [sink.go](../../../sdk/sink.go), [registry.go](../../../internal/worker/registry.go), [source.go](../../../sdk/connectors/memory/source.go).
 
 ---
 

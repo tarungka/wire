@@ -10,13 +10,23 @@
 >
 > **Created:** `2026-05-09`
 >
-> **Last Updated:** `2026-05-09`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-05-09 | Tarun Ashok | Initial draft + implementation |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Streaming WatchCommands, scheduler wake-up/coalescing, pending-command handoff, and heartbeat fallback are implemented.
+- **Remaining:** Worker stream metrics, trace propagation, SDK completion streaming, and retirement of heartbeat command delivery remain follow-ups outside the implemented scope.
+- **Evidence:** [server.go](../../../internal/rpc/server.go), [coordinator.go](../../../internal/coordinator/coordinator.go), [scheduler.go](../../../internal/coordinator/scheduler.go), [worker.go](../../../internal/worker/worker.go).
 
 ---
 
@@ -645,7 +655,7 @@ Wire-protocol surface change: one new method ID (`0x0008`). No existing message 
 
 ## 6. Future Work
 
-- **Worker `/metrics` for the WatchCommands stream.** Counter for stream open / close / reconnect, histogram for command-dispatch latency from `EnqueueCommand` to `handleCommands`. The observability harness from WIP-19 covers everything else; the worker just needs `observability.Init` plumbed into `wire-worker-example`.
-- **Trace context propagation across the stream.** Currently each `WatchCommands` push is its own opaque event. Adding a `TraceContext` field to `WorkerCommand` (or piggy-backing on the frame header) would let worker→coordinator traces stitch in Jaeger/Tempo when the OTLP exporter from WIP-19 lands.
+- **Worker `/metrics` for the WatchCommands stream.** Counter for stream open / close / reconnect, histogram for command-dispatch latency from `EnqueueCommand` to `handleCommands`. The observability harness in `examples/observability-stack` covers everything else; the worker just needs `observability.Init` plumbed into `wire-worker-example`.
+- **Trace context propagation across the stream.** Currently each `WatchCommands` push is its own opaque event. Adding a `TraceContext` field to `WorkerCommand` (or piggy-backing on the frame header) would let worker→coordinator traces stitch in Jaeger/Tempo when the OTLP exporter described in `docs/observability.md` lands.
 - **SDK streaming completion.** The submitter polls `GET /api/v1/jobs/{id}` every 100 ms. With `CallStream` available, a `WatchJobStatus` RPC would let the SDK block on a completion notification instead — pushing job latency below the 100 ms poll floor.
 - **Remove heartbeat-based command delivery entirely.** Once all in-tree workers use `WatchCommands` and a deprecation cycle has passed, drop the `Commands` field from `HeartbeatResponse` and the `DrainCommands` path.

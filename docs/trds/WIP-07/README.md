@@ -6,17 +6,27 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-22`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** RPC framing, client/server dispatch, errors, worker registration, heartbeat, and task-status reporting are implemented. WIP-21 adds streaming command dispatch.
+- **Remaining:** The full proposed checkpoint and resource-reservation workflows are not wired into the runtime. Reconcile the specification with the methods actually registered by the coordinator.
+- **Evidence:** [client.go](../../../internal/rpc/client.go), [server.go](../../../internal/rpc/server.go), [transport.go](../../../internal/coordinator/transport.go).
 
 ---
 

@@ -1,8 +1,14 @@
 # WIP-24 — TaskSlot.Run masks operator-chain errors via errgroup race
 
-> **Status:** implemented in this commit. Fix lives in
-> `internal/engine/task_slot.go`; doc captures the analysis so the
-> reasoning isn't lost.
+> **Status:** `Implemented`
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** TaskSlot captures the chain error before cancellation and preserves it over incidental context cancellation, with a guard that preserves peer errors.
+- **Remaining:** No remaining implementation work identified for the scoped TaskSlot fix. Other executors are outside this fix and require separate assessment.
+- **Evidence:** [task_slot.go](../../../internal/engine/task_slot.go), [task_slot_test.go](../../../internal/engine/task_slot_test.go).
 
 ## Symptom
 

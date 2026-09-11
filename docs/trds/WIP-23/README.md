@@ -1,7 +1,14 @@
 # WIP-23 — Coordinator submit path is lock+fsync-bound under load
 
-> **Status:** deferred. Diagnosis confirmed via 10-min Grafana sweep
-> against `examples/observability-stack`; fix not yet implemented.
+> **Status:** `Partially Implemented`
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Fix 1 (one WriteBatch per submission) and Fix 2 (persistence outside the coordinator mutex) are implemented.
+- **Remaining:** Fix 3 (selective NoSync writes) is not implemented; store mutations still use pebble.Sync. Revalidate the documented latency targets under the stated load profile before claiming those results.
+- **Evidence:** [job_manager.go](../../../internal/coordinator/job_manager.go), [store_pebble.go](../../../internal/coordinator/store_pebble.go).
 
 ## Symptom
 
@@ -64,12 +71,12 @@ Worker-side RPCs queue behind submitters on the same mutex.
    — one goroutine per concurrent HTTP submit, all blocked on
    `c.mu`/fsync.
 
-## Fix plan
+## Fix plan and current progress
 
 Three independent improvements, listed in order of expected impact.
 Apply them as separate commits / PRs so each can be measured.
 
-### Fix 1 — Single batched fsync per submit (highest impact / lowest risk)
+### Fix 1 — Single batched fsync per submit (implemented)
 
 `internal/coordinator/job_manager.go` `SubmitJob`:
 
@@ -82,7 +89,7 @@ Apply them as separate commits / PRs so each can be measured.
 Expected effect: HTTP submit p99 ~ halves, Pebble `set` rate halves
 (replaced by `write_batch` rate at the same overall throughput).
 
-### Fix 2 — Drop the fsync from the critical section
+### Fix 2 — Drop the fsync from the critical section (implemented)
 
 `internal/coordinator/job_manager.go` `SubmitJob`:
 
@@ -102,7 +109,7 @@ Expected effect: HTTP submit p99 ~ halves, Pebble `set` rate halves
 Expected effect: Heartbeat / UpdateTaskStatus tail latency collapses
 back to single-digit ms because they no longer queue behind disk I/O.
 
-### Fix 3 — `pebble.NoSync` for non-critical metadata writes
+### Fix 3 — `pebble.NoSync` for non-critical metadata writes (not implemented)
 
 `internal/coordinator/store_pebble.go`:
 

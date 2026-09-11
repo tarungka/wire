@@ -6,17 +6,27 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-22`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Bounded-out-of-orderness, monotonic, and ingestion-time strategies, idle-input tracking, and propagation primitives are implemented and tested.
+- **Remaining:** Window closure and checkpoint recovery driven by these watermarks are not implemented end to end in cluster execution.
+- **Evidence:** [watermark_strategy.go](../../../internal/engine/watermark_strategy.go), [watermark_tracker.go](../../../internal/engine/watermark_tracker.go), [watermark_propagator.go](../../../internal/engine/watermark_propagator.go).
 
 ---
 

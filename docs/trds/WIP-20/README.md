@@ -6,17 +6,27 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-03-06`
 >
-> **Last Updated:** `2026-03-06`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-03-06 | Tarun Ashok | Initial draft |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** The linear-chain MVP is operational: registered operators execute on workers and a cluster integration test checks sink output.
+- **Remaining:** Reconcile remaining implementation/specification differences: the executor assembles the chain directly rather than using TaskSlot.Run(), and reports RUNNING before operator initialization. Shuffle and state-backend integration are explicit non-goals, not completion blockers for this WIP.
+- **Evidence:** [registry.go](../../../internal/worker/registry.go), [task_executor.go](../../../internal/worker/task_executor.go), [worker.go](../../../internal/worker/worker.go), [integration_test.go](../../../internal/worker/integration_test.go).
 
 ---
 

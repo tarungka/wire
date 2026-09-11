@@ -6,17 +6,27 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-22`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Heartbeat loops, liveness tracking, timeout handling, and component tests exist.
+- **Remaining:** Complete the worker-loss recovery/rescheduling workflow; heartbeat detection alone does not restore running jobs.
+- **Evidence:** [heartbeat.go](../../../internal/rpc/heartbeat.go), [worker.go](../../../internal/worker/worker.go), [reconcile.go](../../../internal/coordinator/reconcile.go).
 
 ---
 

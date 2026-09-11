@@ -6,17 +6,27 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-23`
 >
-> **Last Updated:** `2026-02-23`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-23 | Tarun Ashok | Initial draft |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** The HashMap backend, ordered iteration, memory accounting, snapshot/restore, and backend factory are implemented and tested.
+- **Remaining:** The Pebble engine backend returns an unavailable error. Backend parity, cluster state integration, and rescaling remain incomplete; coordinator Pebble metadata is separate.
+- **Evidence:** [state_backend_hashmap.go](../../../internal/engine/state_backend_hashmap.go), [state_backend_factory.go](../../../internal/engine/state_backend_factory.go).
 
 ---
 

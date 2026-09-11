@@ -1,8 +1,16 @@
 # WIP-19: YAML Pipeline Parser
 
-**Status:** Proposed
+**Status:** `Proposed`
 **Author:** TBD
 **Dependencies:** WIP-14 (User API & Go SDK)
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** The proposal defines a pipeline schema and intended conversion to StreamGraph; no pipeline parser is implemented.
+- **Remaining:** Implement parsing, expression evaluation, transform resolution, validation, graph conversion, and the proposed reload behavior. Existing YAML system configuration is a different feature.
+- **Evidence:** [stream_graph.go](../../../sdk/stream_graph.go), [loader.go](../../../internal/config/loader.go).
 
 ## Summary
 

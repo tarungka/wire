@@ -6,17 +6,27 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-22`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Graph construction, basic transformations, embedded execution, named cluster operators, and a test harness are implemented.
+- **Remaining:** Complete windows/reductions, durable managed state, side outputs, pipeline YAML, and distributed keyed execution. MiniCluster currently wraps the embedded executor.
+- **Evidence:** [embedded.go](../../../sdk/embedded.go), [cluster.go](../../../sdk/cluster.go), [mini_cluster.go](../../../sdk/mini_cluster.go).
 
 ---
 
