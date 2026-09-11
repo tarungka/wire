@@ -122,6 +122,11 @@ func (ex *embeddedExecutor) runLinearInstance(
 		return fmt.Errorf("sdk: no source in pipeline")
 	}
 
+	if err := sourceOp.Open(runCtx); err != nil {
+		return err
+	}
+	defer func() { _ = sourceOp.Close() }()
+
 	// Create channels.
 	eventCh := make(chan engine.Event, engine.DefaultInputBufferSize)
 	controlCh := make(chan engine.ControlMsg, 8)
@@ -321,6 +326,13 @@ func (ex *embeddedExecutor) runStageInstance(
 		case NodeWindow, NodeReduce:
 			// Window/Reduce not yet implemented in embedded mode.
 		}
+	}
+
+	if isSourceStage && sourceOp != nil {
+		if err := sourceOp.Open(runCtx); err != nil {
+			return err
+		}
+		defer func() { _ = sourceOp.Close() }()
 	}
 
 	eventCh := io.inputChs[instanceIdx]

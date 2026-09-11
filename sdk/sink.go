@@ -11,3 +11,10 @@ type Sink interface {
 	// Close releases resources held by the sink.
 	Close() error
 }
+
+// BatchSink optionally accepts an explicit batch. Write remains synchronous;
+// callers must handle partial delivery if a batch spans multiple requests.
+type BatchSink interface {
+	Sink
+	WriteBatch(ctx context.Context, events []Event) error
+}

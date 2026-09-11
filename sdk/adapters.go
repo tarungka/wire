@@ -65,9 +65,14 @@ type sourceAdapter struct {
 	source Source
 }
 
-func (a *sourceAdapter) Open(ctx context.Context) error      { return a.source.Open(ctx) }
-func (a *sourceAdapter) Close() error                        { return a.source.Close() }
-func (a *sourceAdapter) Checkpoint(_ uint64) ([]byte, error) { return nil, nil }
+func (a *sourceAdapter) Open(ctx context.Context) error { return a.source.Open(ctx) }
+func (a *sourceAdapter) Close() error                   { return a.source.Close() }
+func (a *sourceAdapter) Checkpoint(id uint64) ([]byte, error) {
+	if source, ok := a.source.(CheckpointedSource); ok {
+		return source.Checkpoint(id)
+	}
+	return nil, nil
+}
 func (a *sourceAdapter) ReadBatch(ctx context.Context) ([]Event, error) {
 	return a.source.ReadBatch(ctx)
 }

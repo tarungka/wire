@@ -25,9 +25,9 @@
 
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Basic Source/Sink interfaces, operator factory registration, and memory test connectors are implemented.
-- **Remaining:** The proposed HTTP source/sink, replay/offset contracts, and transactional connector integration are absent. Production third-party connectors remain outside this proposal's HTTP-focused scope.
-- **Evidence:** [source.go](../../../sdk/source.go), [sink.go](../../../sdk/sink.go), [registry.go](../../../internal/worker/registry.go), [source.go](../../../sdk/connectors/memory/source.go).
+- **Implemented:** Basic Source/Sink interfaces, optional checkpointed-source and batch-sink contracts, operator factories, memory test connectors, and HTTP source/sink are implemented. HTTP coverage includes bounded ingest, TLS/authentication, consumed sequence offsets, synchronous delivery, bounded retries, stable idempotency IDs, and embedded SDK execution.
+- **Remaining:** Automatic cluster offset restore/replay orchestration, SDK transactional connector integration, automatic runtime batching/DLQ routing, the stated coverage/load gates, and the developer trial remain incomplete. HTTP acknowledgements are volatile; restoring a sequence does not recover events or trigger sender replay. Worker HTTP source lifecycle depends on WIP-20. Production third-party connectors remain outside this proposal's HTTP-focused scope.
+- **Evidence:** [source.go](../../../sdk/source.go), [sink.go](../../../sdk/sink.go), [registry.go](../../../internal/worker/registry.go), [source.go](../../../sdk/connectors/memory/source.go), [HTTP connector guide](../../../sdk/connectors/httpapi/README.md), [HTTP tests](../../../sdk/connectors/httpapi/httpapi_test.go).
 
 ---
 
