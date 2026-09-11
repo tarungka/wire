@@ -7,7 +7,7 @@
 Fixes 1 and 2 were present in `master` at `0e78195`; this change adds Fix 3. The proposal below retains its original performance targets.
 
 - **Implemented:** Fix 1 (one WriteBatch per submission), Fix 2 (persistence outside the coordinator mutex), and Fix 3 (selective NoSync heartbeat writes) are implemented. Heartbeat timestamps use separate `workers/{id}/heartbeat` keys, so a delayed flush cannot overwrite newer durable registration metadata. Recovery ignores these advisory keys and marks registered workers stale.
-- **Remaining:** Revalidate the documented latency targets under the stated load profile. The Docker daemon was unavailable during local validation; no latency improvement or target attainment is claimed. Status remains partially implemented until this verification is complete.
+- **Remaining:** The host load run met HTTP submit and heartbeat targets, but status-update latency and goroutine counts missed their targets. Status remains partially implemented. See [load results](load-results.md) for the measured scope and limitations.
 - **Durability validation:** Recovery tests cover retained and deliberately discarded advisory writes, registration interleaving, and reopening Pebble after a child process exits without closing the store. The process-exit test preserves synchronous job metadata/configuration; it does not simulate a machine power failure. See [heartbeat_durability_test.go](../../../internal/coordinator/heartbeat_durability_test.go).
 - **Evidence:** [job_manager.go](../../../internal/coordinator/job_manager.go), [store_pebble.go](../../../internal/coordinator/store_pebble.go).
 
