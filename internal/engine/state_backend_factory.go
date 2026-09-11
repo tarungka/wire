@@ -54,18 +54,3 @@ func NewStateBackend(cfg StateBackendConfig) (StateBackend, error) {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownBackendType, backendType)
 	}
 }
-
-// newPebbleStateBackend creates a PebbleDB-backed state backend.
-// This is a placeholder that will be fully implemented when the engine's
-// Pebble integration is wired up. The coordinator package already has a
-// working PebbleStore implementation (internal/coordinator/store_pebble.go)
-// that demonstrates the pattern.
-func newPebbleStateBackend(cfg StateBackendConfig) (StateBackend, error) {
-	if cfg.PebbleDataDir == "" {
-		return nil, fmt.Errorf("state backend: pebble requires PebbleDataDir to be set")
-	}
-	// TODO(WIP-18): Wire up PebbleDB state backend using the same pattern as
-	// internal/coordinator/store_pebble.go. For now, return an error
-	// indicating the backend is not yet available for direct engine use.
-	return nil, fmt.Errorf("state backend: pebble backend is not yet available for direct engine use (use hashmap for testing)")
-}
