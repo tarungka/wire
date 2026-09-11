@@ -13,6 +13,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 	"github.com/rs/zerolog"
+
 	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
