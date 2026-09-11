@@ -53,7 +53,7 @@ type Sink struct {
 
 func NewSink(c SinkConfig) (*Sink, error) {
 	u, err := url.Parse(c.URL)
-	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" || (u.Scheme != "https" && !(u.Scheme == "http" && c.AllowInsecure)) {
+	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" || (u.Scheme != "https" && (u.Scheme != "http" || !c.AllowInsecure)) {
 		return nil, fmt.Errorf("http-api: valid HTTPS URL required (HTTP requires allow_insecure)")
 	}
 	if c.Method == "" {

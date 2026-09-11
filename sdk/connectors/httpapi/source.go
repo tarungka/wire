@@ -120,11 +120,11 @@ func (s *Source) ingest(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
-		http.Error(w, "method not allowed", 405)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !s.config.Auth.authorized(r) {
-		http.Error(w, "unauthorized", 401)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.config.MaxBodySize))
@@ -132,30 +132,30 @@ func (s *Source) ingest(w http.ResponseWriter, r *http.Request) {
 	var request envelope
 	if err := decoder.Decode(&request); err != nil {
 		var tooLarge *http.MaxBytesError
-		code := 400
+		code := http.StatusBadRequest
 		if errors.As(err, &tooLarge) {
-			code = 413
+			code = http.StatusRequestEntityTooLarge
 		}
 		http.Error(w, "invalid event body", code)
 		return
 	}
 	if decoder.Decode(new(any)) != io.EOF || len(request.Events) == 0 {
-		http.Error(w, "expected one nonempty event envelope", 400)
+		http.Error(w, "expected one nonempty event envelope", http.StatusBadRequest)
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		http.Error(w, "source closed", 503)
+		http.Error(w, "source closed", http.StatusServiceUnavailable)
 		return
 	}
 	if len(request.Events) > s.config.BufferSize-len(s.queue) {
 		w.Header().Set("Retry-After", "1")
-		http.Error(w, "buffer full", 429)
+		http.Error(w, "buffer full", http.StatusTooManyRequests)
 		return
 	}
 	if uint64(len(request.Events)) > math.MaxUint64-s.received {
-		http.Error(w, "sequence exhausted", 503)
+		http.Error(w, "sequence exhausted", http.StatusServiceUnavailable)
 		return
 	}
 	for _, event := range request.Events {

@@ -205,7 +205,8 @@ func TestSinkIdempotencyPreservesLargeIntegerIDs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if <-keys == <-keys {
+	first, second := <-keys, <-keys
+	if first == second {
 		t.Fatal("distinct integer IDs collapsed into the same idempotency key")
 	}
 }
