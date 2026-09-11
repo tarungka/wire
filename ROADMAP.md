@@ -16,15 +16,14 @@
 The maintained status table is the [complete WIP index](docs/trds/README.md#wip-index). Each proposal has a dated implementation section identifying completed work, remaining work, and source evidence.
 
 - **Implemented:** WIP-21, WIP-22, WIP-24, WIP-25.
-- **Partially Implemented:** WIP-01 through WIP-18, WIP-20, WIP-23.
-- **Proposed:** WIP-19 (YAML pipeline parser).
+- **Partially Implemented:** WIP-01 through WIP-20, WIP-23.
 
 ## Near-term focus (in priority order)
 
 1. **Make the supported execution contract explicit.** Validate linear cluster graph shapes, reconcile task lifecycle semantics (WIP-20), and reject unsupported pause/restore operations until implemented (WIP-15).
 2. **Complete the distributed stateful execution path.** Integrate keyed routing/state transfer, Pebble engine state, barrier trigger/ACK/abort handling, source replay, sink commits, and checkpoint-based recovery (WIP-03, WIP-05 through WIP-10, WIP-18). Validate with fault tests; this is more than closing isolated TODOs.
 3. **Finish user-facing functionality.** Complete window/late-data execution (WIP-12/WIP-14), real savepoints and restore (WIP-15), the HTTP reference source/sink (WIP-16), and runtime security wiring (WIP-17).
-4. **Reconcile specifications and measure remaining optimizations.** Update historical protocol/config/API assumptions, and evaluate the remaining selective-NoSync proposal and latency targets in WIP-23. YAML pipeline work remains proposed under WIP-19.
+4. **Reconcile specifications and measure remaining optimizations.** Update historical protocol/config/API assumptions, and evaluate the remaining selective-NoSync proposal and latency targets in WIP-23. WIP-19 now parses/validates YAML pipelines and executes stateless linear graphs; runtime integration and hot reload remain.
 
 ## How to propose new work
 

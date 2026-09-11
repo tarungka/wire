@@ -42,7 +42,7 @@ Draft --> In Review --> Approved --> Partially Implemented --> Implemented --> S
 | **Approved** | Approved for implementation |
 | **Partially Implemented** | Some scoped work has landed; remaining implementation or specification differences are recorded in the WIP |
 | **Implemented** | Scoped work has landed; explicitly deferred follow-ups are not implied complete |
-| **Proposed** | Initial proposal without a pipeline implementation (currently WIP-19) |
+| **Proposed** | Initial proposal without an implementation |
 | **Rejected** | Not moving forward |
 | **Superseded** | Replaced by a newer WIP |
 
@@ -93,7 +93,7 @@ All 25 proposals, audited against `master` at `0e78195` on 2026-09-12. Statuses 
 | [WIP-14](WIP-14/README.md) | User API & Go SDK | Partially Implemented |
 | [WIP-15](WIP-15/README.md) | Job Lifecycle & REST API | Partially Implemented |
 | [WIP-16](WIP-16/README.md) | Connector SDK & Built-in Connectors | Partially Implemented |
-| [WIP-19](WIP-19/README.md) | YAML Pipeline Parser | Proposed |
+| [WIP-19](WIP-19/README.md) | YAML Pipeline Parser | Partially Implemented |
 
 ### Security
 
