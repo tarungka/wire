@@ -6,11 +6,11 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-03-01`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
@@ -18,6 +18,16 @@
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
 | 0.2 | 2026-03-01 | Tarun Ashok | Reworked: removed Raft, adopted Flink-inspired phased HA strategy with PebbleDB persistence |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Pebble metadata persistence/recovery, the election abstraction, noop/file-lock backends, and epoch fencing are implemented.
+- **Remaining:** Multi-host standby recovery with accessible durable metadata and restoration of running jobs remains incomplete. Embedded consensus is explicitly deferred (Phase D), not required for the current phase.
+- **Evidence:** [store_pebble.go](../../../internal/coordinator/store_pebble.go), [recovery.go](../../../internal/coordinator/recovery.go), [election_filelock.go](../../../internal/coordinator/election_filelock.go).
 
 ---
 

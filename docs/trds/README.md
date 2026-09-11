@@ -30,10 +30,9 @@ Supporting material (diagrams, benchmarks, prototypes) can be placed alongside t
 ## Status Lifecycle
 
 ```
-Draft --> In Review --> Approved --> Implemented --> Superseded
-  |                                                     ^
-  +--> Rejected                                         |
-                                            (by a newer WIP)
+Draft --> In Review --> Approved --> Partially Implemented --> Implemented --> Superseded
+  |
+  +--> Rejected
 ```
 
 | Status | Meaning |
@@ -41,9 +40,13 @@ Draft --> In Review --> Approved --> Implemented --> Superseded
 | **Draft** | Under discussion, open for feedback |
 | **In Review** | Formally submitted for review |
 | **Approved** | Approved for implementation |
-| **Implemented** | Fully landed in the codebase |
+| **Partially Implemented** | Some scoped work has landed; remaining implementation or specification differences are recorded in the WIP |
+| **Implemented** | Scoped work has landed; explicitly deferred follow-ups are not implied complete |
+| **Proposed** | Initial proposal without a pipeline implementation (currently WIP-19) |
 | **Rejected** | Not moving forward |
 | **Superseded** | Replaced by a newer WIP |
+
+Implementation labels describe observed code, not evidence of a formal approval decision. A component can be implemented without providing an end-to-end cluster guarantee. Read each WIP's dated implementation section before relying on a feature.
 
 ## Creating a New WIP
 
@@ -56,43 +59,54 @@ Draft --> In Review --> Approved --> Implemented --> Superseded
 
 ## WIP Index
 
-Ordered by build dependency: engine core first, then runtime infrastructure, then user-facing layer.
+All 25 proposals, audited against `master` at `0e78195` on 2026-09-12. Statuses match the individual WIP headers; original problem statements may describe an earlier codebase.
 
 ### Engine Core
 
 | WIP | Title | Status |
 |-----|-------|--------|
-| [WIP-01](WIP-01/README.md) | Wire Protocol & Serialization Format | Draft |
-| [WIP-02](WIP-02/README.md) | Goroutine & Concurrency Model | Draft |
-| [WIP-03](WIP-03/README.md) | Key Group Assignment & State Sharding | Draft |
-| [WIP-04](WIP-04/README.md) | Watermark Generation Algorithm | Draft |
-| [WIP-05](WIP-05/README.md) | Barrier Alignment Timeout & Failure Handling | Draft |
-| [WIP-06](WIP-06/README.md) | Checkpoint Metadata Schema | Draft |
-| [WIP-18](WIP-18/README.md) | Multiple State Backends | Draft |
+| [WIP-01](WIP-01/README.md) | Wire Protocol & Serialization Format | Partially Implemented |
+| [WIP-02](WIP-02/README.md) | Goroutine & Concurrency Model | Partially Implemented |
+| [WIP-03](WIP-03/README.md) | Key Group Assignment & State Sharding | Partially Implemented |
+| [WIP-04](WIP-04/README.md) | Watermark Generation Algorithm | Partially Implemented |
+| [WIP-05](WIP-05/README.md) | Barrier Alignment Timeout & Failure Handling | Partially Implemented |
+| [WIP-06](WIP-06/README.md) | Checkpoint Metadata Schema | Partially Implemented |
+| [WIP-18](WIP-18/README.md) | Multiple State Backends | Partially Implemented |
 
 ### Runtime Infrastructure
 
 | WIP | Title | Status |
 |-----|-------|--------|
-| [WIP-07](WIP-07/README.md) | RPC Interface Specification | Draft |
-| [WIP-08](WIP-08/README.md) | Heartbeat & Health Monitoring | Draft |
-| [WIP-09](WIP-09/README.md) | Coordinator High Availability | Draft |
-| [WIP-10](WIP-10/README.md) | Two-Phase Commit for Transactional Sinks | Draft |
-| [WIP-11](WIP-11/README.md) | Error Handling & Dead Letter Queues | Draft |
-| [WIP-12](WIP-12/README.md) | Late Data & Allowed Lateness | Draft |
-| [WIP-20](WIP-20/README.md) | Task Execution Engine | Draft |
+| [WIP-07](WIP-07/README.md) | RPC Interface Specification | Partially Implemented |
+| [WIP-08](WIP-08/README.md) | Heartbeat & Health Monitoring | Partially Implemented |
+| [WIP-09](WIP-09/README.md) | Coordinator High Availability | Partially Implemented |
+| [WIP-10](WIP-10/README.md) | Two-Phase Commit for Transactional Sinks | Partially Implemented |
+| [WIP-11](WIP-11/README.md) | Error Handling & Dead Letter Queues | Partially Implemented |
+| [WIP-12](WIP-12/README.md) | Late Data & Allowed Lateness | Partially Implemented |
+| [WIP-20](WIP-20/README.md) | Task Execution Engine | Partially Implemented |
 
 ### User-Facing Layer
 
 | WIP | Title | Status |
 |-----|-------|--------|
-| [WIP-13](WIP-13/README.md) | Configuration Reference | Draft |
-| [WIP-14](WIP-14/README.md) | User API & Go SDK | Draft |
-| [WIP-15](WIP-15/README.md) | Job Lifecycle & REST API | Draft |
-| [WIP-16](WIP-16/README.md) | Connector SDK & Built-in Connectors | Draft |
+| [WIP-13](WIP-13/README.md) | Configuration Reference | Partially Implemented |
+| [WIP-14](WIP-14/README.md) | User API & Go SDK | Partially Implemented |
+| [WIP-15](WIP-15/README.md) | Job Lifecycle & REST API | Partially Implemented |
+| [WIP-16](WIP-16/README.md) | Connector SDK & Built-in Connectors | Partially Implemented |
+| [WIP-19](WIP-19/README.md) | YAML Pipeline Parser | Proposed |
 
-### Cross-Cutting & Reference
+### Security
 
 | WIP | Title | Status |
 |-----|-------|--------|
-| [WIP-17](WIP-17/README.md) | Security Model | Draft |
+| [WIP-17](WIP-17/README.md) | Security Model | Partially Implemented |
+
+### Command Dispatch and Correctness/Performance Fixes
+
+| WIP | Title | Status |
+|-----|-------|--------|
+| [WIP-21](WIP-21/README.md) | Push-Based Command Dispatch | Implemented |
+| [WIP-22](WIP-22/README.md) | RPC Duration Histogram for Streaming Calls | Implemented |
+| [WIP-23](WIP-23/README.md) | Coordinator Submit Lock/Fsync Contention | Partially Implemented |
+| [WIP-24](WIP-24/README.md) | TaskSlot Operator-Error Propagation | Implemented |
+| [WIP-25](WIP-25/README.md) | Constant-Time Active Job Name Lookup | Implemented |

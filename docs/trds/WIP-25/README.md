@@ -1,7 +1,14 @@
 # WIP-25 — SubmitJob duplicate-name check is O(N) under c.mu
 
-> **Status:** implemented in this commit. Doc captures the analysis so
-> the bottleneck migration after WIP-23 is recorded.
+> **Status:** `Implemented`
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** The active-name map is maintained during submission, persistence rollback, terminal transitions, and recovery.
+- **Remaining:** No remaining implementation work identified for the scoped lookup change. Terminal-job garbage collection and other linear scans are explicitly outside scope.
+- **Evidence:** [job_manager.go](../../../internal/coordinator/job_manager.go), [job_state_machine.go](../../../internal/coordinator/job_state_machine.go), [coordinator.go](../../../internal/coordinator/coordinator.go).
 
 ## Symptom
 

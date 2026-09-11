@@ -6,11 +6,11 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-23`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
@@ -18,6 +18,16 @@
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
 | 0.2 | 2026-02-23 | Tarun Ashok | Removed connector-specific mappings; scoped to protocol only |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Engine transactional-sink interfaces, transaction state, and checkpoint-linked commit handling are implemented and tested.
+- **Remaining:** The cluster worker executor passes no transactional sink or checkpoint ACK callback. External exactly-once delivery and failure recovery are not complete.
+- **Evidence:** [operator.go](../../../internal/engine/operator.go), [checkpoint_coordinator.go](../../../internal/engine/checkpoint_coordinator.go), [task_executor.go](../../../internal/worker/task_executor.go).
 
 ---
 

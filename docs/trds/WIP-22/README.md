@@ -1,7 +1,14 @@
 # WIP-22 — RPC duration histogram polluted by streaming `WatchCommands`
 
-> **Status:** deferred. Fix not yet implemented; this doc captures the
-> root cause and the agreed-upon approach so we can pick it up later.
+> **Status:** `Implemented`
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** RPC duration measurements exclude streaming handlers, count/error metrics carry kind labels, and dashboard queries filter unary RPCs. The earlier Deferred label was stale.
+- **Remaining:** No remaining implementation work identified for the scoped fix. Streaming-specific gauges and per-frame metrics remain explicit follow-ups.
+- **Evidence:** [server.go](../../../internal/rpc/server.go), [wire.json](../../../examples/observability-stack/grafana/dashboards/wire.json).
 
 ## Symptom
 
@@ -50,7 +57,7 @@ Registered methods today (`internal/coordinator/transport.go:39-42`):
 | `UpdateTaskStatus` | unary |
 | **`WatchCommands`** | **streaming** ← polluter |
 
-## Fix plan
+## Implemented fix
 
 **Stop recording duration for streaming RPCs**, add a `kind` attribute
 to the count/error counters so they can still be filtered, and update
@@ -125,9 +132,8 @@ queries — that's the desired behaviour.
   fine for unary RPCs; once streaming is excluded, samples will sit
   comfortably in the lower buckets.
 
-## Workaround until the fix lands
+## Historical workaround (no longer needed)
 
-If you need a clean p99 number from the Grafana panel right now, edit
-panel 31's query inline to `method!="WatchCommands"`. This is the
-dashboard-only stopgap; it's not committed because future streaming
-methods would each need to be added to the exclusion list.
+Before the fix, excluding `method="WatchCommands"` from panel 31 was a
+dashboard-only stopgap. The implemented unary filter now handles all
+streaming methods.

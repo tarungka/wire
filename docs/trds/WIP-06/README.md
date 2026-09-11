@@ -6,17 +6,27 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-22`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Metadata types, JSON serialization, validation, paths, and savepoint compatibility checks are implemented and tested.
+- **Remaining:** Use the metadata in a complete cluster checkpoint/restore path, including state-file recovery and fallback from invalid checkpoints.
+- **Evidence:** [checkpoint_metadata.go](../../../internal/engine/checkpoint_metadata.go), [checkpoint_metadata_validation.go](../../../internal/engine/checkpoint_metadata_validation.go), [recovery.go](../../../internal/coordinator/recovery.go).
 
 ---
 

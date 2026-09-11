@@ -6,11 +6,11 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-24`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
@@ -18,6 +18,16 @@
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
 | 0.2 | 2026-02-24 | Tarun Ashok | Fix watermark channel semantics, clarify event/batch channel model, add barrier alignment topology, add deserialization decision, add error handling strategy, add observability metrics, resolve automaxprocs. Based on Gemini 2.5 Pro review. |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** TaskSlot and operator-chain goroutines, bounded channels, coordinated cancellation, and alignment buffers are implemented.
+- **Remaining:** Durable snapshot replication and its resource-management path are not connected to cluster execution. The worker executor assembles its own linear chain.
+- **Evidence:** [task_slot.go](../../../internal/engine/task_slot.go), [task_executor.go](../../../internal/worker/task_executor.go).
 
 ---
 

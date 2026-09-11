@@ -6,17 +6,27 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-22`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Key hashing, range assignment, key encoding, and rescale-mapping calculations are implemented.
+- **Remaining:** Distributed keyed routing and actual savepoint-based state transfer/rescaling are missing; RescaleMapping only calculates ownership changes.
+- **Evidence:** [assignment.go](../../../internal/keygroup/assignment.go), [hasher.go](../../../internal/keygroup/hasher.go), [scheduler.go](../../../internal/coordinator/scheduler.go).
 
 ---
 

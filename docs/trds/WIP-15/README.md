@@ -6,17 +6,27 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-22`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Job submission, inspection, cancellation, lifecycle state transitions, cluster endpoints, and savepoint metadata APIs are implemented.
+- **Remaining:** Real pause/resume, completed savepoints and restore, upgrades/rescaling, checkpoint-based recovery, binary submission, and the proposed job-management CLI remain incomplete.
+- **Evidence:** [http_jobs.go](../../../internal/coordinator/http_jobs.go), [job_manager.go](../../../internal/coordinator/job_manager.go), [savepoint_manager.go](../../../internal/coordinator/savepoint_manager.go).
 
 ---
 

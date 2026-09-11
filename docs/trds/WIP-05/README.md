@@ -6,17 +6,27 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Draft`
+> **Status:** `Partially Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-02-22`
+> **Last Updated:** `2026-09-12`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
+
+---
+
+## Implementation Status — 2026-09-12
+
+Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+
+- **Implemented:** Engine-level barrier alignment, checkpoint timeout/abort handling, failure tracking, and metrics primitives are implemented.
+- **Remaining:** Wire the cluster checkpoint trigger/ACK/abort path through workers and validate distributed timeout and recovery behavior.
+- **Evidence:** [barrier.go](../../../internal/engine/barrier.go), [checkpoint_coordinator.go](../../../internal/engine/checkpoint_coordinator.go), [worker.go](../../../internal/worker/worker.go).
 
 ---
 
