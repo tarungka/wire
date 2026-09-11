@@ -168,6 +168,9 @@ func (b *PebbleStateBackend) NewIterator(prefix []byte) StateIterator {
 		return &hashMapIterator{}
 	}
 	upper := cloneBytes(prefix)
+	if len(upper) == 0 {
+		upper = nil
+	} // nil means unbounded; an empty bound excludes every key.
 	for i := len(upper) - 1; i >= 0; i-- {
 		upper[i]++
 		if upper[i] != 0 {
