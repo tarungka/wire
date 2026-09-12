@@ -1,0 +1,8 @@
+mode: coordinator
+listen: ':4002'
+http:
+  addr: ':4001'
+node:
+  data_dir: data/coordinator
+election:
+  backend: noop

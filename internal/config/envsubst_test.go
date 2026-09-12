@@ -102,3 +102,21 @@ func TestEnvSubstConfig_Error(t *testing.T) {
 		t.Errorf("expected ErrEnvVarNotSet, got %v", err)
 	}
 }
+
+func TestEnvSubstNodeAndWorkerFields(t *testing.T) {
+	t.Setenv("WIRE_TEST_MODE", "worker")
+	t.Setenv("WIRE_TEST_ID", "worker-1")
+	t.Setenv("WIRE_TEST_ADDR", "localhost:4402")
+	cfg := DefaultConfig()
+	cfg.Mode = "${WIRE_TEST_MODE}"
+	cfg.Listen = "${WIRE_TEST_ADDR}"
+	cfg.Worker.CoordinatorAddr = "${WIRE_TEST_ADDR}"
+	cfg.Worker.WorkerID = "${WIRE_TEST_ID:-worker-1}"
+	cfg.Worker.ListenAddr = "${WIRE_TEST_ADDR}"
+	if err := envSubstConfig(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Mode != "worker" || cfg.Listen != "localhost:4402" || cfg.Worker.CoordinatorAddr != cfg.Listen || cfg.Worker.ListenAddr != cfg.Listen || cfg.Worker.WorkerID != "worker-1" {
+		t.Fatalf("unexpanded fields: %+v", cfg)
+	}
+}
