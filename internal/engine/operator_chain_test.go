@@ -982,10 +982,19 @@ func TestOperatorChain_NonTransactionalSink_Unchanged(t *testing.T) {
 		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	}()
 
-	// Send event — the sink is terminal so no output to wait on. We rely on
-	// control message ordering: the barrier is processed after the event
-	// because the operator chain drains inputCh before handling controlCh.
+	// Event and control channels have no cross-channel ordering. Wait until
+	// the terminal sink consumes the event before testing barrier forwarding.
 	inputCh <- Event{Value: []byte("x")}
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for sink.Count() != 1 {
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatal("sink did not consume the event")
+		}
+	}
 
 	// Send barrier — should be forwarded to outputCh for non-transactional sink.
 	aligner.OnBarrier(0, 1, 1)
