@@ -78,3 +78,9 @@ func SavepointsPrefix(jobID string) []byte {
 func JobConfigKey(jobID string) []byte {
 	return fmt.Appendf(nil, "jobs/%s/config", jobID)
 }
+
+// WorkerHeartbeatKey stores an advisory timestamp, never used for recovery.
+// Keeping it separate prevents delayed flushes from overwriting registration.
+func WorkerHeartbeatKey(workerID string) []byte {
+	return fmt.Appendf(nil, "workers/%s/heartbeat", workerID)
+}
