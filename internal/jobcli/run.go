@@ -25,9 +25,9 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	flags := pflag.NewFlagSet("wire jobs", pflag.ContinueOnError)
 	flags.SetOutput(errOut)
 	flags.Usage = func() {
-		fmt.Fprintln(errOut, "Usage: wire jobs list|get|submit|cancel|pause|resume [job-id] [flags]")
-		fmt.Fprintln(errOut, "       wire savepoints list|get|trigger|delete job-id [savepoint-id] [flags]")
-		fmt.Fprintln(errOut, "       wire cluster status [flags]")
+		_, _ = fmt.Fprintln(errOut, "Usage: wire jobs list|get|submit|cancel|pause|resume [job-id] [flags]")
+		_, _ = fmt.Fprintln(errOut, "       wire savepoints list|get|trigger|delete job-id [savepoint-id] [flags]")
+		_, _ = fmt.Fprintln(errOut, "       wire cluster status [flags]")
 		flags.PrintDefaults()
 	}
 	endpoint := flags.String("coordinator", "http://localhost:4001", "coordinator HTTP URL")
@@ -97,7 +97,7 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 			path += "/" + words[1]
 		}
 	}
-	if *file != "" && !(words[0] == "jobs" && words[1] == "submit") {
+	if *file != "" && (words[0] != "jobs" || words[1] != "submit") {
 		return fmt.Errorf("--file is only valid for jobs submit")
 	}
 	var body []byte
