@@ -3,6 +3,7 @@ package coordinator
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -33,9 +34,9 @@ func TestScheduleJob_AtomicDeployment(t *testing.T) {
 	if err := c.persistJob(job); err != nil {
 		t.Fatal(err)
 	}
-	c.workers["w1"] = &WorkerMeta{ID: "w1", TaskSlotsTotal: 1, TaskSlotsAvailable: 1}
+	c.workers["w1"] = &WorkerMeta{ID: "w1", TaskSlotsTotal: 1, TaskSlotsAvailable: 1, LastHeartbeat: time.Now()}
 	c.scheduleJob(job)
-	if job.Status != JobCreated || c.workers["w1"].TaskSlotsAvailable != 1 || len(c.DrainCommands("w1")) != 0 {
+	if store.batches != 1 || job.Status != JobCreated || c.workers["w1"].TaskSlotsAvailable != 1 || len(c.DrainCommands("w1")) != 0 {
 		t.Fatal("failed persistence published deployment or consumed worker slot")
 	}
 	data, err := base.Get(JobAssignmentsKey("j1"))
