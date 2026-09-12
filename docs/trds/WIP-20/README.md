@@ -6,7 +6,7 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-03-06`
 >
@@ -17,16 +17,21 @@
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-03-06 | Tarun Ashok | Initial draft |
+| 0.2 | 2026-09-12 | Wire contributors | Complete shared TaskSlot lifecycle, panic reporting, terminal draining, and cancellation semantics |
 
 ---
 
 ## Implementation Status — 2026-09-12
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+The scoped linear-chain MVP is implemented. The worker resolves registered operators and delegates execution to `TaskSlot.Run()`.
 
-- **Implemented:** The linear-chain MVP is operational: registered operators execute on workers and a cluster integration test checks sink output.
-- **Remaining:** Reconcile remaining implementation/specification differences: the executor assembles the chain directly rather than using TaskSlot.Run(), and reports RUNNING before operator initialization. Shuffle and state-backend integration are explicit non-goals, not completion blockers for this WIP.
-- **Evidence:** [registry.go](../../../internal/worker/registry.go), [task_executor.go](../../../internal/worker/task_executor.go), [worker.go](../../../internal/worker/worker.go), [integration_test.go](../../../internal/worker/integration_test.go).
+- **Lifecycle:** Source and downstream operators open once before RUNNING is reported or any records are read. Successfully opened operators close in reverse order after the task's goroutines exit; partial initialization unwinds on errors and panics.
+- **Failure handling:** Factory, source, and operator panics become FAILED task reports with stack traces. Cancellation reports CANCELED, including when the engine returns cleanly after cancellation. Terminal pipelines drain forwarded output rather than stalling at the buffer limit.
+- **Validation:** Registry tests cover supported operator factories and lookup errors. `task_executor_test.go` verifies initialization/cleanup, large terminal pipelines, open failures, factory/source/map panics, source read failures, missing operators, and cancellation status over real RPC framing. The coordinator/worker integration test verifies processed sink output.
+- **Outside scope:** Network shuffle, state-backend checkpoint integration, production connectors, and hot code loading remain follow-up work. Completion of this WIP does not imply those capabilities exist.
+- **Evidence:** [task_executor.go](../../../internal/worker/task_executor.go), [task_slot.go](../../../internal/engine/task_slot.go), [operator_lifecycle.go](../../../internal/engine/operator_lifecycle.go), [task_executor_test.go](../../../internal/worker/task_executor_test.go), [integration_test.go](../../../internal/worker/integration_test.go).
+
+The examples below retain the original design sketch. The shipped API uses typed source/map/flat-map/sink factories, embeds the full linear chain in `TaskDescriptor`, and lets `TaskSlot` own opening/closing through an `OnRunning` notification; callers must not pre-open the operators.
 
 ---
 

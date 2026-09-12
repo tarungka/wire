@@ -29,6 +29,7 @@ type TaskSlot struct {
 	ErrorMetrics ErrorMetrics             // Optional error handling metrics collector (WIP-11).
 	TaskIndex    int                      // Index of this task within the parallel subtasks.
 	TaskID       string                   // Unique identifier for this task.
+	OnRunning    func()                   // Called after all operators open, before any records are read.
 	log          zerolog.Logger
 }
 
@@ -47,6 +48,25 @@ func NewTaskSlot(cfg TaskSlotConfig, inputs []*transport.FrameStream, outputs []
 // Run executes the task slot. It launches all goroutines via errgroup and
 // blocks until completion or failure.
 func (ts *TaskSlot) Run(ctx context.Context) error {
+	// Initialize synchronously so workers report RUNNING only after every
+	// operator, including the source, has opened successfully.
+	operators := make([]Operator, 0, len(ts.Operators)+1)
+	if ts.Source != nil {
+		operators = append(operators, ts.Source)
+	}
+	operators = append(operators, ts.Operators...)
+	closeOperators, err := openOperators(ctx, operators, ts.log)
+	if err != nil {
+		return err
+	}
+	defer closeOperators()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if ts.OnRunning != nil {
+		ts.OnRunning()
+	}
+
 	// Create a cancellable context so we can shut everything down when
 	// the operator chain finishes (whether success or failure).
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -85,7 +105,9 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		strategy := ts.resolveStrategy()
 
 		g.Go(func() error {
-			return runSourceReader(gctx, ts.Source, strategy, eventCh, controlCh, ts.log.With().Str("component", "source_reader").Logger())
+			return invokeOperator(func() error {
+				return runSourceReader(gctx, ts.Source, strategy, eventCh, controlCh, ts.log.With().Str("component", "source_reader").Logger())
+			})
 		})
 
 		// Launch watermark emitter for source tasks.
@@ -93,8 +115,10 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		producerWg.Add(1)
 		g.Go(func() error {
 			defer producerWg.Done()
-			return runWatermarkEmitter(gctx, strategy, outputCh, emitInterval,
-				ts.log.With().Str("component", "watermark_emitter").Logger())
+			return invokeOperator(func() error {
+				return runWatermarkEmitter(gctx, strategy, outputCh, emitInterval,
+					ts.log.With().Str("component", "watermark_emitter").Logger())
+			})
 		})
 	} else if numInputs > 0 {
 		// Create per-input watermark tracker (only for non-source tasks).
@@ -209,7 +233,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		if dlqCh != nil {
 			defer close(dlqCh)
 		}
-		err := runOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics)
+		err := runOpenedOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics)
 		if err != nil {
 			chainErr.Store(&err)
 		}
@@ -231,7 +255,17 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		})
 	}
 
-	err := g.Wait()
+	// Terminal chains have no network output writer. Drain forwarded events
+	// and control messages so pipelines larger than the buffer can finish.
+	if len(ts.Outputs) == 0 {
+		g.Go(func() error {
+			for range outputCh {
+			}
+			return nil
+		})
+	}
+
+	err = g.Wait()
 	// Prefer the chain's error over errgroup's verdict — but only when
 	// it's a real chain-side error (e.g. ErrOperatorPanic), not a
 	// context.Canceled produced because a peer goroutine errored first
