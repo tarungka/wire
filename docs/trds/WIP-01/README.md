@@ -25,9 +25,9 @@
 
 ## Implementation Status — 2026-09-12
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Assessed against `master` at `bb58acd`, with the frame-write validation in this PR. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Length-prefixed msgpack frames, CRC32C checks, core message codecs, and transport/fuzz tests are present.
+- **Implemented:** Length-prefixed msgpack frames, CRC32C checks, core message codecs, and transport/fuzz tests are present. Frame writes report short header/payload writes instead of returning success, preserve underlying writer errors, and reject payload sizes that cannot fit the 32-bit frame-length field.
 - **Remaining:** Reconcile the revised session-handshake and stream-header specification with the older per-stream handshake in code; task-to-task routing is not integrated. RecordBatch remains reserved.
 - **Evidence:** [message.go](../../../internal/protocol/message.go), [frame.go](../../../internal/protocol/frame.go), [stream.go](../../../internal/transport/stream.go).
 

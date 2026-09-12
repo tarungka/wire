@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math"
 	"sync"
 )
 
@@ -109,7 +110,10 @@ func WriteFrame(w io.Writer, msgType uint8, msg any) error {
 
 // WriteFrameRaw writes a frame with a pre-encoded payload.
 func WriteFrameRaw(w io.Writer, msgType uint8, payload []byte) error {
-	frameLen := uint32(MsgTypeFieldSize + CRCFieldSize + len(payload))
+	if uint64(len(payload)) > math.MaxUint32-MinFrameLength {
+		return ErrFrameTooLarge
+	}
+	frameLen := uint32(len(payload)) + MinFrameLength
 
 	// Compute CRC32C over MsgType || Payload.
 	crc := computeCRC32C(msgType, payload)
@@ -121,14 +125,18 @@ func WriteFrameRaw(w io.Writer, msgType uint8, payload []byte) error {
 	binary.BigEndian.PutUint32(header[5:9], crc)
 
 	// Write header.
-	if _, err := w.Write(header[:]); err != nil {
+	if n, err := w.Write(header[:]); err != nil {
 		return err
+	} else if n != len(header) {
+		return io.ErrShortWrite
 	}
 
 	// Write payload.
 	if len(payload) > 0 {
-		if _, err := w.Write(payload); err != nil {
+		if n, err := w.Write(payload); err != nil {
 			return err
+		} else if n != len(payload) {
+			return io.ErrShortWrite
 		}
 	}
 
