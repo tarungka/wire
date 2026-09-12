@@ -143,27 +143,33 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		return
 	}
 
-	now := time.Now().UTC()
-	job.Status = JobDeploying
-	job.UpdatedAt = now
-	if err := c.persistJobLocked(job); err != nil {
+	// Commit the state and assignments together before publishing DEPLOYING.
+	// One synchronous batch prevents both a second fsync under c.mu and a
+	// partially persisted deployment if writing assignments fails.
+	next := *job
+	next.Status = JobDeploying
+	next.UpdatedAt = time.Now().UTC()
+	jobData, err := protocol.EncodeMsgPack(&next)
+	if err != nil {
 		c.mu.Unlock()
-		c.log.Error().Err(err).Str("job_id", job.ID).Msg("failed to persist job")
+		c.log.Error().Err(err).Str("job_id", job.ID).Msg("failed to encode job")
 		return
 	}
-
-	// Persist task assignment map.
 	tamData, err := protocol.EncodeMsgPack(&tam)
 	if err != nil {
 		c.mu.Unlock()
 		c.log.Error().Err(err).Str("job_id", job.ID).Msg("failed to encode assignments")
 		return
 	}
-	if err := c.store.Set(JobAssignmentsKey(job.ID), tamData); err != nil {
+	if err := c.store.WriteBatch([]KVPair{
+		{Key: JobMetaKey(job.ID), Value: jobData},
+		{Key: JobAssignmentsKey(job.ID), Value: tamData},
+	}); err != nil {
 		c.mu.Unlock()
-		c.log.Error().Err(err).Str("job_id", job.ID).Msg("failed to persist assignments")
+		c.log.Error().Err(err).Str("job_id", job.ID).Msg("failed to persist deployment")
 		return
 	}
+	*job = next
 
 	// Update worker metadata: add running tasks and decrement available slots.
 	for workerID, wTasks := range assignments {
