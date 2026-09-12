@@ -24,7 +24,7 @@
 
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Heartbeat loops, liveness tracking, timeout handling, and component tests exist.
+- **Implemented:** Heartbeat loops, liveness tracking, timeout handling, and component tests exist. The scheduler now excludes workers with missing/expired heartbeats and rechecks liveness, existence, and slot capacity under the deployment lock before persisting an assignment. Expired or recovered workers cannot receive new work until their heartbeat is fresh.
 - **Remaining:** Complete the worker-loss recovery/rescheduling workflow; heartbeat detection alone does not restore running jobs.
 - **Evidence:** [heartbeat.go](../../../internal/rpc/heartbeat.go), [worker.go](../../../internal/worker/worker.go), [reconcile.go](../../../internal/coordinator/reconcile.go).
 
