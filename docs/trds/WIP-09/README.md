@@ -25,7 +25,7 @@
 
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Pebble metadata persistence/recovery, the election abstraction, noop/file-lock backends, and epoch fencing are implemented.
+- **Implemented:** Pebble metadata persistence/recovery, the election abstraction, noop/file-lock backends, and epoch fencing are implemented. Recovery rejects malformed or exhausted stored epochs and job/worker identities that disagree with their metadata keys; failed validation does not overwrite the fencing token.
 - **Remaining:** Multi-host standby recovery with accessible durable metadata and restoration of running jobs remains incomplete. Embedded consensus is explicitly deferred (Phase D), not required for the current phase.
 - **Evidence:** [store_pebble.go](../../../internal/coordinator/store_pebble.go), [recovery.go](../../../internal/coordinator/recovery.go), [election_filelock.go](../../../internal/coordinator/election_filelock.go).
 
