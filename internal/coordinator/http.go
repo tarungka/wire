@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -21,7 +22,7 @@ type HTTPServer struct {
 }
 
 // NewHTTPServer creates a new HTTP server for the coordinator API.
-func NewHTTPServer(coord *Coordinator, listenAddr string, log zerolog.Logger) *HTTPServer {
+func NewHTTPServer(coord *Coordinator, listenAddr string, log zerolog.Logger, tlsConfig ...*tls.Config) *HTTPServer {
 	s := &HTTPServer{
 		coord: coord,
 		log:   log.With().Str("component", "http").Logger(),
@@ -60,6 +61,12 @@ func NewHTTPServer(coord *Coordinator, listenAddr string, log zerolog.Logger) *H
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	if len(tlsConfig) > 0 && tlsConfig[0] != nil {
+		s.server.TLSConfig = tlsConfig[0].Clone()
+		if s.server.TLSConfig.MinVersion < tls.VersionTLS13 {
+			s.server.TLSConfig.MinVersion = tls.VersionTLS13
+		}
+	}
 	return s
 }
 
@@ -76,6 +83,9 @@ func (s *HTTPServer) Listen() error {
 
 // Serve starts serving on the already-bound listener. Blocks until shutdown.
 func (s *HTTPServer) Serve() error {
+	if s.server.TLSConfig != nil {
+		return s.server.ServeTLS(s.listener, "", "")
+	}
 	return s.server.Serve(s.listener)
 }
 

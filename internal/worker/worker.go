@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"sync"
@@ -16,6 +17,7 @@ import (
 
 // Config holds worker configuration.
 type Config struct {
+	TLSConfig       *tls.Config
 	WorkerID        string
 	CoordinatorAddr string
 	ListenAddr      string
@@ -86,6 +88,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// 1. Establish transport session.
 	tcfg := transport.DefaultConfig()
+	tcfg.TLSConfig = w.cfg.TLSConfig
 	session, err := transport.NewClientSession(w.cfg.CoordinatorAddr, tcfg)
 	if err != nil {
 		return fmt.Errorf("worker: connect to coordinator: %w", err)
