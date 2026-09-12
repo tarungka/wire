@@ -4,10 +4,12 @@
 
 ## Implementation Status — 2026-09-12
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Fixes 1 and 2 were present in `master` at `0e78195`; this change adds Fix 3. The proposal below retains its original performance targets.
 
-- **Implemented:** Fix 1 (one WriteBatch per submission) and Fix 2 (persistence outside the coordinator mutex) are implemented.
-- **Remaining:** Fix 3 (selective NoSync writes) is not implemented; store mutations still use pebble.Sync. Revalidate the documented latency targets under the stated load profile before claiming those results.
+- **Implemented:** Fix 1 (one WriteBatch per submission), Fix 2 (persistence outside the coordinator mutex), and Fix 3 (selective NoSync heartbeat writes) are implemented. Heartbeat timestamps use separate `workers/{id}/heartbeat` keys, so a delayed flush cannot overwrite newer durable registration metadata. Recovery ignores these advisory keys and marks registered workers stale.
+- **Remaining:** The host load run met HTTP submit and heartbeat targets, but status-update latency and goroutine counts missed their targets. Status remains partially implemented. See [load results](load-results.md) for the measured scope and limitations.
+- **Follow-up from load investigation:** Scheduling now batches DEPLOYING metadata and task assignments into one synchronous commit, publishing the new state only after success. Failure/retry coverage verifies no partial deployment or consumed slot. The load results below predate this follow-up; its performance impact is not yet measured.
+- **Durability validation:** Recovery tests cover retained and deliberately discarded advisory writes, registration interleaving, and reopening Pebble after a child process exits without closing the store. The process-exit test preserves synchronous job metadata/configuration; it does not simulate a machine power failure. See [heartbeat_durability_test.go](../../../internal/coordinator/heartbeat_durability_test.go).
 - **Evidence:** [job_manager.go](../../../internal/coordinator/job_manager.go), [store_pebble.go](../../../internal/coordinator/store_pebble.go).
 
 ## Symptom
@@ -99,9 +101,9 @@ Expected effect: HTTP submit p99 ~ halves, Pebble `set` rate halves
   lock; persist outside the lock.
 - Trade-off: a crash *between* the in-memory insert and the disk
   commit drops the job. Recovery on restart already rebuilds from
-  Pebble (`internal/coordinator/recovery_test.go` exercises this), so
-  the worst case is "submitter saw 201, job is gone" — same failure
-  mode as a network-partitioned ACK and recoverable by client retry.
+  Pebble (`internal/coordinator/recovery_test.go` exercises this), and submission waits for the batch to succeed before returning success.
+  A crash before commit cannot lose an acknowledged submission; a crash
+  after commit but before the response can leave the client uncertain.
 - If that trade is unacceptable, alternative: keep the persist under
   the lock but use Go's `sync.Map` or a sharded map for `c.jobs` so
   Heartbeat/UpdateTaskStatus reads don't compete with submits at all.
@@ -109,14 +111,12 @@ Expected effect: HTTP submit p99 ~ halves, Pebble `set` rate halves
 Expected effect: Heartbeat / UpdateTaskStatus tail latency collapses
 back to single-digit ms because they no longer queue behind disk I/O.
 
-### Fix 3 — `pebble.NoSync` for non-critical metadata writes (not implemented)
+### Fix 3 — `pebble.NoSync` for non-critical metadata writes (implemented)
 
 `internal/coordinator/store_pebble.go`:
 
-- Add a `SetAsync` (or `Set` variant) that uses `pebble.NoSync`.
-- Use it for *non-load-bearing* writes (e.g. UpdatedAt timestamp
-  refreshes, scheduler-internal status transitions where a duplicate
-  task descriptor on recovery is harmless).
+- `AsyncMetadataStore.WriteBatchAsync` uses `pebble.NoSync`; stores without this optional capability fall back to synchronous batches.
+- Use it only for advisory worker heartbeat timestamps, never job/task transitions or registration metadata. The bounded `write_batch_async` metric distinguishes these writes from synchronous `write_batch` operations.
 - Keep `pebble.Sync` for `JobMetaKey` / `JobConfigKey` writes — losing
   a submitted job on crash is bad.
 - This is the riskiest of the three; do it last and only with explicit

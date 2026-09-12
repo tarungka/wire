@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -62,31 +63,36 @@ func runOperatorChain(
 	dlqCh chan<- DLQEvent,
 	errMetrics ErrorMetrics,
 ) (retErr error) {
-	// Panic recovery (safety net for non-operator panics).
+	closeOperators, err := openOperators(ctx, operators, log)
+	if err != nil {
+		return err
+	}
+	defer closeOperators()
+	return runOpenedOperatorChain(ctx, operators, inputCh, controlCh, outputCh, aligner, numInputs, metrics, log, txnSink, ackFn, errorConfigs, dlqCh, errMetrics)
+}
+
+// runOpenedOperatorChain processes an already-opened chain. Its caller owns
+// initialization and cleanup, including waiting for source readers to exit.
+func runOpenedOperatorChain(
+	ctx context.Context,
+	operators []Operator,
+	inputCh <-chan Event,
+	controlCh <-chan ControlMsg,
+	outputCh chan<- OutputMsg,
+	aligner *BarrierAligner,
+	numInputs int,
+	metrics CheckpointMetrics,
+	log zerolog.Logger,
+	txnSink TransactionalSink,
+	ackFn func(checkpointID uint64),
+	errorConfigs []ErrorHandlerConfig,
+	dlqCh chan<- DLQEvent,
+	errMetrics ErrorMetrics,
+) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
-			retErr = fmt.Errorf("%w: %v", ErrOperatorPanic, r)
+			retErr = &OperatorPanicError{Value: r, Stack: string(debug.Stack())}
 			log.Error().Interface("panic", r).Msg("operator chain panic")
-		}
-	}()
-
-	// Open all operators.
-	for i, op := range operators {
-		if err := op.Open(ctx); err != nil {
-			// Close already-opened operators in reverse order.
-			for j := i - 1; j >= 0; j-- {
-				_ = operators[j].Close()
-			}
-			return fmt.Errorf("operator[%d] open: %w", i, err)
-		}
-	}
-
-	// Close all operators in reverse order on exit.
-	defer func() {
-		for i := len(operators) - 1; i >= 0; i-- {
-			if err := operators[i].Close(); err != nil {
-				log.Warn().Err(err).Int("operator", i).Msg("operator close error")
-			}
 		}
 	}()
 

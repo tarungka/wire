@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
 	"github.com/tarungka/wire/internal/transport"
@@ -297,7 +299,7 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 	go w.runTask(taskCtx, cmd.JobID, cmd.TaskID, desc, taskLog)
 }
 
-// runTask reports Running on entry, drives the executor, and reports
+// runTask reports Running after initialization, drives the executor, and reports
 // Finished/Failed on exit. Always removes the task from w.tasks when done.
 func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor, log zerolog.Logger) {
 	defer func() {
@@ -306,17 +308,17 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 		w.mu.Unlock()
 	}()
 
-	w.reportTaskStatus(jobID, taskID, rpc.TaskStatusRunning, nil)
-
-	err := w.executor.run(ctx, jobID, taskID, desc, log)
+	err := w.executor.run(ctx, jobID, taskID, desc, log, func() {
+		w.reportTaskStatus(jobID, taskID, rpc.TaskStatusRunning, nil)
+	})
 
 	switch {
-	case err == nil:
-		log.Info().Msg("task finished")
-		w.reportTaskStatus(jobID, taskID, rpc.TaskStatusFinished, nil)
 	case ctx.Err() != nil:
 		log.Info().Msg("task canceled")
 		w.reportTaskStatus(jobID, taskID, rpc.TaskStatusCanceled, nil)
+	case err == nil:
+		log.Info().Msg("task finished")
+		w.reportTaskStatus(jobID, taskID, rpc.TaskStatusFinished, nil)
 	default:
 		log.Error().Err(err).Msg("task failed")
 		w.reportTaskFailed(jobID, taskID, err)
@@ -347,8 +349,14 @@ func (w *Worker) reportTaskStatus(jobID, taskID string, status rpc.TaskStatus, f
 // reportTaskFailed sends an UpdateTaskStatus RPC with status=Failed and the
 // error message populated in the failure info.
 func (w *Worker) reportTaskFailed(jobID, taskID string, err error) {
+	var panicErr *engine.OperatorPanicError
+	var stack string
+	if errors.As(err, &panicErr) {
+		stack = panicErr.Stack
+	}
 	w.reportTaskStatus(jobID, taskID, rpc.TaskStatusFailed, &rpc.TaskFailureInfo{
 		ErrorMessage: err.Error(),
+		StackTrace:   stack,
 		Timestamp:    time.Now().UnixMilli(),
 	})
 }

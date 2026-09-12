@@ -125,6 +125,17 @@ func (s *PebbleStore) WriteBatch(batch []KVPair) (err error) {
 	start := time.Now()
 	defer func() { recordPebbleOp("write_batch", start, err) }()
 
+	return s.writeBatch(batch, pebble.Sync)
+}
+
+// WriteBatchAsync writes advisory metadata without waiting for WAL synchronization.
+func (s *PebbleStore) WriteBatchAsync(batch []KVPair) (err error) {
+	start := time.Now()
+	defer func() { recordPebbleOp("write_batch_async", start, err) }()
+	return s.writeBatch(batch, pebble.NoSync)
+}
+
+func (s *PebbleStore) writeBatch(batch []KVPair, options *pebble.WriteOptions) error {
 	b := s.db.NewBatch()
 	for _, kv := range batch {
 		if err := b.Set(kv.Key, kv.Value, nil); err != nil {
@@ -132,7 +143,7 @@ func (s *PebbleStore) WriteBatch(batch []KVPair) (err error) {
 			return err
 		}
 	}
-	if err := b.Commit(pebble.Sync); err != nil {
+	if err := b.Commit(options); err != nil {
 		_ = b.Close()
 		return err
 	}

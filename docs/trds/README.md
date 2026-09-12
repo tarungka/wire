@@ -59,7 +59,7 @@ Implementation labels describe observed code, not evidence of a formal approval 
 
 ## WIP Index
 
-All 25 proposals, audited against `master` at `0e78195` on 2026-09-12. Statuses match the individual WIP headers; original problem statements may describe an earlier codebase.
+All 25 proposals, initially audited against `master` at `0e78195` on 2026-09-12 and updated as scoped work lands. Statuses match the individual WIP headers; original problem statements may describe an earlier codebase.
 
 ### Engine Core
 
@@ -83,7 +83,7 @@ All 25 proposals, audited against `master` at `0e78195` on 2026-09-12. Statuses 
 | [WIP-10](WIP-10/README.md) | Two-Phase Commit for Transactional Sinks | Partially Implemented |
 | [WIP-11](WIP-11/README.md) | Error Handling & Dead Letter Queues | Partially Implemented |
 | [WIP-12](WIP-12/README.md) | Late Data & Allowed Lateness | Partially Implemented |
-| [WIP-20](WIP-20/README.md) | Task Execution Engine | Partially Implemented |
+| [WIP-20](WIP-20/README.md) | Task Execution Engine | Implemented |
 
 ### User-Facing Layer
 
