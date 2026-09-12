@@ -38,9 +38,10 @@ type FrameStream struct {
 // NewFrameStream wraps a Yamux stream into a FrameStream.
 func NewFrameStream(raw *yamux.Stream, cfg Config) *FrameStream {
 	return &FrameStream{
-		raw: raw,
-		cfg: cfg,
-		log: logger.GetLogger("stream").With().Uint32("stream_id", raw.StreamID()).Logger(),
+		raw:            raw,
+		cfg:            cfg,
+		lastWatermarks: make(map[string]int64),
+		log:            logger.GetLogger("stream").With().Uint32("stream_id", raw.StreamID()).Logger(),
 	}
 }
 
@@ -193,9 +194,6 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 		// Watermark monotonicity check (per-SourceID).
 		if wm, ok := decoded.(*protocol.WatermarkMsg); ok {
 			fs.mu.Lock()
-			if fs.lastWatermarks == nil {
-				fs.lastWatermarks = make(map[string]int64)
-			}
 			last, exists := fs.lastWatermarks[wm.SourceID]
 			if exists && wm.Timestamp < last {
 				fs.mu.Unlock()

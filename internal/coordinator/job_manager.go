@@ -66,6 +66,8 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 	}
 	c.activeJobNames[name] = job.ID
 	c.jobs[job.ID] = job
+	c.jobStatusCounts[job.Status]++
+	c.indexJobByStatus(job.Status, job)
 	c.mu.Unlock()
 
 	// Persist meta + config in a single WriteBatch so the submit pays
@@ -81,6 +83,8 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 		c.mu.Lock()
 		delete(c.jobs, job.ID)
 		delete(c.activeJobNames, name)
+		c.jobStatusCounts[job.Status]--
+		c.unindexJobByStatus(job.Status, job.ID)
 		c.mu.Unlock()
 		return nil, fmt.Errorf("persisting job %s: %w", job.ID, err)
 	}
@@ -119,16 +123,25 @@ func (c *Coordinator) GetJob(jobID string) (*JobMeta, error) {
 	return &snapshot, nil
 }
 
-// ListJobs returns all jobs, optionally filtered by status.
+// ListJobs returns all jobs, optionally filtered by status. With a
+// status filter set, the call is O(matched) via jobsByStatus rather
+// than O(N) over the full job set.
 func (c *Coordinator) ListJobs(statusFilter *JobStatus) []*JobMeta {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	var result []*JobMeta
-	for _, j := range c.jobs {
-		if statusFilter != nil && j.Status != *statusFilter {
-			continue
+	if statusFilter != nil {
+		bucket := c.jobsByStatus[*statusFilter]
+		result := make([]*JobMeta, 0, len(bucket))
+		for _, j := range bucket {
+			snapshot := *j
+			result = append(result, &snapshot)
 		}
+		return result
+	}
+
+	result := make([]*JobMeta, 0, len(c.jobs))
+	for _, j := range c.jobs {
 		// Snapshot per the same reasoning as GetJob.
 		snapshot := *j
 		result = append(result, &snapshot)
@@ -156,18 +169,22 @@ func (c *Coordinator) CancelJob(jobID string) (*JobMeta, error) {
 	c.log.Info().Str("job_id", jobID).Msg("job canceling")
 
 	// Load task assignments and enqueue cancel commands to workers.
-	data, err := c.store.Get(JobAssignmentsKey(jobID))
-	if err == nil && data != nil {
-		var tam TaskAssignmentMap
-		if err := protocol.DecodeMsgPack(data, &tam); err == nil {
-			for taskID, workerID := range tam.Assignments {
-				c.EnqueueCommand(workerID, rpc.WorkerCommand{
-					Type:   rpc.CommandTypeCancelTask,
-					JobID:  jobID,
-					TaskID: taskID,
-				})
-			}
+	// Prefer the in-memory cache; fall back to the store on cache miss.
+	c.mu.RLock()
+	tam, cached := c.assignments[jobID]
+	c.mu.RUnlock()
+	if !cached {
+		data, err := c.store.Get(JobAssignmentsKey(jobID))
+		if err == nil && data != nil {
+			_ = protocol.DecodeMsgPack(data, &tam)
 		}
+	}
+	for taskID, workerID := range tam.Assignments {
+		c.EnqueueCommand(workerID, rpc.WorkerCommand{
+			Type:   rpc.CommandTypeCancelTask,
+			JobID:  jobID,
+			TaskID: taskID,
+		})
 	}
 
 	return job, nil

@@ -14,6 +14,7 @@ import (
 type recoveredState struct {
 	jobs               map[string]*JobMeta
 	workers            map[string]*WorkerMeta
+	assignments        map[string]TaskAssignmentMap // jobID → task assignments (warms allTasksInStatus cache)
 	epoch              uint64
 	config             *ClusterConfig
 	latestCheckpoints  map[string]*CheckpointMeta // jobID → latest completed
@@ -28,6 +29,7 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 	state := &recoveredState{
 		jobs:              make(map[string]*JobMeta),
 		workers:           make(map[string]*WorkerMeta),
+		assignments:       make(map[string]TaskAssignmentMap),
 		latestCheckpoints: make(map[string]*CheckpointMeta),
 	}
 
@@ -62,7 +64,27 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 		return nil, fmt.Errorf("%w: scanning jobs: %v", ErrRecoveryFailed, err)
 	}
 
-	// 2. Recover checkpoints for each job.
+	// 2. Recover task assignments so allTasksInStatus does not pay a
+	//    Pebble Get + DecodeMsgPack on every UpdateTaskStatus after a
+	//    recovery. Missing assignments are fine — jobs in CREATED state
+	//    have not been scheduled yet.
+	for jobID := range state.jobs {
+		key := JobAssignmentsKey(jobID)
+		data, err := store.Get(key)
+		if err != nil {
+			return nil, fmt.Errorf("%w: reading assignments for job %s: %v", ErrRecoveryFailed, jobID, err)
+		}
+		if data == nil {
+			continue
+		}
+		var tam TaskAssignmentMap
+		if err := protocol.DecodeMsgPack(data, &tam); err != nil {
+			return nil, fmt.Errorf("%w: corrupt assignments for job %s: %v", ErrStoreCorrupted, jobID, err)
+		}
+		state.assignments[jobID] = tam
+	}
+
+	// 3. Recover checkpoints for each job.
 	for jobID := range state.jobs {
 		if err := recoverJobCheckpoints(store, jobID, state); err != nil {
 			return nil, err
