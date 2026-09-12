@@ -37,6 +37,11 @@ func (ex *embeddedExecutor) run(ctx context.Context, jobName string) (*JobResult
 
 	// Topo-sort and check for shuffle boundaries.
 	sorted := graph.topoSort()
+	for _, node := range sorted {
+		if node.Type == NodeWindow || node.Type == NodeReduce {
+			return ex.runWindows(ctx, sorted, jobName)
+		}
+	}
 	hasShuffleBoundary := false
 	for _, edge := range graph.edges {
 		if edge.Shuffle == ShuffleHash || edge.Shuffle == ShuffleRebalance {
