@@ -31,3 +31,11 @@ type MetadataStore interface {
 	// Close releases all resources held by the store.
 	Close() error
 }
+
+// AsyncMetadataStore optionally supports atomic writes without waiting for disk
+// synchronization. A successful write is visible to readers but may be lost on
+// crash. Use only for advisory data that recovery does not depend on.
+// Stores without this capability retain the synchronous WriteBatch fallback.
+type AsyncMetadataStore interface {
+	WriteBatchAsync(batch []KVPair) error
+}

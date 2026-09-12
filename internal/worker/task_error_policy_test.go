@@ -58,7 +58,7 @@ func TestTaskExecutorNamedDLQ(t *testing.T) {
 	err := newTaskExecutor(reg).run(ctx, "job", "task", rpc.TaskDescriptor{OperatorChain: []rpc.OperatorDescriptor{
 		{OperatorID: "source", Type: rpc.OperatorTypeSource, ClassName: "source"},
 		{OperatorID: "parse", Type: rpc.OperatorTypeMap, ClassName: "parse", ErrorPolicy: &rpc.ErrorPolicy{OnExhausted: "dlq"}, DLQSink: &rpc.DLQSinkDescriptor{ClassName: "dlq"}},
-	}}, zerolog.Nop())
+	}}, zerolog.Nop(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -103,7 +103,8 @@ func TestCheckpointCoordinator_TimeoutAbort(t *testing.T) {
 	// Wait for timeout and abort.
 	waitForCheckpointAborted(t, cc, 2*time.Second)
 
-	// Verify abort messages sent to both channels.
+	// State is updated before abort notifications are sent outside the lock.
+	// Wait for delivery rather than racing it with a non-blocking receive.
 	for i, ch := range channels {
 		select {
 		case msg := <-ch:
@@ -113,8 +114,8 @@ func TestCheckpointCoordinator_TimeoutAbort(t *testing.T) {
 			if msg.CheckpointID != 1 {
 				t.Errorf("channel[%d]: checkpoint ID: got %d, want 1", i, msg.CheckpointID)
 			}
-		default:
-			t.Errorf("channel[%d]: no abort message received", i)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("channel[%d]: no abort message received", i)
 		}
 	}
 

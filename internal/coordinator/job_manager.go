@@ -55,10 +55,9 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 	// already-inserted entry and rejects.
 	//
 	// Trade-off: a crash between the in-memory insert and the disk
-	// commit drops the job. c.jobs is rebuilt from Pebble on restart
-	// (see recovery_test.go), so the submitter sees "201 created" but
-	// the job is gone — same failure mode as a network-partitioned ACK,
-	// recoverable by client retry.
+	// commit drops the unacknowledged reservation. Success is returned only
+	// after the synchronous batch commits. A crash after commit but before
+	// the response can leave the client uncertain; recovery retains the job.
 	c.mu.Lock()
 	if _, exists := c.activeJobNames[name]; exists {
 		c.mu.Unlock()
