@@ -10,6 +10,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/tarungka/wire/internal/engine"
+	"github.com/tarungka/wire/internal/errorpolicy"
 	"github.com/tarungka/wire/internal/logger"
 )
 
@@ -37,6 +38,19 @@ func (ex *embeddedExecutor) run(ctx context.Context, jobName string) (*JobResult
 
 	// Topo-sort and check for shuffle boundaries.
 	sorted := graph.topoSort()
+	for _, node := range sorted {
+		if node.NamedDLQ != nil {
+			return nil, fmt.Errorf("sdk: named DLQ sinks require cluster mode")
+		}
+	}
+	for _, node := range sorted {
+		if node.DLQSink != nil {
+			if err := node.DLQSink.Open(ctx); err != nil {
+				return nil, fmt.Errorf("sdk: open DLQ for %q: %w", node.Name, err)
+			}
+			defer node.DLQSink.Close()
+		}
+	}
 	hasShuffleBoundary := false
 	for _, edge := range graph.edges {
 		if edge.Shuffle == ShuffleHash || edge.Shuffle == ShuffleRebalance {
@@ -97,9 +111,11 @@ func (ex *embeddedExecutor) runLinearInstance(
 
 	// Build the operator chain from the sorted nodes.
 	var operators []engine.Operator
+	var errorConfigs []engine.ErrorHandlerConfig
 	var sourceOp engine.SourceOperator
 
 	for _, node := range sorted {
+		before := len(operators)
 		switch node.Type {
 		case NodeSource:
 			sa := &sourceAdapter{source: node.Source}
@@ -115,6 +131,23 @@ func (ex *embeddedExecutor) runLinearInstance(
 		case NodeKeyBy, NodeWindow, NodeReduce, NodeProcess:
 			// These shouldn't appear in a linear pipeline.
 			return fmt.Errorf("sdk: unexpected node type %d in linear pipeline", node.Type)
+		}
+		if len(operators) > before {
+			cfg, err := errorpolicy.Compile(node.ErrorPolicy, node.Name)
+			if err != nil {
+				return err
+			}
+			if node.DLQSink != nil {
+				sink := node.DLQSink
+				cfg.DLQWriter = func(e engine.DLQEvent) error {
+					data, err := engine.MarshalDLQEvent(e)
+					if err != nil {
+						return err
+					}
+					return sink.Write(ctx, Event{Key: e.OriginalEvent.Key, Value: data, EventTime: e.Timestamp})
+				}
+			}
+			errorConfigs = append(errorConfigs, cfg)
 		}
 	}
 
@@ -145,7 +178,7 @@ func (ex *embeddedExecutor) runLinearInstance(
 	ig.Go(func() error {
 		defer producerWg.Done()
 		defer runCancel()
-		return engine.RunOperatorChain(igctx, operators, eventCh, controlCh, outputCh, aligner, 1, metrics, chainLog, nil, nil, nil, nil, errMetrics)
+		return engine.RunOperatorChain(igctx, operators, eventCh, controlCh, outputCh, aligner, 1, metrics, chainLog, nil, nil, errorConfigs, nil, errMetrics)
 	})
 
 	// Close outputCh when operator chain finishes.
@@ -297,9 +330,11 @@ func (ex *embeddedExecutor) runStageInstance(
 	defer runCancel()
 
 	var operators []engine.Operator
+	var errorConfigs []engine.ErrorHandlerConfig
 	var sourceOp engine.SourceOperator
 
 	for _, node := range stage {
+		before := len(operators)
 		switch node.Type {
 		case NodeSource:
 			if isSourceStage {
@@ -320,6 +355,23 @@ func (ex *embeddedExecutor) runStageInstance(
 			operators = append(operators, &processAdapter{fn: node.ProcessFn})
 		case NodeWindow, NodeReduce:
 			// Window/Reduce not yet implemented in embedded mode.
+		}
+		if len(operators) > before {
+			cfg, err := errorpolicy.Compile(node.ErrorPolicy, node.Name)
+			if err != nil {
+				return err
+			}
+			if node.DLQSink != nil {
+				sink := node.DLQSink
+				cfg.DLQWriter = func(e engine.DLQEvent) error {
+					data, err := engine.MarshalDLQEvent(e)
+					if err != nil {
+						return err
+					}
+					return sink.Write(ctx, Event{Key: e.OriginalEvent.Key, Value: data, EventTime: e.Timestamp})
+				}
+			}
+			errorConfigs = append(errorConfigs, cfg)
 		}
 	}
 
@@ -345,7 +397,7 @@ func (ex *embeddedExecutor) runStageInstance(
 	ig.Go(func() error {
 		defer producerWg.Done()
 		defer runCancel()
-		return engine.RunOperatorChain(igctx, operators, eventCh, controlCh, outputCh, aligner, 1, metrics, chainLog, nil, nil, nil, nil, errMetrics)
+		return engine.RunOperatorChain(igctx, operators, eventCh, controlCh, outputCh, aligner, 1, metrics, chainLog, nil, nil, errorConfigs, nil, errMetrics)
 	})
 
 	go func() {

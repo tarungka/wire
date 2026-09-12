@@ -25,6 +25,8 @@ func (g *StreamGraph) toJobGraph(defaultParallelism int) rpc.JobGraph {
 
 		ops = append(ops, rpc.OperatorDescriptor{
 			OperatorID:  idStr(node.ID),
+			ErrorPolicy: node.ErrorPolicy,
+			DLQSink:     node.NamedDLQ,
 			Name:        node.Name,
 			Type:        nodeTypeToRPC(node.Type),
 			Parallelism: int32(p),

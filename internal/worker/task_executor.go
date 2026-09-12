@@ -44,6 +44,20 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 
 	var sourceOp engine.SourceOperator
 	var operators []engine.Operator
+	var errorConfigs []engine.ErrorHandlerConfig
+
+	// Validate every policy before invoking user factories.
+	for _, od := range desc.OperatorChain {
+		if od.DLQSink != nil && (od.DLQSink.ClassName == "" || od.ErrorPolicy == nil || od.ErrorPolicy.OnExhausted != "dlq") {
+			return fmt.Errorf("worker: invalid DLQ configuration for %q", od.OperatorID)
+		}
+		if od.Type == rpc.OperatorTypeSource && od.ErrorPolicy != nil {
+			return fmt.Errorf("worker: source error policies are not supported")
+		}
+		if _, err := compileErrorPolicy(od.ErrorPolicy, od.OperatorID); err != nil {
+			return err
+		}
+	}
 
 	for i, od := range desc.OperatorChain {
 		op, err := te.reg.Build(ctx, od, tc)
@@ -62,6 +76,32 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			continue
 		}
 		operators = append(operators, op)
+		cfg, err := compileErrorPolicy(od.ErrorPolicy, od.OperatorID)
+		if err != nil {
+			return err
+		}
+		if od.DLQSink != nil {
+			dlqOp, err := te.reg.Build(ctx, rpc.OperatorDescriptor{OperatorID: od.OperatorID + "/dlq", Type: rpc.OperatorTypeSink, ClassName: od.DLQSink.ClassName, Config: od.DLQSink.Config}, tc)
+			if err != nil {
+				return fmt.Errorf("worker: build DLQ: %w", err)
+			}
+			sink, ok := dlqOp.(engine.SinkOperator)
+			if !ok {
+				return fmt.Errorf("worker: DLQ factory returned %T", dlqOp)
+			}
+			if err := sink.Open(ctx); err != nil {
+				return fmt.Errorf("worker: open DLQ: %w", err)
+			}
+			defer sink.Close()
+			cfg.DLQWriter = func(e engine.DLQEvent) error {
+				data, err := engine.MarshalDLQEvent(e)
+				if err != nil {
+					return err
+				}
+				return sink.Write(ctx, engine.Event{Key: e.OriginalEvent.Key, Value: data, EventTime: e.Timestamp})
+			}
+		}
+		errorConfigs = append(errorConfigs, cfg)
 	}
 
 	if sourceOp == nil {
@@ -104,7 +144,7 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			log,
 			nil, // txnSink — Phase 1 no 2PC.
 			nil, // ackFn — Phase 1 no checkpoint ack.
-			nil, // errorConfigs
+			errorConfigs,
 			nil, // dlqCh
 			engine.NoopErrorMetrics(),
 		)

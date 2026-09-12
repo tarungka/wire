@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -35,6 +36,8 @@ type ErrorClassifier func(err error) ErrorClass
 
 // ErrorHandlerConfig holds per-operator error handling configuration.
 type ErrorHandlerConfig struct {
+	// DLQWriter synchronously delivers a failed event; failures are logged and counted as drops.
+	DLQWriter    func(DLQEvent) error
 	OperatorName string          // Human-readable operator name (for metrics/DLQ).
 	MaxRetries   int             // 0 = no retries (default).
 	Backoff      BackoffStrategy // nil = no backoff.
@@ -59,11 +62,19 @@ func FixedBackoff(delay time.Duration) BackoffStrategy {
 // capped at maxDelay.
 func ExponentialBackoff(initialDelay, maxDelay time.Duration, multiplier float64) BackoffStrategy {
 	return func(attempt int) time.Duration {
-		d := float64(initialDelay)
-		for i := 0; i < attempt; i++ {
-			d *= multiplier
+		if initialDelay <= 0 || maxDelay <= 0 {
+			return 0
 		}
-		if time.Duration(d) > maxDelay {
+		if attempt < 0 {
+			attempt = 0
+		}
+		if math.IsNaN(multiplier) || multiplier < 1 {
+			multiplier = 1
+		}
+		d := float64(initialDelay) * math.Pow(multiplier, float64(attempt))
+		// Compare before converting: an overflowing float-to-duration cast
+		// can become negative and accidentally disable the retry delay.
+		if math.IsInf(d, 1) || d >= float64(maxDelay) {
 			return maxDelay
 		}
 		return time.Duration(d)
@@ -112,6 +123,9 @@ func invokeWithRetry(
 	cfg := link.Config
 	metrics := cc.errMetrics
 
+	if err := cc.ctx.Err(); err != nil {
+		return err
+	}
 	err := safeInvoke(fn)
 	if err == nil {
 		return nil
@@ -133,7 +147,9 @@ func invokeWithRetry(
 
 	// Transient errors: retry up to MaxRetries times.
 	for attempt := 1; attempt <= cfg.MaxRetries; attempt++ {
-		metrics.IncRetryTotal(cfg.OperatorName)
+		if err := cc.ctx.Err(); err != nil {
+			return err
+		}
 
 		// Apply backoff with context cancellation support.
 		if cfg.Backoff != nil {
@@ -147,6 +163,10 @@ func invokeWithRetry(
 			}
 		}
 
+		if err := cc.ctx.Err(); err != nil {
+			return err
+		}
+		metrics.IncRetryTotal(cfg.OperatorName)
 		err = safeInvoke(fn)
 		if err == nil {
 			return nil
@@ -188,14 +208,27 @@ func handleExhausted(
 			Timestamp:     time.Now().UnixMilli(),
 			RetryCount:    retryCount,
 		}
+		if cfg.DLQWriter != nil {
+			if writeErr := safeInvoke(func() error { return cfg.DLQWriter(dlqEvent) }); writeErr != nil {
+				metrics.IncDropTotal(cfg.OperatorName)
+				log.Error().Str("operator", cfg.OperatorName).Err(writeErr).Msg("DLQ sink failed, dropping event")
+			} else {
+				metrics.IncDLQTotal(cfg.OperatorName)
+			}
+			return nil
+		}
 		if dlqCh != nil {
 			select {
 			case dlqCh <- dlqEvent:
 				metrics.IncDLQTotal(cfg.OperatorName)
 			default:
 				metrics.IncDLQOverflowTotal(cfg.OperatorName)
+				metrics.IncDropTotal(cfg.OperatorName)
 				log.Error().Str("operator", cfg.OperatorName).Msg("DLQ channel full, dropping DLQ event")
 			}
+		} else {
+			metrics.IncDropTotal(cfg.OperatorName)
+			log.Error().Str("operator", cfg.OperatorName).Msg("DLQ not configured, dropping event")
 		}
 		return nil
 	case DropEvent:

@@ -1,8 +1,16 @@
 package sdk
 
-import "errors"
+import (
+	"errors"
+	"github.com/tarungka/wire/internal/engine"
+)
 
 var (
+	// ErrTransient marks retryable failures; wrap with fmt.Errorf("%w: ...", sdk.ErrTransient).
+	ErrTransient = engine.ErrTransient
+	// ErrFatal bypasses retry/drop/DLQ policies and fails execution.
+	ErrFatal = engine.ErrFatal
+
 	// ErrNoSources indicates the pipeline has no source operators.
 	ErrNoSources = errors.New("sdk: pipeline has no sources")
 
