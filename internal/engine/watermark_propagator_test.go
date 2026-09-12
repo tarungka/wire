@@ -83,8 +83,10 @@ func TestWatermarkPropagator_AllIdleSkip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tracker := NewInputWatermarkTracker(2)
-	// Don't record any activity — all inputs are idle with non-zero timeout.
+	var now int64
+	tracker := newInputWatermarkTracker(2, func() int64 { return now })
+	// Advance the clock through the startup grace period before propagation.
+	now = int64(time.Minute)
 	tracker.AdvanceWatermark(0, 100)
 	tracker.AdvanceWatermark(1, 200)
 	outputCh := make(chan OutputMsg, 100)
