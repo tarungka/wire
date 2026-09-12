@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -305,21 +306,19 @@ func (cc *CheckpointCoordinator) abortCheckpoint(ctx context.Context) error {
 		Int("consecutive_failures", cc.consecutiveFailures).
 		Msg("checkpoint timeout, aborting")
 
+	// Preserve the terminal error while still releasing task and sink state.
+	var failureErr error
 	// Check consecutive failure threshold.
 	if cc.config.MaxConsecutiveFailures > 0 && cc.consecutiveFailures >= cc.config.MaxConsecutiveFailures {
-		cc.activeCheckpointID = 0
-		cc.mu.Unlock()
-		return fmt.Errorf("%w: %d consecutive failures",
+		failureErr = fmt.Errorf("%w: %d consecutive failures",
 			ErrMaxConsecutiveCheckpointFailures, cc.consecutiveFailures)
 	}
 
 	// Check tolerable failure rate.
-	if cc.config.TolerableFailureRate > 0 && cc.totalCheckpoints > 0 {
+	if failureErr == nil && cc.config.TolerableFailureRate > 0 && cc.totalCheckpoints > 0 {
 		rate := float64(cc.totalFailures) / float64(cc.totalCheckpoints)
 		if rate > cc.config.TolerableFailureRate {
-			cc.activeCheckpointID = 0
-			cc.mu.Unlock()
-			return fmt.Errorf("%w: failure rate %.2f exceeds tolerance %.2f",
+			failureErr = fmt.Errorf("%w: failure rate %.2f exceeds tolerance %.2f",
 				ErrCheckpointFailureRateExceeded, rate, cc.config.TolerableFailureRate)
 		}
 	}
@@ -335,6 +334,8 @@ func (cc *CheckpointCoordinator) abortCheckpoint(ctx context.Context) error {
 	}
 
 	cc.activeCheckpointID = 0
+	cc.activeEpochID = 0
+	cc.pendingACKs = make(map[int]bool)
 	cc.mu.Unlock()
 
 	// Send CtrlAbortTransaction to sink tasks FIRST so they rollback their
@@ -353,7 +354,7 @@ func (cc *CheckpointCoordinator) abortCheckpoint(ctx context.Context) error {
 				select {
 				case cc.controlChannels[idx] <- txnAbortMsg:
 				case <-ctx.Done():
-					return ctx.Err()
+					return errors.Join(failureErr, ctx.Err())
 				}
 			}
 		}
@@ -369,11 +370,11 @@ func (cc *CheckpointCoordinator) abortCheckpoint(ctx context.Context) error {
 		select {
 		case ch <- abortMsg:
 		case <-ctx.Done():
-			return ctx.Err()
+			return errors.Join(failureErr, ctx.Err())
 		}
 	}
 
-	return nil
+	return failureErr
 }
 
 // completeCheckpoint resets active checkpoint state and consecutive failures.

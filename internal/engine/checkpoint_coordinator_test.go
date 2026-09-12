@@ -698,3 +698,62 @@ func TestCheckpointCoordinator_PendingCommits_Recovery(t *testing.T) {
 		t.Errorf("expected 0 pending commits, got %d", len(pending))
 	}
 }
+
+func TestCheckpointCoordinator_ThresholdStillAbortsTasks(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config CheckpointConfig
+		want   error
+	}{
+		{"consecutive", CheckpointConfig{Timeout: time.Millisecond, MaxConsecutiveFailures: 1}, ErrMaxConsecutiveCheckpointFailures},
+		{"rate", CheckpointConfig{Timeout: time.Millisecond, TolerableFailureRate: 0.5}, ErrCheckpointFailureRateExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cc, channels := newTestCoordinator(tc.config, 2)
+			cc.RegisterTransactionalSink(1, "sink")
+			cc.sinkTxnStates[1].State = TxnPreCommitted
+			cc.sinkTxnStates[1].CurrentCheckpoint = 7
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := cc.TriggerCheckpoint(ctx, 7, 3); err != nil {
+				t.Fatal(err)
+			}
+			if err := cc.Run(ctx); !errors.Is(err, tc.want) {
+				t.Fatalf("Run error = %v, want %v", err, tc.want)
+			}
+			for idx, types := range [][]ControlType{{CtrlAbortCheckpoint}, {CtrlAbortTransaction, CtrlAbortCheckpoint}} {
+				for _, want := range types {
+					select {
+					case msg := <-channels[idx]:
+						if msg.Type != want || msg.CheckpointID != 7 || msg.EpochID != 3 {
+							t.Fatalf("unexpected cleanup: %+v", msg)
+						}
+					default:
+						t.Fatalf("task %d missing cleanup %v", idx, want)
+					}
+				}
+			}
+			if cc.activeCheckpointID != 0 || cc.activeEpochID != 0 || len(cc.pendingACKs) != 0 || cc.timer != nil {
+				t.Fatal("checkpoint tracking not cleared")
+			}
+			if cc.sinkTxnStates[1].State != TxnActive || cc.sinkTxnStates[1].CurrentCheckpoint != 0 {
+				t.Fatal("sink tracking not reset")
+			}
+		})
+	}
+}
+
+func TestCheckpointCoordinator_ThresholdCleanupCancellation(t *testing.T) {
+	cc, _ := newTestCoordinator(CheckpointConfig{MaxConsecutiveFailures: 1}, 1)
+	// An unbuffered channel without a receiver simulates an unavailable task.
+	cc.controlChannels[0] = make(chan ControlMsg)
+	if err := cc.TriggerCheckpoint(context.Background(), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := cc.abortCheckpoint(ctx)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrMaxConsecutiveCheckpointFailures) {
+		t.Fatalf("cleanup must preserve both cancellation and threshold error, got %v", err)
+	}
+}
