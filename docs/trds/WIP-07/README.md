@@ -24,8 +24,8 @@
 
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** RPC framing, client/server dispatch, errors, worker registration, heartbeat, and task-status reporting are implemented. WIP-21 adds streaming command dispatch.
-- **Remaining:** The full proposed checkpoint and resource-reservation workflows are not wired into the runtime. Reconcile the specification with the methods actually registered by the coordinator.
+- **Implemented:** RPC framing, client/server dispatch, errors, worker registration, heartbeat, and task-status reporting are implemented. WIP-21 adds streaming command dispatch. The shared server now tracks concurrent sessions independently, closes all sessions on Stop, and makes acceptance/concurrency waits respond to cancellation.
+- **Remaining:** The full proposed checkpoint and resource-reservation workflows are not wired into the runtime. The coordinator currently registers RegisterWorker, Heartbeat, UpdateTaskStatus, and the streaming WatchCommands method; other method definitions do not establish runtime support.
 - **Evidence:** [client.go](../../../internal/rpc/client.go), [server.go](../../../internal/rpc/server.go), [transport.go](../../../internal/coordinator/transport.go).
 
 ---
