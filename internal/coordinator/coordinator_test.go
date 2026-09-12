@@ -159,7 +159,7 @@ func TestCoordinator_HeartbeatFlush(t *testing.T) {
 	// Wait for heartbeat flush.
 	time.Sleep(200 * time.Millisecond)
 
-	val, err := store.Get(WorkerMetaKey("w1"))
+	val, err := store.Get(WorkerHeartbeatKey("w1"))
 	if err != nil {
 		t.Fatal(err)
 	}

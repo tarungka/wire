@@ -428,29 +428,28 @@ func (c *Coordinator) allTasksInStatus(jobID string, status rpc.TaskStatus) bool
 }
 
 // flushHeartbeats persists worker heartbeat summaries to the metadata store.
-// Uses a full Lock to prevent races with persistWorker: if we used RLock,
-// a concurrent persistWorker could update a worker between our read and
-// the WriteBatch call, and our stale snapshot would overwrite the newer state.
+// These timestamps are advisory: recovery always marks workers stale. Separate
+// keys ensure a delayed flush cannot overwrite durable worker registration.
 func (c *Coordinator) flushHeartbeats(ctx context.Context) error {
-	c.mu.Lock()
+	c.mu.RLock()
 	if c.state != StateLeader {
-		c.mu.Unlock()
+		c.mu.RUnlock()
 		return nil
 	}
 
 	var batch []KVPair
 	for id, w := range c.workers {
-		data, err := protocol.EncodeMsgPack(w)
+		data, err := protocol.EncodeMsgPack(w.LastHeartbeat)
 		if err != nil {
-			c.mu.Unlock()
+			c.mu.RUnlock()
 			return fmt.Errorf("encoding worker %s: %w", id, err)
 		}
 		batch = append(batch, KVPair{
-			Key:   WorkerMetaKey(id),
+			Key:   WorkerHeartbeatKey(id),
 			Value: data,
 		})
 	}
-	c.mu.Unlock()
+	c.mu.RUnlock()
 
 	if len(batch) == 0 {
 		return nil
@@ -458,6 +457,9 @@ func (c *Coordinator) flushHeartbeats(ctx context.Context) error {
 
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if store, ok := c.store.(AsyncMetadataStore); ok {
+		return store.WriteBatchAsync(batch)
 	}
 	return c.store.WriteBatch(batch)
 }
