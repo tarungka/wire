@@ -326,7 +326,7 @@ func drainInputCh(cc *chainContext) error {
 func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 	switch ctrl.Type {
 	case CtrlBarrierReceived:
-		if !cc.aligner.AllAligned(ctrl.CheckpointID) {
+		if !cc.aligner.AllAligned(ctrl.CheckpointID) || cc.aligner.ActiveEpochID() != ctrl.EpochID {
 			return nil // Not all inputs aligned yet.
 		}
 

@@ -34,9 +34,17 @@ func NewBarrierAligner(numInputs, maxBufferSize int) *BarrierAligner {
 
 // OnBarrier records that a checkpoint barrier arrived on the given input.
 // Returns true if this barrier triggered full alignment (all inputs arrived).
+// Invalid inputs, checkpoint zero, and barriers outside the active identity are ignored.
 func (ba *BarrierAligner) OnBarrier(inputIndex int, checkpointID, epochID uint64) bool {
 	ba.mu.Lock()
 	defer ba.mu.Unlock()
+
+	if inputIndex < 0 || inputIndex >= ba.numInputs || checkpointID == 0 {
+		return false
+	}
+	if ba.activeID != 0 && (ba.activeID != checkpointID || ba.activeEpoch != epochID) {
+		return false
+	}
 
 	if ba.activeID == 0 {
 		// First barrier for this checkpoint — start alignment.
@@ -84,7 +92,7 @@ func (ba *BarrierAligner) BufferEvent(ctx context.Context, inputIndex int, event
 func (ba *BarrierAligner) AllAligned(checkpointID uint64) bool {
 	ba.mu.Lock()
 	defer ba.mu.Unlock()
-	return ba.activeID == checkpointID && len(ba.arrived) >= ba.numInputs
+	return checkpointID != 0 && ba.activeID == checkpointID && len(ba.arrived) >= ba.numInputs
 }
 
 // DrainAll returns all side-buffered events in input order (0, 1, 2, ...),

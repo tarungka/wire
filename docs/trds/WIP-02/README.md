@@ -23,10 +23,10 @@
 
 ## Implementation Status — 2026-09-12
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Assessed against `master` at `bb58acd`, with the barrier-identity validation in this PR. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** TaskSlot and operator-chain goroutines, bounded channels, coordinated cancellation, and alignment buffers are implemented.
-- **Remaining:** Durable snapshot replication and its resource-management path are not connected to cluster execution. The worker executor assembles its own linear chain.
+- **Implemented:** TaskSlot and operator-chain goroutines, bounded channels, coordinated cancellation, and alignment buffers are implemented. Alignment only counts valid inputs with the active checkpoint ID and epoch; invalid indices, checkpoint zero, and mixed identities cannot complete alignment. Operator-chain snapshot control also checks the active epoch.
+- **Remaining:** Durable snapshot replication and its resource-management path are not connected to cluster execution. The worker executor assembles its own linear chain. Conflicting barriers are ignored while alignment is active; timeout/abort handling must resolve a missing matching barrier. This does not establish persistent epoch fencing across task restarts.
 - **Evidence:** [task_slot.go](../../../internal/engine/task_slot.go), [task_executor.go](../../../internal/worker/task_executor.go).
 
 ---
