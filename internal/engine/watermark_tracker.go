@@ -17,12 +17,22 @@ type InputWatermarkTracker struct {
 
 // NewInputWatermarkTracker creates a tracker for the given number of inputs.
 func NewInputWatermarkTracker(numInputs int) *InputWatermarkTracker {
-	return &InputWatermarkTracker{
+	return newInputWatermarkTracker(numInputs, func() int64 { return time.Now().UnixNano() })
+}
+
+func newInputWatermarkTracker(numInputs int, clock func() int64) *InputWatermarkTracker {
+	tracker := &InputWatermarkTracker{
 		watermarks:     make([]atomic.Int64, numInputs),
 		lastActivityNs: make([]atomic.Int64, numInputs),
 		numInputs:      numInputs,
-		clock:          func() int64 { return time.Now().UnixNano() },
+		clock:          clock,
 	}
+	// Every newly connected input gets a full idle timeout before exclusion.
+	now := clock()
+	for i := range tracker.lastActivityNs {
+		tracker.lastActivityNs[i].Store(now)
+	}
+	return tracker
 }
 
 // AdvanceWatermark CAS-advances the watermark for the given input.
@@ -57,14 +67,8 @@ func (t *InputWatermarkTracker) MinWatermark(idleTimeout time.Duration) (int64, 
 
 	for i := 0; i < t.numInputs; i++ {
 		lastActivity := t.lastActivityNs[i].Load()
-		// An input with no activity (lastActivity == 0) is considered idle
-		// only if idleTimeout > 0. With zero timeout, all inputs participate.
-		if idleTimeout > 0 && lastActivity > 0 && (now-lastActivity) >= idleThresholdNs {
+		if idleTimeout > 0 && (now-lastActivity) >= idleThresholdNs {
 			continue // idle, skip
-		}
-		if idleTimeout > 0 && lastActivity == 0 {
-			// Never seen activity — treat as idle if timeout is configured.
-			continue
 		}
 
 		wm := t.watermarks[i].Load()

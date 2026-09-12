@@ -370,12 +370,9 @@ func TestInputReader_ActivityRecording(t *testing.T) {
 	eventCh := make(chan Event, 10)
 	controlCh := make(chan ControlMsg, 10)
 	aligner := NewBarrierAligner(1, 100)
-	tracker := testTracker(1)
-
-	// Verify no activity initially.
-	if tracker.lastActivityNs[0].Load() != 0 {
-		t.Fatal("expected no initial activity")
-	}
+	var now int64 = 100
+	tracker := newInputWatermarkTracker(1, func() int64 { return now })
+	now = 200
 
 	go func() {
 		if err := writer.WriteMessage(&protocol.DataRecordMsg{
@@ -398,7 +395,7 @@ func TestInputReader_ActivityRecording(t *testing.T) {
 	}
 
 	// Activity should have been recorded.
-	if tracker.lastActivityNs[0].Load() == 0 {
+	if tracker.lastActivityNs[0].Load() != 200 {
 		t.Error("expected activity to be recorded after data record")
 	}
 }

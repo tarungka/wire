@@ -22,9 +22,9 @@
 
 ## Implementation Status — 2026-09-12
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Assessed against `master` at `bb58acd`, with the startup idle-timeout correction in this PR. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Bounded-out-of-orderness, monotonic, and ingestion-time strategies, idle-input tracking, and propagation primitives are implemented and tested.
+- **Implemented:** Bounded-out-of-orderness, monotonic, and ingestion-time strategies, idle-input tracking, and propagation primitives are implemented and tested. New inputs participate in the minimum watermark until the full idle timeout has elapsed; silence at startup no longer causes immediate exclusion. Tests cover the exact timeout boundary, reactivation, all-idle behavior, and disabled idle detection.
 - **Remaining:** Window closure and checkpoint recovery driven by these watermarks are not implemented end to end in cluster execution.
 - **Evidence:** [watermark_strategy.go](../../../internal/engine/watermark_strategy.go), [watermark_tracker.go](../../../internal/engine/watermark_tracker.go), [watermark_propagator.go](../../../internal/engine/watermark_propagator.go).
 
@@ -128,6 +128,8 @@ If a source partition produces no events for a configurable duration, it is mark
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `watermark.idle_timeout` | `1m` | Mark source idle after this duration of no events |
+
+The idle timeout starts when the input tracker is created, even if no event has arrived yet. A newly connected input therefore holds back the minimum watermark for the full configured duration.
 
 When an idle source produces a new event, it is immediately un-idled and its watermark re-enters the `Min()` calculation.
 
