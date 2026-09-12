@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/tarungka/wire/internal/cmd"
 	"github.com/tarungka/wire/internal/config"
 	"github.com/tarungka/wire/internal/coordinator"
+	"github.com/tarungka/wire/internal/jobcli"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/observability"
 	"github.com/tarungka/wire/internal/worker"
@@ -40,6 +42,15 @@ const desc = `Wire is a powerful, distributed stream processing platform designe
 Visit https://www.github.com/tarungka/wire to learn more.`
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "jobs" || os.Args[1] == "savepoints" || os.Args[1] == "cluster") {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := jobcli.Run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Handle signals first, so signal handling is established before anything else.
 	sigCh := HandleSignals(syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
