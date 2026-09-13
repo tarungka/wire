@@ -75,6 +75,14 @@ func TestCheckpointReplicaServicePublishesAndJoins(t *testing.T) {
 	if len(snapshot.Operators) != 1 || string(snapshot.Operators[0]) != "state" {
 		t.Fatalf("restored: %+v", snapshot)
 	}
+	recovery := &Worker{cfg: Config{WorkerID: "recovery-worker", CheckpointReplica: &CheckpointReplicaConfig{StoreRoot: t.TempDir(), ArtifactRoot: t.TempDir(), StagingRoot: t.TempDir()}}}
+	recovered, err := recovery.fetchTaskCheckpoint(ctx, "job", "task", rpc.TaskDescriptor{EpochID: 3, RestoreCheckpoint: &rpc.CheckpointRestoreDescriptor{CheckpointID: 7, EpochID: 2, ReplicaAddress: addr}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered.Operators) != 1 || string(recovered.Operators[0]) != "state" {
+		t.Fatalf("worker recovery: %+v", recovered)
+	}
 	request.WorkerID = "unassigned"
 	fetched.Reset()
 	if err := client.FetchCheckpoint(ctx, request, &fetched); err == nil || fetched.Len() != 0 {

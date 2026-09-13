@@ -133,10 +133,11 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 	slot.OnRunning = onRunning
 	if len(checkpoints) > 0 && checkpoints[0] != nil {
 		checkpoint := checkpoints[0]
+		slot.RestoreCheckpoint = checkpoint.restore
 		slot.CheckpointReplicator = checkpoint.replicator
 		slot.CheckpointReport = checkpoint.report
 		slot.CheckpointDecisions = checkpoint.decisions
-		if sourceOp != nil {
+		if sourceOp != nil && checkpoint.replicator != nil {
 			slot.CheckpointTriggers = checkpoint.triggers
 		}
 	}

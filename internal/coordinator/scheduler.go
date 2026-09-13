@@ -144,6 +144,12 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		return
 	}
 
+	if err := c.attachCheckpointRestoreLocked(job, assignments); err != nil {
+		c.mu.Unlock()
+		c.log.Error().Err(err).Str("job_id", job.ID).Msg("cannot deploy checkpoint recovery")
+		return
+	}
+
 	// Commit the state and assignments together before publishing DEPLOYING.
 	tam.Replicas = make(map[string]string)
 	for workerID, workerTasks := range assignments {

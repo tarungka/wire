@@ -286,17 +286,24 @@ type EdgeDescriptor struct {
 // fuse and execute locally. For Phase 1 (linear pipelines, no shuffle), this
 // is the full source→ops→sink chain. In later phases, it's the slice of
 // operators between two shuffle boundaries.
+type CheckpointRestoreDescriptor struct {
+	CheckpointID   uint64 `codec:"cid"`
+	EpochID        uint64 `codec:"eid"`
+	ReplicaAddress string `codec:"addr"`
+}
+
 type TaskDescriptor struct {
-	CheckpointReplicaAddress string                  `codec:"checkpoint_replica_addr,omitempty"`
-	EpochID                  uint64                  `codec:"eid,omitempty"`
-	TaskID                   string                  `codec:"tid"`
-	OperatorID               string                  `codec:"oid"`
-	SubtaskIndex             int32                   `codec:"si"`
-	Parallelism              int32                   `codec:"p"`
-	KeyGroup                 KeyGroupRange           `codec:"kg"`
-	OperatorChain            []OperatorDescriptor    `codec:"oc,omitempty"`
-	Upstream                 []UpstreamChannelInfo   `codec:"up,omitempty"`
-	Downstream               []DownstreamChannelInfo `codec:"dn,omitempty"`
+	RestoreCheckpoint        *CheckpointRestoreDescriptor `codec:"restore,omitempty"`
+	CheckpointReplicaAddress string                       `codec:"checkpoint_replica_addr,omitempty"`
+	EpochID                  uint64                       `codec:"eid,omitempty"`
+	TaskID                   string                       `codec:"tid"`
+	OperatorID               string                       `codec:"oid"`
+	SubtaskIndex             int32                        `codec:"si"`
+	Parallelism              int32                        `codec:"p"`
+	KeyGroup                 KeyGroupRange                `codec:"kg"`
+	OperatorChain            []OperatorDescriptor         `codec:"oc,omitempty"`
+	Upstream                 []UpstreamChannelInfo        `codec:"up,omitempty"`
+	Downstream               []DownstreamChannelInfo      `codec:"dn,omitempty"`
 }
 
 // KeyGroupRange defines the key-group range assigned to a task.

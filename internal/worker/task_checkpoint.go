@@ -11,6 +11,7 @@ import (
 )
 
 type taskCheckpointRuntime struct {
+	restore    *engine.TaskCheckpoint
 	source     bool
 	triggers   chan engine.CheckpointTrigger
 	decisions  chan engine.ControlMsg
@@ -18,8 +19,8 @@ type taskCheckpointRuntime struct {
 	report     func(context.Context, uint64, uint64, error) error
 }
 
-func (w *Worker) prepareTaskCheckpoint(jobID, taskID string, desc rpc.TaskDescriptor) (*taskCheckpointRuntime, func(), error) {
-	if desc.CheckpointReplicaAddress == "" {
+func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor) (*taskCheckpointRuntime, func(), error) {
+	if desc.CheckpointReplicaAddress == "" && desc.RestoreCheckpoint == nil {
 		return nil, func() {}, nil
 	}
 	if w.cfg.CheckpointReplica == nil || desc.EpochID == 0 {
@@ -31,11 +32,21 @@ func (w *Worker) prepareTaskCheckpoint(jobID, taskID string, desc rpc.TaskDescri
 	if handle == nil || handle.checkpoint == nil {
 		return nil, nil, fmt.Errorf("checkpoint task is no longer assigned")
 	}
-	session, err := transport.NewClientSession(desc.CheckpointReplicaAddress, transport.DefaultConfig())
+	runtime := handle.checkpoint
+	if desc.RestoreCheckpoint != nil {
+		snapshot, err := w.fetchTaskCheckpoint(ctx, jobID, taskID, desc)
+		if err != nil {
+			return nil, nil, err
+		}
+		runtime.restore = snapshot
+	}
+	if desc.CheckpointReplicaAddress == "" {
+		return runtime, func() {}, nil
+	}
+	session, err := transport.NewClientSessionContext(ctx, desc.CheckpointReplicaAddress, transport.DefaultConfig())
 	if err != nil {
 		return nil, nil, err
 	}
-	runtime := handle.checkpoint
 	maxFailures := 0
 	if w.executor.taskConfig != nil {
 		maxFailures = w.executor.taskConfig.Checkpoint.MaxConsecutiveFailures

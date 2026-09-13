@@ -19,6 +19,7 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
+	RestoreCheckpoint *TaskCheckpoint
 	// CheckpointReport delivers checkpoint ID, epoch, and upload error to an
 	// external coordinator. It must honor cancellation. Nil means report acceptance,
 	// not global commit; commit and abort arrive through CheckpointDecisions.
@@ -83,6 +84,11 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		return err
 	}
 	defer closeOperators()
+	if ts.RestoreCheckpoint != nil {
+		if err := ts.restoreCheckpoint(); err != nil {
+			return err
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

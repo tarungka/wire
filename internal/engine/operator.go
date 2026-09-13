@@ -21,6 +21,13 @@ type StateHandleOperator interface {
 	RestoreState(SnapshotHandle) error
 }
 
+// CheckpointRestorer restores opaque bytes returned by Operator.Checkpoint.
+// The runtime invokes it after Open and before processing. Typed backend
+// handles use StateHandleOperator.RestoreState instead.
+type CheckpointRestorer interface {
+	RestoreCheckpoint([]byte) error
+}
+
 // MapOperator transforms each input event into exactly one output event.
 type MapOperator interface {
 	Operator

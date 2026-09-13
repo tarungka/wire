@@ -380,7 +380,7 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 		return
 	}
 	handle := &taskHandle{cancel: cancel, jobID: cmd.JobID, epoch: desc.EpochID}
-	if desc.CheckpointReplicaAddress != "" {
+	if desc.CheckpointReplicaAddress != "" || desc.RestoreCheckpoint != nil {
 		handle.checkpoint = &taskCheckpointRuntime{triggers: make(chan engine.CheckpointTrigger, 1), decisions: make(chan engine.ControlMsg, 16)}
 		for _, operator := range desc.OperatorChain {
 			if operator.Type == rpc.OperatorTypeSource {
@@ -412,7 +412,7 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 		w.mu.Unlock()
 	}()
 
-	checkpoint, cleanup, err := w.prepareTaskCheckpoint(jobID, taskID, desc)
+	checkpoint, cleanup, err := w.prepareTaskCheckpoint(ctx, jobID, taskID, desc)
 	if err != nil {
 		w.reportTaskFailed(jobID, taskID, err)
 		return

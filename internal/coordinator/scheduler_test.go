@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -229,5 +230,42 @@ func TestTopoSortOperators_DeterministicOrder(t *testing.T) {
 				t.Fatalf("iteration %d: order = %v, want %v", i, ids, want)
 			}
 		}
+	}
+}
+
+func TestScheduleRecoveryCarriesCompletedCheckpoint(t *testing.T) {
+	for _, valid := range []bool{true, false} {
+		t.Run(fmt.Sprint(valid), func(t *testing.T) {
+			c, store := newTestCoordinator(t)
+			job := &JobMeta{ID: "job", Status: JobCreated, Parallelism: 1, Config: encode(t, linearGraph()), LatestCheckpoint: 7}
+			c.jobs[job.ID] = job
+			c.workers["worker"] = &WorkerMeta{ID: "worker", TaskSlotsAvailable: 1, LastHeartbeat: time.Now()}
+			cp := CheckpointMeta{ID: 7, JobID: "job", EpochID: 2, Status: CheckpointCompleted, Tasks: map[string]string{"job/m/0": "old-worker"}, Replicas: map[string]string{"job/m/0": "replica:1"}, StatePaths: map[string]string{"job/m/0": "replica:1"}}
+			if !valid {
+				cp.Status = CheckpointAborted
+			}
+			if err := store.Set(CheckpointKey("job", 7), encode(t, cp)); err != nil {
+				t.Fatal(err)
+			}
+			c.scheduleJob(job)
+			commands := c.DrainCommands("worker")
+			if !valid {
+				if len(commands) != 0 || job.Status != JobCreated {
+					t.Fatal("invalid recovery deployed")
+				}
+				return
+			}
+			if len(commands) != 1 {
+				t.Fatalf("commands: %+v", commands)
+			}
+			var task rpc.TaskDescriptor
+			if err := protocol.DecodeMsgPack(commands[0].Data, &task); err != nil {
+				t.Fatal(err)
+			}
+			restore := task.RestoreCheckpoint
+			if task.EpochID != 5 || restore == nil || restore.EpochID != 2 || restore.CheckpointID != 7 || restore.ReplicaAddress != "replica:1" {
+				t.Fatalf("deployment: %+v restore: %+v", task, restore)
+			}
+		})
 	}
 }

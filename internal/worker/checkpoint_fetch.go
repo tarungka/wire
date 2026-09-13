@@ -3,11 +3,13 @@ package worker
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"io"
 	"os"
 
 	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/rpc"
+	"github.com/tarungka/wire/internal/transport"
 )
 
 type temporaryCheckpointArchive struct{ *os.File }
@@ -58,4 +60,49 @@ func checkpointArchiveLoader(store *engine.FileCheckpointStore, stagingRoot stri
 		success = true
 		return metadata, archive, nil
 	}
+}
+
+// fetchTaskCheckpoint imports into worker-owned storage before operator Open or
+// task RUNNING. A failed transfer never falls back to starting with empty state.
+func (w *Worker) fetchTaskCheckpoint(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor) (*engine.TaskCheckpoint, error) {
+	restore := desc.RestoreCheckpoint
+	if restore == nil || restore.ReplicaAddress == "" {
+		return nil, fmt.Errorf("checkpoint recovery requires a replica address")
+	}
+	cfg := w.cfg.CheckpointReplica
+	if cfg == nil {
+		return nil, fmt.Errorf("checkpoint recovery requires local storage")
+	}
+	request := rpc.FetchCheckpointRequest{WorkerID: w.cfg.WorkerID, DeploymentEpoch: desc.EpochID, JobID: jobID, TaskID: taskID, CheckpointID: restore.CheckpointID, EpochID: restore.EpochID}
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+	session, err := transport.NewClientSessionContext(ctx, restore.ReplicaAddress, transport.DefaultConfig())
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+	file, err := os.CreateTemp(cfg.StagingRoot, ".checkpoint-fetch-")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close(); _ = os.Remove(file.Name()) }()
+	if err := rpc.NewClient(session.YamuxSession(), rpc.DefaultConfig()).FetchCheckpoint(ctx, request, file); err != nil {
+		return nil, err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	store, err := engine.NewFileCheckpointStore(cfg.StoreRoot)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.ImportArchive(ctx, jobID, taskID, restore.CheckpointID, restore.EpochID, file, cfg.ArtifactRoot, rpc.MaxCheckpointTransferSize); err != nil {
+		return nil, err
+	}
+	snapshot, err := store.Get(ctx, jobID, taskID, restore.CheckpointID, restore.EpochID)
+	if err != nil {
+		return nil, err
+	}
+	return &snapshot, nil
 }
