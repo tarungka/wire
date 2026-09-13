@@ -642,3 +642,50 @@ func runTestDataWindowWriteTimeout(t *testing.T, secure bool) {
 		t.Fatal("partially written frame left stream usable")
 	}
 }
+
+func TestIncompatibleHandshakeWaitsForPeerToConsumeReply(t *testing.T) {
+	for _, secure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tls=%t", secure), func(t *testing.T) {
+			client, server := negotiationPair(t, secure)
+			cfg := DefaultConfig()
+			cfg.NodeID = "server"
+			cfg.HandshakeTimeout = time.Second
+			result := make(chan error, 1)
+			go func() { _, err := server.NegotiateSession(context.Background(), cfg, false); result <- err }()
+			stream, err := client.OpenStream()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := stream.SetDeadline(time.Now().Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if err := protocol.EncodeAndWriteFrame(stream, &protocol.SessionHandshakeMsg{ProtocolVersion: 2, MinVersion: 2, NodeID: "client"}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-result:
+				t.Fatalf("server closed before peer consumed reply: %v", err)
+			case <-time.After(20 * time.Millisecond):
+			}
+			frame, err := protocol.ReadFrame(stream, cfg.MaxFrameSize)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if frame.MsgType != protocol.MsgTypeSessionHandshake {
+				t.Fatalf("reply type %d", frame.MsgType)
+			}
+			if _, err := protocol.DecodePayload(frame); err != nil {
+				t.Fatal(err)
+			}
+			_ = client.Close()
+			select {
+			case err := <-result:
+				if !errors.Is(err, protocol.ErrVersionIncompatible) {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("server did not finish after peer close")
+			}
+		})
+	}
+}

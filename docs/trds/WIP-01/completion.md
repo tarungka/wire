@@ -496,3 +496,15 @@ interpretation of the <1% target. The acceptance measurement requires an explici
 decision; the target has not been relaxed and is not marked complete.
 
 Reproduce with `go test ./internal/protocol -run '^TestCRCComparisonMatchesProduction$' -bench '^Benchmark(CPU|TCP)CRCVerificationLatency$' -count=5 -benchtime=1s`.
+
+### Final CI regression — incompatible TLS session teardown
+
+CI on the waiver documentation commit exposed an intermittent incompatibility
+reply/close race. A successful Yamux write did not ensure the initiator consumed
+the reply before the accepting session closed. The acceptor now waits for peer
+closure after its rejection reply, bounded by the existing handshake deadline.
+The initiator can therefore decode the version mismatch before teardown.
+`TestIncompatibleHandshakeWaitsForPeerToConsumeReply` delays the reader on both
+TCP and TLS; incompatible-version negotiation passed 1,000 race-enabled runs.
+The full race/integration suite passes with this fix. This is separate from the
+explicitly waived CRC latency check; correctness and CI remain required.

@@ -93,6 +93,15 @@ func (s *Session) NegotiateSession(ctx context.Context, cfg Config, initiator bo
 		}
 	}
 	if incompatible {
+		if !initiator {
+			// A successful Yamux Write does not mean the peer has consumed
+			// the reply. Closing the session immediately can discard it,
+			// particularly over TLS. Let the initiator close after reading
+			// the mismatch; the handshake deadline bounds an unresponsive
+			// peer. No further protocol message is expected on this stream.
+			var unexpected [1]byte
+			_, _ = stream.Read(unexpected[:])
+		}
 		return NegotiatedParams{}, protocol.ErrVersionIncompatible
 	}
 	if err = stream.SetDeadline(time.Time{}); err != nil {
