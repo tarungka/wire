@@ -191,3 +191,36 @@ Prometheus exports the monotonic counter as
 remain exporter history after task exit; only live gauges are removed. This
 is an exporter integration test with controlled values, not evidence of a
 worker performing durable checkpoint replication.
+
+## Worker checkpoint integration audit
+
+The full `go test -race -tags=integration ./...` suite passes at `4d5029d`.
+That verifies the accumulated branch changes, but existing tests do not close
+the following runtime gaps found by tracing the command path:
+
+- `worker.handleCommands` logs `CommandTypeTakeSnapshot` as a stub. Workers
+  receive commands through WatchCommands/heartbeat; they do not currently run
+  a checkpoint RPC server. Merely registering a TriggerCheckpoint handler on
+  an unused server would not connect the runtime.
+- `Coordinator.TriggerSavepoint` persists an in-progress entry but still has
+  a barrier-injection TODO. TriggerCheckpoint/AcknowledgeCheckpoint message
+  types and client methods exist without corresponding coordinator/worker
+  checkpoint dispatch integration.
+- The source reader has no checkpoint rendezvous. A control message alone is
+  insufficient: it can overtake queued source records while another ReadBatch
+  advances the source offset. The source must reach a batch boundary, stop
+  fetching, and remain stopped until the chain drains pre-barrier records and
+  captures the source/chain snapshot. Replication then runs asynchronously and
+  fetching resumes; source snapshot capture must not race ReadBatch.
+- Worker task construction does not set CheckpointReplicator or Coordinator.
+  A per-task local coordinator cannot substitute for the job-wide decision:
+  durable ACKs must be fenced by job, task, checkpoint and coordinator epoch,
+  with global commit/abort sent to every participating task.
+- Local inline snapshot storage cannot acknowledge Pebble manifests as durable
+  remote replicas. Transfer referenced immutable files, verify them on the
+  receiving worker, and make recovery independent of the originating worker's
+  paths before publishing the manifest.
+
+The next implementation must connect these existing command and ACK paths,
+with source ordering and cancellation tests, followed by multi-worker replica
+loss/recovery evidence. These are required work, not deferred WIP-02 scope.
