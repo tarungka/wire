@@ -249,3 +249,13 @@ capture. This prevents heartbeat/push redelivery from capturing advanced source
 state under an existing identity. Ten race-enabled boundary/identity test runs
 pass. This is not a replacement for worker assignment-epoch validation, which
 must reject unexpected future epochs as well as commands from old leaders.
+
+`TestSourceTaskReplicatesBoundaryAndContinues` now exercises the source path
+through TaskSlot and real transport streams. A trigger created during the first
+batch captures source offset one and keeps operator state separately. The
+receiver observes the first record, checkpoint barrier, then the next batch's
+record while the injected replicator remains blocked. No ACK or terminal task
+completion occurs before the upload resolves. Success completes checkpoint 7;
+replica failure aborts the checkpoint and permits normal EOF. Both cases pass
+ten race-enabled repetitions. Remote replica persistence, command dispatch,
+global decisions and recovery remain required.

@@ -110,3 +110,120 @@ func testTaskCheckpointUpload(t *testing.T, fail bool) {
 		t.Fatal("durable completion was lost during task shutdown")
 	}
 }
+
+type triggeringCheckpointSource struct {
+	*checkpointBoundarySource
+	triggers chan CheckpointTrigger
+}
+
+func (s *triggeringCheckpointSource) ReadBatch(ctx context.Context) ([]Event, error) {
+	batch, err := s.checkpointBoundarySource.ReadBatch(ctx)
+	s.mu.Lock()
+	first := s.batchIdx == 1 && batch != nil
+	s.mu.Unlock()
+	if first {
+		s.triggers <- CheckpointTrigger{CheckpointID: 7, EpochID: 2}
+	}
+	return batch, err
+}
+
+func TestSourceTaskReplicatesBoundaryAndContinues(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		name := "success"
+		if fail {
+			name = "failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			triggers := make(chan CheckpointTrigger, 1)
+			source := &triggeringCheckpointSource{checkpointBoundarySource: &checkpointBoundarySource{newMockSource([][]Event{{{Value: []byte("before")}}, {{Value: []byte("after")}}})}, triggers: triggers}
+			_, output, slot := newTestPipeline(t, []Operator{&noopMap{}}, source)
+			slot.Config.WatermarkInterval = time.Hour
+			cc, _ := newTestCoordinator(CheckpointConfig{Timeout: 2 * time.Second}, 1)
+			slot.Coordinator = cc
+			slot.TaskID = "source"
+			slot.CheckpointTriggers = triggers
+			started := make(chan TaskCheckpoint, 1)
+			release := make(chan struct{})
+			slot.CheckpointReplicator = checkpointReplicatorFunc(func(ctx context.Context, snapshot TaskCheckpoint) error {
+				started <- snapshot
+				select {
+				case <-release:
+					if fail {
+						return errors.New("replica failed")
+					}
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+			if err := cc.TriggerCheckpoint(ctx, 7, 2); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- slot.Run(ctx) }()
+			var snapshot TaskCheckpoint
+			select {
+			case snapshot = <-started:
+			case <-ctx.Done():
+				t.Fatal("source upload missing")
+			}
+			if !snapshot.HasSource || len(snapshot.Source) != 1 || snapshot.Source[0] != 1 || len(snapshot.Operators) != 1 {
+				t.Fatalf("wrong snapshot: %+v", snapshot)
+			}
+			for i := 0; i < 3; i++ {
+				msg, err := output.ReadMessage()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if i == 1 {
+					barrier, ok := msg.(*protocol.CheckpointBarrierMsg)
+					if !ok || barrier.CheckpointID != 7 || barrier.EpochID != 2 {
+						t.Fatalf("barrier: %+v", msg)
+					}
+				} else {
+					want := "before"
+					if i == 2 {
+						want = "after"
+					}
+					data, ok := msg.(*protocol.DataRecordMsg)
+					if !ok || string(data.Value) != want {
+						t.Fatalf("record %d: %+v", i, msg)
+					}
+				}
+			}
+			if cc.LastCompletedCheckpoint() != 0 {
+				t.Fatal("source ACK before replication")
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("source finished before upload: %v", err)
+			default:
+			}
+			close(release)
+			msg, err := output.ReadMessage()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := msg.(*protocol.EndOfPartitionMsg); !ok {
+				t.Fatalf("end: %T", msg)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal("source failed to finish")
+			}
+			want := uint64(7)
+			if fail {
+				want = 0
+			}
+			if cc.LastCompletedCheckpoint() != want {
+				t.Fatalf("completion=%d want=%d", cc.LastCompletedCheckpoint(), want)
+			}
+		})
+	}
+}
