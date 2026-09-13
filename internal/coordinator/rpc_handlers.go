@@ -3,6 +3,7 @@ package coordinator
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/yamux"
 
@@ -48,20 +49,21 @@ func (c *Coordinator) HandleHeartbeat(_ context.Context, _ uint64, payload []byt
 		return nil, rpc.NewRPCError(rpc.ErrCodeSerializationError, fmt.Sprintf("decode HeartbeatRequest: %v", err))
 	}
 
-	// Update in-memory worker state.
-	c.mu.RLock()
+	c.mu.Lock()
+	epoch := c.epoch
+	if c.state != StateLeader || !c.recovered || req.EpochID != epoch {
+		c.mu.Unlock()
+		return &rpc.HeartbeatResponse{Accepted: false, EpochID: epoch}, nil
+	}
 	w, ok := c.workers[req.WorkerID]
-	c.mu.RUnlock()
-
 	if !ok {
+		c.mu.Unlock()
 		return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, fmt.Sprintf("unknown worker: %s", req.WorkerID))
 	}
-
-	c.mu.Lock()
+	w.LastHeartbeat = time.Now().UTC()
 	if req.Load != nil {
-		w.TaskSlotsAvailable = w.TaskSlotsTotal - int(req.Load.ActiveSlots)
+		w.TaskSlotsAvailable = max(0, min(w.TaskSlotsTotal, w.TaskSlotsTotal-int(req.Load.ActiveSlots)))
 	}
-	epoch := c.epoch
 	c.mu.Unlock()
 
 	// Drain pending commands for this worker.
