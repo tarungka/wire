@@ -120,6 +120,7 @@ func (s *Session) AcceptDataStream(cfg Config, targetExists func(protocol.Stream
 	fs := NewFrameStream(raw, cfg)
 	fs.negotiated = &params
 	fs.header = header
+	fs.readOffset = uint64(frame.Length) + protocol.LengthFieldSize
 	fs.session = s
 	accepted = true
 	return fs, nil

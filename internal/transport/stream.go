@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,7 @@ type FrameStream struct {
 	mu                   sync.Mutex
 	writeMu              sync.Mutex
 	readMu               sync.Mutex
+	readOffset           uint64
 	reportMu             sync.Mutex
 	reportedPause        bool
 	closeOnce            sync.Once
@@ -143,6 +145,7 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 	}
 
 	for {
+		offset := fs.readOffset
 		frame, err := fs.readFrame()
 		if err != nil {
 			if err == protocol.ErrCRCMismatch {
@@ -156,8 +159,13 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 					_ = fs.Close()
 					return nil, fmt.Errorf("transport: stream closed after %d consecutive CRC errors", MaxConsecutiveCRCErrors)
 				}
-				fs.log.Warn().Err(err).Msg("CRC mismatch, dropping frame")
+				fs.log.Warn().Err(err).Uint64("frame_offset", offset).
+					Uint32("received_crc", frame.ReceivedCRC).Uint32("computed_crc", frame.ComputedCRC).
+					Str("frame_prefix_hex", hex.EncodeToString(frame.CorruptPrefix)).Msg("CRC mismatch, dropping frame")
 				continue
+			}
+			if errors.Is(err, protocol.ErrFrameTooLarge) || errors.Is(err, protocol.ErrFrameTooSmall) {
+				fs.log.Warn().Err(err).Str("remote_addr", fs.raw.RemoteAddr().String()).Uint32("frame_length", frame.Length).Uint64("frame_offset", offset).Msg("invalid frame length")
 			}
 			_ = fs.Close()
 			return nil, err
@@ -185,7 +193,8 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 				_ = fs.Close()
 				return nil, fmt.Errorf("transport: stream closed after %d consecutive decode errors", MaxConsecutiveDecodeErrors)
 			}
-			fs.log.Warn().Err(err).Msg("decode error, dropping frame")
+			fs.log.Warn().Err(err).Uint64("frame_offset", offset).
+				Str("payload_prefix_hex", hex.EncodeToString(frame.Payload[:min(len(frame.Payload), 64)])).Msg("decode error, dropping frame")
 			continue
 		}
 

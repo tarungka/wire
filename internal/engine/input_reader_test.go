@@ -317,45 +317,61 @@ func TestInputReader_WatermarkDoesNotRegress(t *testing.T) {
 
 func TestInputReader_EventChannelFull_UnblocksOnContextCancel(t *testing.T) {
 	writer, reader := newTestStreamPair(t)
-	defer func() { _ = reader.Close() }()
-
+	defer writer.Close()
+	defer reader.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-
-	eventCh := make(chan Event, 1) // Tiny channel.
+	defer cancel()
+	eventCh := make(chan Event, 1)
 	controlCh := make(chan ControlMsg, 10)
-	aligner := NewBarrierAligner(1, 100)
-	tracker := testTracker(1)
-
+	sent := make(chan error, 1)
 	go func() {
-		// Send enough data to fill eventCh and block the reader.
 		for i := 0; i < 10; i++ {
-			if err := writer.WriteMessage(&protocol.DataRecordMsg{
-				Value:     []byte{byte(i)},
-				EventTime: int64(i),
-			}); err != nil {
-				t.Errorf("WriteMessage data record: %v", err)
+			if err := writer.WriteMessageContext(ctx, &protocol.DataRecordMsg{Value: []byte{byte(i)}, EventTime: int64(i)}); err != nil {
+				if ctx.Err() != nil {
+					sent <- nil
+				} else {
+					sent <- err
+				}
 				return
 			}
 		}
+		sent <- nil
 	}()
-
 	done := make(chan error, 1)
 	go func() {
-		done <- runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
+		done <- runInputReader(ctx, 0, reader, eventCh, controlCh, NewBarrierAligner(1, 100), testTracker(1), testLogger())
 	}()
-
-	// Let the reader block on the full channel, then cancel.
-	time.Sleep(100 * time.Millisecond)
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for len(eventCh) == 0 {
+		select {
+		case err := <-done:
+			t.Fatalf("reader exited before cancellation: %v", err)
+		case <-deadline.C:
+			t.Fatal("reader did not fill event channel")
+		case <-tick.C:
+		}
+	}
+	// No consumer drains the full channel. Cancellation must stop the receiver
+	// and any sender paused by its buffer, without an external stream close.
 	cancel()
-	_ = writer.Close() // Unblock the inner read goroutine.
-
 	select {
 	case err := <-done:
 		if err != nil && err != context.Canceled {
-			t.Fatalf("expected nil or context.Canceled, got: %v", err)
+			t.Fatalf("reader cancellation: %v", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("input reader did not unblock on context cancel")
+	case <-deadline.C:
+		t.Fatal("input reader did not stop on cancellation")
+	}
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Fatalf("sender failed before cancellation: %v", err)
+		}
+	case <-deadline.C:
+		t.Fatal("sender did not stop on cancellation")
 	}
 }
 

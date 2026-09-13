@@ -14,7 +14,7 @@ sent; implementing batching is explicitly deferred by this TRD.
 | Stream routing (§2.2, §3.8) | Sender-only headers, first-frame deadline, RegisterTask/AcceptTask routing and unknown-target rejection pass. Worker task descriptors/executor still need distributed input/output wiring; the current executor requires a local source and creates TaskSlot with no network streams. |
 | Inline ordering (§5 decision 3) | Pending final audit: records/barriers/watermarks remain ordered on data streams and reach task inputs in order. |
 | Control/backpressure (§3.7, §6.3) | One retained control stream dispatches pause/resume by Yamux ID. Writes pause at 80% and resume at 20%; engine input read-ahead reports occupancy. TCP and TLS tests demonstrate blocked writes and recovery. Still verify control progress under a fully exhausted data window and runtime buffer saturation end to end. |
-| Errors and lifecycle (§6) | Partial-frame completion deadlines preserve idle streams; EOP closes output and rejects later writes; error counters reset independently; corrupt frames avoid payload-copy allocation. Completed-barrier suppression and detailed diagnostics remain. |
+| Errors and lifecycle (§6) | Partial-frame completion deadlines preserve idle streams; EOP closes output and rejects later writes; error counters reset independently; corrupt frames avoid payload-copy allocation. Corruption diagnostics now include stream-relative offsets, bounded 64-byte previews and both CRCs; invalid lengths log the remote address and reported length. Completed-barrier suppression remains. |
 | TLS (§7) | Existing TLS/mTLS positive and negative tests pass with session negotiation; TLS all-message test now exercises actual control-stream pause/resume. |
 | Resource bounds (§7.3, §8.2) | Verify bounded allocations and session reuse, closure during negotiation, malformed streams and fuzz inputs. |
 | CRC overhead (§1.4) | Native CRC: median 80.75 ns/1025 bytes; independent software recurrence: 1850 ns. Hardware acceleration is evident. The <1% verification-latency acceptance target is not demonstrated. |
@@ -84,6 +84,26 @@ engine race suites after input-buffer integration and paused-output cancellation
 Decoder fuzzing passed 1,763,490 executions in the recorded 10-second run. The merged
 checkpoint fixture now supplies EpochID=1 to match the barrier it created.
 
-Other remaining work includes completed-checkpoint barrier suppression, detailed corruption diagnostics,
+Other remaining work includes completed-checkpoint barrier suppression,
 final message-field validation, reciprocal connection reuse, and full acceptance
 coverage. This branch is not a completed WIP and is not ready to merge.
+
+### Goal continuation: CI and diagnostics
+
+The integration CI failure at `01a63d6` came from
+`TestInputReader_EventChannelFull_UnblocksOnContextCancel`: it treated an expected
+sender error after cancellation as an unconditional failure and did not join the
+sender goroutine. It now waits for a full event channel, cancels explicitly,
+and joins both goroutines without externally closing the stream to unblock them.
+The revised test passes 50 iterations under the race detector.
+
+The current worktree passes `go test -race -tags=integration -timeout 5m ./...`
+and golangci-lint v2.5.0 reports zero issues. Corrupt-frame diagnostics have a
+regression test proving the preview is bounded, CRC values differ, the payload
+is not decoded, and the diagnostic does not alias a pooled buffer.
+
+PR review inspection: no inline comments or submitted reviews were present.
+The ECC bot requests security evidence; its unrelated analyzer/RAG/harness corpus
+recommendations do not describe Wire's protocol. Attach final CodeQL/TLS/fuzz
+validation evidence in the PR when the implementation is complete; do not change
+app permissions merely because the bot cannot publish checks.

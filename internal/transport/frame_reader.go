@@ -19,9 +19,12 @@ func (r *frameReader) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 	if r.started {
-		return r.stream.raw.Read(p)
+		n, err := r.stream.raw.Read(p)
+		r.stream.readOffset += uint64(n)
+		return n, err
 	}
 	n, err := r.stream.raw.Read(p[:1])
+	r.stream.readOffset += uint64(n)
 	if n > 0 {
 		r.started = true
 		timeout := r.stream.cfg.FrameReadTimeout

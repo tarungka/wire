@@ -91,3 +91,35 @@ func TestMaximumLegalRecordFrame(t *testing.T) {
 		t.Fatal("maximum record truncated")
 	}
 }
+
+func TestCorruptFrameDiagnosticBounds(t *testing.T) {
+	var wire bytes.Buffer
+	if err := EncodeAndWriteFrame(&wire, &DataRecordMsg{Value: make([]byte, 4096)}); err != nil {
+		t.Fatal(err)
+	}
+	data := wire.Bytes()
+	data[len(data)-1] ^= 1
+	frame, err := ReadFrame(bytes.NewReader(data), DefaultMaxFrameSize)
+	if err != ErrCRCMismatch {
+		t.Fatalf("expected corruption, got %v", err)
+	}
+	if frame.Payload != nil {
+		t.Fatal("corrupt payload allocated or exposed as decoded content")
+	}
+	if len(frame.CorruptPrefix) != 64 || !bytes.Equal(frame.CorruptPrefix, data[4:68]) {
+		t.Fatal("diagnostic must contain exactly first 64 body bytes")
+	}
+	if frame.ReceivedCRC == frame.ComputedCRC {
+		t.Fatal("diagnostic CRCs incorrectly match")
+	}
+	if int(frame.Length)+LengthFieldSize != len(data) {
+		t.Fatalf("reported length %d", frame.Length)
+	}
+	saved := append([]byte(nil), frame.CorruptPrefix...)
+	for i := 0; i < 20; i++ {
+		_, _ = ReadFrame(bytes.NewReader(data), DefaultMaxFrameSize)
+	}
+	if !bytes.Equal(saved, frame.CorruptPrefix) {
+		t.Fatal("diagnostic aliases reused buffer")
+	}
+}

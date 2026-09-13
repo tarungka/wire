@@ -42,8 +42,14 @@ func computeCRC32C(msgType byte, payload []byte) uint32 {
 
 // Frame represents a decoded wire protocol frame.
 type Frame struct {
-	MsgType uint8
-	Payload []byte // Raw msgpack bytes, post-CRC verification.
+	// Length is the reported wire length, excluding its four-byte prefix.
+	Length uint32
+	// Corruption diagnostics are populated only when CRC validation fails.
+	ReceivedCRC   uint32
+	ComputedCRC   uint32
+	CorruptPrefix []byte // At most 64 bytes of the frame body, copied before reuse.
+	MsgType       uint8
+	Payload       []byte // Raw msgpack bytes, post-CRC verification.
 }
 
 // ReadFrame reads a single frame from the reader.
@@ -58,10 +64,10 @@ func ReadFrame(r io.Reader, maxFrameSize uint32) (Frame, error) {
 
 	// 2. Validate length.
 	if frameLen < MinFrameLength {
-		return Frame{}, ErrFrameTooSmall
+		return Frame{Length: frameLen}, ErrFrameTooSmall
 	}
 	if frameLen > maxFrameSize {
-		return Frame{}, ErrFrameTooLarge
+		return Frame{Length: frameLen}, ErrFrameTooLarge
 	}
 
 	// 3. Read the frame body using a pooled buffer to reduce GC pressure.
@@ -90,11 +96,12 @@ func ReadFrame(r io.Reader, maxFrameSize uint32) (Frame, error) {
 	// cause a second allocation of the sender-controlled frame length.
 	crcComputed := computeCRC32C(msgType, buf[5:])
 	if crcReceived != crcComputed {
+		diagnostic := Frame{Length: frameLen, MsgType: msgType, ReceivedCRC: crcReceived, ComputedCRC: crcComputed, CorruptPrefix: append([]byte(nil), buf[:min(len(buf), 64)]...)}
 		if cap(buf) <= 1024*1024 {
 			*bufp = buf
 			framePool.Put(bufp)
 		}
-		return Frame{}, ErrCRCMismatch
+		return diagnostic, ErrCRCMismatch
 	}
 	payload := append([]byte(nil), buf[5:]...)
 	if cap(buf) <= 1024*1024 {
@@ -102,7 +109,7 @@ func ReadFrame(r io.Reader, maxFrameSize uint32) (Frame, error) {
 		framePool.Put(bufp)
 	}
 
-	return Frame{MsgType: msgType, Payload: payload}, nil
+	return Frame{Length: frameLen, MsgType: msgType, Payload: payload}, nil
 }
 
 // WriteFrame encodes a message and writes a complete frame to the writer.
