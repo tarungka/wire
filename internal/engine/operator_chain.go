@@ -258,10 +258,8 @@ func processEvent(cc *chainContext, event Event) error {
 
 	// Send surviving events to output.
 	for _, e := range events {
-		select {
-		case cc.outputCh <- OutputMsg{Type: OutputData, Event: e}:
-		case <-cc.ctx.Done():
-			return cc.ctx.Err()
+		if err := cc.sendOutput(OutputMsg{Type: OutputData, Event: e}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -448,10 +446,8 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 				EpochID:      ctrl.EpochID,
 				Timestamp:    time.Now().UnixMilli(),
 			}
-			select {
-			case cc.outputCh <- OutputMsg{Type: OutputBarrier, Barrier: barrier}:
-			case <-cc.ctx.Done():
-				return cc.ctx.Err()
+			if err := cc.sendOutput(OutputMsg{Type: OutputBarrier, Barrier: barrier}); err != nil {
+				return err
 			}
 		}
 
@@ -594,10 +590,5 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 }
 
 func emitChainEnd(cc *chainContext) error {
-	select {
-	case cc.outputCh <- OutputMsg{Type: OutputEnd, End: &protocol.EndOfPartitionMsg{Reason: protocol.EndReasonExhausted}}:
-		return nil
-	case <-cc.ctx.Done():
-		return cc.ctx.Err()
-	}
+	return cc.sendOutput(OutputMsg{Type: OutputEnd, End: &protocol.EndOfPartitionMsg{Reason: protocol.EndReasonExhausted}})
 }

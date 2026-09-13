@@ -28,7 +28,7 @@ waive any WIP-02 requirement.
 | Replication failure affects checkpoint, threshold affects task (§2.7) | Coordinator failure reporting now applies existing checkpoint thresholds and ignores stale checkpoint/epoch reports; timeout metrics exclude replication failures. TaskSlot completion delivery now feeds this policy; durable worker replication and additional transactional/abort overlap tests remain required. |
 | Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Engine upload concurrency is implemented. Pebble compaction concurrency defaults to two and is configurable in engine/embedded SDK, retained across restore. Worker configuration integration remains open. |
 | Container CPU limits (§3.2) | cmd/main.go imports automaxprocs v1.6.0 at startup. Explicit GOMAXPROCS takes precedence; quota rounding/minimum and restart behavior are documented. Command package builds locally; Linux cgroup execution remains to be verified (local Docker daemon is stopped). |
-| Six observability metrics (§3.3) | Task input/output channel usage and alignment payload-byte gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Output blocking time and owned goroutines remain open. |
+| Six observability metrics (§3.3) | Task input/output channel usage and alignment payload-byte gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Operator output blocking time is recorded on data/barrier/EOP sends. Owned goroutine instrumentation remains open. |
 | Benchmarks (§8) | Engine benchmarks exist. Establish and record concurrency/channel/deserialization baselines after implementation. |
 | Documentation and PR | Update actual topology, configuration and status only after validation; linked follow-up PR to #207/#149, using personal GitHub account. |
 
@@ -162,3 +162,12 @@ and shutdown clear it as ownership transfers. Retained event arrays are cleared
 when reused so released payloads are not kept alive. Tests verify admission
 limits, byte accounting, preserved transferred records, released references,
 and metric observation/unregistration.
+
+
+Operator output sends record `wire_task_backpressure_time_ms` only when the
+initial nonblocking attempt cannot send. Data, barrier and EOP sends share this
+path; cancelled waits are included, and ready sends do not read the clock.
+TaskSlot attaches its task-labelled recorder to the chain context. The unit
+test checks that ready sends produce no sample and that a full-channel wait
+ended by a deadline records time without emitting a message. Live Prometheus
+counter verification remains part of the endpoint acceptance check.

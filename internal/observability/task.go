@@ -8,6 +8,17 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+func TaskBackpressureRecorder(taskID string) (func(time.Duration), error) {
+	counter, err := Meter().Float64Counter("wire_task_backpressure_time_ms", metric.WithDescription("Cumulative operator chain wait for output capacity in milliseconds"))
+	if err != nil {
+		return nil, err
+	}
+	attrs := metric.WithAttributes(attribute.String("task_id", taskID))
+	return func(duration time.Duration) {
+		counter.Add(context.Background(), float64(duration)/float64(time.Millisecond), attrs)
+	}, nil
+}
+
 // CheckpointUploadRecorder measures only replication I/O, including failures
 // and cancellation, excluding snapshot capture and completion delivery.
 func CheckpointUploadRecorder() (func(context.Context, string, time.Duration), error) {

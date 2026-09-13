@@ -160,6 +160,11 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	eventCh := make(chan Event, ts.Config.InputBufferSize)
 	controlCh := make(chan ControlMsg, numInputs*2+4) // barrier + EoP per input, +4 for 2PC control messages (CtrlCommitCheckpoint, CtrlAbortTransaction).
 	outputCh := make(chan OutputMsg, ts.Config.OutputBufferSize)
+	recordBackpressure, err := observability.TaskBackpressureRecorder(ts.TaskID)
+	if err != nil {
+		return err
+	}
+	chainCtx := context.WithValue(gctx, taskBackpressureKey{}, recordBackpressure)
 	aligner := NewBarrierAligner(numInputs, ts.Config.AlignmentBufferSize)
 	unregisterChannels, err := observability.ObserveTaskChannels(ts.TaskID, func() (int, int) {
 		return len(eventCh), len(outputCh)
@@ -358,7 +363,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		if dlqCh != nil {
 			defer close(dlqCh)
 		}
-		err := runOpenedOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics, checkpoint)
+		err := runOpenedOperatorChain(chainCtx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics, checkpoint)
 		if err != nil {
 			chainErr.Store(&err)
 		} else {
