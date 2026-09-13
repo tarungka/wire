@@ -20,7 +20,7 @@ waive any WIP-02 requirement.
 | 6 | Abort drains without snapshot | `TestOperatorChain_AbortCheckpoint_DrainsSideBufferNoBarrier`, `TestExternalCheckpointAbortReleasesFailedUpload`, and `TestTaskCheckpointUploadFailureAbortsBeforeEOF` cover abort without snapshot, failed upload release, and EOF completion. |
 | 7 | Operator panic fails task and joins siblings | `TestWorker_TaskLifecycleStatuses` covers source/map/factory panics, FAILED reports with stacks, cancellation, and cleanup. TaskSlot uses the authoritative chain error and joins siblings before returning. |
 | 8 | Atomic watermarks | Tracker CAS/stress tests verify atomic monotonic updates. `TestSourceReadAndWatermarkOverlapInTaskLifecycle` verifies concurrent source publication through the real emitter; input reader tests cover nonregressing received watermarks. |
-| 9 | Prompt control mailbox handling under full data channels | `TestOperatorChain_ControlPriority` tests control delivery under full input. Async checkpoint tests verify processing continues during upload; output cancellation tests verify blocked writes terminate. |
+| 9 | Prompt control mailbox handling under full data channels | `TestOperatorChainCheckpointControlWithFullDataChannel` pre-fills the data channel and verifies abort priority plus checkpoint handling with pre-/post-barrier ordering; 100 race-enabled repetitions pass. Async checkpoint tests verify processing continues during upload; output cancellation tests verify blocked writes terminate. |
 
 ## Other explicit requirements
 
