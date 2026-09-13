@@ -304,7 +304,12 @@ The primary data-carrying message. Each DataRecord represents a single event flo
 
 Message payloads use the current MessagePack specification: byte slices use
 `bin8`, `bin16`, or `bin32`, not the legacy raw-string representation. Required
-map fields must be present even when their value is zero. Repeated required
+map fields must be present even when their value is zero. Empty or nil Go record
+values and nil header values encode as zero-length binary, not MessagePack nil.
+Nil optional keys and empty header maps are omitted. Receivers require the
+declared wire type for known fields: binary is not interchangeable with string,
+integers with floats, or booleans with integers. Integer widths are range-checked;
+EOP reasons must be 0–2 and backpressure states 0–1 with finite usage in [0,1]. Repeated required
 fields are rejected rather than selecting one of conflicting values. Unknown
 fields may contain nested MessagePack values up to 64 levels; declared lengths
 and container counts are validated against the available frame bytes.

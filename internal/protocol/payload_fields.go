@@ -156,7 +156,7 @@ func (c *payloadCursor) skip(depth int) bool {
 	return true
 }
 
-func hasRequiredFields(data []byte, required []string) bool {
+func hasRequiredFields(data []byte, required []string, message any) bool {
 	c := payloadCursor{data: data}
 	count, ok := c.mapSize()
 	if !ok || count > uint64(len(data)-c.pos)/2 {
@@ -178,7 +178,7 @@ func hasRequiredFields(data []byte, required []string) bool {
 				break
 			}
 		}
-		if !c.skip(0) {
+		if !c.field(messageFieldKind(message, string(key))) {
 			return false
 		}
 	}

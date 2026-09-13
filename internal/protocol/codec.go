@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"fmt"
+	"math"
 
 	"github.com/hashicorp/go-msgpack/v2/codec"
 )
@@ -30,7 +31,7 @@ func (b *payloadBuffer) Write(p []byte) (int, error) {
 
 func encodeMsgPackLimit(v any, limit uint32) ([]byte, error) {
 	buf := payloadBuffer{limit: limit}
-	err := codec.NewEncoder(&buf, &msgpackHandle).Encode(v)
+	err := codec.NewEncoder(&buf, &msgpackHandle).Encode(canonicalMessage(v))
 	if buf.exceeded {
 		return nil, ErrFrameTooLarge
 	}
@@ -44,7 +45,7 @@ func encodeMsgPackLimit(v any, limit uint32) ([]byte, error) {
 func EncodeMsgPack(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := codec.NewEncoder(&buf, &msgpackHandle)
-	if err := enc.Encode(v); err != nil {
+	if err := enc.Encode(canonicalMessage(v)); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrEncodePayload, err)
 	}
 	return buf.Bytes(), nil
@@ -81,7 +82,7 @@ func decodeFramePayload(data []byte, v any) error {
 	case *SessionDrainMsg:
 		required = []string{"r"}
 	}
-	if !hasRequiredFields(data, required) {
+	if !hasRequiredFields(data, required, v) {
 		return fmt.Errorf("%w: malformed map or missing/duplicate required field", ErrDecodePayload)
 	}
 	// Every active Wire message is a map. The generic codec also accepts nil
@@ -95,6 +96,16 @@ func decodeFramePayload(data []byte, v any) error {
 	}
 	if dec.NumBytesRead() != len(data) {
 		return fmt.Errorf("%w: trailing bytes after message", ErrDecodePayload)
+	}
+	switch message := v.(type) {
+	case *EndOfPartitionMsg:
+		if message.Reason > EndReasonError {
+			return fmt.Errorf("%w: invalid partition end reason", ErrDecodePayload)
+		}
+	case *BackpressureMsg:
+		if message.State > BackpressurePause || math.IsNaN(float64(message.BufferUsage)) || message.BufferUsage < 0 || message.BufferUsage > 1 {
+			return fmt.Errorf("%w: invalid backpressure value", ErrDecodePayload)
+		}
 	}
 	return nil
 }

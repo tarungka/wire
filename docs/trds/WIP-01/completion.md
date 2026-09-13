@@ -9,8 +9,8 @@ sent; implementing batching is explicitly deferred by this TRD.
 
 | Scope | Current evidence / remaining work |
 | --- | --- |
-| Message formats (§3.1–3.10) | Added StreamHeader 0x00 and SessionHandshake 0x07 codecs and round trips. Finalize required/optional field conventions and boundary validation across all messages. |
-| Session negotiation (§2.2, §3.10) | Mux negotiates before publication and data opening. Compatible/rolling/incompatible versions, feature intersection, timeout, early data rejection, and session reuse pass. Same-peer dialing is coalesced with cancellable waiters; unrelated peers make progress independently. Reciprocal worker connection reuse remains. |
+| Message formats (§3.1–3.10) | Active message codecs, binary representation, required fields, strict known-field types, integer bounds, enum/range checks, optional omission and empty-value conventions are implemented and tested. The negotiated SessionDrain extension is included. |
+| Session negotiation (§2.2, §3.10) | Mux negotiates before publication and data opening. Compatible/rolling/incompatible versions, feature intersection, timeout, early data rejection, and session reuse pass. Same-peer dialing is coalesced with cancellable waiters; unrelated peers make progress independently. Sequential reciprocal reuse, deterministic crossed-dial selection and graceful duplicate retirement pass TCP and mutual TLS tests. Membership endpoint aliases/NAT remain an integration consideration. |
 | Stream routing (§2.2, §3.8) | Sender-only headers, first-frame deadline, RegisterTask/AcceptTask routing and unknown-target rejection pass. Worker descriptors now wire network inputs/outputs into TaskSlot, with explicit task IDs and partition indices. Workers listen on and advertise an actual data endpoint. Deployment ordering, distributed completion notifications, and broader multi-worker acceptance remain to audit. |
 | Inline ordering (§5 decision 3) | A single output dispatcher distributes records and broadcasts barriers/watermarks/EOP in order to every output. Exact two-partition sequence and terminal-drain tests pass. Final multi-input/runtime ordering audit remains. |
 | Control/backpressure (§3.7, §6.3) | One retained control stream dispatches pause/resume by Yamux ID. Writes pause at 80% and resume at 20%; engine input read-ahead reports occupancy. TCP and TLS tests demonstrate blocked writes and recovery. A full-window regression now proves control progress while a 2 MiB data frame is blocked. Active/queued writes cancel and configured stream write deadlines close partial frames. Network execution stress covers buffer saturation. |
@@ -332,3 +332,23 @@ prove those semantics.
 
 Full integration-tagged race tests and v2.5.0 lint pass. Decoder fuzzing with the
 scanner passed 1,783,310 executions in the 10-second run (11.5 seconds overall).
+
+### Field types, ranges and nil/empty conventions
+
+Known fields now require their declared MessagePack type before typed decoding:
+strings, binary values, integers, floats, booleans, and string-to-binary header
+maps are distinguished. The typed codec checks integer width/sign bounds. EOP
+reason values outside 0–2 and backpressure state/usage values outside their
+specified ranges, including NaN and infinity, are rejected.
+
+Nil Go record values and nil header values encode as zero-length binary. Optional
+nil keys and empty header maps remain omitted. Normalization does not mutate the
+caller-owned record or header map, and ordinary nonempty records take the direct
+path. Byte-level tests cover both pointer and value records and ownership.
+
+Field-type tests cover every active message, integer overflow and negative values
+for unsigned fields, wrong wire types, and invalid header values. Full integration
+race tests and v2.5.0 lint pass. Decoder fuzzing passed 1,637,305 executions in the
+10-second run (11.5 seconds overall). Performance methodology clarification and
+other runtime/acceptance gates remain open; schema validation does not settle
+those gates.
