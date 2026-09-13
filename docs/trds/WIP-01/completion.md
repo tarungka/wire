@@ -352,3 +352,21 @@ race tests and v2.5.0 lint pass. Decoder fuzzing passed 1,637,305 executions in 
 10-second run (11.5 seconds overall). Performance methodology clarification and
 other runtime/acceptance gates remain open; schema validation does not settle
 those gates.
+
+### Same-worker routing and incompatible-handshake CI race
+
+A self-dial gives one mux the two Yamux endpoints of a single TCP connection.
+The duplicate selector previously marked one endpoint for draining, eventually
+closing both. Retirement now recognizes reverse-matching TCP endpoints as the
+same physical connection. A regression first reproduced the draining flag, then
+verified ten routed local streams, payloads and EOP with neither endpoint retiring.
+Loopback, crossed-connection and concurrent reciprocal tests pass 20 race runs.
+
+Linux CI on 0d95928 failed the incompatible-version case: the initiator received
+the reply and closed before the acceptor's Yamux write returned, so the acceptor
+reported only session shutdown. Once both version ranges have been validated,
+reply-write failure now retains ErrVersionIncompatible along with the underlying
+write error. The existing incompatible negotiation regression passed 1,000 race
+runs (250 each at CPU counts 1, 2, 4 and 8), including closure of both sessions.
+Full integration-tagged race tests and golangci-lint v2.5.0 pass locally; the new
+head still requires Linux CI verification.

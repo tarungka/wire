@@ -80,13 +80,19 @@ func (s *Session) NegotiateSession(ctx context.Context, cfg Config, initiator bo
 		return NegotiatedParams{}, fmt.Errorf("transport: invalid remote session identity or version range")
 	}
 	effective := min(local.ProtocolVersion, remote.ProtocolVersion)
+	incompatible := effective < local.MinVersion || effective < remote.MinVersion
 	// Respond before rejecting an incompatible range so both peers can diagnose it.
 	if !initiator {
 		if err = send(); err != nil {
+			if incompatible {
+				// The peer may receive our reply and close before Yamux's
+				// Write returns. The validated version mismatch remains true.
+				return NegotiatedParams{}, errors.Join(protocol.ErrVersionIncompatible, sessionHandshakeError(deadline, err))
+			}
 			return NegotiatedParams{}, sessionHandshakeError(deadline, err)
 		}
 	}
-	if effective < local.MinVersion || effective < remote.MinVersion {
+	if incompatible {
 		return NegotiatedParams{}, protocol.ErrVersionIncompatible
 	}
 	if err = stream.SetDeadline(time.Time{}); err != nil {

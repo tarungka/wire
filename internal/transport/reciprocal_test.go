@@ -361,3 +361,61 @@ func TestMuxConcurrentReciprocalDialDrainsDuplicates(t *testing.T) {
 		}
 	}
 }
+
+func TestMuxSelfDialKeepsBothConnectionEndpoints(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cfg := DefaultConfig()
+	cfg.ListenAddr = "127.0.0.1:0"
+	mux := NewMux(cfg)
+	defer mux.Close()
+	if err := mux.Listen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.RegisterTask("local-target"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		output, err := mux.Dial(ctx, mux.ListenAddr(), protocol.StreamHeaderMsg{SourceTaskID: "local-source", TargetTaskID: "local-target"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux.mu.RLock()
+		draining := false
+		for sess := range mux.sessions {
+			if sess.isDraining() {
+				draining = true
+			}
+		}
+		mux.mu.RUnlock()
+		if draining {
+			t.Fatal("retiring one endpoint of the loopback connection")
+		}
+		input, err := mux.AcceptTask(ctx, "local-target")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := output.WriteMessageContext(ctx, &protocol.DataRecordMsg{Value: []byte("local")}); err != nil {
+			t.Fatal(err)
+		}
+		message, err := input.ReadMessage()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(message.(*protocol.DataRecordMsg).Value) != "local" {
+			t.Fatal("record changed")
+		}
+		if err := output.WriteMessageContext(ctx, &protocol.EndOfPartitionMsg{SourceID: "local-source"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := input.ReadMessage(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mux.mu.RLock()
+	count := len(mux.sessions)
+	mux.mu.RUnlock()
+	if count != 2 {
+		t.Fatalf("one loopback TCP connection needs two local session endpoints, got %d", count)
+	}
+}

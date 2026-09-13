@@ -78,7 +78,7 @@ func (m *Mux) publishSession(addr string, candidate *Session) *Session {
 		m.peers[endpoint] = selected
 	}
 	for sess := range m.sessions {
-		if sess != selected && sess.peerNodeID == node {
+		if sess != selected && sess.peerNodeID == node && !oppositeConnectionEndpoints(sess, selected) {
 			sess.beginDrain(m.cfg)
 		}
 	}
@@ -100,4 +100,10 @@ func (m *Mux) sessionBefore(a, b *Session) bool {
 		return s.conn.RemoteAddr().String()
 	}
 	return endpoint(a) < endpoint(b)
+}
+
+// A self-dial gives one mux both Yamux endpoints of the same TCP connection.
+// Closing either endpoint would destroy the selected connection as well.
+func oppositeConnectionEndpoints(a, b *Session) bool {
+	return a.conn.LocalAddr().String() == b.conn.RemoteAddr().String() && a.conn.RemoteAddr().String() == b.conn.LocalAddr().String()
 }
