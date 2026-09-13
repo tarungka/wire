@@ -12,7 +12,7 @@ waive any WIP-02 requirement.
 |---|---|---|
 | 1 | Slow sink bounds source reading | Existing TaskSlot backpressure tests; audit network and output fan-out bounds. |
 | 2 | Cancellation drains and joins within five seconds | Two-phase cancellation stops intake, releases alignment buffers, drains fetched batches/read-ahead through the chain, and bounds processing/output with DrainTimeout. Helpers are joined. Six regression scenarios pass 20 race-enabled repetitions; full race/integration suite and lint pass. Transactional cleanup and operator lifecycle/resource bounds still require audit. |
-| 3 | Async checkpoint replication permits continued processing | Operator.Checkpoint results are discarded. No TaskSlot upload worker or worker integration exists. Implement bounded, owned replication and failure handling. |
+| 3 | Async checkpoint replication permits continued processing | A bounded checkpointUploader component now owns immutable snapshot copies, has no idle workers, and reports failures as completions. Operator.Checkpoint results are still discarded by the chain: TaskSlot, checkpoint-decision, and durable worker replication integration remain required. |
 | 4 | Concurrent source read/watermark safety | Separate source reader and legacy watermark strategy exist; audit source implementations and add full-lifecycle race evidence. |
 | 5 | Two-input alignment / snapshot / release | WIP-01 ordering and atomic buffer transfer regressions exist. Retain pre-barrier snapshot and barrier-before-post-data ordering. |
 | 6 | Abort drains without snapshot | Existing abort tests; audit races with upload completion and shutdown. |
@@ -54,3 +54,27 @@ Prepared transactional sinks follow abort cleanup on cancellation; they cannot
 accept more records while awaiting a global decision. This path still needs
 explicit shutdown-budget validation. The implementation does not claim it can
 forcibly terminate arbitrary user callbacks that ignore cancellation.
+
+## Checkpoint upload lifecycle design
+
+`TaskCheckpoint` identifies the task, checkpoint and epoch, and carries ordered
+operator snapshot bytes. `CheckpointReplicator.Replicate` must return success
+only after the configured durability requirement is met. An adapter must
+replicate referenced state artifacts too; copying a local snapshot path is not
+durable replication.
+
+The task-owned uploader admits at most the configured number of active uploads
+plus unconsumed completions. It has no idle worker goroutines and no pending
+snapshot queue. Admission returns a busy result without waiting for I/O; the
+runtime must delay or reject a new checkpoint without blocking data processing.
+Snapshot bytes are copied before returning control to operators. Completion
+carries checkpoint/epoch identity so stale results can be rejected. Close stops
+admission, cancels uploads, and joins workers. Replicators must honor context
+cancellation. Replication errors and panics become checkpoint result errors;
+the task integration must apply WIP-05 failure thresholds rather than treating
+every failed upload as a fatal task error.
+
+These component invariants pass 50 race-enabled repetitions. This is not yet
+evidence of async replication in a running worker: chain submission, durable
+replica transport, completion/abort fencing and terminal-task handling remain
+open. No successful checkpoint may be acknowledged before replication succeeds.
