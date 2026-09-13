@@ -31,12 +31,8 @@ Tests are under `internal/protocol` (P), `internal/transport` (T), and
 | 21 | Handshake timeout | T `TestSessionNegotiationTimeoutClosesSession` exercises a shortened configured timeout; DefaultHandshakeTimeout is five seconds. |
 | 22 | Rolling upgrade/data | T `TestSessionNegotiationVersionsAndFeatures/{tcp,mutual_tls}/rolling_upgrade` checks v2/min1 with v1, inherited v1 parameters, and record/EOP flow. |
 
-## Separate merge gates
+## Performance acceptance and explicit exception
 
-- Framing throughput <3% and CRC verification latency <1%. Single-write framing measures
-  -8.65% CPU and 1.71% loopback TCP overhead at five-sample medians (see
-  completion.md). CRC adds 20.79% CPU latency; TCP median adds 0.28% but sample noise exceeds the difference. The CRC latency gate remains open pending measurement criteria and stronger evidence. No target has been
-  relaxed; these measurements are specific to the documented setup.
-- Final-head CI and applicable review/security evidence. A prior green commit
-  does not validate subsequent edits.
-- Final status/PR description must match these results before marking ready.
+- Framing throughput: -8.65% CPU and 1.71% loopback TCP overhead at five-sample medians, below the 3% target in the documented setup. See completion.md for sample variability and limits.
+- **CRC latency check explicitly waived by the project owner on 2026-09-13 for PR #210.** The <1% target is not claimed as passed: CPU overhead is 20.79%; TCP results are inconclusive at sub-percent precision. This exception skips only the performance acceptance check. Production CRC verification, corruption rejection, regression tests and benchmarks remain enabled.
+- Final-head CI and review status are verified on the PR before it is marked ready. The exception does not waive any build, test, lint or security check.

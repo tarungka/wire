@@ -6,7 +6,7 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
@@ -25,11 +25,11 @@
 
 ## Implementation Status — 2026-09-13
 
-Follow-up implementation starts from `master` at `6317284` and supersedes the narrow frame-write fix in #208. Status remains **Partially Implemented** until the full scope and acceptance targets pass.
+Implemented in follow-up PR [#210](https://github.com/tarungka/wire/pull/210), superseding the narrow frame-write fix in #208. The implementation and all 22 acceptance scenarios are mapped in [acceptance.md](acceptance.md).
 
-- **Implemented on this branch:** SessionHandshake 0x07 before data streams, routing-only StreamHeader 0x00, named task stream queues, retained control-stream backpressure with sender pause/resume, engine input-buffer reports, TLS coverage, and stream-end/cancellation enforcement.
-- **Remaining:** Final runtime/acceptance audit, final-head CI and review clearance, and performance targets. Worker descriptor stream wiring is implemented; Coordinator–Worker RPC orchestration remains a WIP-07 dependency. Single-write framing now measures -8.65% CPU encode/write overhead and 1.71% loopback TCP overhead at five-sample medians on Apple M4; the separate <1% CRC latency target remains unproven. See completion.md for measurement limits. RecordBatch remains reserved and MUST NOT be sent.
-- **Acceptance mapping:** [acceptance.md](acceptance.md). Implementation and run history: [completion.md](completion.md).
+**Explicit acceptance exception (2026-09-13):** The project owner authorized skipping the **<1% additional CRC32C verification latency check** for this PR. This check is waived, not passed. CPU parse/decode overhead measured 20.79% (83 ns); TCP differences were too noisy to establish a sub-percent bound. CRC verification remains mandatory in production, and corruption tests and benchmarks remain enabled.
+
+Framing overhead measures -8.65% CPU encode/write and 1.71% loopback TCP at five-sample medians on Apple M4, below the 3% target in that setup. See [completion.md](completion.md) for evidence and measurement limits. Coordinator–Worker RPC orchestration is a WIP-07 dependency; RecordBatch remains reserved as specified.
 
 ---
 
@@ -66,7 +66,7 @@ Define a binary, length-prefixed framing protocol that runs on top of Yamux stre
 | Protocol specification exists | No spec | Complete spec covering all message types | Doc review |
 | Frame parsing is unambiguous | Ad hoc | Any developer can implement a parser from the spec alone | Walkthrough test |
 | Corruption detected before deserialization | No detection | 100% of truncated/corrupt frames rejected; CRC32C catches all single-bit and burst errors up to 32 bits | Fuzz testing + CRC verification benchmarks |
-| CRC32C verification overhead | N/A | < 1% additional latency per frame on hardware with SSE4.2/ARM CRC | Benchmark |
+| CRC32C verification overhead | 20.79% CPU overhead; TCP inconclusive | < 1% additional latency per frame on hardware with SSE4.2/ARM CRC | **Check explicitly waived for PR #210 by project owner, 2026-09-13; not passed.** Benchmarks retained. |
 | Throughput overhead from framing | Unmeasured | < 3% overhead vs raw msgpack on 1KB records | Benchmark |
 
 ---

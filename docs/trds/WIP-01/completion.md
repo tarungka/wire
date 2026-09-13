@@ -5,20 +5,17 @@ all applicable WIP-01 requirements are implemented and verified, not merely that
 one protocol helper passes tests. RecordBatch is reserved by §3.9 and MUST NOT be
 sent; implementing batching is explicitly deferred by this TRD.
 
-## Required implementation and evidence
+## Current completion status — 2026-09-13
 
-| Scope | Current evidence / remaining work |
-| --- | --- |
-| Message formats (§3.1–3.10) | Active message codecs, binary representation, required fields, strict known-field types, integer bounds, enum/range checks, optional omission and empty-value conventions are implemented and tested. The negotiated SessionDrain extension is included. |
-| Session negotiation (§2.2, §3.10) | Mux negotiates before publication and data opening. Compatible/rolling/incompatible versions, feature intersection, timeout, early data rejection, and session reuse pass. Same-peer dialing is coalesced with cancellable waiters; unrelated peers make progress independently. Sequential reciprocal reuse, deterministic crossed-dial selection and graceful duplicate retirement pass TCP and mutual TLS tests. Membership endpoint aliases/NAT remain an integration consideration. |
-| Stream routing (§2.2, §3.8) | Sender-only headers, first-frame deadline, RegisterTask/AcceptTask routing and unknown-target rejection pass. Worker descriptors now wire network inputs/outputs into TaskSlot, with explicit task IDs and partition indices. Workers listen on and advertise an actual data endpoint. Deployment ordering, distributed completion notifications, and broader multi-worker acceptance remain to audit. |
-| Inline ordering (§5 decision 3) | A single output dispatcher distributes records and broadcasts barriers/watermarks/EOP in order to every output. Exact two-partition sequence and terminal-drain tests pass. Final multi-input/runtime ordering audit remains. |
-| Control/backpressure (§3.7, §6.3) | One retained control stream dispatches pause/resume by Yamux ID. Writes pause at 80% and resume at 20%; engine input read-ahead reports occupancy. TCP and TLS tests demonstrate blocked writes and recovery. A full-window regression now proves control progress while a 2 MiB data frame is blocked. Active/queued writes cancel and configured stream write deadlines close partial frames. Network execution stress covers buffer saturation. |
-| Errors and lifecycle (§6) | Partial-frame completion deadlines preserve idle streams; EOP closes output and rejects later writes; error counters reset independently; corrupt frames avoid payload-copy allocation. Corruption diagnostics now include stream-relative offsets, bounded 64-byte previews and both CRCs; invalid lengths log the remote address and reported length. Streams suppress barriers at or below authoritative global completion or a restored checkpoint. Input readers recheck after queueing; distributed completion notifications still need worker wiring. |
-| TLS (§7) | Existing TLS/mTLS positive and negative tests pass with session negotiation; TLS all-message test now exercises actual control-stream pause/resume. |
-| Resource bounds (§7.3, §8.2) | Verify bounded allocations and session reuse, closure during negotiation, malformed streams and fuzz inputs. |
-| CRC overhead (§1.4) | Native CRC: median 80.75 ns/1025 bytes; independent software recurrence: 1850 ns. Hardware acceleration is evident. The <1% verification-latency acceptance target is not demonstrated. |
-| Framing overhead (§1.4) | FAILS target: median raw encoding + write 504.3 ns vs framed encoding + write 620.8 ns, +23.1%. See benchmark evidence below. Do not mark Implemented. |
+WIP-01 is implemented in PR #210. Current requirement-by-requirement evidence is in [acceptance.md](acceptance.md); the entries below record the implementation and measurement history, including failures subsequently fixed.
+
+**Explicit exception:** The project owner instructed “lets skip that check explicitly mentioning it” for the <1% CRC verification latency acceptance check. It is waived for this PR, not passed. CPU overhead measured 20.79% (83 ns). TCP medians varied from +0.28% in five samples to -0.25% in ten longer samples, with noise larger than the difference. No sub-percent latency claim is made. CRC remains mandatory in production and all correctness checks stay enabled.
+
+The framing throughput target is met at documented five-sample medians: -8.65% CPU encode/write and 1.71% loopback TCP overhead. Runtime ordering, concurrent buffer ownership, session reuse, routing, deadlines and TCP/mutual-TLS acceptance have executable regressions. Coordinator–Worker RPC orchestration is explicitly outside WIP-01 and remains a WIP-07 dependency.
+
+## Historical implementation and measurement log
+
+The following notes preserve earlier findings; their remaining-work statements are superseded by the current status and acceptance mapping above.
 
 ## Section 8.1 acceptance scenarios
 
