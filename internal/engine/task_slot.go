@@ -18,6 +18,7 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
+	CheckpointReplicator CheckpointReplicator // Optional durable checkpoint uploader; requires Coordinator.
 	Config               TaskSlotConfig
 	Inputs               []*transport.FrameStream // Upstream input streams.
 	Outputs              []*transport.FrameStream // Downstream output streams.
@@ -49,6 +50,13 @@ func NewTaskSlot(cfg TaskSlotConfig, inputs []*transport.FrameStream, outputs []
 // Run executes the task slot. It launches all goroutines via errgroup and
 // blocks until completion or failure.
 func (ts *TaskSlot) Run(ctx context.Context) error {
+	if ts.CheckpointReplicator != nil && ts.Coordinator == nil {
+		return errors.New("checkpoint replication requires a coordinator")
+	}
+	if ts.Config.CheckpointUploadConcurrency < 0 {
+		return errors.New("checkpoint upload concurrency must not be negative")
+	}
+
 	// Initialize synchronously so workers report RUNNING only after every
 	// operator, including the source, has opened successfully.
 	operators := make([]Operator, 0, len(ts.Operators)+1)
@@ -74,6 +82,27 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	defer runCancel()
 
 	g, gctx := errgroup.WithContext(runCtx)
+	var checkpoint *chainCheckpointState
+	if ts.CheckpointReplicator != nil {
+		concurrency := ts.Config.CheckpointUploadConcurrency
+		if concurrency == 0 {
+			concurrency = 1
+		}
+		uploader, err := newCheckpointUploader(gctx, concurrency, ts.CheckpointReplicator)
+		if err != nil {
+			return err
+		}
+		if ts.Config.Checkpoint.Timeout > 0 {
+			uploader.timeout = ts.Config.Checkpoint.Timeout
+		}
+		defer uploader.Close()
+		checkpoint = &chainCheckpointState{uploader: uploader, taskID: ts.TaskID, pending: make(map[checkpointIdentity]bool), notify: func(ctx context.Context, r checkpointUploadResult) error {
+			if r.Err != nil {
+				return ts.Coordinator.FailCheckpoint(ctx, r.CheckpointID, r.EpochID, r.Err)
+			}
+			return ts.Coordinator.AckReplicatedCheckpoint(ctx, ts.TaskIndex, r.CheckpointID, r.EpochID)
+		}}
+	}
 	intakeCtx, stopIntake := context.WithCancel(gctx)
 	defer stopIntake()
 	normalizeIntake := func(err error) error {
@@ -130,6 +159,11 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	eventCh := make(chan Event, ts.Config.InputBufferSize)
 	controlCh := make(chan ControlMsg, numInputs*2+4) // barrier + EoP per input, +4 for 2PC control messages (CtrlCommitCheckpoint, CtrlAbortTransaction).
 	outputCh := make(chan OutputMsg, ts.Config.OutputBufferSize)
+	if checkpoint != nil {
+		if err := ts.Coordinator.BindTaskControl(ts.TaskIndex, controlCh); err != nil {
+			return err
+		}
+	}
 
 	// Create barrier aligner.
 	aligner := NewBarrierAligner(numInputs, ts.Config.AlignmentBufferSize)
@@ -276,7 +310,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// Launch checkpoint coordinator if configured.
 	if ts.Coordinator != nil {
 		g.Go(func() error {
-			return normalizeIntake(ts.Coordinator.Run(intakeCtx))
+			return ts.Coordinator.Run(gctx)
 		})
 	}
 
@@ -314,7 +348,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		if dlqCh != nil {
 			defer close(dlqCh)
 		}
-		err := runOpenedOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics)
+		err := runOpenedOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics, checkpoint)
 		if err != nil {
 			chainErr.Store(&err)
 		} else {

@@ -12,6 +12,8 @@ import (
 
 // ackMsg carries an acknowledgement from a task slot to the coordinator.
 type ackMsg struct {
+	EpochID      uint64
+	applied      chan struct{}
 	TaskIndex    int
 	CheckpointID uint64
 }
@@ -107,6 +109,7 @@ func (cc *CheckpointCoordinator) sendCommitNotifications(ctx context.Context, in
 	for idx := range cc.sinkTxnStates {
 		sinkIndices = append(sinkIndices, idx)
 	}
+	channels := append([]chan<- ControlMsg(nil), cc.controlChannels...)
 	cc.mu.Unlock()
 
 	commitMsg := ControlMsg{
@@ -115,9 +118,9 @@ func (cc *CheckpointCoordinator) sendCommitNotifications(ctx context.Context, in
 		EpochID:      info.epochID,
 	}
 	for _, idx := range sinkIndices {
-		if idx < len(cc.controlChannels) {
+		if idx < len(channels) {
 			select {
-			case cc.controlChannels[idx] <- commitMsg:
+			case channels[idx] <- commitMsg:
 			case <-ctx.Done():
 				return
 			}
@@ -223,6 +226,23 @@ func (cc *CheckpointCoordinator) AckCheckpoint(taskIndex int, checkpointID uint6
 	}
 }
 
+// AckReplicatedCheckpoint waits until the coordinator has applied or rejected
+// an epoch-fenced ACK, so a finishing task cannot cancel Run before it is read.
+func (cc *CheckpointCoordinator) AckReplicatedCheckpoint(ctx context.Context, taskIndex int, id, epoch uint64) error {
+	applied := make(chan struct{})
+	select {
+	case cc.ackCh <- ackMsg{TaskIndex: taskIndex, CheckpointID: id, EpochID: epoch, applied: applied}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-applied:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // FailCheckpoint reports a replication failure without blocking on abort
 // notifications. The bounded mailbox honors caller cancellation; Run applies
 // failure policy only if both checkpoint and epoch still match the active one.
@@ -279,8 +299,11 @@ func (cc *CheckpointCoordinator) Run(ctx context.Context) error {
 		case ack := <-cc.ackCh:
 			cc.mu.Lock()
 			// Ignore stale ACKs (wrong checkpoint ID or no active checkpoint).
-			if ack.CheckpointID != cc.activeCheckpointID || cc.activeCheckpointID == 0 {
+			if ack.CheckpointID != cc.activeCheckpointID || cc.activeCheckpointID == 0 || (ack.applied != nil && ack.EpochID != cc.activeEpochID) {
 				cc.mu.Unlock()
+				if ack.applied != nil {
+					close(ack.applied)
+				}
 				continue
 			}
 
@@ -293,6 +316,9 @@ func (cc *CheckpointCoordinator) Run(ctx context.Context) error {
 			cc.pendingCommit = nil
 			cc.mu.Unlock()
 
+			if ack.applied != nil {
+				close(ack.applied)
+			}
 			// Send commit notifications outside the lock to avoid deadlock.
 			if pending != nil {
 				cc.sendCommitNotifications(ctx, pending)
@@ -364,6 +390,7 @@ func (cc *CheckpointCoordinator) abortCheckpointIdentity(ctx context.Context, ex
 		cc.sinkTxnStates[idx].CurrentCheckpoint = 0
 	}
 
+	channels := append([]chan<- ControlMsg(nil), cc.controlChannels...)
 	cc.activeCheckpointID = 0
 	cc.activeEpochID = 0
 	cc.pendingACKs = make(map[int]bool)
@@ -381,9 +408,9 @@ func (cc *CheckpointCoordinator) abortCheckpointIdentity(ctx context.Context, ex
 			EpochID:      epochID,
 		}
 		for _, idx := range sinkIndices {
-			if idx < len(cc.controlChannels) {
+			if idx < len(channels) {
 				select {
-				case cc.controlChannels[idx] <- txnAbortMsg:
+				case channels[idx] <- txnAbortMsg:
 				case <-ctx.Done():
 					return errors.Join(failureErr, ctx.Err())
 				}
@@ -397,7 +424,7 @@ func (cc *CheckpointCoordinator) abortCheckpointIdentity(ctx context.Context, ex
 		CheckpointID: checkpointID,
 		EpochID:      epochID,
 	}
-	for _, ch := range cc.controlChannels {
+	for _, ch := range channels {
 		select {
 		case ch <- abortMsg:
 		case <-ctx.Done():
@@ -453,4 +480,15 @@ func (cc *CheckpointCoordinator) LastCompletedCheckpoint() uint64 {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
 	return cc.lastCompletedCheckpoint
+}
+
+// BindTaskControl connects a TaskSlot's mailbox before that slot starts Run.
+func (cc *CheckpointCoordinator) BindTaskControl(index int, ch chan<- ControlMsg) error {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	if index < 0 || index >= len(cc.controlChannels) || ch == nil {
+		return errors.New("invalid checkpoint task control binding")
+	}
+	cc.controlChannels[index] = ch
+	return nil
 }

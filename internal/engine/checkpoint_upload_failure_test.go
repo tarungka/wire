@@ -70,3 +70,30 @@ func TestStaleReplicationFailureCannotAbortNewEpoch(t *testing.T) {
 	default:
 	}
 }
+
+func TestReplicatedAckRequiresMatchingEpoch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cc, _ := newTestCoordinator(CheckpointConfig{Timeout: time.Minute}, 1)
+	done := make(chan error, 1)
+	go func() { done <- cc.Run(ctx) }()
+	if err := cc.TriggerCheckpoint(ctx, 9, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := cc.AckReplicatedCheckpoint(ctx, 0, 9, 3); err != nil {
+		t.Fatal(err)
+	}
+	if cc.LastCompletedCheckpoint() != 0 {
+		t.Fatal("stale epoch completed checkpoint")
+	}
+	if err := cc.AckReplicatedCheckpoint(ctx, 0, 9, 4); err != nil {
+		t.Fatal(err)
+	}
+	if cc.LastCompletedCheckpoint() != 9 {
+		t.Fatal("matching ACK was not applied before returning")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

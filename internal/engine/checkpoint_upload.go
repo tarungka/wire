@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 )
 
 // TaskCheckpoint owns immutable operator snapshot bytes for one aligned epoch.
@@ -37,6 +38,8 @@ type checkpointUploadResult struct {
 // never waits for network I/O; the chain consumes results before admitting more.
 type checkpointUploader struct {
 	mu         sync.Mutex
+	cancels    map[checkpointIdentity]context.CancelFunc
+	timeout    time.Duration
 	closed     bool
 	closeOnce  sync.Once
 	ctx        context.Context
@@ -52,7 +55,7 @@ func newCheckpointUploader(ctx context.Context, concurrency int, replicator Chec
 		return nil, errors.New("checkpoint uploader requires positive concurrency and a replicator")
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	return &checkpointUploader{ctx: ctx, cancel: cancel, replicator: replicator, slots: make(chan struct{}, concurrency), results: make(chan checkpointUploadResult, concurrency)}, nil
+	return &checkpointUploader{ctx: ctx, cancel: cancel, cancels: make(map[checkpointIdentity]context.CancelFunc), timeout: DefaultCheckpointTimeout, replicator: replicator, slots: make(chan struct{}, concurrency), results: make(chan checkpointUploadResult, concurrency)}, nil
 }
 
 func (u *checkpointUploader) Submit(snapshot TaskCheckpoint) error {
@@ -79,10 +82,17 @@ func (u *checkpointUploader) Submit(snapshot TaskCheckpoint) error {
 	for i, data := range snapshot.Operators {
 		owned.Operators[i] = append([]byte(nil), data...)
 	}
+	uploadCtx, cancel := context.WithTimeout(u.ctx, u.timeout)
+	key := checkpointIdentity{snapshot.CheckpointID, snapshot.EpochID}
+	u.cancels[key] = cancel
 	u.wg.Add(1)
 	go func() {
 		defer u.wg.Done()
-		err := invokeOperator(func() error { return u.replicator.Replicate(u.ctx, owned) })
+		err := invokeOperator(func() error { return u.replicator.Replicate(uploadCtx, owned) })
+		cancel()
+		u.mu.Lock()
+		delete(u.cancels, key)
+		u.mu.Unlock()
 		result := checkpointUploadResult{CheckpointID: owned.CheckpointID, EpochID: owned.EpochID, Err: err}
 		select {
 		case u.results <- result:
@@ -115,4 +125,13 @@ func (u *checkpointUploader) Close() {
 		u.wg.Wait()
 		close(u.results)
 	})
+}
+
+func (u *checkpointUploader) Cancel(id, epoch uint64) {
+	u.mu.Lock()
+	cancel := u.cancels[checkpointIdentity{id, epoch}]
+	u.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }

@@ -19,6 +19,7 @@ var errChainDone = errors.New("operator chain done")
 // chainContext consolidates parameters passed between the operator chain
 // functions, avoiding long parameter lists.
 type chainContext struct {
+	checkpoint          *chainCheckpointState
 	draining            bool
 	preparedCheckpoint  uint64
 	transactionPrepared bool
@@ -94,6 +95,7 @@ func runOpenedOperatorChain(
 	errorConfigs []ErrorHandlerConfig,
 	dlqCh chan<- DLQEvent,
 	errMetrics ErrorMetrics,
+	checkpoint ...*chainCheckpointState,
 ) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -142,6 +144,13 @@ func runOpenedOperatorChain(
 		ackFn:      ackFn,
 	}
 
+	if len(checkpoint) > 0 {
+		cc.checkpoint = checkpoint[0]
+	}
+	var uploadResults <-chan checkpointUploadResult
+	if cc.checkpoint != nil {
+		uploadResults = cc.checkpoint.uploader.results
+	}
 	eofCount := 0
 
 	for {
@@ -164,6 +173,10 @@ func runOpenedOperatorChain(
 			}
 		}
 
+		if cc.checkpoint != nil && cc.checkpoint.endPending && len(cc.checkpoint.pending) == 0 {
+			return emitChainEnd(cc)
+		}
+
 		// A prepared transaction cannot accept post-barrier records until
 		// its coordinator decision arrives. Keep consuming control messages.
 		events := inputCh
@@ -174,6 +187,13 @@ func runOpenedOperatorChain(
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case result := <-uploadResults:
+			if err := cc.checkpoint.complete(ctx, result); err != nil {
+				return err
+			}
+			if cc.checkpoint.endPending && len(cc.checkpoint.pending) == 0 {
+				return emitChainEnd(cc)
+			}
 		case ctrl, ok := <-controlCh:
 			if !ok {
 				return nil
@@ -345,6 +365,9 @@ func drainInputCh(cc *chainContext) error {
 
 // handleControl processes a control message.
 func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
+	if cc.checkpoint != nil && ctrl.Type == CtrlAbortCheckpoint {
+		cc.checkpoint.abort(ctrl.CheckpointID, ctrl.EpochID)
+	}
 	if cc.draining && ctrl.Type == CtrlBarrierReceived {
 		return nil
 	}
@@ -389,10 +412,18 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			return err
 		}
 
-		// Snapshot all operators.
+		// Capture snapshot bytes synchronously at the aligned boundary.
+		var snapshots [][]byte
+		if cc.checkpoint != nil {
+			snapshots = make([][]byte, len(cc.links))
+		}
 		for i, link := range cc.links {
-			if _, err := link.Operator.Checkpoint(ctrl.CheckpointID); err != nil {
+			data, err := link.Operator.Checkpoint(ctrl.CheckpointID)
+			if err != nil {
 				return fmt.Errorf("operator[%d] checkpoint: %w", i, err)
+			}
+			if snapshots != nil {
+				snapshots[i] = append([]byte(nil), data...)
 			}
 		}
 
@@ -407,7 +438,7 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			}
 			cc.preparedCheckpoint = ctrl.CheckpointID
 			cc.transactionPrepared = true
-			if cc.ackFn != nil {
+			if cc.ackFn != nil && cc.checkpoint == nil {
 				cc.ackFn(ctrl.CheckpointID)
 			}
 		} else {
@@ -421,6 +452,12 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			case cc.outputCh <- OutputMsg{Type: OutputBarrier, Barrier: barrier}:
 			case <-cc.ctx.Done():
 				return cc.ctx.Err()
+			}
+		}
+
+		if cc.checkpoint != nil {
+			if err := cc.checkpoint.submit(cc.ctx, ctrl.CheckpointID, ctrl.EpochID, snapshots); err != nil {
+				return err
 			}
 		}
 
@@ -477,6 +514,9 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 
 	case CtrlAbortCheckpoint:
 		cc.log.Warn().Uint64("checkpoint", ctrl.CheckpointID).Msg("aborting checkpoint")
+		if cc.checkpoint != nil {
+			cc.checkpoint.abort(ctrl.CheckpointID, ctrl.EpochID)
+		}
 		// Drain side buffers and process them (events are still valid, just no checkpoint).
 		drained := cc.aligner.FinishAlignment(ctrl.CheckpointID)
 		for _, event := range drained {
@@ -496,14 +536,12 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 				return err
 			}
 
-			cc.log.Info().Msg("all inputs exhausted, forwarding EndOfPartition")
-			eop := &protocol.EndOfPartitionMsg{
-				Reason: protocol.EndReasonExhausted,
+			if cc.checkpoint != nil && len(cc.checkpoint.pending) > 0 {
+				cc.checkpoint.endPending = true
+				return nil
 			}
-			select {
-			case cc.outputCh <- OutputMsg{Type: OutputEnd, End: eop}:
-			case <-cc.ctx.Done():
-				return cc.ctx.Err()
+			if err := emitChainEnd(cc); err != nil {
+				return err
 			}
 			return errChainDone
 		}
@@ -553,4 +591,13 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 	}
 
 	return nil
+}
+
+func emitChainEnd(cc *chainContext) error {
+	select {
+	case cc.outputCh <- OutputMsg{Type: OutputEnd, End: &protocol.EndOfPartitionMsg{Reason: protocol.EndReasonExhausted}}:
+		return nil
+	case <-cc.ctx.Done():
+		return cc.ctx.Err()
+	}
 }

@@ -12,7 +12,7 @@ waive any WIP-02 requirement.
 |---|---|---|
 | 1 | Slow sink bounds source reading | Existing TaskSlot backpressure tests; audit network and output fan-out bounds. |
 | 2 | Cancellation drains and joins within five seconds | Two-phase cancellation stops intake, releases alignment buffers, drains fetched batches/read-ahead through the chain, and bounds processing/output with DrainTimeout. Helpers are joined. Six regression scenarios pass 20 race-enabled repetitions; full race/integration suite and lint pass. Transactional cleanup and operator lifecycle/resource bounds still require audit. |
-| 3 | Async checkpoint replication permits continued processing | A bounded checkpointUploader component now owns immutable snapshot copies, has no idle workers, and reports failures as completions. Operator.Checkpoint results are still discarded by the chain: TaskSlot, checkpoint-decision, and durable worker replication integration remain required. |
+| 3 | Async checkpoint replication permits continued processing | TaskSlot now submits captured aligned snapshots to the bounded uploader. A real stream test verifies continued processing during blocked replication, delayed ACK, and EOF waiting for success or abort. Durable worker replica transport and source checkpoint injection remain required. |
 | 4 | Concurrent source read/watermark safety | Separate source reader and legacy watermark strategy exist; audit source implementations and add full-lifecycle race evidence. |
 | 5 | Two-input alignment / snapshot / release | WIP-01 ordering and atomic buffer transfer regressions exist. Retain pre-barrier snapshot and barrier-before-post-data ordering. |
 | 6 | Abort drains without snapshot | Existing abort tests; audit races with upload completion and shutdown. |
@@ -25,7 +25,7 @@ waive any WIP-02 requirement.
 | Requirement | Current evidence / remaining work |
 |---|---|
 | Per-task topology and bounded channels (§2.1–2.4) | Input reader includes one bounded read-ahead helper. Output uses one ordered dispatcher, not the stated per-output workers. Reconcile topology with ordering and test bounds. |
-| Replication failure affects checkpoint, threshold affects task (§2.7) | Coordinator failure reporting now applies existing checkpoint thresholds and ignores stale checkpoint/epoch reports; timeout metrics exclude replication failures. Uploader completion delivery and durable worker replication still need wiring. |
+| Replication failure affects checkpoint, threshold affects task (§2.7) | Coordinator failure reporting now applies existing checkpoint thresholds and ignores stale checkpoint/epoch reports; timeout metrics exclude replication failures. TaskSlot completion delivery now feeds this policy; durable worker replication and additional transactional/abort overlap tests remain required. |
 | Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Upload concurrency and configurable task Pebble compaction bounds need implementation/integration. |
 | Container CPU limits (§3.2) | No automaxprocs import or dependency found. Verify Go runtime baseline and implement the documented behavior with explicit evidence. |
 | Six observability metrics (§3.3) | No wire_task_* metric instrumentation found. Add task channel usage, output blocking time, owned goroutines, upload duration and alignment bytes with lifecycle cleanup. |
@@ -88,5 +88,21 @@ notifications. A timer captured for an earlier checkpoint is also checked
 against its original identity. Replication errors do not increment the timeout
 counter. Tests prove that an initial upload failure aborts only its checkpoint,
 the configured failure threshold is enforced, and stale ID/epoch failures do
-not change an active newer checkpoint. The uploader-to-runtime completion path
-remains unconnected, so these tests do not yet prove worker checkpoint durability.
+not change an active newer checkpoint. The uploader-to-runtime completion path is now connected; these tests still do not prove worker checkpoint durability without a durable replica adapter.
+
+### TaskSlot checkpoint runtime connection
+
+TaskSlot accepts a CheckpointReplicator and requires a coordinator when it is
+configured. The operator chain captures snapshot bytes at alignment, submits
+without waiting for replication I/O, and continues data processing. Transactional
+ACKs are withheld until upload success. Replicated ACKs include epoch and wait
+for coordinator application, avoiding task-EOF cancellation losing an ACK.
+Nonfatal upload failures retain pending checkpoint state until abort handling;
+EOF waits for that outcome. Abort cancels the matching upload and stale results
+are ignored. Per-upload timeout follows checkpoint timeout; concurrency defaults
+to one. The coordinator stays alive during the processing drain.
+
+The network TaskSlot success/failure-at-EOF scenarios pass 30 race-enabled
+repetitions. This validates runtime behavior with an injected replicator, not
+peer durability. Worker configuration/replica transport, source checkpoint
+injection, additional transactional cases and metrics remain open.
