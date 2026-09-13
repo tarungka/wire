@@ -13,6 +13,8 @@ import (
 // TaskCheckpoint owns immutable operator snapshot bytes for one aligned epoch.
 // Operator positions correspond to the task's ordered operator chain.
 type TaskCheckpoint struct {
+	HasSource    bool
+	Source       []byte
 	TaskID       string
 	CheckpointID uint64
 	EpochID      uint64
@@ -86,6 +88,7 @@ func (u *checkpointUploader) Submit(snapshot TaskCheckpoint) error {
 	// Operators may reuse their snapshot buffers after Checkpoint returns. Copy
 	// synchronously before returning control to processing/user code.
 	owned := snapshot
+	owned.Source = append([]byte(nil), snapshot.Source...)
 	owned.Operators = make([][]byte, len(snapshot.Operators))
 	for i, data := range snapshot.Operators {
 		owned.Operators[i] = append([]byte(nil), data...)

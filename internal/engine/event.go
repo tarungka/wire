@@ -48,10 +48,11 @@ const (
 
 // ControlMsg carries control signals from input readers to the operator chain.
 type ControlMsg struct {
-	Type         ControlType
-	InputIndex   int
-	CheckpointID uint64
-	EpochID      uint64
+	sourceBoundary *sourceCheckpointBoundary
+	Type           ControlType
+	InputIndex     int
+	CheckpointID   uint64
+	EpochID        uint64
 }
 
 // OutputType identifies the kind of output message.

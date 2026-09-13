@@ -60,7 +60,7 @@ func (s *FileCheckpointStore) Put(ctx context.Context, jobID string, snapshot Ta
 	if err != nil {
 		return err
 	}
-	size := uint64(len(snapshot.Operators)) * 4
+	size := uint64(len(snapshot.Operators))*4 + uint64(len(snapshot.Source))
 	for _, data := range snapshot.Operators {
 		size += uint64(len(data))
 	}

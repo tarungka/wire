@@ -19,7 +19,8 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
-	CheckpointReplicator CheckpointReplicator // Optional durable checkpoint uploader; requires Coordinator.
+	CheckpointTriggers   <-chan CheckpointTrigger // Optional source-only checkpoint commands.
+	CheckpointReplicator CheckpointReplicator     // Optional durable checkpoint uploader; requires Coordinator.
 	Config               TaskSlotConfig
 	Inputs               []*transport.FrameStream // Upstream input streams.
 	Outputs              []*transport.FrameStream // Downstream output streams.
@@ -51,6 +52,9 @@ func NewTaskSlot(cfg TaskSlotConfig, inputs []*transport.FrameStream, outputs []
 // Run executes the task slot. It launches all goroutines via errgroup and
 // blocks until completion or failure.
 func (ts *TaskSlot) Run(ctx context.Context) error {
+	if ts.CheckpointTriggers != nil && (ts.Source == nil || ts.CheckpointReplicator == nil) {
+		return errors.New("source checkpoint triggers require a source and checkpoint replicator")
+	}
 	if ts.CheckpointReplicator != nil && ts.Coordinator == nil {
 		return errors.New("checkpoint replication requires a coordinator")
 	}
@@ -213,13 +217,14 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// For source tasks, resolve strategy and launch source reader.
 	if ts.Source != nil {
 		strategy := ts.resolveStrategy()
+		sourceCheckpoints := &sourceCheckpointInput{requests: ts.CheckpointTriggers, source: ts.Source, aligner: aligner, control: controlCh}
 
 		inputWg.Add(1)
 		g.Go(func() error {
 			defer taskGoroutineStarted(runCtx)()
 			defer inputWg.Done()
 			return normalizeIntake(invokeOperator(func() error {
-				return runSourceReaderWithContexts(intakeCtx, gctx, ts.Source, strategy, eventCh, controlCh, ts.log.With().Str("component", "source_reader").Logger())
+				return runSourceReaderWithContexts(intakeCtx, gctx, ts.Source, strategy, eventCh, controlCh, ts.log.With().Str("component", "source_reader").Logger(), sourceCheckpoints)
 			}))
 		})
 
@@ -472,10 +477,15 @@ func runSourceReader(ctx context.Context, source SourceOperator, strategy Waterm
 
 // Stop fetching when intake is cancelled, but drain an already-fetched batch
 // using the processing context. A source must honor its ReadBatch context.
-func runSourceReaderWithContexts(intakeCtx, ctx context.Context, source SourceOperator, strategy WatermarkStrategy, eventCh chan<- Event, controlCh chan<- ControlMsg, log zerolog.Logger) error {
+func runSourceReaderWithContexts(intakeCtx, ctx context.Context, source SourceOperator, strategy WatermarkStrategy, eventCh chan<- Event, controlCh chan<- ControlMsg, log zerolog.Logger, checkpoints ...*sourceCheckpointInput) error {
 	for {
 		if err := intakeCtx.Err(); err != nil {
 			return err
+		}
+		if len(checkpoints) > 0 {
+			if err := checkpoints[0].atBoundary(intakeCtx, ctx); err != nil {
+				return err
+			}
 		}
 		batch, err := source.ReadBatch(intakeCtx)
 		if err != nil {

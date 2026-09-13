@@ -363,6 +363,9 @@ func drainInputCh(cc *chainContext) error {
 
 // handleControl processes a control message.
 func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
+	if ctrl.sourceBoundary != nil {
+		defer close(ctrl.sourceBoundary.done)
+	}
 	if cc.checkpoint != nil && ctrl.Type == CtrlAbortCheckpoint {
 		cc.checkpoint.abort(ctrl.CheckpointID, ctrl.EpochID)
 	}
@@ -452,7 +455,7 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		}
 
 		if cc.checkpoint != nil {
-			if err := cc.checkpoint.submit(cc.ctx, ctrl.CheckpointID, ctrl.EpochID, snapshots); err != nil {
+			if err := cc.checkpoint.submit(cc.ctx, ctrl.CheckpointID, ctrl.EpochID, snapshots, ctrl.sourceBoundary); err != nil {
 				return err
 			}
 		}

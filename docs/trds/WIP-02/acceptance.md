@@ -224,3 +224,21 @@ the following runtime gaps found by tracing the command path:
 The next implementation must connect these existing command and ACK paths,
 with source ordering and cancellation tests, followed by multi-worker replica
 loss/recovery evidence. These are required work, not deferred WIP-02 scope.
+
+
+### Source checkpoint boundary implementation
+
+TaskSlot now accepts source-only CheckpointTriggers when a replicator and
+coordinator are configured. The source reader checks requests between fully
+dispatched batches, copies source checkpoint bytes, marks the virtual input's
+barrier, and waits for the chain to release the boundary before another read.
+The chain drains preceding records and captures operator state as before;
+TaskCheckpoint carries source bytes separately from operator positions. The
+uploader owns a copy of both, and local storage includes source bytes in its
+size limit. No worker command is connected yet.
+
+The boundary test requests a checkpoint midway through dispatching a two-record
+batch and verifies both records precede the boundary, source state reflects one
+fetched batch, and the next batch remains blocked until release. Further task
+replication/abort/EOF overlap tests and coordinator epoch fencing are required
+before this path is considered complete.
