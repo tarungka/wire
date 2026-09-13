@@ -366,3 +366,13 @@ and restores the original value through Pebble's existing checksum-verifying
 Restore path. The race-enabled test and engine lint pass. Production bounded
 archive import, artifact transport, operator-handle relocation and worker wiring
 remain required; test extraction is not the production receiver.
+
+ImportPebbleSnapshot now provides the production archive import primitive. It
+bounds total archive bytes, manifest size and file count; rejects path traversal,
+links, duplicates, undeclared/missing files, invalid checksums and nonzero trailing
+data; and removes the candidate directory on failure. Each file and both the
+snapshot and parent directories are synced before returning a relocated handle.
+Only that returned handle denotes completion, not discovery of a staging path.
+The original-removal recovery test now uses this importer. Additional tests
+cover unsafe paths, symlinks, corruption, missing files, quota overflow and
+cleanup. Artifact transport and operator-handle integration remain required.
