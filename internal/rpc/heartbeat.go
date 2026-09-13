@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -352,6 +353,9 @@ func (hs *HeartbeatSender) sendHeartbeat(ctx context.Context) {
 
 	start := time.Now()
 	resp, err := hs.client.Heartbeat(ctx, req)
+	if err == nil && !resp.Accepted {
+		err = errors.New("coordinator rejected heartbeat")
+	}
 	if err != nil {
 		hs.metrics.IncFailuresTotal()
 		hs.log.Warn().Err(err).Msg("heartbeat failed")

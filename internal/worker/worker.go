@@ -212,6 +212,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.handleCommands,
 		rpc.WithContactLostCallback(func() {
 			w.log.Error().Msg("lost contact with coordinator")
+			w.cancelTasksOnContactLoss()
 		}),
 	)
 
@@ -520,5 +521,15 @@ func (w *Worker) handleCommands(cmds []rpc.WorkerCommand) {
 		default:
 			w.log.Warn().Uint8("type", uint8(cmd.Type)).Msg("unknown command type")
 		}
+	}
+}
+
+// cancelTasksOnContactLoss stops old executions when coordinator authority can
+// no longer be confirmed. Recovery must deploy a new attempt explicitly.
+func (w *Worker) cancelTasksOnContactLoss() {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	for _, handle := range w.tasks {
+		handle.cancel()
 	}
 }

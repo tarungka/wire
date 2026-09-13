@@ -69,3 +69,15 @@ func TestShutdownHonorsDeadlineForStuckTask(t *testing.T) {
 		t.Fatalf("shutdown result: %v", err)
 	}
 }
+
+func TestContactLossCancelsEveryTask(t *testing.T) {
+	first, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	second, cancelSecond := context.WithCancel(context.Background())
+	defer cancelSecond()
+	w := &Worker{tasks: map[string]*taskHandle{"first": {cancel: cancelFirst}, "second": {cancel: cancelSecond}}}
+	w.cancelTasksOnContactLoss()
+	if first.Err() == nil || second.Err() == nil || len(w.tasks) != 2 {
+		t.Fatal("contact loss must cancel tasks and retain them until joined")
+	}
+}

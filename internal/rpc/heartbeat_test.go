@@ -947,3 +947,29 @@ func TestOnContactLostRearms(t *testing.T) {
 
 // Suppress unused import warning for protocol.
 var _ = protocol.EncodeMsgPack
+
+func TestRejectedHeartbeatCountsAsContactFailure(t *testing.T) {
+	clientSession, serverSession := testYamuxPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := DefaultConfig()
+	cfg.MaxConsecutiveHeartbeatFailures = 2
+	server := NewServer(cfg)
+	server.Register(MethodHeartbeat, func(context.Context, uint64, []byte) (any, *RPCError) {
+		return &HeartbeatResponse{Accepted: false, Commands: []WorkerCommand{{Type: CommandTypeDeployTask}}}, nil
+	})
+	done := make(chan struct{})
+	go func() { defer close(done); server.ServeSession(ctx, serverSession) }()
+	defer func() { cancel(); _ = serverSession.Close(); <-done }()
+	lost, commands := 0, 0
+	sender := NewHeartbeatSender(NewClient(clientSession, cfg), cfg, func() *HeartbeatRequest { return &HeartbeatRequest{WorkerID: "worker"} }, func([]WorkerCommand) { commands++ }, WithContactLostCallback(func() { lost++ }))
+	sender.sendHeartbeat(ctx)
+	if lost != 0 {
+		t.Fatal("contact callback fired before configured threshold")
+	}
+	sender.sendHeartbeat(ctx)
+	sender.sendHeartbeat(ctx)
+	if lost != 1 || commands != 0 {
+		t.Fatalf("lost=%d commands=%d", lost, commands)
+	}
+}
