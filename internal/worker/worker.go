@@ -43,6 +43,7 @@ type Worker struct {
 	data     *transport.Mux
 	epoch    uint64
 	mu       sync.RWMutex
+	stopping bool
 	tasks    map[string]*taskHandle // taskID -> handle
 	log      zerolog.Logger
 }
@@ -156,7 +157,18 @@ func (w *Worker) Run(ctx context.Context) error {
 	// this stream — orders of magnitude faster than the heartbeat-tick
 	// dispatch model. Heartbeats still run for liveness and as a fallback
 	// when the stream is unavailable.
-	go w.runWatchCommands(ctx)
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		w.runWatchCommands(watchCtx)
+	}()
+	// Stop command admission and join the reader before deferred task shutdown
+	// closes shared transports. No pushed deployment can race after this join.
+	defer func() {
+		stopWatch()
+		<-watchDone
+	}()
 
 	// 5. Start heartbeat loop.
 	heartbeat := rpc.NewHeartbeatSender(
@@ -256,6 +268,7 @@ func (w *Worker) workerID() string {
 // Shutdown cancels running tasks and closes the transport session.
 func (w *Worker) Shutdown(_ context.Context) error {
 	w.mu.Lock()
+	w.stopping = true
 	for taskID, h := range w.tasks {
 		w.log.Info().Str("task_id", taskID).Msg("canceling task")
 		h.cancel()
@@ -301,8 +314,9 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 	// Idempotent: ignore if task already exists.
 	w.mu.RLock()
 	_, exists := w.tasks[cmd.TaskID]
+	stopping := w.stopping
 	w.mu.RUnlock()
-	if exists {
+	if exists || stopping {
 		w.log.Debug().Str("task_id", cmd.TaskID).Msg("ignoring duplicate DeployTask")
 		return
 	}
@@ -317,6 +331,13 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 
 	taskCtx, cancel := context.WithCancel(context.Background())
 	w.mu.Lock()
+	// Heartbeat and push delivery may both deploy the same task. Admission
+	// must be atomic with duplicate detection and worker shutdown.
+	if _, exists := w.tasks[cmd.TaskID]; exists || w.stopping {
+		w.mu.Unlock()
+		cancel()
+		return
+	}
 	w.tasks[cmd.TaskID] = &taskHandle{cancel: cancel}
 	w.mu.Unlock()
 
