@@ -11,8 +11,8 @@ sent; implementing batching is explicitly deferred by this TRD.
 | --- | --- |
 | Message formats (§3.1–3.10) | Added StreamHeader 0x00 and SessionHandshake 0x07 codecs and round trips. Finalize required/optional field conventions and boundary validation across all messages. |
 | Session negotiation (§2.2, §3.10) | Mux negotiates before publication and data opening. Compatible/rolling/incompatible versions, feature intersection, timeout, early data rejection, and session reuse pass. Same-peer dialing is coalesced with cancellable waiters; unrelated peers make progress independently. Reciprocal worker connection reuse remains. |
-| Stream routing (§2.2, §3.8) | Sender-only headers, first-frame deadline, RegisterTask/AcceptTask routing and unknown-target rejection pass. Worker task descriptors/executor still need distributed input/output wiring; the current executor requires a local source and creates TaskSlot with no network streams. |
-| Inline ordering (§5 decision 3) | Pending final audit: records/barriers/watermarks remain ordered on data streams and reach task inputs in order. |
+| Stream routing (§2.2, §3.8) | Sender-only headers, first-frame deadline, RegisterTask/AcceptTask routing and unknown-target rejection pass. Worker descriptors now wire network inputs/outputs into TaskSlot, with explicit task IDs and partition indices. Workers listen on and advertise an actual data endpoint. Deployment ordering, distributed completion notifications, and broader multi-worker acceptance remain to audit. |
+| Inline ordering (§5 decision 3) | A single output dispatcher distributes records and broadcasts barriers/watermarks/EOP in order to every output. Exact two-partition sequence and terminal-drain tests pass. Final multi-input/runtime ordering audit remains. |
 | Control/backpressure (§3.7, §6.3) | One retained control stream dispatches pause/resume by Yamux ID. Writes pause at 80% and resume at 20%; engine input read-ahead reports occupancy. TCP and TLS tests demonstrate blocked writes and recovery. Still verify control progress under a fully exhausted data window and runtime buffer saturation end to end. |
 | Errors and lifecycle (§6) | Partial-frame completion deadlines preserve idle streams; EOP closes output and rejects later writes; error counters reset independently; corrupt frames avoid payload-copy allocation. Corruption diagnostics now include stream-relative offsets, bounded 64-byte previews and both CRCs; invalid lengths log the remote address and reported length. Streams suppress barriers at or below authoritative global completion or a restored checkpoint. Input readers recheck after queueing; distributed completion notifications still need worker wiring. |
 | TLS (§7) | Existing TLS/mTLS positive and negative tests pass with session negotiation; TLS all-message test now exercises actual control-stream pause/resume. |
@@ -126,3 +126,33 @@ handshaking and verifies both cancellation and independent peer progress.
 Validation: `go test -race -tags=integration -timeout 5m ./...` passes; the Mux
 concurrency/cancellation regressions pass five repetitions; golangci-lint v2.5.0
 reports zero issues. Full WIP-01 completion is still pending the remaining gates.
+
+### Goal continuation: network-backed task execution
+
+Workers now open a data Mux before registering and advertise its bound endpoint.
+TaskDescriptor upstream/downstream channels accept explicit task IDs and input
+partition indices; the executor opens declared outputs and places accepted inputs
+in descriptor order, rejecting unexpected or duplicate sources. Non-source tasks
+can execute from these network inputs. Cancellation/error cleanup closes streams
+and unregisters the receiving task. A new registration generation cannot consume
+streams queued for an earlier deployment with the same task ID.
+
+The engine previously let output writers compete for a shared channel, delivering
+control frames to only one partition. The output dispatcher now distributes data
+round-robin and broadcasts ordered controls to all outputs. Successful source
+completion drains output despite application backpressure; failure/external
+cancellation interrupts it. A transport EOF without EOP fails the input rather
+than leaving its operator chain waiting indefinitely.
+
+Evidence: `TestTaskExecutorProcessesAcrossWorkerStreams` sends 2048 records
+through distinct worker transports, a source task and a network-backed map/sink
+task; it verifies count, single operator initialization/closure, terminal delivery
+and removal of routing state. Ten race-enabled repetitions pass. Additional tests
+verify exact record/control sequences on two partitions, stale registration
+isolation, and premature EOF. `go test -race -tags=integration -timeout 5m ./...`
+passes, and golangci-lint v2.5.0 reports zero issues.
+
+This proves explicit-descriptor network execution, not automatic cross-worker
+JobGraph planning: the coordinator's existing planner still produces fused local
+chains and rejects shuffle edges. Remaining completion work must not treat this
+as evidence of a full distributed deployment/recovery acceptance run.

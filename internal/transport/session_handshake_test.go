@@ -404,3 +404,52 @@ func TestDialWaiterCancellationDoesNotBlockOtherPeers(t *testing.T) {
 		t.Fatal("initiating dial did not cancel")
 	}
 }
+
+func TestTaskUnregisterClosesPendingGeneration(t *testing.T) {
+	server, client, addr := newTestMuxPair(t)
+	const task = "restarting-task"
+	if err := server.RegisterTask(task); err != nil {
+		t.Fatal(err)
+	}
+	server.mu.RLock()
+	previous := server.tasks[task]
+	server.mu.RUnlock()
+	old, err := client.Dial(context.Background(), addr, protocol.StreamHeaderMsg{SourceTaskID: "old-source", TargetTaskID: task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	deadline := time.Now().Add(time.Second)
+	for len(previous.streams) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("old stream was not queued")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	server.UnregisterTask(task)
+	if _, err := server.AcceptTask(context.Background(), task); err == nil {
+		t.Fatal("unregistered task accepted a stream")
+	}
+	if err := server.RegisterTask(task); err != nil {
+		t.Fatal(err)
+	}
+	current, err := client.Dial(context.Background(), addr, protocol.StreamHeaderMsg{SourceTaskID: "new-source", TargetTaskID: task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	input, err := server.AcceptTask(ctx, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	header, _ := input.Header()
+	if header.SourceTaskID != "new-source" {
+		t.Fatalf("old generation leaked: %+v", header)
+	}
+	if err := previous.enqueue(ctx, input); err == nil {
+		t.Fatal("closed generation accepted late stream")
+	}
+}

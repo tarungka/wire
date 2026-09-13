@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"io"
 	"testing"
 	"time"
 
@@ -413,5 +414,19 @@ func TestInputReader_ActivityRecording(t *testing.T) {
 	// Activity should have been recorded.
 	if tracker.lastActivityNs[0].Load() != 200 {
 		t.Error("expected activity to be recorded after data record")
+	}
+}
+
+func TestInputReaderUnexpectedEOFDoesNotLeaveTaskWaiting(t *testing.T) {
+	writer, reader := newTestStreamPair(t)
+	defer reader.Close()
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := runInputReader(ctx, 0, reader, make(chan Event, 1), make(chan ControlMsg, 1), NewBarrierAligner(1, 1), testTracker(1), testLogger())
+	if err != io.ErrUnexpectedEOF {
+		t.Fatalf("closed input without EndOfPartition: %v", err)
 	}
 }

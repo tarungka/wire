@@ -51,3 +51,31 @@ func writeOutputMsgContext(ctx context.Context, stream *transport.FrameStream, m
 		return nil
 	}
 }
+
+// runOutputRouter gives one goroutine ownership of partition ordering. Data
+// records are distributed round-robin; barriers, watermarks, and termination
+// are broadcast after all preceding records have been written. Sharing a
+// receive channel among writers would deliver each control frame to only one
+// partition and could reorder it relative to another writer's pending record.
+func runOutputRouter(ctx context.Context, streams []*transport.FrameStream, outputCh <-chan OutputMsg, log zerolog.Logger) error {
+	next := 0
+	for msg := range outputCh {
+		if len(streams) == 0 {
+			continue
+		}
+		if msg.Type == OutputData {
+			if err := writeOutputMsgContext(ctx, streams[next], msg); err != nil {
+				return err
+			}
+			next = (next + 1) % len(streams)
+			continue
+		}
+		for index, stream := range streams {
+			if err := writeOutputMsgContext(ctx, stream, msg); err != nil {
+				log.Error().Err(err).Int("output", index).Msg("failed to broadcast output control message")
+				return err
+			}
+		}
+	}
+	return nil
+}

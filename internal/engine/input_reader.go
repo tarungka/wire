@@ -83,8 +83,11 @@ func runInputReader(
 		}
 
 		if result.err != nil {
-			if result.err == io.EOF || ctx.Err() != nil {
+			if ctx.Err() != nil {
 				return nil
+			}
+			if result.err == io.EOF {
+				return io.ErrUnexpectedEOF
 			}
 			log.Error().Err(result.err).Int("input", inputIndex).Msg("input reader error")
 			return result.err

@@ -9,13 +9,15 @@ import (
 
 	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/rpc"
+	"github.com/tarungka/wire/internal/transport"
 )
 
 // taskExecutor instantiates operators from a TaskDescriptor and runs them
 // through the shared TaskSlot runtime. Operators are resolved by name from
 // the worker registry rather than inline SDK function values.
 type taskExecutor struct {
-	reg *Registry
+	reg  *Registry
+	data *transport.Mux
 }
 
 func newTaskExecutor(reg *Registry) *taskExecutor {
@@ -24,7 +26,7 @@ func newTaskExecutor(reg *Registry) *taskExecutor {
 
 // run builds the operator chain described by desc.OperatorChain, wires
 // channels, and drives execution until ctx is cancelled or the source ends.
-// Phase 1: single-input linear pipeline, no shuffle, no state, no checkpoints.
+// Explicit upstream/downstream descriptors connect separate worker tasks.
 func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor, log zerolog.Logger, onRunning func()) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -107,13 +109,21 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		errorConfigs = append(errorConfigs, cfg)
 	}
 
-	if sourceOp == nil {
+	if sourceOp == nil && len(desc.Upstream) == 0 {
 		return fmt.Errorf("worker: task %q has no source in OperatorChain", taskID)
 	}
 
+	if sourceOp != nil && len(desc.Upstream) > 0 {
+		return fmt.Errorf("worker: task cannot combine a local source with network inputs")
+	}
+	inputs, outputs, cleanup, err := connectTaskStreams(ctx, te.data, jobID, taskID, desc)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	config := engine.DefaultTaskSlotConfig()
 	config.ErrorConfigs = errorConfigs
-	slot := engine.NewTaskSlot(config, nil, nil, operators, sourceOp)
+	slot := engine.NewTaskSlot(config, inputs, outputs, operators, sourceOp)
 	slot.TaskID = taskID
 	slot.TaskIndex = int(desc.SubtaskIndex)
 	slot.OnRunning = onRunning
