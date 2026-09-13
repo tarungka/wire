@@ -139,7 +139,7 @@ func (c *Coordinator) runSingleNode(ctx context.Context) error {
 	}
 
 	c.log.Info().Uint64("epoch", c.epoch).Msg("leader (single-node)")
-	return c.serve(ctx)
+	return c.serve(c.leaderCtx)
 }
 
 func (c *Coordinator) runMultiNode(ctx context.Context) error {
@@ -284,7 +284,9 @@ func (c *Coordinator) recover() error {
 
 // serve runs the main coordinator service loop: heartbeat flushing and scheduling.
 func (c *Coordinator) serve(ctx context.Context) error {
-	go c.runScheduler(ctx)
+	schedulerDone := make(chan struct{})
+	go func() { defer close(schedulerDone); c.runScheduler(ctx) }()
+	defer func() { <-schedulerDone }()
 
 	// Register the by-status job gauge. The callback is invoked once
 	// per metric scrape; safe to leave registered for the lifetime of
