@@ -178,12 +178,14 @@ func (r RestartStrategyType) String() string {
 type CommandType uint8
 
 const (
-	CommandTypeNone         CommandType = 0
-	CommandTypeCancelJob    CommandType = 1
-	CommandTypeDeployTask   CommandType = 2
-	CommandTypeCancelTask   CommandType = 3
-	CommandTypeTakeSnapshot CommandType = 4
-	CommandTypeUpdateConfig CommandType = 5
+	CommandTypeNone             CommandType = 0
+	CommandTypeCancelJob        CommandType = 1
+	CommandTypeDeployTask       CommandType = 2
+	CommandTypeCancelTask       CommandType = 3
+	CommandTypeTakeSnapshot     CommandType = 4
+	CommandTypeUpdateConfig     CommandType = 5
+	CommandTypeAbortCheckpoint  CommandType = 6
+	CommandTypeCommitCheckpoint CommandType = 7
 )
 
 // String returns the human-readable name of the command type.
@@ -199,6 +201,10 @@ func (c CommandType) String() string {
 		return "CancelTask"
 	case CommandTypeTakeSnapshot:
 		return "TakeSnapshot"
+	case CommandTypeAbortCheckpoint:
+		return "AbortCheckpoint"
+	case CommandTypeCommitCheckpoint:
+		return "CommitCheckpoint"
 	case CommandTypeUpdateConfig:
 		return "UpdateConfig"
 	default:
@@ -280,15 +286,25 @@ type EdgeDescriptor struct {
 // fuse and execute locally. For Phase 1 (linear pipelines, no shuffle), this
 // is the full source→ops→sink chain. In later phases, it's the slice of
 // operators between two shuffle boundaries.
+type CheckpointRestoreDescriptor struct {
+	CheckpointID   uint64 `codec:"cid"`
+	EpochID        uint64 `codec:"eid"`
+	ReplicaAddress string `codec:"addr"`
+}
+
 type TaskDescriptor struct {
-	TaskID        string                  `codec:"tid"`
-	OperatorID    string                  `codec:"oid"`
-	SubtaskIndex  int32                   `codec:"si"`
-	Parallelism   int32                   `codec:"p"`
-	KeyGroup      KeyGroupRange           `codec:"kg"`
-	OperatorChain []OperatorDescriptor    `codec:"oc,omitempty"`
-	Upstream      []UpstreamChannelInfo   `codec:"up,omitempty"`
-	Downstream    []DownstreamChannelInfo `codec:"dn,omitempty"`
+	AttemptID                string                       `codec:"attempt_id,omitempty"`
+	RestoreCheckpoint        *CheckpointRestoreDescriptor `codec:"restore,omitempty"`
+	CheckpointReplicaAddress string                       `codec:"checkpoint_replica_addr,omitempty"`
+	EpochID                  uint64                       `codec:"eid,omitempty"`
+	TaskID                   string                       `codec:"tid"`
+	OperatorID               string                       `codec:"oid"`
+	SubtaskIndex             int32                        `codec:"si"`
+	Parallelism              int32                        `codec:"p"`
+	KeyGroup                 KeyGroupRange                `codec:"kg"`
+	OperatorChain            []OperatorDescriptor         `codec:"oc,omitempty"`
+	Upstream                 []UpstreamChannelInfo        `codec:"up,omitempty"`
+	Downstream               []DownstreamChannelInfo      `codec:"dn,omitempty"`
 }
 
 // KeyGroupRange defines the key-group range assigned to a task.
@@ -355,12 +371,14 @@ type TaskDeploymentStatus struct {
 
 // UpdateTaskStatusRequest is sent from Worker to Coordinator to report a task's status change.
 type UpdateTaskStatusRequest struct {
-	JobID   string           `codec:"jid"`
-	TaskID  string           `codec:"tid"`
-	Status  TaskStatus       `codec:"st"`
-	EpochID uint64           `codec:"eid"`
-	Metrics *TaskMetrics     `codec:"met,omitempty"`
-	Failure *TaskFailureInfo `codec:"fi,omitempty"`
+	AttemptID string           `codec:"attempt_id,omitempty"`
+	WorkerID  string           `codec:"wid"`
+	JobID     string           `codec:"jid"`
+	TaskID    string           `codec:"tid"`
+	Status    TaskStatus       `codec:"st"`
+	EpochID   uint64           `codec:"eid"`
+	Metrics   *TaskMetrics     `codec:"met,omitempty"`
+	Failure   *TaskFailureInfo `codec:"fi,omitempty"`
 }
 
 // UpdateTaskStatusResponse is the Coordinator's reply.
@@ -432,6 +450,8 @@ type CheckpointTriggerStatus struct {
 
 // AcknowledgeCheckpointRequest is sent from Worker to Coordinator when a task completes its checkpoint.
 type AcknowledgeCheckpointRequest struct {
+	Failure      string                `codec:"failure,omitempty"`
+	WorkerID     string                `codec:"wid"`
 	JobID        string                `codec:"jid"`
 	TaskID       string                `codec:"tid"`
 	CheckpointID uint64                `codec:"cid"`
@@ -530,11 +550,12 @@ type RunningTaskSummary struct {
 
 // RegisterWorkerRequest is sent from Worker to Coordinator to register or re-register.
 type RegisterWorkerRequest struct {
-	WorkerID         string   `codec:"wid"`
-	Address          string   `codec:"addr"`
-	TaskSlotsTotal   int      `codec:"tst"`
-	HighestSeenEpoch uint64   `codec:"hse"`
-	RunningTasks     []string `codec:"rt,omitempty"`
+	CheckpointAddress string   `codec:"checkpoint_addr,omitempty"`
+	WorkerID          string   `codec:"wid"`
+	Address           string   `codec:"addr"`
+	TaskSlotsTotal    int      `codec:"tst"`
+	HighestSeenEpoch  uint64   `codec:"hse"`
+	RunningTasks      []string `codec:"rt,omitempty"`
 }
 
 // RegisterWorkerResponse is the Coordinator's reply to RegisterWorker.
@@ -557,8 +578,10 @@ type WatchCommandsRequest struct {
 
 // WorkerCommand carries a command from Coordinator to Worker via heartbeat.
 type WorkerCommand struct {
-	Type   CommandType `codec:"t"`
-	JobID  string      `codec:"jid,omitempty"`
-	TaskID string      `codec:"tid,omitempty"`
-	Data   []byte      `codec:"d,omitempty"`
+	AttemptID string      `codec:"attempt_id,omitempty"`
+	EpochID   uint64      `codec:"eid,omitempty"`
+	Type      CommandType `codec:"t"`
+	JobID     string      `codec:"jid,omitempty"`
+	TaskID    string      `codec:"tid,omitempty"`
+	Data      []byte      `codec:"d,omitempty"`
 }

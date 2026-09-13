@@ -43,14 +43,16 @@ const (
 	CtrlEndOfPartition                      // An input has reached end of partition.
 	CtrlCommitCheckpoint                    // Coordinator confirms global checkpoint completion; sink should Commit.
 	CtrlAbortTransaction                    // Coordinator instructs sink to abort in-flight transaction.
+	CtrlDrainInputs                         // Intake is stopping; release alignment before final shutdown.
 )
 
 // ControlMsg carries control signals from input readers to the operator chain.
 type ControlMsg struct {
-	Type         ControlType
-	InputIndex   int
-	CheckpointID uint64
-	EpochID      uint64
+	sourceBoundary *sourceCheckpointBoundary
+	Type           ControlType
+	InputIndex     int
+	CheckpointID   uint64
+	EpochID        uint64
 }
 
 // OutputType identifies the kind of output message.

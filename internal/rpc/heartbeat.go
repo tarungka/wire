@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -287,6 +288,7 @@ type HeartbeatSender struct {
 	buildRequestFn      func() *HeartbeatRequest
 	handleCommandsFn    func([]WorkerCommand)
 	onContactLost       func()
+	onNewEpoch          func(uint64)
 	metrics             HeartbeatMetrics
 	mu                  sync.Mutex
 	consecutiveFailures int
@@ -307,6 +309,12 @@ func WithSenderMetrics(m HeartbeatMetrics) HeartbeatSenderOption {
 // The callback re-arms after a successful heartbeat.
 func WithContactLostCallback(fn func()) HeartbeatSenderOption {
 	return func(hs *HeartbeatSender) { hs.onContactLost = fn }
+}
+
+// WithNewEpochCallback reports a newer coordinator fencing token before any
+// commands are dispatched. The owner must stop executions from the old epoch.
+func WithNewEpochCallback(fn func(uint64)) HeartbeatSenderOption {
+	return func(hs *HeartbeatSender) { hs.onNewEpoch = fn }
 }
 
 // NewHeartbeatSender creates a sender that periodically sends heartbeats via the client.
@@ -352,6 +360,15 @@ func (hs *HeartbeatSender) sendHeartbeat(ctx context.Context) {
 
 	start := time.Now()
 	resp, err := hs.client.Heartbeat(ctx, req)
+	if err == nil && resp.EpochID > req.EpochID {
+		if hs.onNewEpoch != nil {
+			hs.onNewEpoch(resp.EpochID)
+		}
+		err = errors.New("coordinator epoch changed")
+	}
+	if err == nil && !resp.Accepted {
+		err = errors.New("coordinator rejected heartbeat")
+	}
 	if err != nil {
 		hs.metrics.IncFailuresTotal()
 		hs.log.Warn().Err(err).Msg("heartbeat failed")

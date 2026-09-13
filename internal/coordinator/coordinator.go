@@ -27,9 +27,13 @@ type CoordinatorConfig struct {
 	ListenAddr             string
 	HeartbeatFlushInterval time.Duration
 	WorkerTimeout          time.Duration
+	CheckpointTimeout      time.Duration
 }
 
 func (c *CoordinatorConfig) resolve() {
+	if c.CheckpointTimeout <= 0 {
+		c.CheckpointTimeout = 10 * time.Minute
+	}
 	if c.HeartbeatFlushInterval <= 0 {
 		c.HeartbeatFlushInterval = DefaultHeartbeatFlushInterval
 	}
@@ -52,8 +56,9 @@ type Coordinator struct {
 	log      zerolog.Logger
 
 	// In-memory caches (write-through to store).
-	jobs    map[string]*JobMeta
-	workers map[string]*WorkerMeta
+	jobs              map[string]*JobMeta
+	workers           map[string]*WorkerMeta
+	activeCheckpoints map[string]CheckpointMeta
 
 	// activeJobNames maps a non-terminal job's name to its ID, kept in
 	// sync with c.jobs. Provides O(1) duplicate-name detection in
@@ -134,7 +139,7 @@ func (c *Coordinator) runSingleNode(ctx context.Context) error {
 	}
 
 	c.log.Info().Uint64("epoch", c.epoch).Msg("leader (single-node)")
-	return c.serve(ctx)
+	return c.serve(c.leaderCtx)
 }
 
 func (c *Coordinator) runMultiNode(ctx context.Context) error {
@@ -279,7 +284,9 @@ func (c *Coordinator) recover() error {
 
 // serve runs the main coordinator service loop: heartbeat flushing and scheduling.
 func (c *Coordinator) serve(ctx context.Context) error {
-	go c.runScheduler(ctx)
+	schedulerDone := make(chan struct{})
+	go func() { defer close(schedulerDone); c.runScheduler(ctx) }()
+	defer func() { <-schedulerDone }()
 
 	// Register the by-status job gauge. The callback is invoked once
 	// per metric scrape; safe to leave registered for the lifetime of

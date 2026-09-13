@@ -16,8 +16,9 @@ import (
 // through the shared TaskSlot runtime. Operators are resolved by name from
 // the worker registry rather than inline SDK function values.
 type taskExecutor struct {
-	reg  *Registry
-	data *transport.Mux
+	taskConfig *engine.TaskSlotConfig
+	reg        *Registry
+	data       *transport.Mux
 }
 
 func newTaskExecutor(reg *Registry) *taskExecutor {
@@ -27,7 +28,7 @@ func newTaskExecutor(reg *Registry) *taskExecutor {
 // run builds the operator chain described by desc.OperatorChain, wires
 // channels, and drives execution until ctx is cancelled or the source ends.
 // Explicit upstream/downstream descriptors connect separate worker tasks.
-func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor, log zerolog.Logger, onRunning func()) (retErr error) {
+func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor, log zerolog.Logger, onRunning func(), checkpoints ...*taskCheckpointRuntime) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = &engine.OperatorPanicError{Value: r, Stack: string(debug.Stack())}
@@ -122,10 +123,23 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 	}
 	defer cleanup()
 	config := engine.DefaultTaskSlotConfig()
+	if te.taskConfig != nil {
+		config = *te.taskConfig
+	}
 	config.ErrorConfigs = errorConfigs
 	slot := engine.NewTaskSlot(config, inputs, outputs, operators, sourceOp)
 	slot.TaskID = taskID
 	slot.TaskIndex = int(desc.SubtaskIndex)
 	slot.OnRunning = onRunning
+	if len(checkpoints) > 0 && checkpoints[0] != nil {
+		checkpoint := checkpoints[0]
+		slot.RestoreCheckpoint = checkpoint.restore
+		slot.CheckpointReplicator = checkpoint.replicator
+		slot.CheckpointReport = checkpoint.report
+		slot.CheckpointDecisions = checkpoint.decisions
+		if sourceOp != nil && checkpoint.replicator != nil {
+			slot.CheckpointTriggers = checkpoint.triggers
+		}
+	}
 	return slot.Run(ctx)
 }

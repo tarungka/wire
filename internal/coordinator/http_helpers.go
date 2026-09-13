@@ -88,6 +88,8 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 func writeJobError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, ErrCheckpointInProgress):
+		writeError(w, http.StatusConflict, "CHECKPOINT_IN_PROGRESS", err.Error())
 	case errors.Is(err, ErrJobNotFound):
 		writeError(w, http.StatusNotFound, "JOB_NOT_FOUND", err.Error())
 	case errors.Is(err, ErrInvalidTransition):

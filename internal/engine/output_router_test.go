@@ -83,3 +83,47 @@ func TestOutputRouterBroadcastsOrderedControlFrames(t *testing.T) {
 		t.Fatal("router did not drain")
 	}
 }
+
+func TestOutputWritersProgressIndependentlyAndJoinOnCancel(t *testing.T) {
+	a, ar := newTestStreamPair(t)
+	b, br := newTestStreamPair(t)
+	defer a.Close()
+	defer ar.Close()
+	defer b.Close()
+	defer br.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	messages := make(chan OutputMsg, 2)
+	messages <- OutputMsg{Type: OutputData, Event: Event{Value: make([]byte, 2*1024*1024)}}
+	messages <- OutputMsg{Type: OutputData, Event: Event{Value: []byte("other partition")}}
+	done := make(chan error, 1)
+	go func() { done <- runOutputRouter(ctx, []*transport.FrameStream{a, b}, messages, testLogger()) }()
+	received := make(chan error, 1)
+	go func() {
+		message, err := br.ReadMessage()
+		if err == nil {
+			record, ok := message.(*protocol.DataRecordMsg)
+			if !ok || string(record.Value) != "other partition" {
+				err = fmt.Errorf("unexpected record: %T", message)
+			}
+		}
+		received <- err
+	}()
+	select {
+	case err := <-received:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("one blocked stream prevented another writer from progressing")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled blocked write reported success")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("writers did not join after cancellation")
+	}
+}

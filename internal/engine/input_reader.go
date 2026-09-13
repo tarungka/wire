@@ -49,10 +49,29 @@ func runInputReaderWithReport(
 	log zerolog.Logger,
 	reportUsage func(int, int) error,
 ) error {
+	return runInputReaderWithContexts(ctx, ctx, inputIndex, stream, eventCh, controlCh, aligner, tracker, log, reportUsage)
+}
+
+// runInputReaderWithContexts stops network intake independently of dispatching
+// already-read messages. The dispatch context bounds graceful draining.
+func runInputReaderWithContexts(
+	intakeCtx context.Context,
+	ctx context.Context,
+	inputIndex int,
+	stream *transport.FrameStream,
+	eventCh chan<- Event,
+	controlCh chan<- ControlMsg,
+	aligner *BarrierAligner,
+	tracker *InputWatermarkTracker,
+	log zerolog.Logger,
+	reportUsage func(int, int) error,
+) error {
+	ctx, cancelDispatch := context.WithCancel(ctx)
+	defer cancelDispatch()
 	// Keep a bounded read-ahead queue. Count the producer's in-flight send
 	// as an occupied slot; serialized reports sample the latest count, preventing
 	// stale pause signals from arriving after the queue has drained.
-	readerCtx, cancelReader := context.WithCancel(ctx)
+	readerCtx, cancelReader := context.WithCancel(intakeCtx)
 	defer cancelReader()
 	const queueCapacity = 4
 	msgCh := make(chan readResult, queueCapacity)
@@ -68,9 +87,18 @@ func runInputReaderWithReport(
 		return reportUsage(int(occupancy.Load()), queueCapacity+1)
 	}
 	readerDone := make(chan struct{})
-	defer func() { cancelReader(); _ = stream.Close(); <-readerDone }()
+	closeDone := make(chan struct{})
+	stopClose := context.AfterFunc(readerCtx, func() { defer taskGoroutineStarted(ctx)(); _ = stream.Close(); close(closeDone) })
+	defer func() {
+		if !stopClose() {
+			<-closeDone
+		}
+	}()
+	defer func() { cancelReader(); cancelDispatch(); _ = stream.Close(); <-readerDone }()
 	go func() {
+		defer taskGoroutineStarted(ctx)()
 		defer close(readerDone)
+		defer close(msgCh)
 		for {
 			select {
 			case slots <- struct{}{}:
@@ -78,13 +106,16 @@ func runInputReaderWithReport(
 				return
 			}
 			msg, err := stream.ReadMessage()
+			if err != nil && readerCtx.Err() != nil {
+				return
+			}
 			occupancy.Add(1)
 			if reportErr := report(); reportErr != nil {
 				log.Warn().Err(reportErr).Int("input", inputIndex).Msg("input flow-control report failed")
 			}
 			select {
 			case msgCh <- readResult{msg, err}:
-			case <-readerCtx.Done():
+			case <-ctx.Done():
 				return
 			}
 			if err != nil {
@@ -98,7 +129,11 @@ func runInputReaderWithReport(
 		select {
 		case <-ctx.Done():
 			return nil
-		case result = <-msgCh:
+		case received, ok := <-msgCh:
+			if !ok {
+				return nil
+			}
+			result = received
 			occupancy.Add(-1)
 			<-slots
 			if err := report(); err != nil {

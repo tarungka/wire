@@ -2,6 +2,8 @@ package coordinator
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"time"
@@ -34,6 +36,7 @@ func (c *Coordinator) runScheduler(ctx context.Context) {
 			c.log.Info().Msg("scheduler stopping")
 			return
 		case <-ticker.C:
+			c.expireCheckpoints(time.Now())
 			c.scheduleTick(ctx)
 		case <-c.schedulerKick:
 			// Coalesce a short burst of submissions into one tick. The
@@ -80,7 +83,7 @@ func (c *Coordinator) scheduleTick(ctx context.Context) {
 	c.mu.RLock()
 	var createdJobs []*JobMeta
 	for _, job := range c.jobs {
-		if job.Status == JobCreated {
+		if job.Status == JobCreated || job.Status == JobFailing {
 			createdJobs = append(createdJobs, job)
 		}
 	}
@@ -89,6 +92,12 @@ func (c *Coordinator) scheduleTick(ctx context.Context) {
 	for _, job := range createdJobs {
 		if ctx.Err() != nil {
 			return
+		}
+		c.mu.RLock()
+		failing := job.Status == JobFailing
+		c.mu.RUnlock()
+		if failing && !c.prepareTaskRestart(job) {
+			continue
 		}
 		c.scheduleJob(job)
 	}
@@ -118,8 +127,14 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		return
 	}
 
+	var attempt [16]byte
+	if _, err := rand.Read(attempt[:]); err != nil {
+		c.log.Error().Err(err).Msg("cannot generate deployment attempt identity")
+		return
+	}
 	// Build TaskAssignmentMap.
 	tam := TaskAssignmentMap{
+		AttemptID:   hex.EncodeToString(attempt[:]),
 		JobID:       job.ID,
 		Assignments: make(map[string]string, len(tasks)),
 	}
@@ -132,7 +147,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	// Transition CREATED → DEPLOYING and persist assignments under Lock.
 	c.mu.Lock()
 	// Re-check status under lock (another tick may have grabbed it).
-	if job.Status != JobCreated || !c.assignmentsLiveLocked(assignments, time.Now()) {
+	if (job.Status != JobCreated && job.Status != JobFailing) || !c.assignmentsLiveLocked(assignments, time.Now()) {
 		c.mu.Unlock()
 		return
 	}
@@ -143,10 +158,30 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		return
 	}
 
+	if err := c.attachCheckpointRestoreLocked(job, assignments); err != nil {
+		c.mu.Unlock()
+		c.log.Error().Err(err).Str("job_id", job.ID).Msg("cannot deploy checkpoint recovery")
+		return
+	}
+
 	// Commit the state and assignments together before publishing DEPLOYING.
+	tam.EpochID = c.epoch
+	tam.Replicas = make(map[string]string)
+	for workerID, workerTasks := range assignments {
+		peer := c.checkpointPeerLocked(workerID, time.Now())
+		for i := range workerTasks {
+			workerTasks[i].CheckpointReplicaAddress = peer
+			if peer != "" {
+				tam.Replicas[workerTasks[i].TaskID] = peer
+			}
+		}
+	}
 	// One synchronous batch prevents both a second fsync under c.mu and a
 	// partially persisted deployment if writing assignments fails.
 	next := *job
+	if job.Status == JobFailing {
+		next.RestartCount++
+	}
 	next.Status = JobDeploying
 	next.UpdatedAt = time.Now().UTC()
 	jobData, err := protocol.EncodeMsgPack(&next)
@@ -170,9 +205,18 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		return
 	}
 	*job = next
+	for _, workerTasks := range assignments {
+		for _, task := range workerTasks {
+			delete(c.taskStatuses, task.TaskID)
+		}
+	}
 
 	// Update worker metadata: add running tasks and decrement available slots.
 	for workerID, wTasks := range assignments {
+		for i := range wTasks {
+			wTasks[i].EpochID = c.epoch
+			wTasks[i].AttemptID = tam.AttemptID
+		}
 		w, ok := c.workers[workerID]
 		if !ok {
 			continue
@@ -206,6 +250,26 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		Int("tasks", len(tasks)).
 		Int("workers", len(assignments)).
 		Msg("job scheduled")
+}
+
+// checkpointPeerLocked selects one live remote replica deterministically.
+// A missing endpoint leaves checkpoint replication unavailable for this task.
+func (c *Coordinator) checkpointPeerLocked(sourceID string, now time.Time) string {
+	source := c.workers[sourceID]
+	if source == nil || source.CheckpointAddress == "" {
+		return ""
+	}
+	var candidates []string
+	for id, worker := range c.workers {
+		if id != sourceID && worker.CheckpointAddress != "" && worker.CheckpointAddress != source.CheckpointAddress && !worker.LastHeartbeat.IsZero() && now.Sub(worker.LastHeartbeat) < c.config.WorkerTimeout {
+			candidates = append(candidates, id)
+		}
+	}
+	sort.Strings(candidates)
+	if len(candidates) == 0 {
+		return ""
+	}
+	return c.workers[candidates[0]].CheckpointAddress
 }
 
 // generateTaskDescriptors creates task descriptors for a job by decoding

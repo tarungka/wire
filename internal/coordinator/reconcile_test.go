@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/protocol"
+	"github.com/tarungka/wire/internal/rpc"
 )
 
 func newTestCoordinator(t *testing.T) (*Coordinator, *MemoryStore) {
@@ -25,13 +26,14 @@ func newTestCoordinator(t *testing.T) (*Coordinator, *MemoryStore) {
 }
 
 func TestRegisterWorker_Success(t *testing.T) {
-	c, _ := newTestCoordinator(t)
+	c, store := newTestCoordinator(t)
 
 	resp, err := c.RegisterWorker(RegisterWorkerRequest{
-		WorkerID:         "w1",
-		Address:          "localhost:5001",
-		TaskSlotsTotal:   4,
-		HighestSeenEpoch: 5,
+		CheckpointAddress: "localhost:5002",
+		WorkerID:          "w1",
+		Address:           "localhost:5001",
+		TaskSlotsTotal:    4,
+		HighestSeenEpoch:  5,
 	})
 	if err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
@@ -48,7 +50,21 @@ func TestRegisterWorker_Success(t *testing.T) {
 	if _, ok := c.workers["w1"]; !ok {
 		t.Fatal("worker not in cache")
 	}
+	if c.workers["w1"].CheckpointAddress != "localhost:5002" {
+		t.Fatal("replica endpoint lost during registration")
+	}
 	c.mu.RUnlock()
+	data, err := store.Get(WorkerMetaKey("w1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored WorkerMeta
+	if err := protocol.DecodeMsgPack(data, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.CheckpointAddress != "localhost:5002" {
+		t.Fatal("replica endpoint missing from persistent worker metadata")
+	}
 }
 
 func TestRegisterWorker_EpochFencing(t *testing.T) {
@@ -256,4 +272,32 @@ func TestRegisterWorker_ConcurrentRegistration(t *testing.T) {
 		t.Fatalf("expected %d workers, got %d", n, len(c.workers))
 	}
 	c.mu.RUnlock()
+}
+
+func TestReregisterFindsMissingTaskFromJobAssignment(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	job := &JobMeta{ID: "job", Status: JobRunning, LatestCheckpoint: 7}
+	c.jobs["job"] = job
+	assignment := TaskAssignmentMap{JobID: "job", EpochID: 5, AttemptID: "old", Assignments: map[string]string{"task": "worker"}}
+	if err := store.Set(JobAssignmentsKey("job"), encode(t, assignment)); err != nil {
+		t.Fatal(err)
+	}
+	response, err := c.RegisterWorker(RegisterWorkerRequest{WorkerID: "worker", TaskSlotsTotal: 1, HighestSeenEpoch: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.MissingTasks) != 1 || response.MissingTasks[0] != "task" || job.Status != JobFailing || c.taskStatuses["task"] != rpc.TaskStatusFailed {
+		t.Fatalf("missing task not connected to restart: %+v job %+v", response, job)
+	}
+	data, err := store.Get(JobMetaKey("job"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted JobMeta
+	if err := protocol.DecodeMsgPack(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != JobFailing || persisted.LatestCheckpoint != 7 {
+		t.Fatalf("restart state: %+v", persisted)
+	}
 }

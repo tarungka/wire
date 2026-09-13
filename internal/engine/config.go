@@ -58,24 +58,26 @@ type WatermarkConfig struct {
 
 // TaskSlotConfig holds configuration for a single TaskSlot execution.
 type TaskSlotConfig struct {
-	InputBufferSize     int                  // Per-input event channel capacity.
-	OutputBufferSize    int                  // Output channel capacity.
-	AlignmentBufferSize int                  // Per-input side buffer capacity for barrier alignment.
-	DrainTimeout        time.Duration        // Maximum time to drain channels on shutdown.
-	WatermarkInterval   time.Duration        // Watermark emission interval (source tasks only). Deprecated: use Watermark.EmitInterval.
-	Watermark           WatermarkConfig      // Watermark generation and propagation config.
-	Checkpoint          CheckpointConfig     // Checkpoint timeout and failure tracking config.
-	ErrorConfigs        []ErrorHandlerConfig // Per-operator error handling config. nil = legacy behavior (fail on any error).
-	DLQBufferSize       int                  // DLQ channel buffer capacity. 0 → DefaultDLQBufferSize.
+	CheckpointUploadConcurrency int                  // Zero uses one upload per task; pending completions count toward the bound.
+	InputBufferSize             int                  // Per-input event channel capacity.
+	OutputBufferSize            int                  // Output channel capacity.
+	AlignmentBufferSize         int                  // Per-input side buffer capacity for barrier alignment.
+	DrainTimeout                time.Duration        // Maximum time to drain channels on shutdown.
+	WatermarkInterval           time.Duration        // Watermark emission interval (source tasks only). Deprecated: use Watermark.EmitInterval.
+	Watermark                   WatermarkConfig      // Watermark generation and propagation config.
+	Checkpoint                  CheckpointConfig     // Checkpoint timeout and failure tracking config.
+	ErrorConfigs                []ErrorHandlerConfig // Per-operator error handling config. nil = legacy behavior (fail on any error).
+	DLQBufferSize               int                  // DLQ channel buffer capacity. 0 → DefaultDLQBufferSize.
 }
 
 // DefaultTaskSlotConfig returns a TaskSlotConfig populated with default values.
 func DefaultTaskSlotConfig() TaskSlotConfig {
 	return TaskSlotConfig{
-		InputBufferSize:     DefaultInputBufferSize,
-		OutputBufferSize:    DefaultOutputBufferSize,
-		AlignmentBufferSize: DefaultAlignmentBufferSize,
-		DrainTimeout:        DefaultDrainTimeout,
-		WatermarkInterval:   DefaultWatermarkInterval,
+		CheckpointUploadConcurrency: 1,
+		InputBufferSize:             DefaultInputBufferSize,
+		OutputBufferSize:            DefaultOutputBufferSize,
+		AlignmentBufferSize:         DefaultAlignmentBufferSize,
+		DrainTimeout:                DefaultDrainTimeout,
+		WatermarkInterval:           DefaultWatermarkInterval,
 	}
 }

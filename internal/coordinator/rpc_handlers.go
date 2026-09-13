@@ -3,6 +3,7 @@ package coordinator
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/yamux"
 
@@ -20,11 +21,12 @@ func (c *Coordinator) HandleRegisterWorker(_ context.Context, _ uint64, payload 
 
 	// Map RPC request to coordinator domain request.
 	coordReq := RegisterWorkerRequest{
-		WorkerID:         rpcReq.WorkerID,
-		Address:          rpcReq.Address,
-		TaskSlotsTotal:   rpcReq.TaskSlotsTotal,
-		HighestSeenEpoch: rpcReq.HighestSeenEpoch,
-		RunningTasks:     rpcReq.RunningTasks,
+		CheckpointAddress: rpcReq.CheckpointAddress,
+		WorkerID:          rpcReq.WorkerID,
+		Address:           rpcReq.Address,
+		TaskSlotsTotal:    rpcReq.TaskSlotsTotal,
+		HighestSeenEpoch:  rpcReq.HighestSeenEpoch,
+		RunningTasks:      rpcReq.RunningTasks,
 	}
 
 	resp, err := c.RegisterWorker(coordReq)
@@ -47,20 +49,21 @@ func (c *Coordinator) HandleHeartbeat(_ context.Context, _ uint64, payload []byt
 		return nil, rpc.NewRPCError(rpc.ErrCodeSerializationError, fmt.Sprintf("decode HeartbeatRequest: %v", err))
 	}
 
-	// Update in-memory worker state.
-	c.mu.RLock()
+	c.mu.Lock()
+	epoch := c.epoch
+	if c.state != StateLeader || !c.recovered || req.EpochID != epoch {
+		c.mu.Unlock()
+		return &rpc.HeartbeatResponse{Accepted: false, EpochID: epoch}, nil
+	}
 	w, ok := c.workers[req.WorkerID]
-	c.mu.RUnlock()
-
 	if !ok {
+		c.mu.Unlock()
 		return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, fmt.Sprintf("unknown worker: %s", req.WorkerID))
 	}
-
-	c.mu.Lock()
+	w.LastHeartbeat = time.Now().UTC()
 	if req.Load != nil {
-		w.TaskSlotsAvailable = w.TaskSlotsTotal - int(req.Load.ActiveSlots)
+		w.TaskSlotsAvailable = max(0, min(w.TaskSlotsTotal, w.TaskSlotsTotal-int(req.Load.ActiveSlots)))
 	}
-	epoch := c.epoch
 	c.mu.Unlock()
 
 	// Drain pending commands for this worker.
@@ -152,8 +155,27 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 	}
 
 	c.mu.Lock()
-	c.taskStatuses[req.TaskID] = req.Status
+	denied := &rpc.UpdateTaskStatusResponse{Accepted: false, Message: "task status does not match active assignment"}
+	if c.state != StateLeader || !c.recovered || req.EpochID != c.epoch || req.WorkerID == "" {
+		c.mu.Unlock()
+		return denied, nil
+	}
 	job, jobExists := c.jobs[req.JobID]
+	if !jobExists || job.Status.IsTerminal() {
+		c.mu.Unlock()
+		return denied, nil
+	}
+	assignmentData, err := c.store.Get(JobAssignmentsKey(req.JobID))
+	if err != nil {
+		c.mu.Unlock()
+		return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, err.Error())
+	}
+	var assignment TaskAssignmentMap
+	if err := protocol.DecodeMsgPack(assignmentData, &assignment); err != nil || assignment.JobID != req.JobID || assignment.Assignments[req.TaskID] != req.WorkerID || assignment.AttemptID != req.AttemptID {
+		c.mu.Unlock()
+		return denied, nil
+	}
+	c.taskStatuses[req.TaskID] = req.Status
 	c.mu.Unlock()
 
 	c.log.Info().
@@ -161,10 +183,6 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 		Str("job_id", req.JobID).
 		Str("status", req.Status.String()).
 		Msg("task status updated")
-
-	if !jobExists {
-		return &rpc.UpdateTaskStatusResponse{Accepted: true}, nil
-	}
 
 	// Check for job-level transitions based on task status.
 	switch req.Status {
@@ -219,4 +237,23 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 	}
 
 	return &rpc.UpdateTaskStatusResponse{Accepted: true}, nil
+}
+
+// HandleAcknowledgeCheckpoint accepts upload reports only through the persisted
+// checkpoint state machine; a decoded RPC alone never marks a task durable.
+func (c *Coordinator) HandleAcknowledgeCheckpoint(_ context.Context, _ uint64, payload []byte) (any, *rpc.RPCError) {
+	var request rpc.AcknowledgeCheckpointRequest
+	if err := rpc.DecodeRPCPayload(rpc.RPCFrame{Payload: payload}, &request); err != nil {
+		return nil, rpc.NewRPCError(rpc.ErrCodeSerializationError, fmt.Sprintf("decode checkpoint acknowledgement: %v", err))
+	}
+	var reportErr error
+	if request.Failure != "" {
+		reportErr = c.ReportCheckpointFailure(request)
+	} else {
+		reportErr = c.AcknowledgeCheckpoint(request)
+	}
+	if reportErr != nil {
+		return &rpc.AcknowledgeCheckpointResponse{Accepted: false, Message: reportErr.Error()}, nil
+	}
+	return &rpc.AcknowledgeCheckpointResponse{Accepted: true}, nil
 }

@@ -450,11 +450,25 @@ func (a *processAdapter) Close() error {
 	return err
 }
 func (a *processAdapter) Checkpoint(id uint64) ([]byte, error) {
-	handle, err := a.backend.Checkpoint(id)
+	handle, err := a.CheckpointState(id)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(handle)
+}
+
+func (a *processAdapter) CheckpointState(id uint64) (engine.SnapshotHandle, error) {
+	if a.backend == nil {
+		return engine.SnapshotHandle{}, engine.ErrBackendClosed
+	}
+	return a.backend.Checkpoint(id)
+}
+
+func (a *processAdapter) RestoreState(handle engine.SnapshotHandle) error {
+	if a.backend == nil {
+		return engine.ErrBackendClosed
+	}
+	return a.backend.Restore(handle)
 }
 func (a *processAdapter) FlatMap(_ context.Context, event engine.Event, emit func(engine.Event)) error {
 	pctx := &backendProcessContext{key: append([]byte(nil), event.Key...), backend: a.backend}
@@ -470,6 +484,7 @@ func (a *processAdapter) FlatMap(_ context.Context, event engine.Event, emit fun
 
 // Compile-time check.
 var _ engine.FlatMapOperator = (*processAdapter)(nil)
+var _ engine.StateHandleOperator = (*processAdapter)(nil)
 
 // splitStages splits the sorted nodes into stages, breaking at shuffle boundaries.
 func (ex *embeddedExecutor) splitStages(sorted []*StreamNode, graph *StreamGraph) [][]*StreamNode {

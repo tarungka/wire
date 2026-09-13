@@ -12,6 +12,22 @@ type Operator interface {
 	Checkpoint(checkpointID uint64) ([]byte, error)
 }
 
+// StateHandleOperator exposes backend snapshot identity for artifact replication.
+// CheckpointState replaces Checkpoint during a capture; callers must not invoke
+// both for the same boundary. RestoreState runs after Open and before processing.
+type StateHandleOperator interface {
+	Operator
+	CheckpointState(checkpointID uint64) (SnapshotHandle, error)
+	RestoreState(SnapshotHandle) error
+}
+
+// CheckpointRestorer restores opaque bytes returned by Operator.Checkpoint.
+// The runtime invokes it after Open and before processing. Typed backend
+// handles use StateHandleOperator.RestoreState instead.
+type CheckpointRestorer interface {
+	RestoreCheckpoint([]byte) error
+}
+
 // MapOperator transforms each input event into exactly one output event.
 type MapOperator interface {
 	Operator

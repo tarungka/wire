@@ -122,12 +122,18 @@ type JobMeta struct {
 
 // TaskAssignmentMap maps task IDs to the worker IDs they are assigned to.
 type TaskAssignmentMap struct {
+	EpochID     uint64            `codec:"eid,omitempty"`
+	AttemptID   string            `codec:"attempt_id,omitempty"`
+	Replicas    map[string]string `codec:"replicas,omitempty"`
 	JobID       string            `codec:"job_id"`
 	Assignments map[string]string `codec:"assignments"` // task_id → worker_id
 }
 
 // CheckpointMeta holds persisted metadata for a single checkpoint.
 type CheckpointMeta struct {
+	Replicas   map[string]string `codec:"replicas,omitempty"`
+	EpochID    uint64            `codec:"epoch_id,omitempty"`
+	Tasks      map[string]string `codec:"tasks,omitempty"`
 	ID         uint64            `codec:"id"`
 	JobID      string            `codec:"job_id"`
 	Status     CheckpointStatus  `codec:"status"`
@@ -170,6 +176,7 @@ type SavepointMeta struct {
 
 // WorkerMeta holds persisted metadata for a registered worker.
 type WorkerMeta struct {
+	CheckpointAddress  string    `codec:"checkpoint_address,omitempty"`
 	ID                 string    `codec:"id"`
 	Address            string    `codec:"address"`
 	TaskSlotsTotal     int       `codec:"task_slots_total"`

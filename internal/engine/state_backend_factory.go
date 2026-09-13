@@ -7,6 +7,8 @@ const (
 	// DefaultStateBackendType is PebbleDB for production workloads.
 	DefaultStateBackendType = StateBackendPebble
 
+	DefaultPebbleMaxCompactionConcurrency = 2
+
 	// DefaultHashMapMemLimit is the default logical payload size limit for the
 	// HashMap state backend (sum of key + value bytes). 0 means unlimited
 	// (useful for testing). Does not account for Go runtime overhead.
@@ -27,13 +29,18 @@ type StateBackendConfig struct {
 	// PebbleDataDir is the directory for PebbleDB data files.
 	// Required when Type == StateBackendPebble.
 	PebbleDataDir string
+
+	// PebbleMaxCompactionConcurrency bounds background compactions per backend.
+	// Zero selects the default of two. Negative values are invalid.
+	PebbleMaxCompactionConcurrency int
 }
 
 // DefaultStateBackendConfig returns a StateBackendConfig with default values.
 func DefaultStateBackendConfig() StateBackendConfig {
 	return StateBackendConfig{
-		Type:            DefaultStateBackendType,
-		HashMapMemLimit: DefaultHashMapMemLimit,
+		Type:                           DefaultStateBackendType,
+		HashMapMemLimit:                DefaultHashMapMemLimit,
+		PebbleMaxCompactionConcurrency: DefaultPebbleMaxCompactionConcurrency,
 	}
 }
 

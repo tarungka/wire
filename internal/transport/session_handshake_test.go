@@ -181,11 +181,17 @@ func runTestSessionNegotiationRejectsDataBeforeHandshake(t *testing.T, secure bo
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := protocol.EncodeAndWriteFrame(stream, &protocol.DataRecordMsg{Value: []byte("premature")}); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-result; !errors.Is(err, protocol.ErrHandshakeExpected) {
-		t.Fatalf("error=%v", err)
+	// The server closes the session after reading the invalid frame. That
+	// closure can reach the client before its Write returns, so successful
+	// delivery is established by the server's precise rejection below.
+	writeErr := protocol.EncodeAndWriteFrame(stream, &protocol.DataRecordMsg{Value: []byte("premature")})
+	select {
+	case err := <-result:
+		if !errors.Is(err, protocol.ErrHandshakeExpected) {
+			t.Fatalf("error=%v (client write: %v)", err, writeErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("server did not reject premature data (client write: %v)", writeErr)
 	}
 	if !server.IsClosed() {
 		t.Fatal("protocol violation left session open")

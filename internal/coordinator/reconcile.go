@@ -5,15 +5,17 @@ import (
 	"time"
 
 	"github.com/tarungka/wire/internal/protocol"
+	"github.com/tarungka/wire/internal/rpc"
 )
 
 // RegisterWorkerRequest is the request payload for worker registration.
 type RegisterWorkerRequest struct {
-	WorkerID         string   `codec:"worker_id"`
-	Address          string   `codec:"address"`
-	TaskSlotsTotal   int      `codec:"task_slots_total"`
-	HighestSeenEpoch uint64   `codec:"highest_seen_epoch"`
-	RunningTasks     []string `codec:"running_tasks"`
+	CheckpointAddress string   `codec:"checkpoint_address,omitempty"`
+	WorkerID          string   `codec:"worker_id"`
+	Address           string   `codec:"address"`
+	TaskSlotsTotal    int      `codec:"task_slots_total"`
+	HighestSeenEpoch  uint64   `codec:"highest_seen_epoch"`
+	RunningTasks      []string `codec:"running_tasks"`
 }
 
 // RegisterWorkerResponse is returned to a worker after registration.
@@ -26,13 +28,12 @@ type RegisterWorkerResponse struct {
 // RegisterWorker handles a worker (re-)registration request.
 // It validates epoch fencing, persists the worker, and reconciles tasks.
 func (c *Coordinator) RegisterWorker(req RegisterWorkerRequest) (*RegisterWorkerResponse, error) {
-	c.mu.RLock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.state != StateLeader {
-		c.mu.RUnlock()
 		return nil, ErrNotLeader
 	}
 	currentEpoch := c.epoch
-	c.mu.RUnlock()
 
 	// Epoch fencing: reject if the worker has seen a newer epoch.
 	if req.HighestSeenEpoch > currentEpoch {
@@ -41,6 +42,7 @@ func (c *Coordinator) RegisterWorker(req RegisterWorkerRequest) (*RegisterWorker
 	}
 
 	worker := &WorkerMeta{
+		CheckpointAddress:  req.CheckpointAddress,
 		ID:                 req.WorkerID,
 		Address:            req.Address,
 		TaskSlotsTotal:     req.TaskSlotsTotal,
@@ -49,10 +51,15 @@ func (c *Coordinator) RegisterWorker(req RegisterWorkerRequest) (*RegisterWorker
 		RunningTasks:       req.RunningTasks,
 	}
 
-	if err := c.persistWorker(worker); err != nil {
+	workerData, err := protocol.EncodeMsgPack(worker)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.store.Set(WorkerMetaKey(worker.ID), workerData); err != nil {
 		return nil, fmt.Errorf("persisting worker: %w", err)
 	}
 
+	c.workers[worker.ID] = worker
 	result, err := c.reconcileTasks(req.WorkerID, req.RunningTasks)
 	if err != nil {
 		return nil, fmt.Errorf("reconciling tasks: %w", err)
@@ -60,6 +67,21 @@ func (c *Coordinator) RegisterWorker(req RegisterWorkerRequest) (*RegisterWorker
 
 	// Mark missing tasks as FAILED in the store so they can be rescheduled.
 	for _, taskID := range result.MissingTasks {
+		c.taskStatuses[taskID] = rpc.TaskStatusFailed
+		if job := c.jobs[result.taskJobs[taskID]]; job != nil && (job.Status == JobRunning || job.Status == JobDeploying) {
+			next := *job
+			next.Status = JobFailing
+			next.UpdatedAt = time.Now().UTC()
+			data, err := protocol.EncodeMsgPack(&next)
+			if err != nil {
+				return nil, err
+			}
+			if err := c.store.Set(JobMetaKey(job.ID), data); err != nil {
+				return nil, err
+			}
+			*job = next
+		}
+
 		if err := c.markTaskFailed(taskID); err != nil {
 			c.log.Error().Err(err).
 				Str("task_id", taskID).
@@ -77,6 +99,7 @@ func (c *Coordinator) RegisterWorker(req RegisterWorkerRequest) (*RegisterWorker
 // ReconcileResult holds the outcome of task reconciliation between the
 // coordinator's persisted assignments and a worker's reported tasks.
 type ReconcileResult struct {
+	taskJobs      map[string]string
 	TasksToCancel []string // orphaned tasks worker should stop
 	MissingTasks  []string // tasks coordinator expected but worker lost
 }
@@ -107,7 +130,33 @@ func (c *Coordinator) reconcileTasks(workerID string, reportedTasks []string) (*
 		reportedSet[t] = true
 	}
 
-	result := &ReconcileResult{}
+	result := &ReconcileResult{taskJobs: make(map[string]string)}
+	// Job assignments are the scheduler's authoritative deployment record.
+	for jobID, job := range c.jobs {
+		if job.Status.IsTerminal() {
+			continue
+		}
+		data, err := c.store.Get(JobAssignmentsKey(jobID))
+		if err != nil {
+			return nil, err
+		}
+		if len(data) == 0 {
+			continue
+		}
+		var assignment TaskAssignmentMap
+		if err := protocol.DecodeMsgPack(data, &assignment); err != nil {
+			return nil, err
+		}
+		if assignment.JobID != jobID {
+			return nil, fmt.Errorf("assignment job identity mismatch")
+		}
+		for taskID, owner := range assignment.Assignments {
+			if owner == workerID {
+				assignedTasks[taskID] = true
+				result.taskJobs[taskID] = jobID
+			}
+		}
+	}
 
 	// Find orphaned tasks: reported by worker but not in coordinator's records.
 	for _, t := range reportedTasks {
