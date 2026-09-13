@@ -28,7 +28,7 @@
 Follow-up implementation starts from `master` at `6317284` and supersedes the narrow frame-write fix in #208. Status remains **Partially Implemented** until the full scope and acceptance targets pass.
 
 - **Implemented on this branch:** SessionHandshake 0x07 before data streams, routing-only StreamHeader 0x00, named task stream queues, retained control-stream backpressure with sender pause/resume, engine input-buffer reports, TLS coverage, and stream-end/cancellation enforcement.
-- **Remaining:** Distributed worker task wiring, remaining error/resource acceptance cases, and performance targets. The latest measured 1 KiB CPU-only bounded framing overhead is 19.7%, exceeding the 3% target; the benchmark methodology clarification is pending. RecordBatch remains reserved and MUST NOT be sent.
+- **Remaining:** Final runtime/acceptance audit, final-head CI and review clearance, and performance targets. Worker descriptor stream wiring is implemented; Coordinator–Worker RPC orchestration remains a WIP-07 dependency. The latest measured 1 KiB CPU-only bounded framing overhead is 19.7%, exceeding the 3% target; the benchmark methodology clarification is pending. RecordBatch remains reserved and MUST NOT be sent.
 - **Evidence and full checklist:** [completion.md](completion.md).
 
 ---
@@ -37,7 +37,7 @@ Follow-up implementation starts from `master` at `6317284` and supersedes the na
 
 ### 1.1 Problem Statement
 
-Wire nodes communicate over Yamux-multiplexed TCP connections (port 4002) to shuffle data records, propagate checkpoint barriers, advance watermarks, and signal end-of-partition. The codebase already has msgpack encoding utilities (`internal/utils/utils.go`: `EncodeMsgPack`/`DecodeMsgPack` using `hashicorp/go-msgpack/v2`) and a working Yamux multiplexer (`internal/tcp/mux.go`), but there is **no formal wire protocol specification**. Without a spec:
+Wire nodes communicate over Yamux-multiplexed TCP connections (port 4002) to shuffle data records, propagate checkpoint barriers, advance watermarks, and signal end-of-partition. The codebase already has msgpack encoding utilities (`internal/protocol/codec.go`: `EncodeMsgPack`/`DecodeMsgPack` using `hashicorp/go-msgpack/v2`) and a working Yamux multiplexer (`internal/transport/mux.go`), but there is **no formal wire protocol specification**. Without a spec:
 
 - Developers cannot reason about frame boundaries, message ordering, or version compatibility.
 - There is no defined mechanism for distinguishing data records from control messages (barriers, watermarks) on a shared stream.
@@ -46,7 +46,7 @@ Wire nodes communicate over Yamux-multiplexed TCP connections (port 4002) to shu
 
 ### 1.2 Proposed Solution (Technical Summary)
 
-Define a binary, length-prefixed framing protocol that runs on top of Yamux streams. Every frame carries a 4-byte length prefix, a 1-byte message type discriminator, a 4-byte CRC32C checksum, and an N-byte msgpack-encoded payload. Eight message types cover the control and data plane: `StreamHeader`, `DataRecord`, `CheckpointBarrier`, `Watermark`, `EndOfPartition`, `Backpressure`, `RecordBatch` (reserved for future batching), and `SessionHandshake`. Version and feature negotiation happens once per Yamux session via `SessionHandshake` on the dedicated control stream (matching the Kafka `ApiVersions` / HTTP/2 `SETTINGS` pattern), while each data stream begins with a lightweight `StreamHeader` declaration for routing metadata. The protocol is designed for zero-copy-friendly reading, minimal allocation, and deterministic parsing.
+Define a binary, length-prefixed framing protocol that runs on top of Yamux streams. Every frame carries a 4-byte length prefix, a 1-byte message type discriminator, a 4-byte CRC32C checksum, and an N-byte msgpack-encoded payload. Eight active message types plus reserved `RecordBatch` cover the control and data plane: `StreamHeader`, `DataRecord`, `CheckpointBarrier`, `Watermark`, `EndOfPartition`, `Backpressure`, `RecordBatch` (reserved for future batching), `SessionHandshake`, and negotiated `SessionDrain`. Version and feature negotiation happens once per Yamux session via `SessionHandshake` on the dedicated control stream (matching the Kafka `ApiVersions` / HTTP/2 `SETTINGS` pattern), while each data stream begins with a lightweight `StreamHeader` declaration for routing metadata. The protocol is designed for zero-copy-friendly reading, minimal allocation, and deterministic parsing.
 
 ### 1.3 Goals & Non-Goals
 
@@ -95,7 +95,7 @@ Define a binary, length-prefixed framing protocol that runs on top of Yamux stre
 
 ### 2.2 Yamux Stream Multiplexing
 
-Wire establishes **one TCP connection per worker pair**, managed by the `Mux` struct in `internal/tcp/mux.go`. Each logical data channel (one per upstream-task to downstream-task edge in the ExecutionGraph) maps to a dedicated **Yamux stream** within that connection.
+Wire establishes **one TCP connection per worker pair**, managed by the `Mux` struct in `internal/transport/mux.go`. Each logical data channel (one per upstream-task to downstream-task edge in the ExecutionGraph) maps to a dedicated **Yamux stream** within that connection.
 
 **Session lifecycle:**
 
@@ -152,7 +152,7 @@ Wire uses a **partial mesh** topology. Connections are established on demand: Wo
 - If no session exists, a new TCP connection is dialed, Yamux client handshake runs, the control stream is opened, `SessionHandshake (0x07)` is exchanged, and the session is stored for reuse. Only after the session handshake succeeds are data streams opened.
 - The **receiver** accepts streams from any session via `Mux.Accept()`, which returns streams from the shared channel fed by all active sessions.
 
-**Yamux configuration (from `internal/tcp/mux.go`):**
+**Yamux configuration (from `internal/transport/mux.go`):**
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
@@ -316,23 +316,19 @@ and container counts are validated against the available frame bytes.
 
 **Compact msgpack key rationale:** Single-character keys minimize per-record overhead. At 100K records/sec, saving 10 bytes per key name saves ~1 MB/sec of bandwidth per stream.
 
-**Example encoding (hex):**
+**Example frame (hex):**
 
-```
-Frame:
-  Length:   00 00 00 23              (35 bytes follow: 1 MsgType + 4 CRC32C + 30 payload)
-  MsgType:  01                       (DataRecord)
-  CRC32C:   xx xx xx xx              (CRC32C over MsgType + Payload)
-  Payload (30 bytes, msgpack map with 4 entries):
-    84                               (fixmap, 4 entries)
-    A1 6B                            (fixstr "k")
-    C4 04 75 73 72 31               (bin8, 4 bytes: "usr1")
-    A1 76                            (fixstr "v")
-    C4 08 7B 22 61 22 3A 31 7D 0A  (bin8, 8 bytes: {"a":1}\n)
-    A1 74                            (fixstr "t")
-    D3 00 00 01 8E 5A 3C D4 00     (int64: 1708819200000 = 2024-02-25T00:00:00Z)
-    A1 68                            (fixstr "h")
-    80                               (fixmap, 0 entries - empty headers)
+Key `usr1`, Value `{"a":1}\n` (8 bytes, ending in a newline), EventTime `1708819200000`; empty Headers omitted.
+
+```text
+Length:  00 00 00 25 (37 bytes after length prefix)
+MsgType: 01
+CRC32C:  17 40 0a 69
+Payload: 83 a1 6b c4 04 75 73 72 31 a1 74 d3 00 00 01 8d dd 8f b8 00 a1 76 c4 08 7b 22 61 22 3a 31 7d 0a
+Total:   41 bytes on wire
+
+Complete frame:
+000000250117400a6983a16bc40475737231a174d30000018ddd8fb800a176c4087b2261223a317d0a
 ```
 
 **Go struct for codec:**
@@ -375,19 +371,17 @@ type CheckpointBarrierMsg struct {
 
 **Example frame (hex):**
 
-```
-Frame:
-  Length:   00 00 00 16              (22 bytes follow: 1 MsgType + 4 CRC32C + 17 payload)
-  MsgType:  02                       (CheckpointBarrier)
-  CRC32C:   xx xx xx xx              (CRC32C over MsgType + Payload)
-  Payload (17 bytes, msgpack map with 3 entries):
-    83                               (fixmap, 3 entries)
-    A1 63                            (fixstr "c")
-    CF 00 00 00 00 00 00 00 2A     (uint64: 42)
-    A1 65                            (fixstr "e")
-    CF 00 00 00 00 00 00 00 2A     (uint64: 42)
-    A2 74 73                         (fixstr "ts")
-    D3 00 00 01 8E 5A 3C D4 00     (int64: 1708819200000)
+CheckpointID `42`, EpochID `42`, Timestamp `1708819200000`.
+
+```text
+Length:  00 00 00 18 (24 bytes after length prefix)
+MsgType: 02
+CRC32C:  16 72 ac 9c
+Payload: 83 a1 63 2a a1 65 2a a2 74 73 d3 00 00 01 8d dd 8f b8 00
+Total:   28 bytes on wire
+
+Complete frame:
+00000018021672ac9c83a1632aa1652aa27473d30000018ddd8fb800
 ```
 
 ### 3.5 Message Type: Watermark (0x03)
@@ -540,19 +534,17 @@ type StreamHeaderMsg struct {
 
 **Example frame (hex):**
 
-```
-Frame:
-  Length:   00 00 00 1E              (30 bytes follow: 1 MsgType + 4 CRC32C + 25 payload)
-  MsgType:  00                       (StreamHeader)
-  CRC32C:   xx xx xx xx              (CRC32C over MsgType + Payload)
-  Payload (25 bytes, msgpack map with 3 entries):
-    83                               (fixmap, 3 entries)
-    A3 73 72 63                      (fixstr "src")
-    A9 6D 61 70 2D 6F 70 2D 33     (fixstr "map-op-3")
-    A3 64 73 74                      (fixstr "dst")
-    AC 72 65 64 75 63 65 2D 6F 70 2D 31  (fixstr "reduce-op-1")
-    A1 70                            (fixstr "p")
-    CD 00 02                         (uint16: 2)
+SourceTaskID `map-op-3`, TargetTaskID `reduce-op-1`, PartitionIndex `2`.
+
+```text
+Length:  00 00 00 26 (38 bytes after length prefix)
+MsgType: 00
+CRC32C:  7e 67 94 97
+Payload: 83 a3 64 73 74 ab 72 65 64 75 63 65 2d 6f 70 2d 31 a1 70 02 a3 73 72 63 a8 6d 61 70 2d 6f 70 2d 33
+Total:   42 bytes on wire
+
+Complete frame:
+00000026007e67949783a3647374ab7265647563652d6f702d31a17002a3737263a86d61702d6f702d33
 ```
 
 ### 3.9 Message Type: RecordBatch (0x06) -- Reserved
@@ -699,6 +691,7 @@ During a rolling upgrade, old nodes may advertise `v=1, min_v=1` while new nodes
 |-----|---------|-------------|---------------|
 | 0 | CRC32C (reserved compatibility bit) | CRC32C is always computed and verified on every frame. | CRC32C remains mandatory; clearing this bit never disables checksums. |
 | 1 | LZ4 Compression | *Reserved for future use.* | N/A |
+| 2 | SessionDrain | Duplicate sessions retire after both peers confirm their streams have drained. | No drain messages are sent. |
 
 ---
 
@@ -706,20 +699,19 @@ During a rolling upgrade, old nodes may advertise `v=1, min_v=1` while new nodes
 
 ### 4.1 Byte-Level Frame Layout
 
-**Minimum valid frame (EndOfPartition with minimal payload):**
+**Example frame (hex):**
 
-```
-Offset  Hex                          Field
-------  ---------------------------  -----------
-0x00    00 00 00 0F                  Length = 15 (1 MsgType + 4 CRC32C + 10 payload)
-0x04    04                           MsgType = EndOfPartition
-0x05    xx xx xx xx                  CRC32C (over MsgType + Payload)
-0x09    82                           fixmap(2)
-0x0A    A1 73                        fixstr "s"
-0x0C    A3 73 2D 30                  fixstr "s-0"
-0x0F    A1 72                        fixstr "r"
-0x11    00                           uint8 0x00
-                                     Total: 18 bytes on wire (9 header + 10 payload)
+SourceID `s-0`, Reason `0` (exhausted).
+
+```text
+Length:  00 00 00 0f (15 bytes after length prefix)
+MsgType: 04
+CRC32C:  e5 a4 01 48
+Payload: 82 a1 72 00 a1 73 a3 73 2d 30
+Total:   19 bytes on wire
+
+Complete frame:
+0000000f04e5a4014882a17200a173a3732d30
 ```
 
 **Typical DataRecord frame (~100 byte payload):**
@@ -740,6 +732,12 @@ Offset  Hex                          Field
                                      Total: 119 bytes on wire (9 header + 110 payload)
 ```
 
+The complete byte examples are checked by `TestSpecificationExamples` in
+`internal/protocol/spec_examples_test.go`. Integer types specify valid value
+ranges, not a mandatory encoded width: MessagePack may use positive fixints
+for small values such as checkpoint ID 42. Map field order is not significant
+to receivers; the examples show the encoder's current order.
+
 ### 4.2 Maximum Frame Size
 
 The `Length` field is 4 bytes (uint32), allowing a theoretical maximum of ~4 GB. However, the protocol enforces a **configurable maximum frame size** to prevent memory exhaustion. The minimum valid `Length` value is `5` (1 byte MsgType + 4 bytes CRC32C + 0 bytes payload).
@@ -752,7 +750,7 @@ Frames with `Length < 5` or exceeding the configured limit are rejected with a p
 
 ### 4.3 Byte Order
 
-All multi-byte integer fields in the frame header (i.e., the `Length` and `CRC32C` fields) use **big-endian** (network byte order) encoding, consistent with `binary.BigEndian` as used in `internal/utils/utils.go` (`ConvertUint64ToBytes`). Payload fields are encoded by msgpack, which has its own endianness rules (big-endian for integers).
+All multi-byte integer fields in the frame header (i.e., the `Length` and `CRC32C` fields) use **big-endian** (network byte order) encoding, as implemented with `binary.BigEndian` in `internal/protocol/frame.go`. Payload fields are encoded by msgpack, which has its own endianness rules (big-endian for integers).
 
 ### 4.4 Message Ordering on a Stream
 
@@ -781,7 +779,7 @@ Stream timeline:
 | **Context** | Need a serialization format for encoding message payloads within frames. The format must be fast, compact, and easy to use from Go without code generation. |
 | **Options Considered** | (A) msgpack, (B) Protocol Buffers (protobuf), (C) FlatBuffers, (D) JSON, (E) CBOR |
 | **Decision** | Option A: msgpack |
-| **Rationale** | (1) Already in use: `hashicorp/go-msgpack/v2` is a dependency and `EncodeMsgPack`/`DecodeMsgPack` are implemented in `internal/utils/utils.go`. Zero new dependencies. (2) Schema-less: no `.proto` files to maintain, no code generation step. Payloads are plain Go structs with codec tags. (3) Compact: msgpack is typically 15-30% smaller than JSON and comparable to protobuf for small messages. (4) Fast: the hashicorp codec is well-optimized and avoids reflection for registered types. (5) Debuggable: msgpack can be inspected with standard tools (`msgpack-inspect`, Python `msgpack` library). |
+| **Rationale** | (1) Already in use: `hashicorp/go-msgpack/v2` is a dependency and `EncodeMsgPack`/`DecodeMsgPack` are implemented in `internal/protocol/codec.go`. Zero new dependencies. (2) Schema-less: no `.proto` files to maintain, no code generation step. Payloads are plain Go structs with codec tags. (3) Compact: msgpack is typically 15-30% smaller than JSON and comparable to protobuf for small messages. (4) Fast: the hashicorp codec is well-optimized and avoids reflection for registered types. (5) Debuggable: msgpack can be inspected with standard tools (`msgpack-inspect`, Python `msgpack` library). |
 | **Options Rejected** | Protobuf: requires `.proto` files and code generation. Adds build complexity. FlatBuffers: zero-copy reads are attractive but add significant complexity and require schema files. JSON: too verbose for high-throughput binary data (2-3x overhead). CBOR: similar to msgpack but less ecosystem support in Go. |
 | **Trade-offs Accepted** | No generated static schema or field numbering. Receivers validate required field presence, reject repeated required fields, and use typed decoding. Unknown fields are skipped for forward compatibility, with nesting limited to 64 levels and all lengths bounded by the frame. Codec tags and encoded binary representations are covered by tests. |
 | **Revisit Trigger** | If Wire adds cross-language workers (Python/Rust), protobuf with shared `.proto` files may be preferable. If zero-copy performance matters (records > 1 MB), FlatBuffers should be re-evaluated. |
@@ -881,14 +879,14 @@ Stream timeline:
 
 ### 7.1 TLS Wrapping
 
-The wire protocol runs on top of TCP, which can optionally be wrapped in TLS. When TLS is enabled (via `--node-cert` and `--node-key` flags), the entire Yamux session (and therefore all streams and wire protocol frames) are encrypted.
+The wire protocol runs on top of TCP, which can optionally be wrapped in TLS. When `transport.Config.TLSConfig` is supplied, the entire Yamux session (and therefore all streams and wire protocol frames) is encrypted. The CLI exposes node certificate flags, but wiring that configuration through worker bootstrap remains a WIP-17 integration dependency; WIP-01 TLS tests configure the transport directly.
 
-**TLS configuration (from `internal/tcp/mux.go: NewTLSMux`):**
+**TLS configuration (from `internal/transport/tls.go`):**
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| `MinVersion` | TLS 1.3 | TLS 1.2 and below have known weaknesses. TLS 1.3 is faster (1-RTT handshake) and more secure. |
-| `ClientAuth` | `RequireAndVerifyClientCert` (when `--node-verify-client` is set) | Mutual TLS ensures both ends are authenticated cluster members. |
+| `MinVersion` | TLS 1.3 | Transport sessions enforce the TLS 1.3 minimum. |
+| `ClientAuth` | `RequireAndVerifyClientCert` (when the transport TLS config requests client verification) | Mutual TLS ensures both ends are authenticated cluster members. |
 
 **Security properties when TLS is enabled:**
 - **Confidentiality:** All wire protocol frames are encrypted. An eavesdropper sees only TLS records.
@@ -904,16 +902,16 @@ The wire protocol runs on top of TCP, which can optionally be wrapped in TLS. Wh
 
 ### 7.2 No Protocol-Level Authentication
 
-The wire protocol itself does not include authentication fields (e.g., tokens, signatures). Authentication is handled at the TLS layer (certificate-based) or at the cluster membership layer (cluster membership registration; see WIP-09). A node that is not a cluster member cannot discover worker addresses and therefore cannot open data plane connections.
+The wire protocol itself does not include authentication fields (e.g., tokens, signatures). Authentication is handled at the TLS layer (certificate-based) or at the cluster membership layer (cluster membership registration; see WIP-09). Membership discovery is not an access-control boundary: a reachable plaintext listener can accept non-member connections. Certificate verification must be enforced at the TLS layer when authentication is required.
 
 ### 7.3 Denial of Service Considerations
 
 | Attack Vector | Mitigation |
 |---------------|------------|
 | Oversized frame (memory exhaustion) | `max_frame_size` enforced at the reader (default 16 MB). Frames exceeding the limit are rejected without allocating a buffer. |
-| Connection flood | Yamux session limit per peer. Listener-level rate limiting (not part of this spec, handled at the infrastructure layer). |
+| Connection flood | Session reuse and graceful duplicate retirement avoid persistent healthy-peer duplicates. Listener-level quotas/rate limiting remain infrastructure responsibilities outside this spec. |
 | Slowloris (slow reads) | `ConnectionWriteTimeout` (10s) in Yamux config. Writers that cannot flush within the timeout are disconnected. |
-| Replay attacks | Not applicable in the data plane context. Replayed records are idempotent with respect to the checkpoint/recovery protocol. |
+| Replay attacks | CRC32C does not prevent replay. Completed-checkpoint barriers are suppressed; record replay correctness depends on the checkpoint/recovery subsystem, not framing alone. |
 
 ---
 
@@ -924,7 +922,7 @@ The wire protocol itself does not include authentication fields (e.g., tokens, s
 | Unit Tests | Frame encoding/decoding, each message type | Go `testing`, table-driven | 100% of message types and edge cases |
 | Roundtrip Tests | Encode → decode for every message type | Go `testing` with property-based checks | All field combinations |
 | Fuzz Tests | Random bytes fed to frame parser | Go `testing/fuzz` | Parser never panics, never allocates > max_frame_size |
-| Integration Tests | Two goroutines communicating via Yamux with wire protocol | `internal/tcp/mux.go` + loopback | All message types flow end-to-end |
+| Integration Tests | Two goroutines communicating via Yamux with wire protocol | `internal/transport/mux.go` + loopback | All message types flow end-to-end |
 | Benchmark Tests | Throughput and latency of frame encode/decode | Go `testing.B` | Establish baseline, detect regressions |
 
 ### 8.1 Key Test Scenarios

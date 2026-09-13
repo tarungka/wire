@@ -370,3 +370,22 @@ write error. The existing incompatible negotiation regression passed 1,000 race
 runs (250 each at CPU counts 1, 2, 4 and 8), including closure of both sessions.
 Full integration-tagged race tests and golangci-lint v2.5.0 pass locally; the new
 head still requires Linux CI verification.
+
+### Executable specification examples and dependency audit
+
+The DataRecord, CheckpointBarrier, StreamHeader and EndOfPartition byte examples
+contained inconsistent lengths, timestamp bytes or string lengths, and placeholder
+CRCs. They now show complete frames with actual checksums. A golden test checks
+the encoder bytes, their presence in the specification, and their decoded values.
+The documentation distinguishes integer value ranges from MessagePack's compact
+encoded widths and explains map ordering. Protocol tests and v2.5.0 lint pass.
+
+The original scope table explicitly excludes Coordinator–Worker RPC and TLS
+implementation beneath Yamux. Their integration dependencies must remain visible:
+worker bootstrap does not yet wire node TLS flags through to transport, and
+record-level recovery is not provided by framing alone. The TLS API and its tests
+are real evidence; CLI flags, membership discovery, or CRC are not proof of
+transport authentication or replay protection. The specification now states these
+limits accurately instead of asserting unimplemented guarantees. The completed
+barrier receiver hook remains part of WIP-01; whole RPC checkpoint orchestration
+must be evaluated under its owning WIPs.
