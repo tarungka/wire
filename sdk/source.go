@@ -14,3 +14,12 @@ type Source interface {
 	// Must be safe for concurrent use.
 	GenerateWatermark() int64
 }
+
+// CheckpointedSource optionally exposes source offsets to checkpoint adapters.
+// RestoreOffset does not itself guarantee replay: the connector documents its
+// external replay requirements and must reject unsupported offsets.
+type CheckpointedSource interface {
+	Source
+	Checkpoint(checkpointID uint64) ([]byte, error)
+	RestoreOffset(ctx context.Context, offset []byte) error
+}
