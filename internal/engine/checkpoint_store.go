@@ -56,6 +56,22 @@ func (s *FileCheckpointStore) Import(ctx context.Context, jobID, taskID string, 
 	if snapshot.TaskID != taskID || snapshot.CheckpointID != id || snapshot.EpochID != epoch {
 		return errors.New("checkpoint import identity mismatch")
 	}
+	if err := snapshot.ValidateStateHandles(); err != nil {
+		return err
+	}
+	for _, index := range snapshot.StateHandleIndexes {
+		data := snapshot.Source
+		if index >= 0 {
+			data = snapshot.Operators[index]
+		}
+		var handle SnapshotHandle
+		if err := json.Unmarshal(data, &handle); err != nil {
+			return err
+		}
+		if handle.BackendType == StateBackendPebble {
+			return errors.New("file-backed checkpoint requires archive import")
+		}
+	}
 	return s.Put(ctx, jobID, snapshot)
 }
 

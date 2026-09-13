@@ -12,7 +12,7 @@ import (
 )
 
 func TestCheckpointReplicaReceipt(t *testing.T) {
-	for _, mode := range []string{"stored", "wrong-identity", "wrong-request", "not-stored"} {
+	for _, mode := range []string{"stored", "wrong-identity", "wrong-request", "wrong-format", "not-stored"} {
 		t.Run(mode, func(t *testing.T) {
 			clientSession, serverSession := testYamuxPair(t)
 			cfg := DefaultConfig()
@@ -45,6 +45,8 @@ func TestCheckpointReplicaReceipt(t *testing.T) {
 					receipt.Snapshot.EpochID++
 				case "wrong-request":
 					id++
+				case "wrong-format":
+					receipt.Snapshot.Format = CheckpointFormatInline
 				case "not-stored":
 					receipt.Stored = false
 				}
@@ -54,7 +56,7 @@ func TestCheckpointReplicaReceipt(t *testing.T) {
 			defer cancel()
 			go server.ServeSession(ctx, serverSession)
 			body := bytes.Repeat([]byte{42}, CheckpointChunkSize+1)
-			request := ReplicateCheckpointRequest{JobID: "job", TaskID: "task", CheckpointID: 7, EpochID: 2, Size: uint64(len(body)), SHA256: sha256.Sum256(body)}
+			request := ReplicateCheckpointRequest{Format: CheckpointFormatArchive, JobID: "job", TaskID: "task", CheckpointID: 7, EpochID: 2, Size: uint64(len(body)), SHA256: sha256.Sum256(body)}
 			client := NewClient(clientSession, cfg)
 			done := make(chan error, 1)
 			go func() { done <- client.ReplicateCheckpoint(ctx, request, bytes.NewReader(body)) }()

@@ -13,10 +13,17 @@ import (
 
 const MaxCheckpointTransferSize = 64 * 1024 * 1024
 
+const (
+	CheckpointFormatInline uint8 = iota
+	CheckpointFormatArchive
+)
+
 // ReplicateCheckpointRequest precedes the chunk frames on a dedicated stream.
-// The body is an encoded task snapshot; referenced state files require separate
-// replication before a receiver may declare the task snapshot recoverable.
+// Format selects either a self-contained JSON snapshot or a task archive with
+// portable state artifacts. The receiver must validate and durably publish the
+// selected format before declaring the checkpoint recoverable.
 type ReplicateCheckpointRequest struct {
+	Format       uint8             `codec:"format"`
 	JobID        string            `codec:"jid"`
 	TaskID       string            `codec:"tid"`
 	CheckpointID uint64            `codec:"cid"`
@@ -26,6 +33,9 @@ type ReplicateCheckpointRequest struct {
 }
 
 func (r ReplicateCheckpointRequest) Validate() error {
+	if r.Format != CheckpointFormatInline && r.Format != CheckpointFormatArchive {
+		return errors.New("unsupported checkpoint replica format")
+	}
 	if r.JobID == "" || r.TaskID == "" || len(r.JobID) > 4096 || len(r.TaskID) > 4096 || r.CheckpointID == 0 {
 		return errors.New("invalid checkpoint replica identity")
 	}
