@@ -1,6 +1,10 @@
 package sdk
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/tarungka/wire/internal/rpc"
+)
 
 // StreamNodeType identifies the kind of operator in the stream graph.
 type StreamNodeType uint8
@@ -29,6 +33,9 @@ const (
 
 // StreamNode represents a single operator in the logical DAG.
 type StreamNode struct {
+	NamedDLQ    *rpc.DLQSinkDescriptor
+	ErrorPolicy *rpc.ErrorPolicy
+	DLQSink     Sink
 	ID          int
 	Name        string
 	Type        StreamNodeType
@@ -112,6 +119,11 @@ func (g *StreamGraph) addEdge(sourceID, targetID int, shuffle ShuffleType) {
 // inline closures (MapFn/FilterFn/...) cannot be serialized across the RPC
 // boundary and so are not allowed in a Cluster-mode graph.
 func (g *StreamGraph) validateForCluster() error {
+	for _, node := range g.nodes {
+		if node.DLQSink != nil {
+			return fmt.Errorf("sdk: inline DLQ sinks require embedded mode")
+		}
+	}
 	for _, node := range g.nodes {
 		if node.ClassName == "" {
 			return fmt.Errorf(

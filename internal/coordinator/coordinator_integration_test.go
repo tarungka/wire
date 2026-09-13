@@ -34,10 +34,7 @@ func TestIntegration_CrashRecovery(t *testing.T) {
 	done1 := make(chan error, 1)
 	go func() { done1 <- c1.Run(ctx1) }()
 
-	time.Sleep(100 * time.Millisecond)
-	if !c1.IsReady() {
-		t.Fatal("c1 should be ready")
-	}
+	waitForIntegrationReady(t, c1, done1)
 	epoch1 := c1.CurrentEpoch()
 
 	// Persist sample jobs.
@@ -104,10 +101,7 @@ func TestIntegration_CrashRecovery(t *testing.T) {
 	done2 := make(chan error, 1)
 	go func() { done2 <- c2.Run(ctx2) }()
 
-	time.Sleep(100 * time.Millisecond)
-	if !c2.IsReady() {
-		t.Fatal("c2 should be ready after recovery")
-	}
+	waitForIntegrationReady(t, c2, done2)
 
 	// Verify epoch incremented.
 	epoch2 := c2.CurrentEpoch()
@@ -202,6 +196,23 @@ func TestIntegration_HTTPEndpoints(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode >= 500 {
 			t.Fatalf("GET %s: unexpected status %d", path, resp.StatusCode)
+		}
+	}
+}
+
+func waitForIntegrationReady(t *testing.T, c *Coordinator, done <-chan error) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for !c.IsReady() {
+		select {
+		case err := <-done:
+			t.Fatalf("coordinator exited before readiness: %v", err)
+		case <-deadline.C:
+			t.Fatal("coordinator did not become ready within 5 seconds")
+		case <-ticker.C:
 		}
 	}
 }

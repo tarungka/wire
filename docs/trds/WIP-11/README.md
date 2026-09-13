@@ -22,11 +22,13 @@
 
 ## Implementation Status — 2026-09-12
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Base audit assessed `master` at `0e78195`; the evidence below includes this WIP-11 implementation. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Error classification, retry/backoff, panic handling, and DLQ event/routing primitives are implemented.
-- **Remaining:** The cluster executor passes no per-operator error configuration or DLQ channel; complete the user-facing configuration and sink integration.
-- **Evidence:** [error_handler.go](../../../internal/engine/error_handler.go), [dlq.go](../../../internal/engine/dlq.go), [task_executor.go](../../../internal/worker/task_executor.go).
+- **Implemented:** Error classification, cancellation-aware capped retries, panic handling, SDK per-operator policies, serialized worker policies, and synchronous best-effort DLQ delivery. Embedded jobs accept inline sinks; cluster descriptors select registered sink factories. DLQ records use the documented JSON envelope. Missing/failed/full DLQ destinations count drops; missing destinations log an error.
+- **Remaining:** YAML policy parsing and reserved `__dlq__` graph input, exported runtime metrics (executors currently use noop counters), full MiniCluster error-policy coverage, and the stated 100% unit-coverage target. The worker uses the shared TaskSlot lifecycle merged through WIP-20, with per-operator error configurations passed into that runtime. This change owns the added DLQ sink lifecycle.
+- **Evidence:** [error_handler.go](../../../internal/engine/error_handler.go), [task_executor.go](../../../internal/worker/task_executor.go), [SDK API](../../../sdk/error_handler.go), [SDK execution tests](../../../sdk/error_handler_test.go), [worker DLQ test](../../../internal/worker/task_error_policy_test.go).
+
+See [current API usage](../../sdk/error_handling.md). The proposal examples below describe the intended API; current retry fields are serializable millisecond values and actions are strings.
 
 ---
 
