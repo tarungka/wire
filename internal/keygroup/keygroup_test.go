@@ -89,7 +89,7 @@ func TestKeyGroup_Distribution(t *testing.T) {
 		numKeys      = 1_000_000
 		numKeyGroups = 128
 		expected     = numKeys / numKeyGroups // 7812
-		tolerance    = 0.20                   // 20% per WIP-03 Section 8.1.1
+		tolerance    = 0.10                   // Stricter distribution bound in WIP-03 Section 8.
 	)
 
 	counts := make([]int, numKeyGroups)

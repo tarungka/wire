@@ -289,12 +289,30 @@ type EdgeDescriptor struct {
 // is the full source→ops→sink chain. In later phases, it's the slice of
 // operators between two shuffle boundaries.
 type CheckpointRestoreDescriptor struct {
+	// SourceTaskID is set for rescaling; empty restores the receiving task itself.
+	SourceTaskID   string `codec:"source_task_id,omitempty"`
 	CheckpointID   uint64 `codec:"cid"`
 	EpochID        uint64 `codec:"eid"`
 	ReplicaAddress string `codec:"addr"`
 }
 
+// RescaleStatePart identifies the stored snapshot and inclusive range to import.
+type RescaleStatePart struct {
+	SourceTaskID   string        `codec:"source_task_id"`
+	ReplicaAddress string        `codec:"replica_address"`
+	Groups         KeyGroupRange `codec:"groups"`
+}
+
+// RescaleRestoreDescriptor retains the savepoint identity while ownership changes.
+type RescaleRestoreDescriptor struct {
+	CheckpointID uint64             `codec:"cid"`
+	EpochID      uint64             `codec:"eid"`
+	NumKeyGroups int                `codec:"key_groups"`
+	Parts        []RescaleStatePart `codec:"parts"`
+}
+
 type TaskDescriptor struct {
+	RestoreRescale           *RescaleRestoreDescriptor    `codec:"restore_rescale,omitempty"`
 	OutputKeyGroups          int                          `codec:"output_key_groups,omitempty"`
 	NumKeyGroups             int                          `codec:"key_groups,omitempty"`
 	AttemptID                string                       `codec:"attempt_id,omitempty"`

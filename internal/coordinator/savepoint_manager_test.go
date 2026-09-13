@@ -9,6 +9,7 @@ func TestTriggerSavepoint(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
+	installSavepointAssignment(t, c, job.ID)
 	if err := c.transitionJob(job, JobDeploying); err != nil {
 		t.Fatalf("transitionJob to DEPLOYING: %v", err)
 	}
@@ -35,6 +36,7 @@ func TestTriggerSavepoint_NotRunning(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
+	installSavepointAssignment(t, c, job.ID)
 	// Job is CREATED, not RUNNING.
 	_, err := c.TriggerSavepoint(job.ID)
 	if !errors.Is(err, ErrJobNotRunning) {
@@ -46,6 +48,7 @@ func TestGetSavepoint(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
+	installSavepointAssignment(t, c, job.ID)
 	if err := c.transitionJob(job, JobDeploying); err != nil {
 		t.Fatalf("transitionJob to DEPLOYING: %v", err)
 	}
@@ -80,6 +83,7 @@ func TestListSavepoints(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
+	installSavepointAssignment(t, c, job.ID)
 	if err := c.transitionJob(job, JobDeploying); err != nil {
 		t.Fatalf("transitionJob to DEPLOYING: %v", err)
 	}
@@ -90,6 +94,7 @@ func TestListSavepoints(t *testing.T) {
 	if _, err := c.TriggerSavepoint(job.ID); err != nil {
 		t.Fatalf("TriggerSavepoint 1: %v", err)
 	}
+	abortPendingSavepoint(t, c, job.ID)
 	if _, err := c.TriggerSavepoint(job.ID); err != nil {
 		t.Fatalf("TriggerSavepoint 2: %v", err)
 	}
@@ -107,6 +112,7 @@ func TestDeleteSavepoint(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
+	installSavepointAssignment(t, c, job.ID)
 	if err := c.transitionJob(job, JobDeploying); err != nil {
 		t.Fatalf("transitionJob to DEPLOYING: %v", err)
 	}
@@ -118,6 +124,8 @@ func TestDeleteSavepoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TriggerSavepoint: %v", err)
 	}
+
+	abortPendingSavepoint(t, c, job.ID)
 
 	if err := c.DeleteSavepoint(job.ID, sp.ID); err != nil {
 		t.Fatalf("DeleteSavepoint: %v", err)

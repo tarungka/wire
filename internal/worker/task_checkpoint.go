@@ -11,6 +11,8 @@ import (
 )
 
 type taskCheckpointRuntime struct {
+	rescale    []engine.OperatorRescaleState
+	restoredID uint64
 	restore    *engine.TaskCheckpoint
 	source     bool
 	triggers   chan engine.CheckpointTrigger
@@ -20,7 +22,7 @@ type taskCheckpointRuntime struct {
 }
 
 func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor) (*taskCheckpointRuntime, func(), error) {
-	if desc.CheckpointReplicaAddress == "" && desc.RestoreCheckpoint == nil {
+	if desc.CheckpointReplicaAddress == "" && desc.RestoreCheckpoint == nil && desc.RestoreRescale == nil {
 		return nil, func() {}, nil
 	}
 	if w.cfg.CheckpointReplica == nil || desc.EpochID == 0 {
@@ -33,6 +35,14 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 		return nil, nil, fmt.Errorf("checkpoint task is no longer assigned")
 	}
 	runtime := handle.checkpoint
+	if desc.RestoreRescale != nil {
+		states, err := w.fetchRescaleState(ctx, jobID, taskID, desc)
+		if err != nil {
+			return nil, nil, err
+		}
+		runtime.rescale = states
+		runtime.restoredID = desc.RestoreRescale.CheckpointID
+	}
 	if desc.RestoreCheckpoint != nil {
 		snapshot, err := w.fetchTaskCheckpoint(ctx, jobID, taskID, desc)
 		if err != nil {

@@ -137,7 +137,8 @@ func KeyGroup(key []byte, numKeyGroups int) uint16 {
 
 ```go
 func AssignedTask(keyGroup uint16, numKeyGroups int, parallelism int) int {
-    return int(keyGroup) * parallelism / numKeyGroups
+    // Invert the floor boundaries, including uneven parallelism.
+    return ((int(keyGroup) + 1) * parallelism - 1) / numKeyGroups
 }
 
 func TaskKeyGroupRange(taskIndex int, numKeyGroups int, parallelism int) (start, end uint16) {
@@ -158,12 +159,35 @@ func TaskKeyGroupRange(taskIndex int, numKeyGroups int, parallelism int) (start,
 
 ### 3.4 Rescaling Protocol
 
+The coordinator exposes `POST /api/v1/jobs/{job_id}/rescale` with a JSON body:
+
+```json
+{"savepoint_id": "sp-...", "parallelism": 8}
+```
+
+First trigger a savepoint with `POST /api/v1/jobs/{job_id}/savepoints` and
+poll its status until completed. The rescale request requires that savepoint
+to remain the job's latest completed checkpoint and rejects an active
+checkpoint. A successful request returns HTTP 202. Poll the job until it
+returns to `RUNNING`; acceptance of the request does not mean restoration
+has finished. The current implementation uses the fenced restart lifecycle
+(`FAILING` then `DEPLOYING`) while stopping and replacing the old tasks.
+
+Keyed operators implement `engine.KeyGroupStateRestorer` to restore typed
+checkpoint handles over their assigned ranges. Nonempty opaque checkpoint
+bytes currently require an explicit redistribution strategy and are rejected;
+the runtime cannot infer how to split arbitrary source offsets or sink state.
+The job's fixed `key_groups` count is preserved, and all operator parallelism
+values are changed to the requested value.
+
+
+
 When parallelism changes (e.g., 4 → 8) via savepoint-based rescale:
 
 1. Old assignment: Task 0 owned [0, 32).
-2. New assignment: Task 0 owns [0, 16), Task 4 owns [16, 32).
+2. New assignment: Task 0 owns [0, 16), Task 1 owns [16, 32).
 3. Task 0 downloads its state from the savepoint and retains groups [0, 16).
-4. Task 4 downloads state from the savepoint and extracts groups [16, 32).
+4. Task 1 downloads state from the savepoint and extracts groups [16, 32).
 5. Each task opens a Pebble instance with only its assigned key range.
 
 State transfer is via the durable store (replicated PebbleDB). During rescaling, tasks restore state from local or peer-replicated checkpoints.
@@ -178,21 +202,21 @@ flowchart TD
     end
     subgraph New["New Assignment (parallelism=8)"]
         NT0["Task 0: KG [0,16)"]
-        NT4["Task 4: KG [16,32)"]
-        NT1["Task 1: KG [32,48)"]
-        NT5["Task 5: KG [48,64)"]
-        NT2["Task 2: KG [64,80)"]
-        NT6["Task 6: KG [80,96)"]
-        NT3["Task 3: KG [96,112)"]
+        NT1["Task 1: KG [16,32)"]
+        NT2["Task 2: KG [32,48)"]
+        NT3["Task 3: KG [48,64)"]
+        NT4["Task 4: KG [64,80)"]
+        NT5["Task 5: KG [80,96)"]
+        NT6["Task 6: KG [96,112)"]
         NT7["Task 7: KG [112,128)"]
     end
     OT0 --> NT0
-    OT0 --> NT4
-    OT1 --> NT1
-    OT1 --> NT5
-    OT2 --> NT2
-    OT2 --> NT6
-    OT3 --> NT3
+    OT0 --> NT1
+    OT1 --> NT2
+    OT1 --> NT3
+    OT2 --> NT4
+    OT2 --> NT5
+    OT3 --> NT6
     OT3 --> NT7
 
     style Old fill:#fff3e0

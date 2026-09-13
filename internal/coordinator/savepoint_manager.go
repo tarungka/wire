@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"time"
 
 	"github.com/tarungka/wire/internal/protocol"
 )
@@ -20,35 +19,11 @@ func generateSavepointID() string {
 
 // TriggerSavepoint creates a new in-progress savepoint for a running job.
 func (c *Coordinator) TriggerSavepoint(jobID string) (*SavepointMeta, error) {
-	if !c.IsReady() {
-		return nil, ErrNotLeader
-	}
-
-	c.mu.RLock()
-	job, ok := c.jobs[jobID]
-	c.mu.RUnlock()
-	if !ok {
-		return nil, ErrJobNotFound
-	}
-
-	if job.Status != JobRunning {
-		return nil, ErrJobNotRunning
-	}
-
-	sp := &SavepointMeta{
-		ID:          generateSavepointID(),
-		JobID:       jobID,
-		Status:      SavepointInProgress,
-		TriggerTime: time.Now().UTC(),
-	}
-
-	if err := c.persistSavepoint(sp); err != nil {
+	id := generateSavepointID()
+	if _, err := c.triggerCheckpoint(jobID, id); err != nil {
 		return nil, err
 	}
-
-	c.log.Info().Str("job_id", jobID).Str("savepoint_id", sp.ID).Msg("savepoint triggered")
-	// TODO: inject checkpoint barriers via RPC
-	return sp, nil
+	return c.GetSavepoint(jobID, id)
 }
 
 // GetSavepoint retrieves a savepoint by job ID and savepoint ID.
@@ -93,7 +68,9 @@ func (c *Coordinator) ListSavepoints(jobID string) ([]*SavepointMeta, error) {
 
 // DeleteSavepoint removes a savepoint from the store.
 func (c *Coordinator) DeleteSavepoint(jobID, spID string) error {
-	if !c.IsReady() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state != StateLeader || !c.recovered {
 		return ErrNotLeader
 	}
 
@@ -104,6 +81,17 @@ func (c *Coordinator) DeleteSavepoint(jobID, spID string) error {
 	}
 	if data == nil {
 		return ErrSavepointNotFound
+	}
+
+	var sp SavepointMeta
+	if err := protocol.DecodeMsgPack(data, &sp); err != nil {
+		return err
+	}
+	if job := c.jobs[jobID]; job != nil && !job.Status.IsTerminal() && job.RescaleCheckpoint != 0 && job.RescaleCheckpoint == sp.CheckpointID && job.LatestCheckpoint == sp.CheckpointID {
+		return ErrSavepointInUse
+	}
+	if sp.Status == SavepointInProgress {
+		return ErrCheckpointInProgress
 	}
 
 	if err := c.store.Delete(SavepointKey(jobID, spID)); err != nil {

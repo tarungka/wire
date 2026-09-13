@@ -70,7 +70,7 @@ func TestToJobGraphHashShuffle(t *testing.T) {
 	// Find the hash edge.
 	found := false
 	for _, edge := range jg.Edges {
-		if edge.SourceOperatorID == "src" && edge.TargetOperatorID == "keyby" {
+		if edge.SourceOperatorID == "keyby" && edge.TargetOperatorID == "sink" {
 			if edge.Shuffle != rpc.ShuffleStrategyHash {
 				t.Errorf("expected Hash shuffle, got %v", edge.Shuffle)
 			}
@@ -79,5 +79,20 @@ func TestToJobGraphHashShuffle(t *testing.T) {
 	}
 	if !found {
 		t.Error("hash edge not found")
+	}
+}
+
+func TestNamedKeyBySelectsBeforeShuffle(t *testing.T) {
+	env := New()
+	env.AddSourceNamed("source", "source-factory", nil).KeyByNamed("select", "selector-factory", []byte("cfg")).AddSinkNamed("sink", "sink-factory", nil)
+	if err := env.graph.validateForCluster(); err != nil {
+		t.Fatal(err)
+	}
+	graph := env.graph.toJobGraph(3)
+	if len(graph.Edges) != 2 || graph.Edges[0].Shuffle != rpc.ShuffleStrategyForward || graph.Edges[1].Shuffle != rpc.ShuffleStrategyHash {
+		t.Fatalf("edges=%+v", graph.Edges)
+	}
+	if graph.Operators[1].ClassName != "selector-factory" || string(graph.Operators[1].Config) != "cfg" {
+		t.Fatalf("selector=%+v", graph.Operators[1])
 	}
 }

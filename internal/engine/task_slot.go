@@ -20,6 +20,7 @@ import (
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
 	RestoreCheckpoint *TaskCheckpoint
+	RescaleState      []OperatorRescaleState
 	// CheckpointReport delivers checkpoint ID, epoch, and upload error to an
 	// external coordinator. It must honor cancellation. Nil means report acceptance,
 	// not global commit; commit and abort arrive through CheckpointDecisions.
@@ -87,6 +88,14 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		return err
 	}
 	defer closeOperators()
+	if ts.RestoreCheckpoint != nil && len(ts.RescaleState) > 0 {
+		return errors.New("task cannot combine ordinary and rescaled restoration")
+	}
+	if len(ts.RescaleState) > 0 {
+		if err := ts.restoreRescaledOperators(ctx); err != nil {
+			return err
+		}
+	}
 	if ts.RestoreCheckpoint != nil {
 		if err := ts.restoreCheckpoint(); err != nil {
 			return err

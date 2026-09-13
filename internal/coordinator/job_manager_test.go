@@ -174,6 +174,7 @@ func TestPauseResumeJob(t *testing.T) {
 	c, _ := newReadyCoordinator(t)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
+	installSavepointAssignment(t, c, job.ID)
 	if err := c.transitionJob(job, JobDeploying); err != nil {
 		t.Fatalf("transitionJob to DEPLOYING: %v", err)
 	}

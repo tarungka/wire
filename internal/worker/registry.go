@@ -14,6 +14,8 @@ import (
 // TaskContext is passed to an operator factory when a task is deployed.
 // It carries per-task identity and scheduling information.
 type TaskContext struct {
+	// NumKeyGroups is fixed for the job and must be used when hashing state keys.
+	NumKeyGroups int
 	TaskID       string
 	JobID        string
 	OperatorID   string
@@ -37,11 +39,12 @@ type (
 // looks up factories by the ClassName in each OperatorDescriptor at task
 // deploy time.
 type Registry struct {
-	mu       sync.RWMutex
-	sources  map[string]SourceFactory
-	maps     map[string]MapFactory
-	flatMaps map[string]FlatMapFactory
-	sinks    map[string]SinkFactory
+	keySelectors map[string]KeySelectorFactory
+	mu           sync.RWMutex
+	sources      map[string]SourceFactory
+	maps         map[string]MapFactory
+	flatMaps     map[string]FlatMapFactory
+	sinks        map[string]SinkFactory
 }
 
 // NewRegistry returns an empty Registry.
@@ -108,6 +111,20 @@ func (r *Registry) Build(ctx context.Context, desc rpc.OperatorDescriptor, tc Ta
 	defer r.mu.RUnlock()
 
 	switch desc.Type {
+	case rpc.OperatorTypeKeyBy:
+		factory := r.keySelectors[desc.ClassName]
+		if factory == nil {
+			return nil, fmt.Errorf("worker: unknown key selector %q", desc.ClassName)
+		}
+		selector, err := factory(ctx, desc.Config, tc)
+		if err != nil {
+			return nil, fmt.Errorf("worker: key selector %q: %w", desc.ClassName, err)
+		}
+		if selector == nil {
+			return nil, fmt.Errorf("worker: key selector %q returned nil", desc.ClassName)
+		}
+		return &keyByOperator{selectKey: selector}, nil
+
 	case rpc.OperatorTypeSource:
 		f, ok := r.sources[desc.ClassName]
 		if !ok {

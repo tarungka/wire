@@ -12,6 +12,8 @@ import (
 // FetchCheckpointRequest names a stored snapshot and the deployment requesting
 // recovery. EpochID belongs to the snapshot; DeploymentEpoch fences its reader.
 type FetchCheckpointRequest struct {
+	// TargetTaskID identifies the new owner during rescale; TaskID names the stored source.
+	TargetTaskID    string `codec:"target_task_id,omitempty"`
 	AttemptID       string `codec:"attempt_id,omitempty"`
 	WorkerID        string `codec:"wid"`
 	DeploymentEpoch uint64 `codec:"deid"`
@@ -22,6 +24,9 @@ type FetchCheckpointRequest struct {
 }
 
 func (r FetchCheckpointRequest) Validate() error {
+	if len(r.TargetTaskID) > 4096 {
+		return errors.New("invalid rescale target identity")
+	}
 	if r.WorkerID == "" || len(r.WorkerID) > 4096 || r.DeploymentEpoch == 0 {
 		return errors.New("invalid checkpoint recovery deployment")
 	}

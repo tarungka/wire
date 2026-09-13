@@ -241,6 +241,7 @@ func TestHTTP_PauseResumeJob(t *testing.T) {
 	srv := startTestHTTPServer(t, c)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
+	installSavepointAssignment(t, c, job.ID)
 	if err := c.transitionJob(job, JobDeploying); err != nil {
 		t.Fatalf("transitionJob to deploying: %v", err)
 	}

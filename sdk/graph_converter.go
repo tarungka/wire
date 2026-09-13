@@ -36,10 +36,19 @@ func (g *StreamGraph) toJobGraph(defaultParallelism int) rpc.JobGraph {
 	}
 
 	for _, edge := range g.edges {
+		shuffle := shuffleTypeToRPC(edge.Shuffle)
+		// Logical KeyBy edges describe a partitioning operation. The physical
+		// graph must compute its key first, then shuffle the selected event.
+		if g.nodes[edge.TargetID].Type == NodeKeyBy {
+			shuffle = rpc.ShuffleStrategyForward
+		}
+		if g.nodes[edge.SourceID].Type == NodeKeyBy {
+			shuffle = rpc.ShuffleStrategyHash
+		}
 		edges = append(edges, rpc.EdgeDescriptor{
 			SourceOperatorID: idStr(edge.SourceID),
 			TargetOperatorID: idStr(edge.TargetID),
-			Shuffle:          shuffleTypeToRPC(edge.Shuffle),
+			Shuffle:          shuffle,
 		})
 	}
 

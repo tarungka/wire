@@ -169,6 +169,25 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		return
 	}
 
+	// Persist fetch grants atomically with task ownership before deployment.
+	tam.RescaleParts = make(map[string][]RescaleStatePart)
+	for _, workerTasks := range assignments {
+		for _, task := range workerTasks {
+			if task.RestoreRescale != nil {
+				tam.RescaleParts[task.TaskID] = task.RestoreRescale.Parts
+			}
+		}
+	}
+
+	// Persist the physical topology used by this deployment. A later rescale
+	// must restore the old chains/ranges, not regenerate them from a new graph.
+	for _, task := range tasks {
+		task.Upstream, task.Downstream = nil, nil
+		task.RestoreCheckpoint = nil
+		task.RestoreRescale = nil
+		tam.TaskDescriptors = append(tam.TaskDescriptors, task)
+	}
+
 	// Commit the state and assignments together before publishing DEPLOYING.
 	tam.EpochID = c.epoch
 	tam.Replicas = make(map[string]string)
