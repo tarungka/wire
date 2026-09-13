@@ -396,3 +396,12 @@ uses an operator whose opaque Checkpoint method panics, proving the typed path
 is selected and its marker reaches replication. Engine/worker race suites pass.
 Artifact-aware transfer must now consume these markers and relocate their
 serialized handles before worker publication and deployment recovery.
+
+TaskCheckpoint.RelocateStateHandles now replaces explicitly marked source or
+operator Pebble handles in an owned snapshot copy. It rejects unmarked entries,
+backend/checkpoint changes, changed file checksum maps, and nonabsolute replica
+locations. Tests cover source/operator relocation, unchanged opaque/original
+state, and identity/content rejection. The helper assumes artifact import has
+already established file durability; it neither copies files nor authorizes a
+peer location. Artifact-aware network transfer and publication must call it
+with verified imported handles before deployment restoration is connected.
