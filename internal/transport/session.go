@@ -16,6 +16,11 @@ import (
 
 // Session wraps a yamux.Session and its underlying net.Conn.
 type Session struct {
+	dataMu         sync.Mutex
+	draining       bool
+	opening        int
+	peerDrained    chan struct{}
+	peerDrainOnce  sync.Once
 	negotiationMu  sync.Mutex
 	controlWriteMu sync.Mutex
 	outputs        map[uint32]*FrameStream

@@ -9,6 +9,7 @@ const (
 	MsgTypeWatermark         uint8 = 0x03
 	MsgTypeEndOfPartition    uint8 = 0x04
 	MsgTypeBackpressure      uint8 = 0x05
+	MsgTypeSessionDrain      uint8 = 0x08
 	MsgTypeRecordBatch       uint8 = 0x06 // Reserved for future use.
 )
 
@@ -27,8 +28,9 @@ const (
 
 // Feature flags for session negotiation per WIP-01 Section 3.10.
 const (
-	FeatureCRC32C      uint32 = 1 << 0
-	FeatureCompression uint32 = 1 << 1
+	FeatureCRC32C       uint32 = 1 << 0
+	FeatureCompression  uint32 = 1 << 1
+	FeatureSessionDrain uint32 = 1 << 2
 )
 
 // Protocol version constants.
@@ -94,6 +96,8 @@ type BackpressureMsg struct {
 // MsgTypeName returns a human-readable name for the given message type.
 func MsgTypeName(mt uint8) string {
 	switch mt {
+	case MsgTypeSessionDrain:
+		return "SessionDrain"
 	case MsgTypeStreamHeader:
 		return "StreamHeader"
 	case MsgTypeSessionHandshake:
@@ -113,4 +117,9 @@ func MsgTypeName(mt uint8) string {
 	default:
 		return "Unknown"
 	}
+}
+
+// SessionDrainMsg coordinates duplicate session retirement on the control stream.
+type SessionDrainMsg struct {
+	Ready bool `codec:"r"`
 }

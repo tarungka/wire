@@ -154,6 +154,7 @@ func TestMuxCrossedConnectionsSelectSameSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer bc.Close()
+	var held, heldInput *FrameStream
 	for _, pair := range []struct {
 		mux     *Mux
 		session *Session
@@ -171,6 +172,18 @@ func TestMuxCrossedConnectionsSelectSameSession(t *testing.T) {
 			defer mux.forgetSession(sess)
 			mux.sessionAcceptLoop(mux.ctx, sess)
 		}(pair.mux, pair.session)
+		if pair.mux == b {
+			held, err = bc.OpenDataStream(ctx, b.cfg, protocol.StreamHeaderMsg{SourceTaskID: "held", TargetTaskID: "default"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer held.Close()
+			heldInput, err = a.Accept(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer heldInput.Close()
+		}
 	}
 	// Accepting-side publication follows its handshake write, so synchronize
 	// with it using a routed data stream on each forced connection.
@@ -178,7 +191,7 @@ func TestMuxCrossedConnectionsSelectSameSession(t *testing.T) {
 		session *Session
 		cfg     Config
 		target  *Mux
-	}{{ac, a.cfg, b}, {bc, b.cfg, a}} {
+	}{{ac, a.cfg, b}} {
 		stream, err := pair.session.OpenDataStream(ctx, pair.cfg, protocol.StreamHeaderMsg{SourceTaskID: "s", TargetTaskID: "default"})
 		if err != nil {
 			t.Fatal(err)
@@ -194,6 +207,43 @@ func TestMuxCrossedConnectionsSelectSameSession(t *testing.T) {
 		}
 		if _, err := input.ReadMessage(); err != nil {
 			t.Fatal(err)
+		}
+	}
+	if err := held.WriteMessage(&protocol.DataRecordMsg{Value: []byte("survives drain")}); err != nil {
+		t.Fatal(err)
+	}
+	message, err := heldInput.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(message.(*protocol.DataRecordMsg).Value) != "survives drain" {
+		t.Fatal("held record changed")
+	}
+	if bc.IsClosed() {
+		t.Fatal("duplicate closed with a live stream")
+	}
+	if err := held.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "held"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := heldInput.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		a.mu.RLock()
+		an := len(a.sessions)
+		a.mu.RUnlock()
+		b.mu.RLock()
+		bn := len(b.sessions)
+		b.mu.RUnlock()
+		if an == 1 && bn == 1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("duplicates did not drain: %d/%d", an, bn)
+		case <-ticker.C:
 		}
 	}
 	a.mu.RLock()
@@ -223,5 +273,75 @@ func TestMuxCrossedConnectionsSelectSameSession(t *testing.T) {
 	defer received.Close()
 	if received.session != as {
 		t.Fatal("later dial arrived on another connection")
+	}
+}
+
+func TestMuxConcurrentReciprocalDialDrainsDuplicates(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cfg := DefaultConfig()
+	cfg.ListenAddr = "127.0.0.1:0"
+	cfg.NodeID = "a"
+	a := NewMux(cfg)
+	cfg.NodeID = "b"
+	b := NewMux(cfg)
+	defer a.Close()
+	defer b.Close()
+	for _, mux := range []*Mux{a, b} {
+		if err := mux.Listen(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type result struct {
+		stream *FrameStream
+		err    error
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	for _, pair := range []struct{ from, to *Mux }{{a, b}, {b, a}} {
+		go func(from, to *Mux) {
+			<-start
+			stream, err := from.Dial(ctx, to.ListenAddr())
+			results <- result{stream, err}
+		}(pair.from, pair.to)
+	}
+	close(start)
+	for i := 0; i < 2; i++ {
+		r := <-results
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		defer r.stream.Close()
+		if err := r.stream.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "done"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, mux := range []*Mux{a, b} {
+		stream, err := mux.Accept(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+		if _, err := stream.ReadMessage(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		a.mu.RLock()
+		an := len(a.sessions)
+		a.mu.RUnlock()
+		b.mu.RLock()
+		bn := len(b.sessions)
+		b.mu.RUnlock()
+		if an == 1 && bn == 1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("connection counts %d/%d", an, bn)
+		case <-tick.C:
+		}
 	}
 }

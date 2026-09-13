@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -26,6 +27,7 @@ type Mux struct {
 	peers     map[string]*Session
 	sessions  map[*Session]struct{}
 	nodes     map[string]*Session
+	changed   chan struct{}
 	streamCh  chan *FrameStream
 	log       zerolog.Logger
 	ctx       context.Context
@@ -48,6 +50,7 @@ func NewMux(cfg Config) *Mux {
 		peers:    make(map[string]*Session),
 		sessions: make(map[*Session]struct{}),
 		nodes:    make(map[string]*Session),
+		changed:  make(chan struct{}),
 		dialing:  make(map[string]chan struct{}),
 		tasks:    make(map[string]*taskQueue),
 		streamCh: make(chan *FrameStream, 64),
@@ -92,11 +95,17 @@ func (m *Mux) Dial(ctx context.Context, addr string, routing ...protocol.StreamH
 	if len(routing) == 1 {
 		header = routing[0]
 	}
-	sess, err := m.getOrCreateSession(ctx, addr)
-	if err != nil {
-		return nil, err
+	for {
+		sess, err := m.getOrCreateSession(ctx, addr)
+		if err != nil {
+			return nil, err
+		}
+		stream, err := sess.OpenDataStream(ctx, m.cfg, header)
+		if errors.Is(err, errSessionDraining) {
+			continue
+		}
+		return stream, err
 	}
-	return sess.OpenDataStream(ctx, m.cfg, header)
 }
 
 // RegisterTask creates a bounded incoming-stream queue for a task. Register
@@ -284,6 +293,18 @@ func (m *Mux) getOrCreateSession(ctx context.Context, addr string) (*Session, er
 			return nil, fmt.Errorf("transport: mux closed")
 		}
 		if sess := m.peers[addr]; sess != nil && !sess.IsClosed() {
+			if sess.isDraining() {
+				changed := m.changed
+				m.mu.Unlock()
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-m.ctx.Done():
+					return nil, m.ctx.Err()
+				case <-changed:
+					continue
+				}
+			}
 			m.mu.Unlock()
 			return sess, nil
 		}

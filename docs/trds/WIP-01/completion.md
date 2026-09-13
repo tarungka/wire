@@ -238,3 +238,26 @@ Safe retirement of the duplicate after active streams drain is still required;
 selection alone does not prove one live TCP connection per pair after a cross-dial.
 The full integration-tagged race suite and golangci-lint v2.5.0 pass with the
 selection change.
+
+### Graceful duplicate retirement
+
+SessionDrain (0x08) is a control-only extension gated by negotiated feature bit
+2. Losing connections stop new data opens atomically, exchange drain intent,
+and continue serving existing streams and backpressure. Each side sends Ready
+only after its opening operations finish and Yamux retains only the control
+stream; both readiness confirmations are required before closing TCP. A local
+stream count alone is not sufficient because a remote open may be in flight.
+Mux.Dial retries when selection races with retirement and waits cancellably for
+session publication rather than exposing a retirement error to the task.
+
+The forced cross-dial test now holds a losing-stream record across selection,
+proves it survives, and waits for one live connection per mux after EOP. It passed
+20 race iterations. Public simultaneous reciprocal Dial passed 120 race runs
+(30 each at CPU counts 1, 2, 4, 8). Older peers without the negotiated feature
+continue data flow; sending the extension without negotiation closes the session.
+The full integration-tagged race suite passes. The extension is included in
+frame-limit and decoder fuzz seeds; golangci-lint v2.5.0 passes after its deadline
+cleanup check was corrected. Remaining WIP gates, including performance and the
+broader acceptance audit, are not implied complete by these connection tests.
+Decoder fuzzing with the SessionDrain seed passed 1,380,331 executions in the
+10-second fuzz run (11.5 seconds including setup/finish).

@@ -159,6 +159,12 @@ func WriteFrameRaw(w io.Writer, msgType uint8, payload []byte) error {
 // DecodePayload decodes the raw payload of a Frame into the appropriate message struct.
 func DecodePayload(f Frame) (any, error) {
 	switch f.MsgType {
+	case MsgTypeSessionDrain:
+		var msg SessionDrainMsg
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
+			return nil, err
+		}
+		return &msg, nil
 	case MsgTypeStreamHeader:
 		var msg StreamHeaderMsg
 		if err := decodeFramePayload(f.Payload, &msg); err != nil {
@@ -222,6 +228,8 @@ func EncodeAndWriteFrame(w io.Writer, msg any) error {
 func EncodeAndWriteFrameLimit(w io.Writer, msg any, maxFrameSize uint32) error {
 	var msgType uint8
 	switch msg.(type) {
+	case *SessionDrainMsg, SessionDrainMsg:
+		msgType = MsgTypeSessionDrain
 	case *StreamHeaderMsg, StreamHeaderMsg:
 		msgType = MsgTypeStreamHeader
 	case *SessionHandshakeMsg:

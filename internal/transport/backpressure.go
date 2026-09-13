@@ -18,6 +18,16 @@ func (s *Session) runControl(cfg Config) {
 		if err != nil {
 			return
 		}
+		if drain, ok := msg.(*protocol.SessionDrainMsg); ok {
+			if s.negotiated.Features&protocol.FeatureSessionDrain == 0 {
+				return
+			}
+			s.beginDrain(cfg)
+			if drain.Ready {
+				s.peerDrainOnce.Do(func() { close(s.peerDrained) })
+			}
+			continue
+		}
 		bp, ok := msg.(*protocol.BackpressureMsg)
 		if !ok || bp.State > protocol.BackpressurePause || math.IsNaN(float64(bp.BufferUsage)) || bp.BufferUsage < 0 || bp.BufferUsage > 1 {
 			return

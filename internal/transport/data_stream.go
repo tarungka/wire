@@ -11,6 +11,14 @@ import (
 // OpenDataStream opens a sender-only stream after session negotiation. The
 // header is written before the stream becomes available to the producer.
 func (s *Session) OpenDataStream(ctx context.Context, cfg Config, header protocol.StreamHeaderMsg) (*FrameStream, error) {
+	s.dataMu.Lock()
+	if s.draining {
+		s.dataMu.Unlock()
+		return nil, errSessionDraining
+	}
+	s.opening++
+	s.dataMu.Unlock()
+	defer func() { s.dataMu.Lock(); s.opening--; s.dataMu.Unlock() }()
 	params, _, ok := s.SessionParameters()
 	if !ok {
 		return nil, fmt.Errorf("transport: session has not been negotiated")

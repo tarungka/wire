@@ -242,6 +242,7 @@ stateDiagram-v2
 | `Backpressure` | `0x05` | Downstream → Upstream | Explicit backpressure signal on the control stream (supplements Yamux flow control) |
 | `RecordBatch` | `0x06` | Upstream → Downstream | **Reserved.** Batch of DataRecords in a single frame. See Section 3.9. |
 | `SessionHandshake` | `0x07` | Bidirectional (control stream only) | Session-level version and feature negotiation. Exchanged once per Yamux session on the control stream. See Section 3.10. |
+| `SessionDrain` | `0x08` | Bidirectional (control stream only) | Negotiated graceful retirement of a duplicate worker connection. |
 
 **Message type range allocation:**
 
@@ -251,7 +252,8 @@ stateDiagram-v2
 | `0x01`-`0x05` | Core data/control messages |
 | `0x06` | RecordBatch (reserved, see Section 3.9) |
 | `0x07` | SessionHandshake (session-level negotiation, control stream only) |
-| `0x08`-`0x3F` | Reserved for future core protocol extensions |
+| `0x08` | SessionDrain (negotiated duplicate retirement, control stream only) |
+| `0x09`-`0x3F` | Reserved for future core protocol extensions |
 | `0x40`-`0x7F` | Reserved for user-defined / experimental extensions |
 | `0x80`-`0xFF` | Reserved (must not be used) |
 
@@ -579,7 +581,7 @@ This design follows the industry pattern established by Kafka (`ApiVersionsReque
 |-------|-------------|------|----------|-------------|
 | **ProtocolVersion** | `"v"` | `uint16` | Yes | Protocol version offered by the sender. Current version: `1`. |
 | **MinVersion** | `"min_v"` | `uint16` | Yes | Minimum protocol version the sender supports. Current: `1`. |
-| **Features** | `"f"` | `uint32` | Yes | Bitmask of supported feature flags. Bit 0: CRC32C checksums. Bit 1: LZ4 compression (reserved). Bits 2-31: reserved (must be 0). |
+| **Features** | `"f"` | `uint32` | Yes | Bitmask of supported feature flags. Bit 0: CRC32C checksums. Bit 1: LZ4 compression (reserved). Bit 2: SessionDrain support. Bits 3-31: reserved (must be 0). |
 | **NodeID** | `"n"` | `str` | Yes | Identifier of the sending node. Used for logging, debugging, and session tracking. |
 | **ListenPort** | `"lp"` | `uint16` | No | Bound data listener port. Omitted for dial-only nodes and older peers. Used with the observed TCP peer IP to find the existing session for reverse dials. |
 
@@ -591,7 +593,9 @@ NAT port translation and address aliases require membership-provided endpoint
 mapping. When first dials cross, both endpoints select the connection initiated by the
 lexicographically lower NodeID for subsequent streams. Connections in the same
 direction are ordered by the initiator TCP endpoint. Active streams retain their
-original connection; duplicate connection retirement remains implementation work.
+original connection until they finish. When both peers negotiate SessionDrain,
+the losing connection is retired using the exchange below. Older peers without
+that feature retain their existing streams until connection shutdown.
 
 **Go struct:**
 
@@ -620,7 +624,29 @@ const (
 4. Both sides validate compatibility: if `effectiveVersion < local.MinVersion` or `effectiveVersion < remote.MinVersion`, the versions are incompatible. The session is torn down (TCP connection closed). No data streams are opened.
 5. The negotiated version and feature set are stored on the session object. All data streams opened on this session inherit these settings.
 6. **Timeout:** If either side does not receive the peer's `SessionHandshake` within 5 seconds of session establishment, the session is torn down.
-7. After the `SessionHandshake` exchange completes, the control stream remains open for `Backpressure (0x05)` messages (see Section 3.7).
+7. After the `SessionHandshake` exchange completes, the control stream remains open for `Backpressure (0x05)` messages (see Section 3.7) and negotiated `SessionDrain (0x08)` messages.
+
+**Duplicate session retirement (SessionDrain, 0x08):**
+
+The payload is a map with required boolean `"r"` (`Ready`). This message MUST
+only be sent on the control stream when feature bit 2 is active. It is not a
+second SessionHandshake and does not change negotiated parameters.
+
+1. After selecting a different connection for future streams, mark the duplicate
+   as draining and send `SessionDrain(Ready=false)`. New data-stream opens on the
+   duplicate stop atomically; already-started opens may finish.
+2. Receiving SessionDrain also starts local draining. Backpressure continues on
+   the same control stream so existing streams can finish normally.
+3. Wait for all local opening operations to finish and for Yamux to retain only
+   the control stream. Half-closed data streams count as active. Then send
+   `SessionDrain(Ready=true)`.
+4. Close the duplicate TCP connection only after both local readiness and peer
+   readiness. The peer's confirmation covers remote opens that were in flight
+   when local draining began. Do not infer peer readiness from a local count or
+   a quiet timeout.
+5. Shutdown/cancellation still closes all connections immediately. A duplicate
+   with a long-lived active stream remains until that stream ends; retirement
+   must not lose records merely to reduce the connection count.
 
 **Session establishment sequence:**
 

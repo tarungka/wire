@@ -15,6 +15,7 @@ func TestOutgoingFrameLimit(t *testing.T) {
 		&WatermarkMsg{SourceID: "source"},
 		&EndOfPartitionMsg{SourceID: "source"},
 		&BackpressureMsg{StreamID: 1, State: BackpressurePause},
+		&SessionDrainMsg{Ready: true},
 	}
 	for _, msg := range messages {
 		payload, err := EncodeMsgPack(msg)

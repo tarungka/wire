@@ -98,6 +98,7 @@ func (s *Session) NegotiateSession(ctx context.Context, cfg Config, initiator bo
 	params := NegotiatedParams{EffectiveVersion: effective, Features: local.Features & remote.Features}
 	s.negotiated = &params
 	s.control = stream
+	s.peerDrained = make(chan struct{})
 	s.peerNodeID = remote.NodeID
 	s.peerListenPort = remote.ListenPort
 	s.initiator = initiator
