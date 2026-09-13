@@ -144,7 +144,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// A successful chain cancels input readers, but queued output still needs
 	// to drain through downstream backpressure. External cancellation and real
 	// failures interrupt paused writers; external cancellation allows bounded draining.
-	outputCtx, cancelOutput := context.WithCancel(context.WithoutCancel(ctx))
+	outputCtx, cancelOutput := context.WithCancel(context.WithoutCancel(runCtx))
 	defer cancelOutput()
 	drainTimeout := ts.Config.DrainTimeout
 	if drainTimeout <= 0 {
