@@ -16,6 +16,9 @@ type StateBackendConfig struct {
 	Type        string
 	DataDir     string
 	MaxMemoryMB int
+	// MaxCompactionConcurrency bounds Pebble compactions per operator instance.
+	// Zero selects two. It has no effect on the hashmap backend.
+	MaxCompactionConcurrency int
 }
 
 // NewHashMapStateBackend selects bounded in-memory state (0 means unlimited).
@@ -39,6 +42,9 @@ func (env *StreamExecutionEnvironment) SetStateBackend(config StateBackendConfig
 }
 
 func (c StateBackendConfig) validate() error {
+	if c.MaxCompactionConcurrency < 0 {
+		return fmt.Errorf("%w: negative compaction concurrency", ErrInvalidConfig)
+	}
 	if c.Type != "" && c.Type != "pebble" && c.Type != "hashmap" {
 		return fmt.Errorf("%w: unknown state backend %q", ErrInvalidConfig, c.Type)
 	}
@@ -49,7 +55,7 @@ func (c StateBackendConfig) validate() error {
 }
 func (c StateBackendConfig) open(nodeID, instance int) (engine.StateBackend, func(), error) {
 	cleanup := func() {}
-	cfg := engine.StateBackendConfig{Type: engine.StateBackendType(c.Type), HashMapMemLimit: int64(c.MaxMemoryMB) * 1024 * 1024}
+	cfg := engine.StateBackendConfig{Type: engine.StateBackendType(c.Type), HashMapMemLimit: int64(c.MaxMemoryMB) * 1024 * 1024, PebbleMaxCompactionConcurrency: c.MaxCompactionConcurrency}
 	if cfg.Type == "" || cfg.Type == engine.StateBackendPebble {
 		if c.DataDir == "" {
 			dir, err := os.MkdirTemp("", "wire-state-")

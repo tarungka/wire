@@ -90,7 +90,7 @@ func (b *PebbleStateBackend) Restore(handle SnapshotHandle) error {
 	if !reflect.DeepEqual(copied, manifest.Files) {
 		return fmt.Errorf("%w: checkpoint changed while copying", ErrSnapshotCorrupt)
 	}
-	next, err := openRestoredState(path)
+	next, err := openRestoredState(path, b.maxCompactions)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrSnapshotCorrupt, err)
 	}

@@ -3,8 +3,10 @@ package engine
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -158,5 +160,63 @@ func TestPebbleStateBackend_RestoreAnotherDirectory(t *testing.T) {
 	handle.CheckpointID++
 	if err = dest.Restore(handle); !errors.Is(err, ErrSnapshotCorrupt) {
 		t.Fatalf("checkpoint identity mismatch: %v", err)
+	}
+}
+
+func TestPebbleCompactionConcurrencyAcrossRestore(t *testing.T) {
+	for _, limit := range []int{0, 3} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			cfg := StateBackendConfig{PebbleDataDir: t.TempDir(), PebbleMaxCompactionConcurrency: limit}
+			backend, err := NewStateBackend(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b := backend.(*PebbleStateBackend)
+			defer func() { _ = b.Close() }()
+			want := limit
+			if want == 0 {
+				want = 2
+			}
+			check := func() {
+				t.Helper()
+				paths, err := filepath.Glob(filepath.Join(b.activeDir, "OPTIONS-*"))
+				if err != nil || len(paths) == 0 {
+					t.Fatalf("options: %v %v", paths, err)
+				}
+				data, err := os.ReadFile(paths[len(paths)-1])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(data), fmt.Sprintf("max_concurrent_compactions=%d\n", want)) {
+					t.Fatalf("Pebble did not receive concurrency %d", want)
+				}
+			}
+			check()
+			handle, err := b.Checkpoint(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := b.Restore(handle); err != nil {
+				t.Fatal(err)
+			}
+			check()
+			if err := b.Close(); err != nil {
+				t.Fatal(err)
+			}
+			backend, err = NewStateBackend(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b = backend.(*PebbleStateBackend)
+			check()
+		})
+	}
+	dir := filepath.Join(t.TempDir(), "must-not-create")
+	if b, err := NewStateBackend(StateBackendConfig{PebbleDataDir: dir, PebbleMaxCompactionConcurrency: -1}); err == nil {
+		_ = b.Close()
+		t.Fatal("negative limit accepted")
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid config touched directory: %v", err)
 	}
 }

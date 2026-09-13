@@ -26,7 +26,7 @@ waive any WIP-02 requirement.
 |---|---|
 | Per-task topology and bounded channels (§2.1–2.4) | Input reader includes one bounded read-ahead helper. Output uses one ordered dispatcher, not the stated per-output workers. Reconcile topology with ordering and test bounds. |
 | Replication failure affects checkpoint, threshold affects task (§2.7) | Coordinator failure reporting now applies existing checkpoint thresholds and ignores stale checkpoint/epoch reports; timeout metrics exclude replication failures. TaskSlot completion delivery now feeds this policy; durable worker replication and additional transactional/abort overlap tests remain required. |
-| Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Upload concurrency and configurable task Pebble compaction bounds need implementation/integration. |
+| Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Engine upload concurrency is implemented. Pebble compaction concurrency defaults to two and is configurable in engine/embedded SDK, retained across restore. Worker configuration integration remains open. |
 | Container CPU limits (§3.2) | No automaxprocs import or dependency found. Verify Go runtime baseline and implement the documented behavior with explicit evidence. |
 | Six observability metrics (§3.3) | No wire_task_* metric instrumentation found. Add task channel usage, output blocking time, owned goroutines, upload duration and alignment bytes with lifecycle cleanup. |
 | Benchmarks (§8) | Engine benchmarks exist. Establish and record concurrency/channel/deserialization baselines after implementation. |
@@ -125,3 +125,13 @@ evidence, not a simulated power-loss test. Crashes before publication may leave
 unreferenced staging files; startup cleanup remains part of worker integration.
 This component is not a remote replica adapter: peer transport and transfer of
 referenced Pebble files are still required before worker durability is complete.
+
+### Pebble concurrency configuration
+
+`StateBackendConfig.PebbleMaxCompactionConcurrency` defaults to two when zero;
+negative values fail before creating storage. Both initial database open and
+restored generations pass the limit to Pebble. The embedded SDK exposes
+`StateBackendConfig.MaxCompactionConcurrency` and forwards it for each operator
+instance. Tests inspect Pebble's saved OPTIONS after creation, restore and
+reopen, and verify the SDK path reaches the database. This covers backend and
+embedded execution configuration; the worker configuration path is still open.
