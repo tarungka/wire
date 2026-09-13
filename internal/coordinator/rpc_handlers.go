@@ -153,8 +153,27 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 	}
 
 	c.mu.Lock()
-	c.taskStatuses[req.TaskID] = req.Status
+	denied := &rpc.UpdateTaskStatusResponse{Accepted: false, Message: "task status does not match active assignment"}
+	if c.state != StateLeader || !c.recovered || req.EpochID != c.epoch || req.WorkerID == "" {
+		c.mu.Unlock()
+		return denied, nil
+	}
 	job, jobExists := c.jobs[req.JobID]
+	if !jobExists || job.Status.IsTerminal() {
+		c.mu.Unlock()
+		return denied, nil
+	}
+	assignmentData, err := c.store.Get(JobAssignmentsKey(req.JobID))
+	if err != nil {
+		c.mu.Unlock()
+		return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, err.Error())
+	}
+	var assignment TaskAssignmentMap
+	if err := protocol.DecodeMsgPack(assignmentData, &assignment); err != nil || assignment.JobID != req.JobID || assignment.Assignments[req.TaskID] != req.WorkerID {
+		c.mu.Unlock()
+		return denied, nil
+	}
+	c.taskStatuses[req.TaskID] = req.Status
 	c.mu.Unlock()
 
 	c.log.Info().
@@ -162,10 +181,6 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 		Str("job_id", req.JobID).
 		Str("status", req.Status.String()).
 		Msg("task status updated")
-
-	if !jobExists {
-		return &rpc.UpdateTaskStatusResponse{Accepted: true}, nil
-	}
 
 	// Check for job-level transitions based on task status.
 	switch req.Status {

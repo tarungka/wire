@@ -439,14 +439,18 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 func (w *Worker) reportTaskStatus(jobID, taskID string, status rpc.TaskStatus, failure *rpc.TaskFailureInfo) {
 	w.mu.RLock()
 	epoch := w.epoch
+	if handle := w.tasks[taskID]; handle != nil && handle.jobID == jobID {
+		epoch = handle.epoch
+	}
 	w.mu.RUnlock()
 
 	req := &rpc.UpdateTaskStatusRequest{
-		JobID:   jobID,
-		TaskID:  taskID,
-		Status:  status,
-		EpochID: epoch,
-		Failure: failure,
+		WorkerID: w.cfg.WorkerID,
+		JobID:    jobID,
+		TaskID:   taskID,
+		Status:   status,
+		EpochID:  epoch,
+		Failure:  failure,
 	}
 	if _, err := w.client.UpdateTaskStatus(context.Background(), req); err != nil {
 		w.log.Error().Err(err).

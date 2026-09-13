@@ -370,12 +370,13 @@ type TaskDeploymentStatus struct {
 
 // UpdateTaskStatusRequest is sent from Worker to Coordinator to report a task's status change.
 type UpdateTaskStatusRequest struct {
-	JobID   string           `codec:"jid"`
-	TaskID  string           `codec:"tid"`
-	Status  TaskStatus       `codec:"st"`
-	EpochID uint64           `codec:"eid"`
-	Metrics *TaskMetrics     `codec:"met,omitempty"`
-	Failure *TaskFailureInfo `codec:"fi,omitempty"`
+	WorkerID string           `codec:"wid"`
+	JobID    string           `codec:"jid"`
+	TaskID   string           `codec:"tid"`
+	Status   TaskStatus       `codec:"st"`
+	EpochID  uint64           `codec:"eid"`
+	Metrics  *TaskMetrics     `codec:"met,omitempty"`
+	Failure  *TaskFailureInfo `codec:"fi,omitempty"`
 }
 
 // UpdateTaskStatusResponse is the Coordinator's reply.
