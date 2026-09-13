@@ -83,7 +83,7 @@ func (c *Coordinator) scheduleTick(ctx context.Context) {
 	c.mu.RLock()
 	var createdJobs []*JobMeta
 	for _, job := range c.jobs {
-		if job.Status == JobCreated {
+		if job.Status == JobCreated || job.Status == JobFailing {
 			createdJobs = append(createdJobs, job)
 		}
 	}
@@ -92,6 +92,12 @@ func (c *Coordinator) scheduleTick(ctx context.Context) {
 	for _, job := range createdJobs {
 		if ctx.Err() != nil {
 			return
+		}
+		c.mu.RLock()
+		failing := job.Status == JobFailing
+		c.mu.RUnlock()
+		if failing && !c.prepareTaskRestart(job) {
+			continue
 		}
 		c.scheduleJob(job)
 	}
@@ -141,7 +147,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	// Transition CREATED → DEPLOYING and persist assignments under Lock.
 	c.mu.Lock()
 	// Re-check status under lock (another tick may have grabbed it).
-	if job.Status != JobCreated || !c.assignmentsLiveLocked(assignments, time.Now()) {
+	if (job.Status != JobCreated && job.Status != JobFailing) || !c.assignmentsLiveLocked(assignments, time.Now()) {
 		c.mu.Unlock()
 		return
 	}
@@ -173,6 +179,9 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	// One synchronous batch prevents both a second fsync under c.mu and a
 	// partially persisted deployment if writing assignments fails.
 	next := *job
+	if job.Status == JobFailing {
+		next.RestartCount++
+	}
 	next.Status = JobDeploying
 	next.UpdatedAt = time.Now().UTC()
 	jobData, err := protocol.EncodeMsgPack(&next)
@@ -196,6 +205,11 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		return
 	}
 	*job = next
+	for _, workerTasks := range assignments {
+		for _, task := range workerTasks {
+			delete(c.taskStatuses, task.TaskID)
+		}
+	}
 
 	// Update worker metadata: add running tasks and decrement available slots.
 	for workerID, wTasks := range assignments {
