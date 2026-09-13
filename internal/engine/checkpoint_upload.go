@@ -6,6 +6,8 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"github.com/tarungka/wire/internal/observability"
 )
 
 // TaskCheckpoint owns immutable operator snapshot bytes for one aligned epoch.
@@ -37,17 +39,18 @@ type checkpointUploadResult struct {
 // are no idle worker goroutines or unbounded pending snapshot queues. Submit
 // never waits for network I/O; the chain consumes results before admitting more.
 type checkpointUploader struct {
-	mu         sync.Mutex
-	cancels    map[checkpointIdentity]context.CancelFunc
-	timeout    time.Duration
-	closed     bool
-	closeOnce  sync.Once
-	ctx        context.Context
-	cancel     context.CancelFunc
-	replicator CheckpointReplicator
-	slots      chan struct{}
-	results    chan checkpointUploadResult
-	wg         sync.WaitGroup
+	mu             sync.Mutex
+	cancels        map[checkpointIdentity]context.CancelFunc
+	timeout        time.Duration
+	closed         bool
+	closeOnce      sync.Once
+	ctx            context.Context
+	cancel         context.CancelFunc
+	replicator     CheckpointReplicator
+	slots          chan struct{}
+	results        chan checkpointUploadResult
+	wg             sync.WaitGroup
+	recordDuration func(context.Context, string, time.Duration)
 }
 
 func newCheckpointUploader(ctx context.Context, concurrency int, replicator CheckpointReplicator) (*checkpointUploader, error) {
@@ -55,7 +58,12 @@ func newCheckpointUploader(ctx context.Context, concurrency int, replicator Chec
 		return nil, errors.New("checkpoint uploader requires positive concurrency and a replicator")
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	return &checkpointUploader{ctx: ctx, cancel: cancel, cancels: make(map[checkpointIdentity]context.CancelFunc), timeout: DefaultCheckpointTimeout, replicator: replicator, slots: make(chan struct{}, concurrency), results: make(chan checkpointUploadResult, concurrency)}, nil
+	record, err := observability.CheckpointUploadRecorder()
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return &checkpointUploader{ctx: ctx, cancel: cancel, cancels: make(map[checkpointIdentity]context.CancelFunc), timeout: DefaultCheckpointTimeout, replicator: replicator, slots: make(chan struct{}, concurrency), results: make(chan checkpointUploadResult, concurrency), recordDuration: record}, nil
 }
 
 func (u *checkpointUploader) Submit(snapshot TaskCheckpoint) error {
@@ -88,7 +96,9 @@ func (u *checkpointUploader) Submit(snapshot TaskCheckpoint) error {
 	u.wg.Add(1)
 	go func() {
 		defer u.wg.Done()
+		start := time.Now()
 		err := invokeOperator(func() error { return u.replicator.Replicate(uploadCtx, owned) })
+		u.recordDuration(uploadCtx, owned.TaskID, time.Since(start))
 		cancel()
 		u.mu.Lock()
 		delete(u.cancels, key)

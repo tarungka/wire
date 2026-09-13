@@ -118,7 +118,7 @@ func Init(ctx context.Context, cfg Config, log zerolog.Logger) (shutdown func(co
 		// We declare durations in seconds, so install bucket boundaries
 		// that span 100 ns → 10 s, the realistic range for wire ops.
 		latencyBuckets := sdkmetric.NewView(
-			sdkmetric.Instrument{Kind: sdkmetric.InstrumentKindHistogram},
+			sdkmetric.Instrument{Kind: sdkmetric.InstrumentKindHistogram, Unit: "s"},
 			sdkmetric.Stream{
 				Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
 					Boundaries: []float64{

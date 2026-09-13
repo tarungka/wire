@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"testing"
+	"time"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -60,4 +61,43 @@ func TestTaskChannelMetricsLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(map[string]int64{})
+}
+
+func TestCheckpointUploadMetricUnits(t *testing.T) {
+	ctx := context.Background()
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer func() { _ = provider.Shutdown(ctx) }()
+	record, err := checkpointUploadRecorder(provider.Meter("test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record(ctx, "task", 1500*time.Microsecond)
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	record(canceled, "task", 2*time.Millisecond)
+	var data metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &data); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range data.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if m.Name != "wire_task_checkpoint_upload_duration_ms" {
+				continue
+			}
+			h := m.Data.(metricdata.Histogram[float64])
+			if len(h.DataPoints) != 1 {
+				t.Fatalf("points: %v", h.DataPoints)
+			}
+			p := h.DataPoints[0]
+			if p.Count != 2 || p.Sum != 3.5 {
+				t.Fatalf("milliseconds: count=%d sum=%f", p.Count, p.Sum)
+			}
+			if len(p.Bounds) == 0 || p.Bounds[len(p.Bounds)-1] != 600000 {
+				t.Fatalf("bounds: %v", p.Bounds)
+			}
+			return
+		}
+	}
+	t.Fatal("upload metric missing")
 }

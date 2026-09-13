@@ -2,10 +2,29 @@ package observability
 
 import (
 	"context"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
+
+// CheckpointUploadRecorder measures only replication I/O, including failures
+// and cancellation, excluding snapshot capture and completion delivery.
+func CheckpointUploadRecorder() (func(context.Context, string, time.Duration), error) {
+	return checkpointUploadRecorder(Meter())
+}
+
+func checkpointUploadRecorder(m metric.Meter) (func(context.Context, string, time.Duration), error) {
+	h, err := m.Float64Histogram("wire_task_checkpoint_upload_duration_ms",
+		metric.WithDescription("Checkpoint replication duration in milliseconds"),
+		metric.WithExplicitBucketBoundaries(1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 60000, 600000))
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, taskID string, duration time.Duration) {
+		h.Record(ctx, float64(duration)/float64(time.Millisecond), metric.WithAttributes(attribute.String("task_id", taskID)))
+	}, nil
+}
 
 // ObserveTaskChannels registers scrape-time queue occupancy for a live task.
 // The caller must unregister when the task exits to release both its labels
