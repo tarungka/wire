@@ -271,12 +271,21 @@ func EncodeAndWriteFrameLimit(w io.Writer, msg any, maxFrameSize uint32) error {
 	if maxFrameSize < MinFrameLength {
 		return ErrFrameTooLarge
 	}
-	payload, err := encodeMsgPackLimit(msg, maxFrameSize-MinFrameLength)
+	encoded, err := encodeMsgPackPrefix(msg, maxFrameSize-MinFrameLength, HeaderSize)
 	if err != nil {
 		return err
 	}
+	payload := encoded[HeaderSize:]
 	if len(payload) == 1 && payload[0] == 0xc0 {
 		return fmt.Errorf("%w: nil message", ErrEncodePayload)
 	}
-	return WriteFrameRaw(w, msgType, payload)
+	binary.BigEndian.PutUint32(encoded[:4], uint32(len(payload))+MinFrameLength)
+	encoded[4] = msgType
+	binary.BigEndian.PutUint32(encoded[5:9], computeCRC32C(msgType, payload))
+	if n, err := w.Write(encoded); err != nil {
+		return err
+	} else if n != len(encoded) {
+		return io.ErrShortWrite
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"errors"
+	"io"
 	"testing"
 )
 
@@ -98,5 +99,29 @@ func TestNilMessageRejectedBeforeWrite(t *testing.T) {
 		if wire.Len() != 0 {
 			t.Fatalf("%T wrote bytes", msg)
 		}
+	}
+}
+
+func TestBoundedFrameSingleWrite(t *testing.T) {
+	writer := &frameTestWriter{}
+	if err := EncodeAndWriteFrame(writer, &DataRecordMsg{Value: []byte("record")}); err != nil {
+		t.Fatal(err)
+	}
+	if writer.calls != 1 {
+		t.Fatalf("complete frame used %d writes, want one", writer.calls)
+	}
+	for _, count := range []int{0, HeaderSize - 1, HeaderSize} {
+		writer := &frameTestWriter{failCall: 1, count: count}
+		if err := EncodeAndWriteFrame(writer, &DataRecordMsg{Value: []byte("record")}); !errors.Is(err, io.ErrShortWrite) {
+			t.Fatalf("short write %d: %v", count, err)
+		}
+		if writer.calls != 1 {
+			t.Fatalf("continued after incomplete write: %d", writer.calls)
+		}
+	}
+	sentinel := errors.New("connection failed")
+	writer = &frameTestWriter{failCall: 1, count: HeaderSize, err: sentinel}
+	if err := EncodeAndWriteFrame(writer, &DataRecordMsg{Value: []byte("record")}); !errors.Is(err, sentinel) {
+		t.Fatalf("write error: %v", err)
 	}
 }

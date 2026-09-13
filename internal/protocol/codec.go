@@ -17,7 +17,7 @@ var msgpackHandle = codec.MsgpackHandle{WriteExt: true}
 // A rejected write is atomic, including large binary values handed to Write.
 type payloadBuffer struct {
 	buffer   bytes.Buffer
-	limit    uint32
+	limit    uint64
 	exceeded bool
 }
 
@@ -30,7 +30,15 @@ func (b *payloadBuffer) Write(p []byte) (int, error) {
 }
 
 func encodeMsgPackLimit(v any, limit uint32) ([]byte, error) {
-	buf := payloadBuffer{limit: limit}
+	return encodeMsgPackPrefix(v, limit, 0)
+}
+
+// encodeMsgPackPrefix reserves header space in the same allocation as the payload.
+func encodeMsgPackPrefix(v any, limit uint32, prefix int) ([]byte, error) {
+	buf := payloadBuffer{limit: uint64(limit) + uint64(prefix)}
+	if prefix != 0 {
+		buf.buffer.Write(make([]byte, prefix))
+	}
 	err := codec.NewEncoder(&buf, &msgpackHandle).Encode(canonicalMessage(v))
 	if buf.exceeded {
 		return nil, ErrFrameTooLarge

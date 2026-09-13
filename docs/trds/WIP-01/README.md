@@ -28,7 +28,7 @@
 Follow-up implementation starts from `master` at `6317284` and supersedes the narrow frame-write fix in #208. Status remains **Partially Implemented** until the full scope and acceptance targets pass.
 
 - **Implemented on this branch:** SessionHandshake 0x07 before data streams, routing-only StreamHeader 0x00, named task stream queues, retained control-stream backpressure with sender pause/resume, engine input-buffer reports, TLS coverage, and stream-end/cancellation enforcement.
-- **Remaining:** Final runtime/acceptance audit, final-head CI and review clearance, and performance targets. Worker descriptor stream wiring is implemented; Coordinator–Worker RPC orchestration remains a WIP-07 dependency. The latest measured 1 KiB CPU-only bounded framing overhead is 19.7%, exceeding the 3% target; the benchmark methodology clarification is pending. RecordBatch remains reserved and MUST NOT be sent.
+- **Remaining:** Final runtime/acceptance audit, final-head CI and review clearance, and performance targets. Worker descriptor stream wiring is implemented; Coordinator–Worker RPC orchestration remains a WIP-07 dependency. Single-write framing now measures -8.65% CPU encode/write overhead and 1.71% loopback TCP overhead at five-sample medians on Apple M4; the separate <1% CRC latency target remains unproven. See completion.md for measurement limits. RecordBatch remains reserved and MUST NOT be sent.
 - **Acceptance mapping:** [acceptance.md](acceptance.md). Implementation and run history: [completion.md](completion.md).
 
 ---

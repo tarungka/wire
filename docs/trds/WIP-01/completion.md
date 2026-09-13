@@ -444,3 +444,31 @@ TCP/mutual-TLS parity now covers maximum legal frames, invalid lengths, partial
 frame deadlines, exhausted-window deadlines, negotiation, routing and invalid
 first frames. Performance gates remain open; these correctness tests do not
 prove the percentage targets.
+
+### 2026-09-13 — single-write framing performance
+
+The bounded encoder reserves the nine-byte frame header in its encoding buffer,
+fills length/type/CRC in place, then writes the complete frame once. This avoids
+a separate transport write and header allocation. Size rejection still happens
+before wire output; exact-boundary, golden-format, nil-message and short-write
+checks pass. The full race/integration suite and golangci-lint v2.5.0 pass.
+
+Apple M4, Go 1.25, five one-second benchmark samples (medians):
+
+| Benchmark | Raw msgpack | Bounded Wire | Time overhead |
+|---|---:|---:|---:|
+| CPU encode/write, unchanged baseline | 499.2 ns | 456.0 ns | -8.65% |
+| TCP encode/deliver/decode, full value-byte validation | 2276 ns | 2315 ns | 1.71% |
+
+Commands: `go test ./internal/protocol -run '^$' -bench '^BenchmarkFramingOverhead$' -benchmem -count=5 -benchtime=1s`
+and the same command with `BenchmarkTCPFramingThroughput`. The TCP benchmark
+uses identical unbatched 1 KiB records, equal reader buffering, and includes
+receiver draining. Connection setup is excluded. Both paths validate key,
+value and timestamp. Raw uses the MessagePack stream decoder; Wire uses the
+production frame reader and payload decoder. It measures loopback TCP, not
+Yamux or deployment-network throughput. One Wire TCP sample was 2507 ns,
+so the median comparison is not a guarantee for every run or environment.
+
+These results improve on the earlier failing CPU result and fall below the 3%
+median throughput target in this setup. The independent <1% CRC latency gate
+remains unproven; hardware acceleration alone does not establish that result.

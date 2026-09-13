@@ -33,9 +33,10 @@ Tests are under `internal/protocol` (P), `internal/transport` (T), and
 
 ## Separate merge gates
 
-- Framing throughput <3% and CRC verification latency <1%. Recorded CPU framing
-  overhead remains above target; CPU-only versus TCP measurement clarification
-  is pending. No percentage target has been relaxed.
+- Framing throughput <3% and CRC verification latency <1%. Single-write framing measures
+  -8.65% CPU and 1.71% loopback TCP overhead at five-sample medians (see
+  completion.md). The CRC latency target remains unproven. No target has been
+  relaxed; these measurements are specific to the documented setup.
 - Final-head CI and applicable review/security evidence. A prior green commit
   does not validate subsequent edits.
 - Final status/PR description must match these results before marking ready.
