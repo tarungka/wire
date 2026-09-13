@@ -973,3 +973,25 @@ func TestRejectedHeartbeatCountsAsContactFailure(t *testing.T) {
 		t.Fatalf("lost=%d commands=%d", lost, commands)
 	}
 }
+
+func TestNewHeartbeatEpochStopsCommandDeliveryImmediately(t *testing.T) {
+	clientSession, serverSession := testYamuxPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := DefaultConfig()
+	cfg.MaxConsecutiveHeartbeatFailures = 10
+	server := NewServer(cfg)
+	server.Register(MethodHeartbeat, func(context.Context, uint64, []byte) (any, *RPCError) {
+		return &HeartbeatResponse{Accepted: true, EpochID: 6, Commands: []WorkerCommand{{Type: CommandTypeDeployTask}}}, nil
+	})
+	done := make(chan struct{})
+	go func() { defer close(done); server.ServeSession(ctx, serverSession) }()
+	defer func() { cancel(); _ = serverSession.Close(); <-done }()
+	var observed uint64
+	commands, lost := 0, 0
+	sender := NewHeartbeatSender(NewClient(clientSession, cfg), cfg, func() *HeartbeatRequest { return &HeartbeatRequest{WorkerID: "worker", EpochID: 5} }, func([]WorkerCommand) { commands++ }, WithContactLostCallback(func() { lost++ }), WithNewEpochCallback(func(epoch uint64) { observed = epoch }))
+	sender.sendHeartbeat(ctx)
+	if observed != 6 || commands != 0 || lost != 0 {
+		t.Fatalf("epoch=%d commands=%d threshold callback=%d", observed, commands, lost)
+	}
+}

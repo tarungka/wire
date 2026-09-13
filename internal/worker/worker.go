@@ -210,6 +210,10 @@ func (w *Worker) Run(ctx context.Context) error {
 		rpcCfg,
 		w.buildHeartbeatRequest,
 		w.handleCommands,
+		rpc.WithNewEpochCallback(func(epoch uint64) {
+			w.log.Warn().Uint64("epoch", epoch).Msg("coordinator epoch changed; stopping old tasks")
+			w.cancelTasksOnContactLoss()
+		}),
 		rpc.WithContactLostCallback(func() {
 			w.log.Error().Msg("lost contact with coordinator")
 			w.cancelTasksOnContactLoss()
