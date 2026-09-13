@@ -136,6 +136,35 @@ func (w *Worker) Run(ctx context.Context) error {
 	w.mu.Unlock()
 	defer w.Shutdown(context.Background())
 
+	for ctx.Err() == nil {
+		w.mu.RLock()
+		stopping := w.stopping
+		w.mu.RUnlock()
+		if stopping {
+			return nil
+		}
+		err := w.runCoordinatorSession(ctx, workerID, checkpointAddress)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if errors.Is(err, errReconnectTaskJoin) {
+			return err
+		}
+		w.log.Warn().Err(err).Msg("coordinator session ended; reconnecting")
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return nil
+}
+
+var errReconnectTaskJoin = errors.New("old tasks did not stop before coordinator reconnect")
+
+func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpointAddress string) (retErr error) {
+	ctx, stopSession := context.WithCancel(ctx)
+	defer stopSession()
 	w.log.Info().
 		Str("worker_id", workerID).
 		Str("coordinator", w.cfg.CoordinatorAddr).
@@ -144,13 +173,19 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// 1. Establish transport session.
 	tcfg := transport.DefaultConfig()
-	session, err := transport.NewClientSession(w.cfg.CoordinatorAddr, tcfg)
+	session, err := transport.NewClientSessionContext(ctx, w.cfg.CoordinatorAddr, tcfg)
 	if err != nil {
 		return fmt.Errorf("worker: connect to coordinator: %w", err)
 	}
 	w.mu.Lock()
 	w.session = session
 	w.mu.Unlock()
+	defer func() {
+		_ = session.Close()
+		if err := w.joinTasksForReconnect(); err != nil {
+			retErr = errors.Join(retErr, err)
+		}
+	}()
 
 	// 2. Create RPC client.
 	rpcCfg := rpc.DefaultConfig()
@@ -159,7 +194,11 @@ func (w *Worker) Run(ctx context.Context) error {
 	w.mu.Unlock()
 
 	// 3. Register with coordinator.
+	w.mu.RLock()
+	highestEpoch := w.epoch
+	w.mu.RUnlock()
 	regReq := &rpc.RegisterWorkerRequest{
+		HighestSeenEpoch:  highestEpoch,
 		CheckpointAddress: checkpointAddress,
 		WorkerID:          workerID,
 		Address:           w.cfg.ListenAddr,
@@ -171,6 +210,9 @@ func (w *Worker) Run(ctx context.Context) error {
 		return fmt.Errorf("worker: register: %w", err)
 	}
 
+	if regResp.Epoch < highestEpoch {
+		return fmt.Errorf("coordinator registration returned stale epoch %d", regResp.Epoch)
+	}
 	w.mu.Lock()
 	w.epoch = regResp.Epoch
 	w.mu.Unlock()
@@ -213,10 +255,12 @@ func (w *Worker) Run(ctx context.Context) error {
 		rpc.WithNewEpochCallback(func(epoch uint64) {
 			w.log.Warn().Uint64("epoch", epoch).Msg("coordinator epoch changed; stopping old tasks")
 			w.cancelTasksOnContactLoss()
+			stopSession()
 		}),
 		rpc.WithContactLostCallback(func() {
 			w.log.Error().Msg("lost contact with coordinator")
 			w.cancelTasksOnContactLoss()
+			stopSession()
 		}),
 	)
 
@@ -536,4 +580,26 @@ func (w *Worker) cancelTasksOnContactLoss() {
 	for _, handle := range w.tasks {
 		handle.cancel()
 	}
+}
+
+func (w *Worker) joinTasksForReconnect() error {
+	w.mu.RLock()
+	var tasks []<-chan struct{}
+	for _, handle := range w.tasks {
+		handle.cancel()
+		if handle.done != nil {
+			tasks = append(tasks, handle.done)
+		}
+	}
+	w.mu.RUnlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, done := range tasks {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return errReconnectTaskJoin
+		}
+	}
+	return nil
 }
