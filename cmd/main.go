@@ -11,6 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	_ "go.uber.org/automaxprocs" // Apply Linux CPU quotas before starting task goroutines.
 	"golang.org/x/sync/errgroup"
 
 	"github.com/tarungka/wire/internal/cmd"

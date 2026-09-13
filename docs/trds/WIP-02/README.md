@@ -267,7 +267,14 @@ if err := g.Wait(); err != nil {
 
 ### 3.2 GOMAXPROCS
 
-Wire imports `go.uber.org/automaxprocs` in `cmd/main.go`. This sets `GOMAXPROCS` to match the Linux cgroup CPU quota, which is essential for containerized deployments (Kubernetes, Docker). For bare-metal, it defaults to `runtime.NumCPU()` (same as Go default). No manual override is needed.
+Wire imports `go.uber.org/automaxprocs` in `cmd/main.go`. At startup this sets
+`GOMAXPROCS` from the Linux cgroup CPU quota, rounding down with a minimum of
+one. An explicit `GOMAXPROCS` environment variable takes precedence. Without a
+quota, or on non-Linux systems, it leaves the Go runtime's value unchanged.
+Go 1.25 also detects container quotas, but its rounding and minimum differ;
+Wire uses the automaxprocs policy specified here. Setting the value disables
+Go's automatic updates, so quota changes require a restart when automaxprocs
+has applied a quota. No manual override is needed for normal deployments.
 
 ### 3.3 Observability
 
