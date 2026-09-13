@@ -31,3 +31,23 @@ its operation is a whole alignment cycle, not one event.
 
 Rerun after final runtime integration before treating these as WIP-02 release
 evidence. No acceptance threshold or waiver is inferred from these results.
+
+## Integrated runtime refresh — 2026-09-13
+
+Runtime at `0be50db`, with the same command, host, and sample settings above.
+The benchmark completed before Docker startup. Medians of three samples:
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| OperatorChain_MapPassthrough | 278.7 | 133 | 3 |
+| OperatorChain_FlatMap | 474.2 | 365 | 6 |
+| OperatorChain_Sink | 76.89 | 5 | 1 |
+| OperatorChain_MapPassthrough_WithErrorHandler | 291.6 | 133 | 3 |
+| BarrierAligner_BufferDrain | 33017 | 531948 | 112 |
+| DeserializationPlacement/reader | 479.3 | 1443 | 5 |
+| DeserializationPlacement/chain | 456.8 | 1443 | 5 |
+| EventChannel | 26.92 | 0 | 0 |
+
+These microbenchmarks still exclude network fan-out and checkpoint replica
+I/O. They establish a refreshed baseline, not an end-to-end throughput claim.
+Allocation counts are unchanged from the earlier baseline.

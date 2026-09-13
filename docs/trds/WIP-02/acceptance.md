@@ -27,9 +27,9 @@ waive any WIP-02 requirement.
 | Per-task topology and bounded channels (§2.1–2.4) | Input reader includes one bounded read-ahead helper. Output now uses one bounded writer per stream plus a dispatcher; control fences preserve cross-partition ordering. Independent progress under a blocked Yamux window and joined cancellation pass three race-enabled runs. Mailbox capacity is at least 16, expanded for input control messages. |
 | Replication failure affects checkpoint, threshold affects task (§2.7) | Coordinator failure reporting now applies existing checkpoint thresholds and ignores stale checkpoint/epoch reports; timeout metrics exclude replication failures. TaskSlot completion delivery now feeds this policy; durable worker replication and additional transactional/abort overlap tests remain required. |
 | Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Engine upload concurrency is implemented. Pebble compaction concurrency defaults to two and is configurable in engine/embedded SDK, retained across restore. Worker configuration integration remains open. |
-| Container CPU limits (§3.2) | cmd/main.go imports automaxprocs v1.6.0 at startup. Explicit GOMAXPROCS takes precedence; quota rounding/minimum and restart behavior are documented. Command package builds locally; Linux cgroup execution remains to be verified (local Docker daemon is stopped). |
+| Container CPU limits (§3.2) | cmd/main.go imports automaxprocs v1.6.0 at startup. Explicit GOMAXPROCS takes precedence; quota rounding/minimum and restart behavior are documented. The real CGO-disabled linux/arm64 Wire binary was run in Docker with CPU quotas: 1.5 CPUs selected GOMAXPROCS=1, 0.5 CPUs selected the minimum 1, and explicit GOMAXPROCS=3 was honored. Startup logs verify automaxprocs applied each policy. |
 | Six observability metrics (§3.3) | Task input/output channel usage and alignment payload-byte gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Operator output blocking time is recorded on data/barrier/EOP sends. Engine-owned goroutines and callbacks are counted at entry/exit. Prometheus HTTP-handler export and gauge cleanup are tested; running-worker topology validation remains open. |
-| Benchmarks (§8) | Channel handoff and deserialization-placement benchmarks added; current baseline recorded in benchmarks.md. Rerun after final runtime integration. |
+| Benchmarks (§8) | Channel handoff and deserialization-placement benchmarks added; current baseline recorded in benchmarks.md. The integrated runtime refresh at `0be50db` is recorded in benchmarks.md. Allocation counts match the earlier baseline. |
 | Documentation and PR | Update actual topology, configuration and status only after validation; linked follow-up PR to #207/#149, using personal GitHub account. |
 
 ## Specification correction carried forward from WIP-01
@@ -436,3 +436,22 @@ After introducing bounded per-output writers, the complete
 test was added afterward and passed three race-enabled repetitions. Remaining
 acceptance work includes final benchmark refresh, Linux quota evidence, and
 consolidation of the historical audit below into current requirement evidence.
+
+### Linux CPU quota evidence — 2026-09-13
+
+Built the actual entry point with `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go
+build -o /private/tmp/wip02-wire-linux ./cmd`, then imported that static binary
+into a local Docker image. Startup invocations:
+
+```sh
+docker run --rm --cpus=1.5 wire-wip02-quota:local /wip02-wire-linux --help
+docker run --rm --cpus=0.5 wire-wip02-quota:local /wip02-wire-linux --help
+docker run --rm --cpus=1.5 -e GOMAXPROCS=3 wire-wip02-quota:local /wip02-wire-linux --help
+```
+
+The startup logs respectively reported `Updating GOMAXPROCS=1: determined from
+CPU quota`, `Updating GOMAXPROCS=1: using minimum allowed GOMAXPROCS`, and
+`Honoring GOMAXPROCS="3" as set in environment`. The CLI help path exits with
+code 2 after initialization; this check establishes startup quota selection,
+not workload throughput. Local logs are `/private/tmp/wip02-quota-fractional.log`,
+`/private/tmp/wip02-quota-minimum.log`, and `/private/tmp/wip02-quota-override.log`.
