@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -16,7 +17,12 @@ func TestCheckpointReplicaServicePublishesAndJoins(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	root := t.TempDir()
-	addr, closeService, err := startCheckpointReplicaService(ctx, CheckpointReplicaConfig{ListenAddr: "127.0.0.1:0", StoreRoot: root, ArtifactRoot: t.TempDir(), StagingRoot: t.TempDir(), Concurrency: 1, Authorize: func(_ context.Context, request rpc.ReplicateCheckpointRequest) error {
+	addr, closeService, err := startCheckpointReplicaService(ctx, CheckpointReplicaConfig{ListenAddr: "127.0.0.1:0", StoreRoot: root, ArtifactRoot: t.TempDir(), StagingRoot: t.TempDir(), Concurrency: 1, AuthorizeFetch: func(_ context.Context, request rpc.FetchCheckpointRequest) error {
+		if request.WorkerID != "recovery-worker" {
+			return errors.New("unassigned recovery")
+		}
+		return nil
+	}, Authorize: func(_ context.Context, request rpc.ReplicateCheckpointRequest) error {
 		if request.CheckpointID != 7 {
 			return errors.New("checkpoint is not assigned")
 		}
@@ -47,6 +53,32 @@ func TestCheckpointReplicaServicePublishesAndJoins(t *testing.T) {
 	}
 	if _, err := store.Get(ctx, "job", "task", 8, 2); !os.IsNotExist(err) {
 		t.Fatalf("unauthorized checkpoint published: %v", err)
+	}
+
+	client := rpc.NewClient(session.YamuxSession(), rpc.DefaultConfig())
+	request := rpc.FetchCheckpointRequest{WorkerID: "recovery-worker", DeploymentEpoch: 3, JobID: "job", TaskID: "task", CheckpointID: 7, EpochID: 2}
+	var fetched bytes.Buffer
+	if err := client.FetchCheckpoint(ctx, request, &fetched); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := engine.NewFileCheckpointStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.ImportArchive(ctx, "job", "task", 7, 2, bytes.NewReader(fetched.Bytes()), t.TempDir(), int64(fetched.Len())); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := restored.Get(ctx, "job", "task", 7, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Operators) != 1 || string(snapshot.Operators[0]) != "state" {
+		t.Fatalf("restored: %+v", snapshot)
+	}
+	request.WorkerID = "unassigned"
+	fetched.Reset()
+	if err := client.FetchCheckpoint(ctx, request, &fetched); err == nil || fetched.Len() != 0 {
+		t.Fatal("unauthorized recovery received state")
 	}
 	done := make(chan struct{})
 	go func() { closeService(); close(done) }()

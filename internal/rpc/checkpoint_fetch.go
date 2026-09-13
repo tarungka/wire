@@ -155,3 +155,9 @@ func NewCheckpointFetchHandler(concurrency int, load CheckpointArchiveLoader) (S
 		return writeCheckpointChunks(ctx, stream, MethodFetchCheckpoint, id, body, snapshot.Size)
 	}, nil
 }
+
+// AuthorizeCheckpointFetchRequest binds the serving replica to the deployment requesting state.
+type AuthorizeCheckpointFetchRequest struct {
+	ReplicaWorkerID string                 `codec:"rwid"`
+	Fetch           FetchCheckpointRequest `codec:"fetch"`
+}

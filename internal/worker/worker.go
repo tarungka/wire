@@ -95,6 +95,9 @@ func (w *Worker) Run(ctx context.Context) error {
 	var checkpointAddress string
 	if w.cfg.CheckpointReplica != nil {
 		replicaConfig := *w.cfg.CheckpointReplica
+		if replicaConfig.AuthorizeFetch == nil {
+			replicaConfig.AuthorizeFetch = w.authorizeCheckpointFetch
+		}
 		if replicaConfig.Authorize == nil {
 			replicaConfig.Authorize = w.authorizeCheckpointReplica
 		}

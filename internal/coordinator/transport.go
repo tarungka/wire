@@ -41,6 +41,7 @@ func NewTransportServer(coord *Coordinator, listenAddr string, log zerolog.Logge
 	srv.Register(rpc.MethodUpdateTaskStatus, coord.HandleUpdateTaskStatus)
 	srv.Register(rpc.MethodAcknowledgeCheckpoint, coord.HandleAcknowledgeCheckpoint)
 	srv.Register(rpc.MethodAuthorizeCheckpointReplica, coord.HandleAuthorizeCheckpointReplica)
+	srv.Register(rpc.MethodAuthorizeCheckpointFetch, coord.HandleAuthorizeCheckpointFetch)
 	srv.RegisterStream(rpc.MethodWatchCommands, coord.HandleWatchCommands)
 
 	return &TransportServer{

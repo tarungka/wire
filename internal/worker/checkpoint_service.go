@@ -18,13 +18,14 @@ import (
 // exist and be owned by this worker. Authorize must validate current assignment
 // ownership before a verified transfer can be published.
 type CheckpointReplicaConfig struct {
-	ListenAddr    string
-	AdvertiseAddr string
-	StoreRoot     string
-	ArtifactRoot  string
-	StagingRoot   string
-	Concurrency   int
-	Authorize     func(context.Context, rpc.ReplicateCheckpointRequest) error
+	ListenAddr     string
+	AdvertiseAddr  string
+	StoreRoot      string
+	ArtifactRoot   string
+	StagingRoot    string
+	Concurrency    int
+	Authorize      func(context.Context, rpc.ReplicateCheckpointRequest) error
+	AuthorizeFetch func(context.Context, rpc.FetchCheckpointRequest) error
 }
 
 func startCheckpointReplicaService(ctx context.Context, cfg CheckpointReplicaConfig) (string, func(), error) {
@@ -69,6 +70,15 @@ func startCheckpointReplicaService(ctx context.Context, cfg CheckpointReplicaCon
 	serviceCtx, cancel := context.WithCancel(ctx)
 	server := rpc.NewServer(rpc.DefaultConfig())
 	server.RegisterStream(rpc.MethodReplicateCheckpoint, handler)
+	if cfg.AuthorizeFetch != nil {
+		fetchHandler, err := rpc.NewCheckpointFetchHandler(cfg.Concurrency, checkpointArchiveLoader(store, cfg.StagingRoot, cfg.AuthorizeFetch))
+		if err != nil {
+			cancel()
+			_ = listener.Close()
+			return "", nil, err
+		}
+		server.RegisterStream(rpc.MethodFetchCheckpoint, fetchHandler)
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -114,6 +124,23 @@ func (w *Worker) authorizeCheckpointReplica(ctx context.Context, snapshot rpc.Re
 	}
 	if !response.Accepted {
 		return fmt.Errorf("checkpoint publication rejected: %s", response.Message)
+	}
+	return nil
+}
+
+func (w *Worker) authorizeCheckpointFetch(ctx context.Context, fetch rpc.FetchCheckpointRequest) error {
+	w.mu.RLock()
+	client := w.client
+	w.mu.RUnlock()
+	if client == nil {
+		return fmt.Errorf("checkpoint coordinator connection is unavailable")
+	}
+	var response rpc.AcknowledgeCheckpointResponse
+	if err := client.Call(ctx, rpc.MethodAuthorizeCheckpointFetch, rpc.AuthorizeCheckpointFetchRequest{ReplicaWorkerID: w.cfg.WorkerID, Fetch: fetch}, &response); err != nil {
+		return err
+	}
+	if !response.Accepted {
+		return fmt.Errorf("checkpoint recovery rejected: %s", response.Message)
 	}
 	return nil
 }
