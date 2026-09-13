@@ -11,7 +11,7 @@ waive any WIP-02 requirement.
 | # | Requirement | Current evidence / remaining work |
 |---|---|---|
 | 1 | Slow sink bounds source reading | Existing TaskSlot backpressure tests; audit network and output fan-out bounds. |
-| 2 | Cancellation drains and joins within five seconds | Produced-output drain now uses DrainTimeout; input-close and output-close helpers are joined. Network regressions cover a resumed receiver and a permanently blocked receiver. Input-side drain semantics and full lifecycle/resource audit remain open. |
+| 2 | Cancellation drains and joins within five seconds | Two-phase cancellation stops intake, releases alignment buffers, drains fetched batches/read-ahead through the chain, and bounds processing/output with DrainTimeout. Helpers are joined. Six regression scenarios pass 20 race-enabled repetitions; full race/integration suite and lint pass. Transactional cleanup and operator lifecycle/resource bounds still require audit. |
 | 3 | Async checkpoint replication permits continued processing | Operator.Checkpoint results are discarded. No TaskSlot upload worker or worker integration exists. Implement bounded, owned replication and failure handling. |
 | 4 | Concurrent source read/watermark safety | Separate source reader and legacy watermark strategy exist; audit source implementations and add full-lifecycle race evidence. |
 | 5 | Two-input alignment / snapshot / release | WIP-01 ordering and atomic buffer transfer regressions exist. Retain pre-barrier snapshot and barrier-before-post-data ordering. |
@@ -38,3 +38,19 @@ The §2.5 diagram still puts side-buffer draining before barrier forwarding.
 Those records arrived after the barrier and must remain after it. The WIP-01
 implementation and regression preserve the correct ordering; WIP-02 must not
 reintroduce the old behavior while implementing asynchronous snapshot work.
+
+## Shutdown implementation evidence
+
+`TestInputReaderDrainsReadAheadAfterIntakeCancellation` fills the bounded
+read-ahead queue before cancelling intake, then verifies every record arrives.
+`TestSourceReaderDrainsFetchedBatchAfterIntakeCancellation` preserves the rest
+of a fetched batch while preventing another fetch. Task-level tests cover a
+blocked first operator, a resumed downstream, and a permanently blocked
+receiver. `TestDrainReleasesAlignmentWithoutReordering` verifies pre-barrier
+records precede both buffered and blocked post-barrier records during shutdown,
+and that alignment cannot restart once draining begins.
+
+Prepared transactional sinks follow abort cleanup on cancellation; they cannot
+accept more records while awaiting a global decision. This path still needs
+explicit shutdown-budget validation. The implementation does not claim it can
+forcibly terminate arbitrary user callbacks that ignore cancellation.

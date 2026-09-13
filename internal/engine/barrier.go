@@ -14,6 +14,7 @@ import (
 type BarrierAligner struct {
 	mu             sync.Mutex
 	changed        chan struct{}
+	draining       bool
 	numInputs      int
 	maxBufferSize  int
 	activeID       uint64          // 0 = no active alignment.
@@ -41,7 +42,7 @@ func (ba *BarrierAligner) OnBarrier(inputIndex int, checkpointID, epochID uint64
 	ba.mu.Lock()
 	defer ba.mu.Unlock()
 
-	if inputIndex < 0 || inputIndex >= ba.numInputs || checkpointID == 0 {
+	if ba.draining || inputIndex < 0 || inputIndex >= ba.numInputs || checkpointID == 0 {
 		return false
 	}
 	if ba.activeID != 0 && (ba.activeID != checkpointID || ba.activeEpoch != epochID) {
@@ -248,4 +249,23 @@ func (ba *BarrierAligner) WaitForPriorAlignment(ctx context.Context, input int, 
 		case <-changed:
 		}
 	}
+}
+
+// BeginDrain stops future alignment and releases buffered records. Only the
+// operator chain calls this, after consuming pre-barrier queued input.
+func (ba *BarrierAligner) BeginDrain() []Event {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	ba.draining = true
+	var events []Event
+	for i := 0; i < ba.numInputs; i++ {
+		events = append(events, ba.sideBuffers[i]...)
+		ba.sideBuffers[i] = nil
+	}
+	ba.activeID = 0
+	ba.activeEpoch = 0
+	ba.arrived = make(map[int]bool)
+	ba.alignStartTime = time.Time{}
+	ba.signalChangeLocked()
+	return events
 }

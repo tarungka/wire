@@ -19,6 +19,7 @@ var errChainDone = errors.New("operator chain done")
 // chainContext consolidates parameters passed between the operator chain
 // functions, avoiding long parameter lists.
 type chainContext struct {
+	draining            bool
 	preparedCheckpoint  uint64
 	transactionPrepared bool
 	lastCommitted       uint64
@@ -344,6 +345,10 @@ func drainInputCh(cc *chainContext) error {
 
 // handleControl processes a control message.
 func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
+	if cc.draining && ctrl.Type == CtrlBarrierReceived {
+		return nil
+	}
+
 	if cc.transactionPrepared {
 		switch ctrl.Type {
 		case CtrlEndOfPartition:
@@ -503,7 +508,27 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			return errChainDone
 		}
 
+	case CtrlDrainInputs:
+		cc.draining = true
+		if cc.transactionPrepared {
+			// Prepared state cannot accept additional writes without a
+			// coordinator decision. Shutdown aborts it through normal cleanup.
+			return errChainDone
+		}
+		if err := drainInputCh(cc); err != nil {
+			return err
+		}
+		for _, event := range cc.aligner.BeginDrain() {
+			if err := processEvent(cc, event); err != nil {
+				return err
+			}
+		}
 	case CtrlShutdown:
+		if cc.draining && !cc.transactionPrepared {
+			if err := drainInputCh(cc); err != nil {
+				return err
+			}
+		}
 		cc.log.Info().Msg("shutdown control received")
 		return errChainDone
 	}

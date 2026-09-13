@@ -70,28 +70,37 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 
 	// Create a cancellable context so we can shut everything down when
 	// the operator chain finishes (whether success or failure).
-	runCtx, runCancel := context.WithCancel(ctx)
+	runCtx, runCancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer runCancel()
 
 	g, gctx := errgroup.WithContext(runCtx)
+	intakeCtx, stopIntake := context.WithCancel(gctx)
+	defer stopIntake()
+	normalizeIntake := func(err error) error {
+		if errors.Is(err, context.Canceled) && intakeCtx.Err() != nil {
+			return nil
+		}
+		return err
+	}
 	// A successful chain cancels input readers, but queued output still needs
 	// to drain through downstream backpressure. External cancellation and real
-	// failures must interrupt paused writers instead.
+	// failures interrupt paused writers; external cancellation allows bounded draining.
 	outputCtx, cancelOutput := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelOutput()
 	drainTimeout := ts.Config.DrainTimeout
 	if drainTimeout <= 0 {
 		drainTimeout = DefaultDrainTimeout
 	}
-	// External cancellation stops intake/processing immediately but lets
-	// already-produced output drain. Real task failures abort output directly.
+	// External cancellation stops intake; processing and output get one shared
+	// drain budget. Real task failures still cancel the processing group.
 	var drainMu sync.Mutex
 	var drainTimer *time.Timer
 	drainStarted := make(chan struct{})
 	stopDrain := context.AfterFunc(ctx, func() {
 		defer close(drainStarted)
+		stopIntake()
 		drainMu.Lock()
-		drainTimer = time.AfterFunc(drainTimeout, cancelOutput)
+		drainTimer = time.AfterFunc(drainTimeout, func() { runCancel(); cancelOutput() })
 		drainMu.Unlock()
 	})
 	defer func() {
@@ -106,7 +115,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	}()
 	var chainSucceeded atomic.Bool
 	stopOutput := context.AfterFunc(gctx, func() {
-		if !chainSucceeded.Load() && ctx.Err() == nil {
+		if !chainSucceeded.Load() {
 			cancelOutput()
 		}
 	})
@@ -127,6 +136,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 
 	// Track output channel producers so we can close outputCh when all are done.
 	var producerWg sync.WaitGroup
+	var inputWg sync.WaitGroup
 
 	var helperWg sync.WaitGroup
 	helperWg.Add(2)
@@ -135,7 +145,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// drain remaining messages (like the final EndOfPartition).
 	go func() {
 		defer helperWg.Done()
-		<-gctx.Done()
+		<-intakeCtx.Done()
 		for _, s := range ts.Inputs {
 			_ = s.Close()
 		}
@@ -145,10 +155,12 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	if ts.Source != nil {
 		strategy := ts.resolveStrategy()
 
+		inputWg.Add(1)
 		g.Go(func() error {
-			return invokeOperator(func() error {
-				return runSourceReader(gctx, ts.Source, strategy, eventCh, controlCh, ts.log.With().Str("component", "source_reader").Logger())
-			})
+			defer inputWg.Done()
+			return normalizeIntake(invokeOperator(func() error {
+				return runSourceReaderWithContexts(intakeCtx, gctx, ts.Source, strategy, eventCh, controlCh, ts.log.With().Str("component", "source_reader").Logger())
+			}))
 		})
 
 		// Launch watermark emitter for source tasks.
@@ -156,10 +168,10 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		producerWg.Add(1)
 		g.Go(func() error {
 			defer producerWg.Done()
-			return invokeOperator(func() error {
-				return runWatermarkEmitter(gctx, strategy, outputCh, emitInterval,
+			return normalizeIntake(invokeOperator(func() error {
+				return runWatermarkEmitter(intakeCtx, strategy, outputCh, emitInterval,
 					ts.log.With().Str("component", "watermark_emitter").Logger())
-			})
+			}))
 		})
 	} else if numInputs > 0 {
 		// Create per-input watermark tracker (only for non-source tasks).
@@ -172,9 +184,11 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 			if ts.Coordinator != nil {
 				stream.SetCheckpointCompletionReader(ts.Coordinator.LastCompletedCheckpoint)
 			}
+			inputWg.Add(1)
 			g.Go(func() error {
-				return runInputReader(gctx, i, stream, eventCh, controlCh, aligner, tracker,
-					ts.log.With().Int("input", i).Logger())
+				defer inputWg.Done()
+				return runInputReaderWithContexts(intakeCtx, gctx, i, stream, eventCh, controlCh, aligner, tracker,
+					ts.log.With().Int("input", i).Logger(), stream.ReportBufferUsage)
 			})
 		}
 
@@ -190,10 +204,32 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		producerWg.Add(1)
 		g.Go(func() error {
 			defer producerWg.Done()
-			return runWatermarkPropagator(gctx, tracker, outputCh, emitInterval, idleTimeout,
-				ts.log.With().Str("component", "watermark_propagator").Logger())
+			return normalizeIntake(runWatermarkPropagator(intakeCtx, tracker, outputCh, emitInterval, idleTimeout,
+				ts.log.With().Str("component", "watermark_propagator").Logger()))
 		})
 	}
+
+	// Stop alignment before waiting for intake: a full side buffer may be
+	// holding a reader. Final shutdown is queued only after dispatch completes.
+	helperWg.Add(1)
+	go func() {
+		defer helperWg.Done()
+		select {
+		case <-ctx.Done():
+		case <-gctx.Done():
+			return
+		}
+		select {
+		case controlCh <- ControlMsg{Type: CtrlDrainInputs}:
+		case <-gctx.Done():
+			return
+		}
+		inputWg.Wait()
+		select {
+		case controlCh <- ControlMsg{Type: CtrlShutdown}:
+		case <-gctx.Done():
+		}
+	}()
 
 	// Resolve checkpoint metrics.
 	metrics := ts.Metrics
@@ -240,7 +276,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// Launch checkpoint coordinator if configured.
 	if ts.Coordinator != nil {
 		g.Go(func() error {
-			return ts.Coordinator.Run(gctx)
+			return normalizeIntake(ts.Coordinator.Run(intakeCtx))
 		})
 	}
 
@@ -362,11 +398,20 @@ func (ts *TaskSlot) resolveEmitInterval() time.Duration {
 // the eventCh. For source tasks, this replaces the input readers.
 // If a WatermarkStrategy is provided, ObserveEventTime is called for each event.
 func runSourceReader(ctx context.Context, source SourceOperator, strategy WatermarkStrategy, eventCh chan<- Event, controlCh chan<- ControlMsg, log zerolog.Logger) error {
+	return runSourceReaderWithContexts(ctx, ctx, source, strategy, eventCh, controlCh, log)
+}
+
+// Stop fetching when intake is cancelled, but drain an already-fetched batch
+// using the processing context. A source must honor its ReadBatch context.
+func runSourceReaderWithContexts(intakeCtx, ctx context.Context, source SourceOperator, strategy WatermarkStrategy, eventCh chan<- Event, controlCh chan<- ControlMsg, log zerolog.Logger) error {
 	for {
-		batch, err := source.ReadBatch(ctx)
+		if err := intakeCtx.Err(); err != nil {
+			return err
+		}
+		batch, err := source.ReadBatch(intakeCtx)
 		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
+			if intakeCtx.Err() != nil {
+				return intakeCtx.Err()
 			}
 			log.Error().Err(err).Msg("source read batch error")
 			return err

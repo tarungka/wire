@@ -14,7 +14,8 @@ import (
 // outputCh fills, and the operator chain blocks on send.
 //
 // TaskSlot keeps this output context alive on successful chain completion so
-// terminal frames drain, and cancels it on external cancellation or failure.
+// terminal frames drain. External cancellation permits a bounded drain;
+// failures cancel writes immediately.
 func runOutputWriter(ctx context.Context, stream *transport.FrameStream, outputCh <-chan OutputMsg, log zerolog.Logger) error {
 	for msg := range outputCh {
 		if err := writeOutputMsgContext(ctx, stream, msg); err != nil {
