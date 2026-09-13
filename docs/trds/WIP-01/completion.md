@@ -426,3 +426,21 @@ Full integration race tests passed after the negotiation/CRC changes; the final
 unknown-type extension passed targeted protocol/transport race runs. Lint v2.5.0
 passes. Current PR review inspection found no submitted reviews; automated
 security-evidence recommendations still require final-head evidence at completion.
+
+### 2026-09-13 — barrier ordering and TLS parity
+
+A deterministic engine regression exposed a checkpoint ordering bug: control
+priority snapshotted before queued pre-barrier records, while side-buffered
+post-barrier records were emitted before the forwarded barrier. The chain now
+drains pre-barrier input before snapshotting and forwards the barrier before
+releasing post-barrier data. Buffer transfer/reset and reader classification are
+atomic; full buffers wait for change or cancellation, and a fast next barrier
+waits for its previous alignment to finish.
+
+The four new ordering/concurrent-buffer regressions passed 30 race-enabled runs.
+The legacy test that required post-barrier data before the barrier was corrected.
+The full `go test -race -tags=integration -timeout 5m ./...` suite passes.
+TCP/mutual-TLS parity now covers maximum legal frames, invalid lengths, partial
+frame deadlines, exhausted-window deadlines, negotiation, routing and invalid
+first frames. Performance gates remain open; these correctness tests do not
+prove the percentage targets.

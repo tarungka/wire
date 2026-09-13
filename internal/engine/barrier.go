@@ -13,6 +13,7 @@ import (
 // inputs. Once aligned, buffered events are drained in input order.
 type BarrierAligner struct {
 	mu             sync.Mutex
+	changed        chan struct{}
 	numInputs      int
 	maxBufferSize  int
 	activeID       uint64          // 0 = no active alignment.
@@ -26,6 +27,7 @@ type BarrierAligner struct {
 func NewBarrierAligner(numInputs, maxBufferSize int) *BarrierAligner {
 	return &BarrierAligner{
 		numInputs:     numInputs,
+		changed:       make(chan struct{}),
 		maxBufferSize: maxBufferSize,
 		arrived:       make(map[int]bool),
 		sideBuffers:   make(map[int][]Event),
@@ -113,6 +115,7 @@ func (ba *BarrierAligner) DrainAll(checkpointID uint64) []Event {
 		ba.sideBuffers[i] = buf[:0]
 	}
 
+	ba.signalChangeLocked()
 	return all
 }
 
@@ -134,6 +137,7 @@ func (ba *BarrierAligner) Reset(checkpointID uint64) {
 	for i := range ba.sideBuffers {
 		ba.sideBuffers[i] = ba.sideBuffers[i][:0]
 	}
+	ba.signalChangeLocked()
 }
 
 // ActiveCheckpointID returns the currently active checkpoint ID (0 if none).
@@ -167,4 +171,81 @@ func (ba *BarrierAligner) BufferedEventCount() int {
 		count += len(buf)
 	}
 	return count
+}
+
+func (ba *BarrierAligner) signalChangeLocked() {
+	close(ba.changed)
+	ba.changed = make(chan struct{})
+}
+
+// BufferAlignedEvent atomically decides whether an event belongs in the side
+// buffer. A full buffer waits for draining/reset instead of busy-spinning.
+func (ba *BarrierAligner) BufferAlignedEvent(ctx context.Context, input int, event Event) (bool, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		ba.mu.Lock()
+		if ba.activeID == 0 || !ba.arrived[input] {
+			ba.mu.Unlock()
+			return false, nil
+		}
+		if len(ba.sideBuffers[input]) < ba.maxBufferSize {
+			ba.sideBuffers[input] = append(ba.sideBuffers[input], event)
+			ba.mu.Unlock()
+			return true, nil
+		}
+		changed := ba.changed
+		ba.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+// FinishAlignment transfers the buffered epoch and resets alignment under one
+// lock, so a reader cannot append between a separate DrainAll and Reset.
+func (ba *BarrierAligner) FinishAlignment(checkpointID uint64) []Event {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	if ba.activeID != checkpointID {
+		return nil
+	}
+	var events []Event
+	for i := 0; i < ba.numInputs; i++ {
+		events = append(events, ba.sideBuffers[i]...)
+		ba.sideBuffers[i] = ba.sideBuffers[i][:0]
+	}
+	ba.activeID = 0
+	ba.activeEpoch = 0
+	ba.alignStartTime = time.Time{}
+	ba.arrived = make(map[int]bool)
+	ba.signalChangeLocked()
+	return events
+}
+
+// WaitForPriorAlignment prevents a fast input's next barrier from being silently
+// discarded while the operator chain is still finishing its previous barrier.
+func (ba *BarrierAligner) WaitForPriorAlignment(ctx context.Context, input int, checkpointID uint64) error {
+	for {
+		ba.mu.Lock()
+		if ba.activeID == 0 || ba.activeID >= checkpointID {
+			ba.mu.Unlock()
+			return nil
+		}
+		if !ba.arrived[input] {
+			active := ba.activeID
+			ba.mu.Unlock()
+			return fmt.Errorf("input %d skipped active checkpoint %d before %d", input, active, checkpointID)
+		}
+		changed := ba.changed
+		ba.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
 }

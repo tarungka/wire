@@ -12,8 +12,18 @@ import (
 	"github.com/tarungka/wire/internal/protocol"
 )
 
-func negotiationPair(t *testing.T) (*Session, *Session) {
+func negotiationPair(t *testing.T, secure ...bool) (*Session, *Session) {
 	t.Helper()
+	cfg := DefaultConfig()
+	if len(secure) > 0 && secure[0] {
+		certs := generateTestCerts(t)
+		var err error
+		cfg.TLSConfig, err = LoadTLSConfig(certs.ServerCertFile, certs.ServerKeyFile, true, certs.CACertFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.TLSConfig.RootCAs = cfg.TLSConfig.ClientCAs
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -27,14 +37,14 @@ func negotiationPair(t *testing.T) (*Session, *Session) {
 			failures <- err
 			return
 		}
-		session, err := NewServerSession(conn, DefaultConfig())
+		session, err := NewServerSession(conn, cfg)
 		if err != nil {
 			failures <- err
 			return
 		}
 		servers <- session
 	}()
-	client, err := NewClientSession(ln.Addr().String(), DefaultConfig())
+	client, err := NewClientSession(ln.Addr().String(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +62,11 @@ func negotiationPair(t *testing.T) (*Session, *Session) {
 }
 
 func TestSessionNegotiationVersionsAndFeatures(t *testing.T) {
+	t.Run("tcp", func(t *testing.T) { runTestSessionNegotiationVersionsAndFeatures(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestSessionNegotiationVersionsAndFeatures(t, true) })
+}
+
+func runTestSessionNegotiationVersionsAndFeatures(t *testing.T, secure bool) {
 	for _, tc := range []struct {
 		name             string
 		version, minimum uint16
@@ -60,7 +75,7 @@ func TestSessionNegotiationVersionsAndFeatures(t *testing.T) {
 		{"same version", 1, 1, false}, {"rolling upgrade", 2, 1, false}, {"incompatible", 2, 2, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client, server := negotiationPair(t)
+			client, server := negotiationPair(t, secure)
 			a, b := DefaultConfig(), DefaultConfig()
 			a.NodeID = "upstream"
 			b.NodeID = "downstream"
@@ -136,7 +151,12 @@ func TestSessionNegotiationVersionsAndFeatures(t *testing.T) {
 }
 
 func TestSessionNegotiationTimeoutClosesSession(t *testing.T) {
-	_, server := negotiationPair(t)
+	t.Run("tcp", func(t *testing.T) { runTestSessionNegotiationTimeoutClosesSession(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestSessionNegotiationTimeoutClosesSession(t, true) })
+}
+
+func runTestSessionNegotiationTimeoutClosesSession(t *testing.T, secure bool) {
+	_, server := negotiationPair(t, secure)
 	cfg := DefaultConfig()
 	cfg.NodeID = "server"
 	cfg.HandshakeTimeout = 20 * time.Millisecond
@@ -147,7 +167,12 @@ func TestSessionNegotiationTimeoutClosesSession(t *testing.T) {
 }
 
 func TestSessionNegotiationRejectsDataBeforeHandshake(t *testing.T) {
-	client, server := negotiationPair(t)
+	t.Run("tcp", func(t *testing.T) { runTestSessionNegotiationRejectsDataBeforeHandshake(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestSessionNegotiationRejectsDataBeforeHandshake(t, true) })
+}
+
+func runTestSessionNegotiationRejectsDataBeforeHandshake(t *testing.T, secure bool) {
+	client, server := negotiationPair(t, secure)
 	cfg := DefaultConfig()
 	cfg.NodeID = "server"
 	result := make(chan error, 1)
@@ -168,9 +193,14 @@ func TestSessionNegotiationRejectsDataBeforeHandshake(t *testing.T) {
 }
 
 func TestSessionDataStreamRouting(t *testing.T) {
+	t.Run("tcp", func(t *testing.T) { runTestSessionDataStreamRouting(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestSessionDataStreamRouting(t, true) })
+}
+
+func runTestSessionDataStreamRouting(t *testing.T, secure bool) {
 	for _, known := range []bool{true, false} {
 		t.Run(fmt.Sprint("known=", known), func(t *testing.T) {
-			client, server := negotiationPair(t)
+			client, server := negotiationPair(t, secure)
 			cfg := DefaultConfig()
 			cfg.NodeID = "test-worker"
 			errs := make(chan error, 1)
@@ -227,7 +257,12 @@ func TestSessionDataStreamRouting(t *testing.T) {
 }
 
 func TestDataStreamRequiresNegotiation(t *testing.T) {
-	client, server := negotiationPair(t)
+	t.Run("tcp", func(t *testing.T) { runTestDataStreamRequiresNegotiation(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestDataStreamRequiresNegotiation(t, true) })
+}
+
+func runTestDataStreamRequiresNegotiation(t *testing.T, secure bool) {
+	client, server := negotiationPair(t, secure)
 	cfg := DefaultConfig()
 	if _, err := client.OpenDataStream(context.Background(), cfg, protocol.StreamHeaderMsg{SourceTaskID: "a", TargetTaskID: "b"}); err == nil {
 		t.Fatal("opened before negotiation")
@@ -238,9 +273,14 @@ func TestDataStreamRequiresNegotiation(t *testing.T) {
 }
 
 func TestDataStreamInvalidFirstFrame(t *testing.T) {
+	t.Run("tcp", func(t *testing.T) { runTestDataStreamInvalidFirstFrame(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestDataStreamInvalidFirstFrame(t, true) })
+}
+
+func runTestDataStreamInvalidFirstFrame(t *testing.T, secure bool) {
 	for _, missing := range []bool{false, true} {
 		t.Run(fmt.Sprint("missing=", missing), func(t *testing.T) {
-			client, server := negotiationPair(t)
+			client, server := negotiationPair(t, secure)
 			cfg := DefaultConfig()
 			cfg.NodeID = "worker"
 			cfg.HandshakeTimeout = 50 * time.Millisecond
@@ -334,7 +374,12 @@ func TestMuxRoutesNamedTasks(t *testing.T) {
 }
 
 func TestPartialDataFrameDeadline(t *testing.T) {
-	server, client, addr := newTestMuxPair(t)
+	t.Run("tcp", func(t *testing.T) { runTestPartialDataFrameDeadline(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestPartialDataFrameDeadline(t, true) })
+}
+
+func runTestPartialDataFrameDeadline(t *testing.T, secure bool) {
+	server, client, addr := newTestMuxPairSecure(t, secure)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	out, err := client.Dial(ctx, addr)
@@ -561,7 +606,12 @@ func TestControlProgressAndCancellationWithExhaustedDataWindow(t *testing.T) {
 }
 
 func TestDataWindowWriteTimeout(t *testing.T) {
-	server, client, addr := newTestMuxPair(t)
+	t.Run("tcp", func(t *testing.T) { runTestDataWindowWriteTimeout(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestDataWindowWriteTimeout(t, true) })
+}
+
+func runTestDataWindowWriteTimeout(t *testing.T, secure bool) {
+	server, client, addr := newTestMuxPairSecure(t, secure)
 	out, err := client.Dial(context.Background(), addr)
 	if err != nil {
 		t.Fatal(err)

@@ -107,20 +107,11 @@ func runInputReader(
 		case *protocol.DataRecordMsg:
 			event := EventFromProto(m)
 			tracker.RecordActivity(inputIndex)
-			if aligner.IsAligning(inputIndex) {
-				if err := aligner.BufferEvent(ctx, inputIndex, event); err != nil {
-					log.Warn().Err(err).Int("input", inputIndex).Msg("side buffer full, blocking")
-					// Spin-wait with context check when buffer is full.
-					for {
-						if ctx.Err() != nil {
-							return ctx.Err()
-						}
-						if err := aligner.BufferEvent(ctx, inputIndex, event); err == nil {
-							break
-						}
-					}
-				}
-			} else {
+			buffered, err := aligner.BufferAlignedEvent(ctx, inputIndex, event)
+			if err != nil {
+				return err
+			}
+			if !buffered {
 				select {
 				case eventCh <- event:
 				case <-ctx.Done():
@@ -131,6 +122,9 @@ func runInputReader(
 		case *protocol.CheckpointBarrierMsg:
 			if stream.IsCheckpointCompleted(m.CheckpointID) {
 				continue
+			}
+			if err := aligner.WaitForPriorAlignment(ctx, inputIndex, m.CheckpointID); err != nil {
+				return err
 			}
 			aligner.OnBarrier(inputIndex, m.CheckpointID, m.EpochID)
 			ctrl := ControlMsg{
