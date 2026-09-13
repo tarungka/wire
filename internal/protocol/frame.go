@@ -161,48 +161,48 @@ func DecodePayload(f Frame) (any, error) {
 	switch f.MsgType {
 	case MsgTypeStreamHeader:
 		var msg StreamHeaderMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
 	case MsgTypeSessionHandshake:
 		var msg SessionHandshakeMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
 
 	case MsgTypeDataRecord:
 		var msg DataRecordMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
 
 	case MsgTypeCheckpointBarrier:
 		var msg CheckpointBarrierMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
 
 	case MsgTypeWatermark:
 		var msg WatermarkMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
 
 	case MsgTypeEndOfPartition:
 		var msg EndOfPartitionMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
 
 	case MsgTypeBackpressure:
 		var msg BackpressureMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
@@ -251,12 +251,12 @@ func EncodeAndWriteFrameLimit(w io.Writer, msg any, maxFrameSize uint32) error {
 	default:
 		return fmt.Errorf("%w: unsupported type %T", ErrEncodePayload, msg)
 	}
-	payload, err := EncodeMsgPack(msg)
+	if maxFrameSize < MinFrameLength {
+		return ErrFrameTooLarge
+	}
+	payload, err := encodeMsgPackLimit(msg, maxFrameSize-MinFrameLength)
 	if err != nil {
 		return err
-	}
-	if uint64(len(payload))+MinFrameLength > uint64(maxFrameSize) {
-		return ErrFrameTooLarge
 	}
 	return WriteFrameRaw(w, msgType, payload)
 }

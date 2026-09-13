@@ -41,3 +41,39 @@ func TestOutgoingFrameLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestPayloadBufferRejectsBeforeAllocation(t *testing.T) {
+	b := payloadBuffer{limit: 32}
+	huge := make([]byte, 16*1024*1024)
+	if n, err := b.Write(huge); n != 0 || !errors.Is(err, ErrFrameTooLarge) {
+		t.Fatalf("got %d, %v", n, err)
+	}
+	if b.buffer.Cap() != 0 {
+		t.Fatalf("rejected write allocated %d bytes", b.buffer.Cap())
+	}
+	if _, err := encodeMsgPackLimit(&DataRecordMsg{Value: huge}, 32); !errors.Is(err, ErrFrameTooLarge) {
+		t.Fatalf("encoder: %v", err)
+	}
+	var wire bytes.Buffer
+	for _, limit := range []uint32{0, MinFrameLength - 1, MinFrameLength} {
+		if err := EncodeAndWriteFrameLimit(&wire, &DataRecordMsg{}, limit); !errors.Is(err, ErrFrameTooLarge) {
+			t.Fatalf("limit %d: %v", limit, err)
+		}
+	}
+	if wire.Len() != 0 {
+		t.Fatal("invalid limit wrote bytes")
+	}
+}
+
+func TestFrameRejectsTrailingPayload(t *testing.T) {
+	for _, mt := range []uint8{MsgTypeStreamHeader, MsgTypeSessionHandshake, MsgTypeDataRecord, MsgTypeCheckpointBarrier, MsgTypeWatermark, MsgTypeEndOfPartition, MsgTypeBackpressure} {
+		// An empty map is structurally decodable into each message, but a second
+		// object or malformed tail must never be hidden by that successful decode.
+		for _, tail := range []byte{0x80, 0xc0, 0xc1} {
+			_, err := DecodePayload(Frame{MsgType: mt, Payload: []byte{0x80, tail}})
+			if !errors.Is(err, ErrDecodePayload) {
+				t.Fatalf("type %d tail %x: %v", mt, tail, err)
+			}
+		}
+	}
+}

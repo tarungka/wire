@@ -185,11 +185,15 @@ backpressure) now enforce Config.MaxFrameSize before writing any frame bytes.
 The length includes type and CRC and excludes the four-byte prefix, matching
 ReadFrame. Boundary tests cover all seven active message types and prove that
 an oversized frame produces no output and the exact-limit frame round-trips.
-Protocol/transport race tests and v2.5.0 lint pass. Encoding still allocates the
-payload before checking its size; bounded encoding and schema validation remain
-open resource/protocol work. The low-level raw frame writer remains available
+Protocol/transport race tests and v2.5.0 lint pass. Encoding now rejects writes that would exceed the payload budget before
+copying those bytes. Protocol decoding rejects trailing MessagePack objects or
+garbage after the message. Final field-convention validation remains open. The low-level raw frame writer remains available
 for protocol fixtures and checks uint32 representability.
 
 At head 76f5fda, lint, unit tests, integration tests, build and Docker CI passed.
 Go and Python CodeQL jobs failed after reaching upload, with no error annotation;
 the failed jobs were requested to rerun. This is not yet security-check clearance.
+
+The bounded encoder and trailing-payload checks pass the full integration-tagged
+race suite and golangci-lint v2.5.0. A 16 MiB binary value with a 32-byte budget
+is rejected without copying the binary value into the output buffer.
