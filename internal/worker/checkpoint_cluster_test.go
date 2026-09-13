@@ -34,6 +34,10 @@ func (*checkpointTestSource) ReadBatch(ctx context.Context) ([]engine.Event, err
 	}
 }
 
+func TestClusterCheckpointRestartsFromReplica(t *testing.T) {
+	testClusterCheckpoint(t, false, false, true)
+}
+
 func TestClusterCheckpointReplicatesAndCompletes(t *testing.T) {
 	testClusterCheckpoint(t, false)
 }
@@ -72,8 +76,15 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 			t.Error(err)
 		}
 	}()
+	restart := len(transactional) > 1 && transactional[1]
+	var failSource atomic.Bool
+	var instances atomic.Int32
+	var restoredRead atomic.Bool
 	registry := worker.NewRegistry()
 	registry.RegisterSource("checkpoint-source", func(context.Context, []byte, worker.TaskContext) (engine.SourceOperator, error) {
+		if restart {
+			return &restartCheckpointSource{fail: &failSource, needsRestore: instances.Add(1) > 1, readAfterRestore: &restoredRead}, nil
+		}
 		return &checkpointTestSource{}, nil
 	})
 	var committed atomic.Uint64
@@ -200,6 +211,40 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 			t.Fatalf("remote snapshot: %+v, %v", snapshot, err)
 		}
 	}
+	if restart {
+		failSource.Store(true)
+		waitFor(t, 8*time.Second, func() bool {
+			current, err := coord.GetJob(job.ID)
+			return err == nil && current.Status == coordinator.JobRunning && current.RestartCount == 1 && restoredRead.Load()
+		})
+	}
+}
+
+type restartCheckpointSource struct {
+	checkpointTestSource
+	fail             *atomic.Bool
+	needsRestore     bool
+	restored         bool
+	readAfterRestore *atomic.Bool
+}
+
+func (s *restartCheckpointSource) RestoreCheckpoint(data []byte) error {
+	if string(data) != "source-offset" {
+		return errors.New("incorrect restored source offset")
+	}
+	s.restored = true
+	return nil
+}
+func (s *restartCheckpointSource) ReadBatch(ctx context.Context) ([]engine.Event, error) {
+	if s.needsRestore {
+		if !s.restored {
+			return nil, errors.New("source read before restore")
+		}
+		s.readAfterRestore.Store(true)
+	} else if s.fail.Load() {
+		return nil, errors.New("injected source failure")
+	}
+	return s.checkpointTestSource.ReadBatch(ctx)
 }
 
 type checkpointTestSink struct {
