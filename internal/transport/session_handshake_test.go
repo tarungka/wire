@@ -356,3 +356,51 @@ func TestPausedWriterCancellation(t *testing.T) {
 		t.Fatalf("paused cancellation: %v", err)
 	}
 }
+
+func TestDialWaiterCancellationDoesNotBlockOtherPeers(t *testing.T) {
+	stalled, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stalled.Close()
+	_, client, healthyAddr := newTestMuxPair(t)
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	first := make(chan error, 1)
+	go func() { _, err := client.Dial(firstCtx, stalled.Addr().String()); first <- err }()
+	// TCP acceptance proves the first dial owns the in-flight entry; deliberately
+	// never create a Yamux server or respond to its session handshake.
+	conn, err := stalled.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	waiterCtx, cancelWaiter := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancelWaiter()
+	waiter := make(chan error, 1)
+	go func() { _, err := client.Dial(waiterCtx, stalled.Addr().String()); waiter <- err }()
+	select {
+	case err := <-waiter:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("waiting dial: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dial waiter ignored its context")
+	}
+	healthyCtx, cancelHealthy := context.WithTimeout(context.Background(), time.Second)
+	defer cancelHealthy()
+	stream, err := client.Dial(healthyCtx, healthyAddr)
+	if err != nil {
+		t.Fatalf("stalled worker blocked another peer: %v", err)
+	}
+	defer stream.Close()
+	cancelFirst()
+	select {
+	case err := <-first:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("initiating dial: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initiating dial did not cancel")
+	}
+}

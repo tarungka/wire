@@ -116,6 +116,9 @@ func runInputReader(
 			}
 
 		case *protocol.CheckpointBarrierMsg:
+			if stream.IsCheckpointCompleted(m.CheckpointID) {
+				continue
+			}
 			aligner.OnBarrier(inputIndex, m.CheckpointID, m.EpochID)
 			ctrl := ControlMsg{
 				Type:         CtrlBarrierReceived,

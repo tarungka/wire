@@ -25,26 +25,28 @@ type NegotiatedParams struct {
 // FrameStream provides high-level stream operations with handshake,
 // error counting, and protocol validation on top of a Yamux stream.
 type FrameStream struct {
-	mu                   sync.Mutex
-	writeMu              sync.Mutex
-	readMu               sync.Mutex
-	readOffset           uint64
-	reportMu             sync.Mutex
-	reportedPause        bool
-	closeOnce            sync.Once
-	done                 chan struct{}
-	resume               chan struct{}
-	session              *Session
-	sender               bool
-	header               *protocol.StreamHeaderMsg
-	raw                  *yamux.Stream
-	cfg                  Config
-	negotiated           *NegotiatedParams
-	consecutiveCRCErrors int
-	consecutiveDecErrors int
-	lastWatermarks       map[string]int64 // per-SourceID watermark tracking
-	ended                bool
-	log                  zerolog.Logger
+	mu                      sync.Mutex
+	writeMu                 sync.Mutex
+	readMu                  sync.Mutex
+	readOffset              uint64
+	reportMu                sync.Mutex
+	reportedPause           bool
+	closeOnce               sync.Once
+	done                    chan struct{}
+	resume                  chan struct{}
+	session                 *Session
+	sender                  bool
+	header                  *protocol.StreamHeaderMsg
+	raw                     *yamux.Stream
+	cfg                     Config
+	negotiated              *NegotiatedParams
+	consecutiveCRCErrors    int
+	consecutiveDecErrors    int
+	lastWatermarks          map[string]int64 // per-SourceID watermark tracking
+	ended                   bool
+	lastCompletedCheckpoint uint64
+	checkpointCompletion    func() uint64
+	log                     zerolog.Logger
 }
 
 // NewFrameStream wraps a Yamux stream into a FrameStream.
@@ -223,6 +225,11 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 		if alreadyEnded {
 			fs.log.Warn().Str("type", protocol.MsgTypeName(frame.MsgType)).Msg("frame after EndOfPartition, dropping")
 			return nil, io.EOF
+		}
+
+		if barrier, ok := decoded.(*protocol.CheckpointBarrierMsg); ok && fs.IsCheckpointCompleted(barrier.CheckpointID) {
+			fs.log.Debug().Uint64("checkpoint_id", barrier.CheckpointID).Msg("completed checkpoint barrier, dropping replay")
+			continue
 		}
 
 		// Watermark monotonicity check (per-SourceID).

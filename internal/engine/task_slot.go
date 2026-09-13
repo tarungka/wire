@@ -18,19 +18,20 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
-	Config       TaskSlotConfig
-	Inputs       []*transport.FrameStream // Upstream input streams.
-	Outputs      []*transport.FrameStream // Downstream output streams.
-	Operators    []Operator               // Fused operator chain.
-	Source       SourceOperator           // Non-nil for source tasks.
-	Strategy     WatermarkStrategy        // Resolved watermark strategy (source tasks only).
-	Coordinator  *CheckpointCoordinator   // Optional checkpoint coordinator (WIP-05).
-	Metrics      CheckpointMetrics        // Optional checkpoint metrics collector.
-	ErrorMetrics ErrorMetrics             // Optional error handling metrics collector (WIP-11).
-	TaskIndex    int                      // Index of this task within the parallel subtasks.
-	TaskID       string                   // Unique identifier for this task.
-	OnRunning    func()                   // Called after all operators open, before any records are read.
-	log          zerolog.Logger
+	Config               TaskSlotConfig
+	Inputs               []*transport.FrameStream // Upstream input streams.
+	Outputs              []*transport.FrameStream // Downstream output streams.
+	Operators            []Operator               // Fused operator chain.
+	Source               SourceOperator           // Non-nil for source tasks.
+	Strategy             WatermarkStrategy        // Resolved watermark strategy (source tasks only).
+	Coordinator          *CheckpointCoordinator   // Optional checkpoint coordinator (WIP-05).
+	Metrics              CheckpointMetrics        // Optional checkpoint metrics collector.
+	ErrorMetrics         ErrorMetrics             // Optional error handling metrics collector (WIP-11).
+	TaskIndex            int                      // Index of this task within the parallel subtasks.
+	RestoredCheckpointID uint64                   // Globally completed snapshot used for recovery.
+	TaskID               string                   // Unique identifier for this task.
+	OnRunning            func()                   // Called after all operators open, before any records are read.
+	log                  zerolog.Logger
 }
 
 // NewTaskSlot creates a new TaskSlot with the given configuration.
@@ -127,6 +128,10 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		// Launch input readers (one per upstream stream).
 		for i, stream := range ts.Inputs {
 			i, stream := i, stream
+			stream.MarkCheckpointCompleted(ts.RestoredCheckpointID)
+			if ts.Coordinator != nil {
+				stream.SetCheckpointCompletionReader(ts.Coordinator.LastCompletedCheckpoint)
+			}
 			g.Go(func() error {
 				return runInputReader(gctx, i, stream, eventCh, controlCh, aligner, tracker,
 					ts.log.With().Int("input", i).Logger())

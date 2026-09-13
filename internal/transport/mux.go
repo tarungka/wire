@@ -18,7 +18,7 @@ import (
 // Yamux sessions, and stream lifecycle.
 type Mux struct {
 	mu        sync.RWMutex
-	dialMu    sync.Mutex
+	dialing   map[string]chan struct{}
 	closeOnce sync.Once
 	tasks     map[string]chan *FrameStream
 	cfg       Config
@@ -44,6 +44,7 @@ func NewMux(cfg Config) *Mux {
 	return &Mux{
 		cfg:      cfg,
 		peers:    make(map[string]*Session),
+		dialing:  make(map[string]chan struct{}),
 		tasks:    make(map[string]chan *FrameStream),
 		streamCh: make(chan *FrameStream, 64),
 		log:      logger.GetLogger("mux"),
@@ -267,21 +268,37 @@ func (m *Mux) sessionAcceptLoop(ctx context.Context, sess *Session) {
 }
 
 func (m *Mux) getOrCreateSession(ctx context.Context, addr string) (*Session, error) {
-	// Serialize creation so concurrent data opens reuse a single negotiated TCP
-	// session, rather than racing multiple handshakes to the same worker.
-	m.dialMu.Lock()
-	defer m.dialMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if m.ctx.Err() != nil {
-		return nil, fmt.Errorf("transport: mux closed")
-	}
-	m.mu.RLock()
-	sess := m.peers[addr]
-	m.mu.RUnlock()
-	if sess != nil && !sess.IsClosed() {
-		return sess, nil
+	// Coalesce same-peer dials without holding a global lock across network
+	// I/O. Waiters may cancel and unrelated workers can connect independently.
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
+		if m.ctx.Err() != nil {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("transport: mux closed")
+		}
+		if sess := m.peers[addr]; sess != nil && !sess.IsClosed() {
+			m.mu.Unlock()
+			return sess, nil
+		}
+		if pending := m.dialing[addr]; pending != nil {
+			m.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-m.ctx.Done():
+				return nil, fmt.Errorf("transport: mux closed")
+			case <-pending:
+				continue
+			}
+		}
+		pending := make(chan struct{})
+		m.dialing[addr] = pending
+		m.mu.Unlock()
+		defer func() { m.mu.Lock(); delete(m.dialing, addr); close(pending); m.mu.Unlock() }()
+		break
 	}
 	dialCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

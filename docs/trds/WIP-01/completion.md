@@ -10,11 +10,11 @@ sent; implementing batching is explicitly deferred by this TRD.
 | Scope | Current evidence / remaining work |
 | --- | --- |
 | Message formats (§3.1–3.10) | Added StreamHeader 0x00 and SessionHandshake 0x07 codecs and round trips. Finalize required/optional field conventions and boundary validation across all messages. |
-| Session negotiation (§2.2, §3.10) | Mux negotiates before publication and data opening. Compatible/rolling/incompatible versions, feature intersection, timeout, early data rejection, and session reuse pass. Further audit: reciprocal worker connections and cancellation while waiting for the dial lock. |
+| Session negotiation (§2.2, §3.10) | Mux negotiates before publication and data opening. Compatible/rolling/incompatible versions, feature intersection, timeout, early data rejection, and session reuse pass. Same-peer dialing is coalesced with cancellable waiters; unrelated peers make progress independently. Reciprocal worker connection reuse remains. |
 | Stream routing (§2.2, §3.8) | Sender-only headers, first-frame deadline, RegisterTask/AcceptTask routing and unknown-target rejection pass. Worker task descriptors/executor still need distributed input/output wiring; the current executor requires a local source and creates TaskSlot with no network streams. |
 | Inline ordering (§5 decision 3) | Pending final audit: records/barriers/watermarks remain ordered on data streams and reach task inputs in order. |
 | Control/backpressure (§3.7, §6.3) | One retained control stream dispatches pause/resume by Yamux ID. Writes pause at 80% and resume at 20%; engine input read-ahead reports occupancy. TCP and TLS tests demonstrate blocked writes and recovery. Still verify control progress under a fully exhausted data window and runtime buffer saturation end to end. |
-| Errors and lifecycle (§6) | Partial-frame completion deadlines preserve idle streams; EOP closes output and rejects later writes; error counters reset independently; corrupt frames avoid payload-copy allocation. Corruption diagnostics now include stream-relative offsets, bounded 64-byte previews and both CRCs; invalid lengths log the remote address and reported length. Completed-barrier suppression remains. |
+| Errors and lifecycle (§6) | Partial-frame completion deadlines preserve idle streams; EOP closes output and rejects later writes; error counters reset independently; corrupt frames avoid payload-copy allocation. Corruption diagnostics now include stream-relative offsets, bounded 64-byte previews and both CRCs; invalid lengths log the remote address and reported length. Streams suppress barriers at or below authoritative global completion or a restored checkpoint. Input readers recheck after queueing; distributed completion notifications still need worker wiring. |
 | TLS (§7) | Existing TLS/mTLS positive and negative tests pass with session negotiation; TLS all-message test now exercises actual control-stream pause/resume. |
 | Resource bounds (§7.3, §8.2) | Verify bounded allocations and session reuse, closure during negotiation, malformed streams and fuzz inputs. |
 | CRC overhead (§1.4) | Native CRC: median 80.75 ns/1025 bytes; independent software recurrence: 1850 ns. Hardware acceleration is evident. The <1% verification-latency acceptance target is not demonstrated. |
@@ -84,7 +84,7 @@ engine race suites after input-buffer integration and paused-output cancellation
 Decoder fuzzing passed 1,763,490 executions in the recorded 10-second run. The merged
 checkpoint fixture now supplies EpochID=1 to match the barrier it created.
 
-Other remaining work includes completed-checkpoint barrier suppression,
+Other remaining work includes distributed task/completion wiring,
 final message-field validation, reciprocal connection reuse, and full acceptance
 coverage. This branch is not a completed WIP and is not ready to merge.
 
@@ -107,3 +107,22 @@ The ECC bot requests security evidence; its unrelated analyzer/RAG/harness corpu
 recommendations do not describe Wire's protocol. Attach final CodeQL/TLS/fuzz
 validation evidence in the PR when the implementation is complete; do not change
 app permissions merely because the bot cannot publish checks.
+
+### Goal continuation: checkpoint replay and dial isolation
+
+The coordinator now exposes its globally completed checkpoint, advancing only
+when all pending task ACKs have arrived. TaskSlot connects network inputs to that
+watermark and initializes them from RestoredCheckpointID. Streams suppress stale
+barriers, and the input reader checks again after buffered reads. The regression
+uses a real two-task coordinator and network stream: partial ACK still permits
+the active barrier, full completion drops older/equal barriers, and a restored
+watermark rejects replay without regressing on stale notifications.
+
+Mux now coalesces only dials for the same address. A waiting caller may cancel
+without waiting for another caller's network timeout, and a stalled worker does
+not block a healthy worker. The test holds a real TCP connection open without
+handshaking and verifies both cancellation and independent peer progress.
+
+Validation: `go test -race -tags=integration -timeout 5m ./...` passes; the Mux
+concurrency/cancellation regressions pass five repetitions; golangci-lint v2.5.0
+reports zero issues. Full WIP-01 completion is still pending the remaining gates.
