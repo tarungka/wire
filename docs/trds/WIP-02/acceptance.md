@@ -29,7 +29,7 @@ waive any WIP-02 requirement.
 | Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Engine upload concurrency is implemented. Pebble compaction concurrency defaults to two and is configurable in engine/embedded SDK, retained across restore. Worker configuration integration remains open. |
 | Container CPU limits (§3.2) | cmd/main.go imports automaxprocs v1.6.0 at startup. Explicit GOMAXPROCS takes precedence; quota rounding/minimum and restart behavior are documented. Command package builds locally; Linux cgroup execution remains to be verified (local Docker daemon is stopped). |
 | Six observability metrics (§3.3) | Task input/output channel usage and alignment payload-byte gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Operator output blocking time is recorded on data/barrier/EOP sends. Engine-owned goroutines and callbacks are counted at entry/exit. Prometheus HTTP-handler export and gauge cleanup are tested; running-worker topology validation remains open. |
-| Benchmarks (§8) | Engine benchmarks exist. Establish and record concurrency/channel/deserialization baselines after implementation. |
+| Benchmarks (§8) | Channel handoff and deserialization-placement benchmarks added; current baseline recorded in benchmarks.md. Rerun after final runtime integration. |
 | Documentation and PR | Update actual topology, configuration and status only after validation; linked follow-up PR to #207/#149, using personal GitHub account. |
 
 ## Specification correction carried forward from WIP-01
