@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/protocol"
+	"github.com/tarungka/wire/internal/rpc"
 )
 
 func newTestCoordinator(t *testing.T) (*Coordinator, *MemoryStore) {
@@ -271,4 +272,32 @@ func TestRegisterWorker_ConcurrentRegistration(t *testing.T) {
 		t.Fatalf("expected %d workers, got %d", n, len(c.workers))
 	}
 	c.mu.RUnlock()
+}
+
+func TestReregisterFindsMissingTaskFromJobAssignment(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	job := &JobMeta{ID: "job", Status: JobRunning, LatestCheckpoint: 7}
+	c.jobs["job"] = job
+	assignment := TaskAssignmentMap{JobID: "job", EpochID: 5, AttemptID: "old", Assignments: map[string]string{"task": "worker"}}
+	if err := store.Set(JobAssignmentsKey("job"), encode(t, assignment)); err != nil {
+		t.Fatal(err)
+	}
+	response, err := c.RegisterWorker(RegisterWorkerRequest{WorkerID: "worker", TaskSlotsTotal: 1, HighestSeenEpoch: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.MissingTasks) != 1 || response.MissingTasks[0] != "task" || job.Status != JobFailing || c.taskStatuses["task"] != rpc.TaskStatusFailed {
+		t.Fatalf("missing task not connected to restart: %+v job %+v", response, job)
+	}
+	data, err := store.Get(JobMetaKey("job"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted JobMeta
+	if err := protocol.DecodeMsgPack(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != JobFailing || persisted.LatestCheckpoint != 7 {
+		t.Fatalf("restart state: %+v", persisted)
+	}
 }
