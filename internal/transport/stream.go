@@ -36,6 +36,12 @@ type FrameStream struct {
 	resume                  chan struct{}
 	session                 *Session
 	sender                  bool
+	managedSender           bool
+	senderReadDone          chan struct{}
+	senderMessage           any
+	senderError             error
+	senderReadDelivered     bool
+	failure                 error
 	header                  *protocol.StreamHeaderMsg
 	raw                     *yamux.Stream
 	cfg                     Config
@@ -84,10 +90,15 @@ func (fs *FrameStream) WriteMessageContext(ctx context.Context, msg any) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-fs.done:
-		return fmt.Errorf("transport: stream closed")
+		return fs.closedError()
 	case fs.writeGate <- struct{}{}:
 	}
 	defer func() { <-fs.writeGate }()
+	select {
+	case <-fs.done:
+		return fs.closedError()
+	default:
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -96,7 +107,7 @@ func (fs *FrameStream) WriteMessageContext(ctx context.Context, msg any) error {
 		ended, resume := fs.ended, fs.resume
 		fs.mu.Unlock()
 		if ended {
-			return fmt.Errorf("transport: stream ended, cannot write")
+			return fs.closedError()
 		}
 		if resume == nil {
 			break
@@ -106,7 +117,7 @@ func (fs *FrameStream) WriteMessageContext(ctx context.Context, msg any) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-fs.done:
-			return fmt.Errorf("transport: stream closed")
+			return fs.closedError()
 		case <-fs.session.yamux.CloseChan():
 			return fmt.Errorf("transport: session closed")
 		}
@@ -141,6 +152,12 @@ func (fs *FrameStream) WriteMessageContext(ctx context.Context, msg any) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		fs.mu.Lock()
+		failure := fs.failure
+		fs.mu.Unlock()
+		if failure != nil {
+			return errors.Join(failure, err)
+		}
 		return err
 	}
 	switch msg.(type) {
@@ -158,6 +175,13 @@ func (fs *FrameStream) WriteMessageContext(ctx context.Context, msg any) error {
 // and end-of-partition detection per WIP-01 Section 6.
 // After EndOfPartition has been delivered, subsequent calls return io.EOF.
 func (fs *FrameStream) ReadMessage() (any, error) {
+	if fs.managedSender {
+		return fs.readSenderResult()
+	}
+	return fs.readMessage(true)
+}
+
+func (fs *FrameStream) readMessage(closeOnEOF bool) (any, error) {
 	fs.readMu.Lock()
 	defer fs.readMu.Unlock()
 	select {
@@ -197,7 +221,9 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 			if errors.Is(err, protocol.ErrFrameTooLarge) || errors.Is(err, protocol.ErrFrameTooSmall) {
 				fs.log.Warn().Err(err).Str("remote_addr", fs.raw.RemoteAddr().String()).Uint32("frame_length", frame.Length).Uint64("frame_offset", offset).Msg("invalid frame length")
 			}
-			_ = fs.Close()
+			if closeOnEOF || !errors.Is(err, io.EOF) {
+				_ = fs.Close()
+			}
 			return nil, err
 		}
 
@@ -284,6 +310,9 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 		if _, ok := decoded.(*protocol.EndOfPartitionMsg); ok {
 			fs.mu.Lock()
 			fs.ended = true
+			if fs.managedSender {
+				fs.failure = fmt.Errorf("%w: %s", ErrTargetTaskRejected, fs.header.TargetTaskID)
+			}
 			fs.mu.Unlock()
 			_ = fs.Close()
 		}

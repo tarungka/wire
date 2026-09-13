@@ -32,6 +32,13 @@ func (r *frameReader) Read(p []byte) (int, error) {
 			timeout = DefaultConnectionWriteTimeout
 		}
 		_ = r.stream.raw.SetReadDeadline(time.Now().Add(timeout))
+		// Close may race the first byte and its completion deadline. Preserve
+		// cancellation rather than replacing Close's immediate deadline.
+		select {
+		case <-r.stream.done:
+			_ = r.stream.raw.SetReadDeadline(time.Now())
+		default:
+		}
 	}
 	return n, err
 }

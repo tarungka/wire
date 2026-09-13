@@ -104,7 +104,21 @@ func (m *Mux) Dial(ctx context.Context, addr string, routing ...protocol.StreamH
 		if errors.Is(err, errSessionDraining) {
 			continue
 		}
-		return stream, err
+		if err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
+		if m.ctx.Err() != nil {
+			m.mu.Unlock()
+			_ = stream.Close()
+			return nil, m.ctx.Err()
+		}
+		stream.senderReadDone = make(chan struct{})
+		stream.managedSender = true
+		m.wg.Add(1)
+		m.mu.Unlock()
+		go func() { defer m.wg.Done(); stream.watchRejection() }()
+		return stream, nil
 	}
 }
 

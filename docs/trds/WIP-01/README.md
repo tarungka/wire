@@ -527,7 +527,7 @@ type StreamHeaderMsg struct {
 1. Session negotiation (§3.10) MUST complete before data streams are opened.
 2. The sender writes exactly one StreamHeader as the first data-stream frame. Source and target task identifiers MUST be nonempty.
 3. The receiver validates the target and dispatches the stream to that task and input partition.
-4. An unknown target is rejected with EndOfPartition(Reason=Error), then stream closure. This rejection is the sole exception to the unidirectional rule; successful data streams have no reverse-direction messages.
+4. An unknown target is rejected with EndOfPartition(Reason=Error), then stream closure. This rejection is the sole exception to the unidirectional rule; successful data streams have no reverse-direction messages. Mux-managed senders monitor this direction automatically, close rejected outputs, and report `ErrTargetTaskRejected` to writers. An explicit sender read can still retrieve the rejection once. This is asynchronous rejection handling, not a positive routing acknowledgment; tasks must be registered before upstream deployment.
 5. A receiver that does not receive a complete StreamHeader within 5 seconds of stream acceptance MUST close the stream.
 6. A first frame whose type is not 0x00 is a protocol violation and MUST close the stream.
 7. Version and feature negotiation MUST NOT be repeated on individual data streams.

@@ -389,3 +389,23 @@ transport authentication or replay protection. The specification now states thes
 limits accurately instead of asserting unimplemented guarantees. The completed
 barrier receiver hook remains part of WIP-01; whole RPC checkpoint orchestration
 must be evaluated under its owning WIPs.
+
+### Sender observation of task rejection
+
+Unknown-target tests previously consumed reverse EOP manually, while worker
+outputs only write. Mux-managed senders now monitor the reverse direction and
+close rejected outputs, preserving ErrTargetTaskRejected for writers (including
+races with queued writes). The monitor uses the same CRC/decode thresholds and
+unknown-message handling as normal frame reads. Explicit ReadMessage callers
+can still retrieve the cached rejection once. Monitoring is joined during mux
+shutdown. Normal reverse EOF does not interrupt the output owner's final EOP.
+
+TCP/mutual-TLS rejection and 100-stream mixed-message tests passed five race runs.
+The complete integration race suite passes, including existing explicit rejection
+readers. A first-byte/Close race was also corrected so the frame completion
+deadline cannot overwrite Close's immediate read deadline; cancellation/closure
+stress tests passed ten runs. Lint v2.5.0 reports zero issues.
+
+This does not add a positive header acknowledgment or make Dial prove that the
+target is registered. Deployment ordering remains the caller's responsibility;
+rejection handling is asynchronous and must not be described as a delivery ACK.
