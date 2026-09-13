@@ -125,7 +125,7 @@ completion merged in [#188](https://github.com/tarungka/wire/pull/188).
 | --- | --- | --- |
 | [WIP-01](WIP-01/README.md) | [#210](https://github.com/tarungka/wire/pull/210), follows #208 | Full scope; CRC latency check explicitly waived |
 | [WIP-02](WIP-02/README.md) | [#211](https://github.com/tarungka/wire/pull/211), follows #207/#149 | Concurrency runtime, checkpoint replication and recovery; validated in PR, review/merge pending |
-| [WIP-03](WIP-03/README.md) | [#206](https://github.com/tarungka/wire/pull/206) | Validated, linear-time rescale mapping |
+| [WIP-03](WIP-03/README.md) | [#212](https://github.com/tarungka/wire/pull/212) | Distributed keyed routing and savepoint state redistribution; follows #150 and #206 |
 | [WIP-04](WIP-04/README.md) | [#205](https://github.com/tarungka/wire/pull/205) | Startup idle timeout |
 | [WIP-05](WIP-05/README.md) | [#204](https://github.com/tarungka/wire/pull/204) | Abort cleanup at failure thresholds |
 | [WIP-06](WIP-06/README.md) | [#203](https://github.com/tarungka/wire/pull/203) | Checkpoint manifest validation |

@@ -10,7 +10,7 @@
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-09-12`
+> **Last Updated:** `2026-09-14`
 
 ### Revision History
 
@@ -20,13 +20,30 @@
 
 ---
 
-## Implementation Status — 2026-09-12
+## Implementation Status — 2026-09-14
 
-Assessed against `master` at `bb58acd`, with the range-validation and rescale-mapping changes in this PR. This section records current implementation; the proposal below retains its original design context and targets.
+Implementation is in follow-up [PR #212](https://github.com/tarungka/wire/pull/212),
+based on merged #150 and #206. Status remains Partially Implemented while the
+PR's final validation is pending.
 
-- **Implemented:** Key hashing, range assignment, key encoding, and rescale-mapping calculations are implemented. Range construction and rescale mapping reject invalid key-group counts and parallelism before constructing ranges. Rescale mapping walks the two sorted partitions in O(old parallelism + new parallelism) time, preserving each old-owner boundary. Tests compare every combination of 1–32 old/new tasks against a pairwise reference and exercise the maximum 32,768-task partition.
-- **Remaining:** Distributed keyed routing and actual savepoint-based state transfer/rescaling are missing; RescaleMapping only calculates ownership changes.
-- **Evidence:** [assignment.go](../../../internal/keygroup/assignment.go), [hasher.go](../../../internal/keygroup/hasher.go), [scheduler.go](../../../internal/coordinator/scheduler.go).
+- **Implemented:** Fixed job key-group configuration, Murmur3 hashing, shared
+  range assignment, composite key encoding, distributed keyed routing,
+  checkpoint-backed savepoints, fenced rescale deployment, replica fetch grants,
+  and staged Pebble range restoration before operator processing.
+- **Verified locally:** The full repository suite passes. Two-worker tests
+  exercise the HTTP rescale endpoint for 4→8, 8→4 and 4→3 with the race detector,
+  restoring a keyed map downstream of hash shuffle, verifying every group and
+  value, and completing a replacement checkpoint. The million-key distribution
+  test meets the stricter 10% tolerance. Lint reports zero issues.
+- **Contract:** Keyed state uses typed snapshot handles and
+  `KeyGroupStateRestorer`. Arbitrary opaque operator bytes are rejected rather
+  than guessed at. The protocol preserves the key-group count and changes
+  operator parallelism uniformly. Unrelated graph changes are rejected.
+- **Remaining:** CI completion and final review of the acceptance evidence.
+- **Evidence:** [completion audit](acceptance.md),
+  [rescale manager](../../../internal/coordinator/rescale_manager.go),
+  [state restoration](../../../internal/engine/state_rescale.go),
+  [distributed acceptance test](../../../internal/worker/rescale_cluster_test.go).
 
 ---
 
