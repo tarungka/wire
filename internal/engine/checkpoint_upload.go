@@ -96,6 +96,7 @@ func (u *checkpointUploader) Submit(snapshot TaskCheckpoint) error {
 	u.wg.Add(1)
 	go func() {
 		defer u.wg.Done()
+		defer taskGoroutineStarted(u.ctx)()
 		start := time.Now()
 		err := invokeOperator(func() error { return u.replicator.Replicate(uploadCtx, owned) })
 		u.recordDuration(uploadCtx, owned.TaskID, time.Since(start))

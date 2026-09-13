@@ -28,7 +28,7 @@ waive any WIP-02 requirement.
 | Replication failure affects checkpoint, threshold affects task (§2.7) | Coordinator failure reporting now applies existing checkpoint thresholds and ignores stale checkpoint/epoch reports; timeout metrics exclude replication failures. TaskSlot completion delivery now feeds this policy; durable worker replication and additional transactional/abort overlap tests remain required. |
 | Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Engine upload concurrency is implemented. Pebble compaction concurrency defaults to two and is configurable in engine/embedded SDK, retained across restore. Worker configuration integration remains open. |
 | Container CPU limits (§3.2) | cmd/main.go imports automaxprocs v1.6.0 at startup. Explicit GOMAXPROCS takes precedence; quota rounding/minimum and restart behavior are documented. Command package builds locally; Linux cgroup execution remains to be verified (local Docker daemon is stopped). |
-| Six observability metrics (§3.3) | Task input/output channel usage and alignment payload-byte gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Operator output blocking time is recorded on data/barrier/EOP sends. Owned goroutine instrumentation remains open. |
+| Six observability metrics (§3.3) | Task input/output channel usage and alignment payload-byte gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Operator output blocking time is recorded on data/barrier/EOP sends. Engine-owned goroutines and callbacks are counted at entry/exit. Endpoint validation remains open. |
 | Benchmarks (§8) | Engine benchmarks exist. Establish and record concurrency/channel/deserialization baselines after implementation. |
 | Documentation and PR | Update actual topology, configuration and status only after validation; linked follow-up PR to #207/#149, using personal GitHub account. |
 
@@ -171,3 +171,12 @@ TaskSlot attaches its task-labelled recorder to the chain context. The unit
 test checks that ready sends produce no sample and that a full-channel wait
 ended by a deadline records time without emitting a message. Live Prometheus
 counter verification remains part of the endpoint acceptance check.
+
+
+`wire_task_goroutine_count` counts running engine-owned task workers, read-ahead
+helpers, upload workers and explicit shutdown callbacks. It excludes the caller
+running TaskSlot.Run, shared transport goroutines, runtime timers and Pebble's
+internal workers. Counting starts at goroutine entry, not admission. A blocked
+upload test verifies zero while idle, one while replicating, and zero after
+Close joins cancellation. Full task topology/endpoint verification remains
+required; this counter does not claim process-wide or Pebble attribution.

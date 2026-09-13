@@ -81,6 +81,13 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// the operator chain finishes (whether success or failure).
 	runCtx, runCancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer runCancel()
+	var goroutines atomic.Int64
+	runCtx = context.WithValue(runCtx, taskGoroutineKey{}, &goroutines)
+	unregisterGoroutines, err := observability.ObserveTaskGoroutines(ts.TaskID, goroutines.Load)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unregisterGoroutines() }()
 
 	g, gctx := errgroup.WithContext(runCtx)
 	var checkpoint *chainCheckpointState
@@ -127,10 +134,11 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	var drainTimer *time.Timer
 	drainStarted := make(chan struct{})
 	stopDrain := context.AfterFunc(ctx, func() {
+		defer taskGoroutineStarted(runCtx)()
 		defer close(drainStarted)
 		stopIntake()
 		drainMu.Lock()
-		drainTimer = time.AfterFunc(drainTimeout, func() { runCancel(); cancelOutput() })
+		drainTimer = time.AfterFunc(drainTimeout, func() { defer taskGoroutineStarted(runCtx)(); runCancel(); cancelOutput() })
 		drainMu.Unlock()
 	})
 	defer func() {
@@ -145,6 +153,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	}()
 	var chainSucceeded atomic.Bool
 	stopOutput := context.AfterFunc(gctx, func() {
+		defer taskGoroutineStarted(runCtx)()
 		if !chainSucceeded.Load() {
 			cancelOutput()
 		}
@@ -193,6 +202,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// in input readers. Output streams are left open so the output writer can
 	// drain remaining messages (like the final EndOfPartition).
 	go func() {
+		defer taskGoroutineStarted(runCtx)()
 		defer helperWg.Done()
 		<-intakeCtx.Done()
 		for _, s := range ts.Inputs {
@@ -206,6 +216,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 
 		inputWg.Add(1)
 		g.Go(func() error {
+			defer taskGoroutineStarted(runCtx)()
 			defer inputWg.Done()
 			return normalizeIntake(invokeOperator(func() error {
 				return runSourceReaderWithContexts(intakeCtx, gctx, ts.Source, strategy, eventCh, controlCh, ts.log.With().Str("component", "source_reader").Logger())
@@ -216,6 +227,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		emitInterval := ts.resolveEmitInterval()
 		producerWg.Add(1)
 		g.Go(func() error {
+			defer taskGoroutineStarted(runCtx)()
 			defer producerWg.Done()
 			return normalizeIntake(invokeOperator(func() error {
 				return runWatermarkEmitter(intakeCtx, strategy, outputCh, emitInterval,
@@ -235,6 +247,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 			}
 			inputWg.Add(1)
 			g.Go(func() error {
+				defer taskGoroutineStarted(runCtx)()
 				defer inputWg.Done()
 				return runInputReaderWithContexts(intakeCtx, gctx, i, stream, eventCh, controlCh, aligner, tracker,
 					ts.log.With().Int("input", i).Logger(), stream.ReportBufferUsage)
@@ -252,6 +265,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		}
 		producerWg.Add(1)
 		g.Go(func() error {
+			defer taskGoroutineStarted(runCtx)()
 			defer producerWg.Done()
 			return normalizeIntake(runWatermarkPropagator(intakeCtx, tracker, outputCh, emitInterval, idleTimeout,
 				ts.log.With().Str("component", "watermark_propagator").Logger()))
@@ -262,6 +276,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// holding a reader. Final shutdown is queued only after dispatch completes.
 	helperWg.Add(1)
 	go func() {
+		defer taskGoroutineStarted(runCtx)()
 		defer helperWg.Done()
 		select {
 		case <-ctx.Done():
@@ -325,6 +340,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// Launch checkpoint coordinator if configured.
 	if ts.Coordinator != nil {
 		g.Go(func() error {
+			defer taskGoroutineStarted(runCtx)()
 			return ts.Coordinator.Run(gctx)
 		})
 	}
@@ -333,6 +349,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	if dlqCh != nil {
 		dlqLog := ts.log.With().Str("component", "dlq").Logger()
 		g.Go(func() error {
+			defer taskGoroutineStarted(runCtx)()
 			for dlqEvent := range dlqCh {
 				dlqLog.Error().
 					Str("operator", dlqEvent.OperatorName).
@@ -358,6 +375,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	var chainErr atomic.Pointer[error]
 	producerWg.Add(1)
 	g.Go(func() error {
+		defer taskGoroutineStarted(runCtx)()
 		defer producerWg.Done()
 		defer runCancel() // Signal all goroutines to stop when chain exits.
 		if dlqCh != nil {
@@ -374,6 +392,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 
 	// Goroutine to close outputCh when all producers are done.
 	go func() {
+		defer taskGoroutineStarted(runCtx)()
 		defer helperWg.Done()
 		producerWg.Wait()
 		close(outputCh)
@@ -382,6 +401,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// A single dispatcher preserves record/control ordering and broadcasts
 	// control frames to every downstream stream. It also drains terminal chains.
 	g.Go(func() error {
+		defer taskGoroutineStarted(runCtx)()
 		return runOutputRouter(outputCtx, ts.Outputs, outputCh, ts.log)
 	})
 

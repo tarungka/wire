@@ -88,7 +88,7 @@ func runInputReaderWithContexts(
 	}
 	readerDone := make(chan struct{})
 	closeDone := make(chan struct{})
-	stopClose := context.AfterFunc(readerCtx, func() { _ = stream.Close(); close(closeDone) })
+	stopClose := context.AfterFunc(readerCtx, func() { defer taskGoroutineStarted(ctx)(); _ = stream.Close(); close(closeDone) })
 	defer func() {
 		if !stopClose() {
 			<-closeDone
@@ -96,6 +96,7 @@ func runInputReaderWithContexts(
 	}()
 	defer func() { cancelReader(); cancelDispatch(); _ = stream.Close(); <-readerDone }()
 	go func() {
+		defer taskGoroutineStarted(ctx)()
 		defer close(readerDone)
 		defer close(msgCh)
 		for {

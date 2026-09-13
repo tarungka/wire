@@ -8,6 +8,25 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// ObserveTaskGoroutines exposes engine-owned task goroutines, excluding shared
+// transport and storage subsystem goroutines. Unregister when the task exits.
+func ObserveTaskGoroutines(taskID string, read func() int64) (func() error, error) {
+	m := Meter()
+	gauge, err := m.Int64ObservableGauge("wire_task_goroutine_count", metric.WithDescription("Active engine-owned task goroutines and callbacks"))
+	if err != nil {
+		return nil, err
+	}
+	attrs := metric.WithAttributes(attribute.String("task_id", taskID))
+	registration, err := m.RegisterCallback(func(_ context.Context, observer metric.Observer) error {
+		observer.ObserveInt64(gauge, read(), attrs)
+		return nil
+	}, gauge)
+	if err != nil {
+		return nil, err
+	}
+	return registration.Unregister, nil
+}
+
 func TaskBackpressureRecorder(taskID string) (func(time.Duration), error) {
 	counter, err := Meter().Float64Counter("wire_task_backpressure_time_ms", metric.WithDescription("Cumulative operator chain wait for output capacity in milliseconds"))
 	if err != nil {
