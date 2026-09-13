@@ -55,7 +55,7 @@ func (c *Coordinator) TriggerCheckpoint(jobID string) (*CheckpointMeta, error) {
 			return false
 		}
 		if previous.Status == CheckpointTriggered || previous.Status == CheckpointInProgress {
-			scanErr = errors.New("checkpoint already in progress")
+			scanErr = ErrCheckpointInProgress
 			return false
 		}
 		if previous.ID > highest {
@@ -192,6 +192,9 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 	}
 	if request.State == nil || request.State.TaskID != request.TaskID || request.State.Path == "" {
 		return errors.New("checkpoint acknowledgement requires durable state location")
+	}
+	if expected := checkpoint.Replicas[request.TaskID]; expected == "" || request.State.Path != expected {
+		return errors.New("checkpoint acknowledgement does not match replica assignment")
 	}
 	if checkpoint.Status != CheckpointInProgress && checkpoint.Status != CheckpointCompleted {
 		return errors.New("checkpoint no longer accepts acknowledgements")

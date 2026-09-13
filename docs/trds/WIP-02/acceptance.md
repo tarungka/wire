@@ -410,3 +410,20 @@ state, and identity/content rejection. The helper assumes artifact import has
 already established file durability; it neither copies files nor authorizes a
 peer location. Artifact-aware network transfer and publication must call it
 with verified imported handles before deployment restoration is connected.
+
+### Recovery integration verification — 2026-09-13
+
+The follow-up now persists a deployment attempt identity, fences task status and
+cancellation by execution, fetches authorized archives from worker replicas, and
+restores task state before processing. `TestClusterCheckpointRestartsFromReplica`
+uses two real workers: it completes a checkpoint, injects a source failure, and
+checks that the restarted source restores the saved state before reading. The
+scenario passed four runs under the race detector. Scheduler tests separately
+verify cancellation-before-redeployment and propagation of the saved checkpoint
+identity.
+
+The complete `go test -race -tags=integration ./...` suite passed after these
+changes (local log: `/private/tmp/wip02-recovery-full-suite.log`). This is evidence
+for the tested source-failure recovery path, not coordinator failover or loss of
+a worker. Those paths still need implementation/verification, alongside the
+remaining topology and lifecycle acceptance audit. WIP-02 remains partial.
