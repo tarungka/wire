@@ -20,11 +20,12 @@ func (c *Coordinator) HandleRegisterWorker(_ context.Context, _ uint64, payload 
 
 	// Map RPC request to coordinator domain request.
 	coordReq := RegisterWorkerRequest{
-		WorkerID:         rpcReq.WorkerID,
-		Address:          rpcReq.Address,
-		TaskSlotsTotal:   rpcReq.TaskSlotsTotal,
-		HighestSeenEpoch: rpcReq.HighestSeenEpoch,
-		RunningTasks:     rpcReq.RunningTasks,
+		CheckpointAddress: rpcReq.CheckpointAddress,
+		WorkerID:          rpcReq.WorkerID,
+		Address:           rpcReq.Address,
+		TaskSlotsTotal:    rpcReq.TaskSlotsTotal,
+		HighestSeenEpoch:  rpcReq.HighestSeenEpoch,
+		RunningTasks:      rpcReq.RunningTasks,
 	}
 
 	resp, err := c.RegisterWorker(coordReq)
@@ -219,4 +220,23 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 	}
 
 	return &rpc.UpdateTaskStatusResponse{Accepted: true}, nil
+}
+
+// HandleAcknowledgeCheckpoint accepts upload reports only through the persisted
+// checkpoint state machine; a decoded RPC alone never marks a task durable.
+func (c *Coordinator) HandleAcknowledgeCheckpoint(_ context.Context, _ uint64, payload []byte) (any, *rpc.RPCError) {
+	var request rpc.AcknowledgeCheckpointRequest
+	if err := rpc.DecodeRPCPayload(rpc.RPCFrame{Payload: payload}, &request); err != nil {
+		return nil, rpc.NewRPCError(rpc.ErrCodeSerializationError, fmt.Sprintf("decode checkpoint acknowledgement: %v", err))
+	}
+	var reportErr error
+	if request.Failure != "" {
+		reportErr = c.ReportCheckpointFailure(request)
+	} else {
+		reportErr = c.AcknowledgeCheckpoint(request)
+	}
+	if reportErr != nil {
+		return &rpc.AcknowledgeCheckpointResponse{Accepted: false, Message: reportErr.Error()}, nil
+	}
+	return &rpc.AcknowledgeCheckpointResponse{Accepted: true}, nil
 }

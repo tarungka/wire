@@ -51,9 +51,10 @@ const (
 	// the coordinator pushes WorkerCommand frames as they're enqueued —
 	// instead of the worker pulling them via the heartbeat tick. Cuts job
 	// dispatch latency from ~heartbeat-interval/2 to a single round-trip.
-	MethodWatchCommands       MethodID = 0x0008
-	MethodReplicateCheckpoint MethodID = 0x0009
-	MethodError               MethodID = 0x00FF
+	MethodWatchCommands              MethodID = 0x0008
+	MethodReplicateCheckpoint        MethodID = 0x0009
+	MethodAuthorizeCheckpointReplica MethodID = 0x000A
+	MethodError                      MethodID = 0x00FF
 )
 
 // RPCFrame represents a decoded RPC frame.
@@ -198,6 +199,8 @@ func MethodName(id MethodID) string {
 		return "WatchCommands"
 	case MethodReplicateCheckpoint:
 		return "ReplicateCheckpoint"
+	case MethodAuthorizeCheckpointReplica:
+		return "AuthorizeCheckpointReplica"
 	case MethodError:
 		return "Error"
 	default:

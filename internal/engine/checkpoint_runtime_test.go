@@ -250,3 +250,100 @@ func (*typedCheckpointProbe) CheckpointState(id uint64) (SnapshotHandle, error) 
 }
 func (*typedCheckpointProbe) RestoreState(SnapshotHandle) error { return nil }
 func TestTaskCapturesTypedCheckpoint(t *testing.T)              { testTaskCheckpointUpload(t, false, true) }
+
+func TestTaskReportsCheckpointToExternalCoordinator(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	input, output, slot := newTestPipeline(t, []Operator{&noopMap{}}, nil)
+	slot.TaskID = "task"
+	reported := make(chan uint64, 1)
+	slot.CheckpointReplicator = checkpointReplicatorFunc(func(context.Context, TaskCheckpoint) error { return nil })
+	slot.CheckpointReport = func(_ context.Context, id, epoch uint64, err error) error {
+		if epoch != 2 || err != nil {
+			return errors.New("unexpected checkpoint report")
+		}
+		reported <- id
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() { done <- slot.Run(ctx) }()
+	if err := input.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 7, EpochID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := output.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case id := <-reported:
+		if id != 7 {
+			t.Fatalf("reported %d", id)
+		}
+	case <-ctx.Done():
+		t.Fatal("external coordinator received no report")
+	}
+	if err := input.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := output.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("task did not finish")
+	}
+}
+
+func TestExternalCheckpointAbortReleasesFailedUpload(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	input, output, slot := newTestPipeline(t, []Operator{&noopMap{}}, nil)
+	slot.TaskID = "task"
+	decisions := make(chan ControlMsg, 1)
+	slot.CheckpointDecisions = decisions
+	uploadErr := errors.New("replica unavailable")
+	slot.CheckpointReplicator = checkpointReplicatorFunc(func(context.Context, TaskCheckpoint) error { return uploadErr })
+	reported := make(chan struct{})
+	slot.CheckpointReport = func(ctx context.Context, id, epoch uint64, err error) error {
+		if !errors.Is(err, uploadErr) {
+			return errors.New("upload failure was lost")
+		}
+		select {
+		case decisions <- ControlMsg{Type: CtrlAbortCheckpoint, CheckpointID: id, EpochID: epoch}:
+			close(reported)
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	done := make(chan error, 1)
+	go func() { done <- slot.Run(ctx) }()
+	if err := input.WriteMessage(&protocol.CheckpointBarrierMsg{CheckpointID: 7, EpochID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := output.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reported:
+	case <-ctx.Done():
+		t.Fatal("failed upload was not reported")
+	}
+	if err := input.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := output.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("external abort did not release task")
+	}
+}

@@ -144,6 +144,16 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	}
 
 	// Commit the state and assignments together before publishing DEPLOYING.
+	tam.Replicas = make(map[string]string)
+	for workerID, workerTasks := range assignments {
+		peer := c.checkpointPeerLocked(workerID, time.Now())
+		for i := range workerTasks {
+			workerTasks[i].CheckpointReplicaAddress = peer
+			if peer != "" {
+				tam.Replicas[workerTasks[i].TaskID] = peer
+			}
+		}
+	}
 	// One synchronous batch prevents both a second fsync under c.mu and a
 	// partially persisted deployment if writing assignments fails.
 	next := *job
@@ -173,6 +183,9 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 
 	// Update worker metadata: add running tasks and decrement available slots.
 	for workerID, wTasks := range assignments {
+		for i := range wTasks {
+			wTasks[i].EpochID = c.epoch
+		}
 		w, ok := c.workers[workerID]
 		if !ok {
 			continue
@@ -206,6 +219,26 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		Int("tasks", len(tasks)).
 		Int("workers", len(assignments)).
 		Msg("job scheduled")
+}
+
+// checkpointPeerLocked selects one live remote replica deterministically.
+// A missing endpoint leaves checkpoint replication unavailable for this task.
+func (c *Coordinator) checkpointPeerLocked(sourceID string, now time.Time) string {
+	source := c.workers[sourceID]
+	if source == nil || source.CheckpointAddress == "" {
+		return ""
+	}
+	var candidates []string
+	for id, worker := range c.workers {
+		if id != sourceID && worker.CheckpointAddress != "" && worker.CheckpointAddress != source.CheckpointAddress && !worker.LastHeartbeat.IsZero() && now.Sub(worker.LastHeartbeat) < c.config.WorkerTimeout {
+			candidates = append(candidates, id)
+		}
+	}
+	sort.Strings(candidates)
+	if len(candidates) == 0 {
+		return ""
+	}
+	return c.workers[candidates[0]].CheckpointAddress
 }
 
 // generateTaskDescriptors creates task descriptors for a job by decoding

@@ -25,13 +25,14 @@ func newTestCoordinator(t *testing.T) (*Coordinator, *MemoryStore) {
 }
 
 func TestRegisterWorker_Success(t *testing.T) {
-	c, _ := newTestCoordinator(t)
+	c, store := newTestCoordinator(t)
 
 	resp, err := c.RegisterWorker(RegisterWorkerRequest{
-		WorkerID:         "w1",
-		Address:          "localhost:5001",
-		TaskSlotsTotal:   4,
-		HighestSeenEpoch: 5,
+		CheckpointAddress: "localhost:5002",
+		WorkerID:          "w1",
+		Address:           "localhost:5001",
+		TaskSlotsTotal:    4,
+		HighestSeenEpoch:  5,
 	})
 	if err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
@@ -48,7 +49,21 @@ func TestRegisterWorker_Success(t *testing.T) {
 	if _, ok := c.workers["w1"]; !ok {
 		t.Fatal("worker not in cache")
 	}
+	if c.workers["w1"].CheckpointAddress != "localhost:5002" {
+		t.Fatal("replica endpoint lost during registration")
+	}
 	c.mu.RUnlock()
+	data, err := store.Get(WorkerMetaKey("w1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored WorkerMeta
+	if err := protocol.DecodeMsgPack(data, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.CheckpointAddress != "localhost:5002" {
+		t.Fatal("replica endpoint missing from persistent worker metadata")
+	}
 }
 
 func TestRegisterWorker_EpochFencing(t *testing.T) {

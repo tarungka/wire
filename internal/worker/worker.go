@@ -18,34 +18,39 @@ import (
 
 // Config holds worker configuration.
 type Config struct {
-	TaskSlot        *engine.TaskSlotConfig // Nil selects engine defaults.
-	WorkerID        string
-	CoordinatorAddr string
-	ListenAddr      string
-	TaskSlots       int
+	CheckpointReplica *CheckpointReplicaConfig
+	TaskSlot          *engine.TaskSlotConfig // Nil selects engine defaults.
+	WorkerID          string
+	CoordinatorAddr   string
+	ListenAddr        string
+	TaskSlots         int
 }
 
 // taskHandle tracks a running task so it can be cancelled on demand or
 // on worker shutdown.
 type taskHandle struct {
-	cancel context.CancelFunc
+	cancel     context.CancelFunc
+	jobID      string
+	epoch      uint64
+	checkpoint *taskCheckpointRuntime
 }
 
 // Worker connects to a coordinator, registers, and runs a heartbeat loop.
 // Deployed tasks are resolved against the Worker's Registry and executed
 // via taskExecutor.
 type Worker struct {
-	cfg      Config
-	reg      *Registry
-	executor *taskExecutor
-	client   *rpc.Client
-	session  *transport.Session
-	data     *transport.Mux
-	epoch    uint64
-	mu       sync.RWMutex
-	stopping bool
-	tasks    map[string]*taskHandle // taskID -> handle
-	log      zerolog.Logger
+	cfg          Config
+	reg          *Registry
+	executor     *taskExecutor
+	client       *rpc.Client
+	session      *transport.Session
+	data         *transport.Mux
+	epoch        uint64
+	mu           sync.RWMutex
+	stopping     bool
+	closeReplica func()
+	tasks        map[string]*taskHandle // taskID -> handle
+	log          zerolog.Logger
 }
 
 // New creates a new Worker using the package-level default registry. User
@@ -87,6 +92,27 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 	}
 	w.cfg.WorkerID = workerID
+	var checkpointAddress string
+	if w.cfg.CheckpointReplica != nil {
+		replicaConfig := *w.cfg.CheckpointReplica
+		if replicaConfig.Authorize == nil {
+			replicaConfig.Authorize = w.authorizeCheckpointReplica
+		}
+		addr, closeReplica, err := startCheckpointReplicaService(ctx, replicaConfig)
+		if err != nil {
+			return fmt.Errorf("worker: checkpoint replica listener: %w", err)
+		}
+		defer closeReplica()
+		w.mu.Lock()
+		if w.stopping {
+			w.mu.Unlock()
+			return fmt.Errorf("worker is shutting down")
+		}
+		w.closeReplica = closeReplica
+		w.mu.Unlock()
+		checkpointAddress = addr
+		w.log.Info().Str("addr", addr).Msg("checkpoint replica listener started")
+	}
 	dataConfig := transport.DefaultConfig()
 	dataConfig.NodeID = workerID
 	dataConfig.ListenAddr = w.cfg.ListenAddr
@@ -123,13 +149,16 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// 2. Create RPC client.
 	rpcCfg := rpc.DefaultConfig()
+	w.mu.Lock()
 	w.client = rpc.NewClient(session.YamuxSession(), rpcCfg)
+	w.mu.Unlock()
 
 	// 3. Register with coordinator.
 	regReq := &rpc.RegisterWorkerRequest{
-		WorkerID:       workerID,
-		Address:        w.cfg.ListenAddr,
-		TaskSlotsTotal: w.cfg.TaskSlots,
+		CheckpointAddress: checkpointAddress,
+		WorkerID:          workerID,
+		Address:           w.cfg.ListenAddr,
+		TaskSlotsTotal:    w.cfg.TaskSlots,
 	}
 	regResp, err := w.client.RegisterWorker(ctx, regReq)
 	if err != nil {
@@ -276,8 +305,11 @@ func (w *Worker) Shutdown(_ context.Context) error {
 	w.mu.Unlock()
 
 	w.mu.RLock()
-	data, session := w.data, w.session
+	data, session, closeReplica := w.data, w.session, w.closeReplica
 	w.mu.RUnlock()
+	if closeReplica != nil {
+		closeReplica()
+	}
 	var err error
 	if data != nil {
 		err = data.Close()
@@ -338,7 +370,22 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 		cancel()
 		return
 	}
-	w.tasks[cmd.TaskID] = &taskHandle{cancel: cancel}
+	if desc.EpochID != 0 && desc.EpochID != w.epoch {
+		w.mu.Unlock()
+		cancel()
+		w.log.Warn().Uint64("epoch", desc.EpochID).Str("task_id", cmd.TaskID).Msg("ignoring deployment from a different coordinator epoch")
+		return
+	}
+	handle := &taskHandle{cancel: cancel, jobID: cmd.JobID, epoch: desc.EpochID}
+	if desc.CheckpointReplicaAddress != "" {
+		handle.checkpoint = &taskCheckpointRuntime{triggers: make(chan engine.CheckpointTrigger, 1), decisions: make(chan engine.ControlMsg, 16)}
+		for _, operator := range desc.OperatorChain {
+			if operator.Type == rpc.OperatorTypeSource {
+				handle.checkpoint.source = true
+			}
+		}
+	}
+	w.tasks[cmd.TaskID] = handle
 	w.mu.Unlock()
 
 	taskLog := w.log.With().
@@ -362,9 +409,15 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 		w.mu.Unlock()
 	}()
 
-	err := w.executor.run(ctx, jobID, taskID, desc, log, func() {
+	checkpoint, cleanup, err := w.prepareTaskCheckpoint(jobID, taskID, desc)
+	if err != nil {
+		w.reportTaskFailed(jobID, taskID, err)
+		return
+	}
+	defer cleanup()
+	err = w.executor.run(ctx, jobID, taskID, desc, log, func() {
 		w.reportTaskStatus(jobID, taskID, rpc.TaskStatusRunning, nil)
-	})
+	}, checkpoint)
 
 	switch {
 	case ctx.Err() != nil:
@@ -429,8 +482,8 @@ func (w *Worker) handleCommands(cmds []rpc.WorkerCommand) {
 				// Don't delete here — runTask's defer cleans up.
 			}
 			w.mu.Unlock()
-		case rpc.CommandTypeTakeSnapshot:
-			w.log.Info().Str("task_id", cmd.TaskID).Msg("received TakeSnapshot command (stub — Phase 4)")
+		case rpc.CommandTypeTakeSnapshot, rpc.CommandTypeCommitCheckpoint, rpc.CommandTypeAbortCheckpoint:
+			w.handleCheckpointCommand(cmd)
 		default:
 			w.log.Warn().Uint8("type", uint8(cmd.Type)).Msg("unknown command type")
 		}

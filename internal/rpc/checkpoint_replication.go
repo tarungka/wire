@@ -124,3 +124,10 @@ func (c *Client) ReplicateCheckpoint(ctx context.Context, request ReplicateCheck
 	}
 	return nil
 }
+
+// AuthorizeCheckpointReplicaRequest identifies the receiving worker and the
+// checkpoint it is about to publish under the coordinator's assignment.
+type AuthorizeCheckpointReplicaRequest struct {
+	WorkerID string                     `codec:"wid"`
+	Snapshot ReplicateCheckpointRequest `codec:"snapshot"`
+}

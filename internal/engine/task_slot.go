@@ -19,8 +19,14 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
+	// CheckpointReport delivers checkpoint ID, epoch, and upload error to an
+	// external coordinator. It must honor cancellation. Nil means report acceptance,
+	// not global commit; commit and abort arrive through CheckpointDecisions.
+	CheckpointReport func(context.Context, uint64, uint64, error) error
+	// The caller owns this bounded channel and fences decisions to the execution.
+	CheckpointDecisions  <-chan ControlMsg
 	CheckpointTriggers   <-chan CheckpointTrigger // Optional source-only checkpoint commands.
-	CheckpointReplicator CheckpointReplicator     // Optional durable checkpoint uploader; requires Coordinator.
+	CheckpointReplicator CheckpointReplicator     // Requires Coordinator or CheckpointReport.
 	Config               TaskSlotConfig
 	Inputs               []*transport.FrameStream // Upstream input streams.
 	Outputs              []*transport.FrameStream // Downstream output streams.
@@ -55,8 +61,11 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	if ts.CheckpointTriggers != nil && (ts.Source == nil || ts.CheckpointReplicator == nil) {
 		return errors.New("source checkpoint triggers require a source and checkpoint replicator")
 	}
-	if ts.CheckpointReplicator != nil && ts.Coordinator == nil {
+	if ts.CheckpointReplicator != nil && ts.Coordinator == nil && ts.CheckpointReport == nil {
 		return errors.New("checkpoint replication requires a coordinator")
+	}
+	if ts.Coordinator != nil && ts.CheckpointReport != nil {
+		return errors.New("checkpoint reporting must select one coordinator")
 	}
 	if ts.Config.CheckpointUploadConcurrency < 0 {
 		return errors.New("checkpoint upload concurrency must not be negative")
@@ -109,6 +118,9 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		}
 		defer uploader.Close()
 		checkpoint = &chainCheckpointState{uploader: uploader, taskID: ts.TaskID, pending: make(map[checkpointIdentity]bool), notify: func(ctx context.Context, r checkpointUploadResult) error {
+			if ts.CheckpointReport != nil {
+				return ts.CheckpointReport(ctx, r.CheckpointID, r.EpochID, r.Err)
+			}
 			if r.Err != nil {
 				return ts.Coordinator.FailCheckpoint(ctx, r.CheckpointID, r.EpochID, r.Err)
 			}
@@ -190,10 +202,33 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 			ts.log.Warn().Err(err).Msg("unregister task channel metrics")
 		}
 	}()
-	if checkpoint != nil {
+	if checkpoint != nil && ts.Coordinator != nil {
 		if err := ts.Coordinator.BindTaskControl(ts.TaskIndex, controlCh); err != nil {
 			return err
 		}
+	}
+	if ts.CheckpointDecisions != nil {
+		g.Go(func() error {
+			defer taskGoroutineStarted(gctx)()
+			for {
+				select {
+				case <-gctx.Done():
+					return nil
+				case decision, ok := <-ts.CheckpointDecisions:
+					if !ok {
+						return nil
+					}
+					if decision.Type != CtrlCommitCheckpoint && decision.Type != CtrlAbortCheckpoint && decision.Type != CtrlAbortTransaction {
+						return errors.New("invalid external checkpoint decision")
+					}
+					select {
+					case controlCh <- decision:
+					case <-gctx.Done():
+						return nil
+					}
+				}
+			}
+		})
 	}
 
 	// Track output channel producers so we can close outputCh when all are done.
