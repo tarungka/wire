@@ -10,6 +10,22 @@ import (
 // validation errors rather than failing on the first one.
 func (c *WireConfig) Validate() error {
 	var errs []error
+	if c.Checkpoint.MaxConsecutiveFailures < 0 {
+		errs = append(errs, fmt.Errorf("checkpoint.max_consecutive_failures must be nonnegative"))
+	}
+	if c.Checkpoint.Timeout.Duration <= 0 {
+		errs = append(errs, fmt.Errorf("checkpoint.timeout must be positive"))
+	}
+	if replica := c.Worker.CheckpointReplica; replica.ListenAddr != "" {
+		if replica.Concurrency < 1 {
+			errs = append(errs, fmt.Errorf("worker.checkpoint_replica.concurrency must be positive"))
+		}
+		for name, path := range map[string]string{"store_root": replica.StoreRoot, "artifact_root": replica.ArtifactRoot, "staging_root": replica.StagingRoot} {
+			if path == "" {
+				errs = append(errs, fmt.Errorf("worker.checkpoint_replica.%s is required", name))
+			}
+		}
+	}
 	for name, value := range map[string]int{"input_buffer_size": c.TaskSlot.InputBufferSize, "output_buffer_size": c.TaskSlot.OutputBufferSize, "alignment_buffer_size": c.TaskSlot.AlignmentBufferSize, "checkpoint_upload_concurrency": c.TaskSlot.CheckpointUploadConcurrency} {
 		if value < 0 {
 			errs = append(errs, fmt.Errorf("task_slot.%s must be >= 0", name))

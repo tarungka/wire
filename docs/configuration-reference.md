@@ -16,6 +16,8 @@ into the current runtime; setting them does not enable those features.
 
 | Field | Type | Default | CLI override |
 | --- | --- | --- | --- |
+| `checkpoint.max_consecutive_failures` | int | `0` | — |
+| `checkpoint.timeout` | duration string | `10m0s` | — |
 | `task_slot.input_buffer_size` | int | `1024` | — |
 | `task_slot.output_buffer_size` | int | `1024` | — |
 | `task_slot.alignment_buffer_size` | int | `4096` | — |
@@ -47,6 +49,12 @@ into the current runtime; setting them does not enable those features.
 | `write_queue.transactional` | bool | `false` | — |
 | `election.backend` | string | `noop` | `--election-backend` |
 | `election.lock_path` | string | `data/coordinator/leader.lock` | `--election-lock-path` |
+| `worker.checkpoint_replica.listen_addr` | string | `""` | — |
+| `worker.checkpoint_replica.advertise_addr` | string | `""` | — |
+| `worker.checkpoint_replica.store_root` | string | `""` | — |
+| `worker.checkpoint_replica.artifact_root` | string | `""` | — |
+| `worker.checkpoint_replica.staging_root` | string | `""` | — |
+| `worker.checkpoint_replica.concurrency` | int | `1` | — |
 | `worker.coordinator_addr` | string | `""` | `--coordinator-addr` |
 | `worker.worker_id` | string | `""` | `--worker-id` |
 | `worker.listen_addr` | string | `:4003` | `--worker-listen` |

@@ -3,6 +3,7 @@ package config
 // WireConfig is the top-level configuration for a Wire node.
 // It maps directly to the wire.yaml schema.
 type WireConfig struct {
+	Checkpoint CheckpointConfig `yaml:"checkpoint" json:"checkpoint" koanf:"checkpoint"`
 	TaskSlot   TaskSlotConfig   `yaml:"task_slot" json:"task_slot" koanf:"task_slot"`
 	Mode       string           `yaml:"mode"        json:"mode"        koanf:"mode"`
 	Listen     string           `yaml:"listen"      json:"listen"      koanf:"listen"`
@@ -15,12 +16,29 @@ type WireConfig struct {
 	Worker     WorkerConfig     `yaml:"worker"      json:"worker"      koanf:"worker"`
 }
 
+type CheckpointConfig struct {
+	MaxConsecutiveFailures int      `yaml:"max_consecutive_failures" json:"max_consecutive_failures" koanf:"max_consecutive_failures"`
+	Timeout                Duration `yaml:"timeout" json:"timeout" koanf:"timeout"`
+}
+
 // WorkerConfig holds settings for running in worker mode.
 type WorkerConfig struct {
-	CoordinatorAddr string `yaml:"coordinator_addr" json:"coordinator_addr" koanf:"coordinator_addr"`
-	WorkerID        string `yaml:"worker_id"        json:"worker_id"        koanf:"worker_id"`
-	ListenAddr      string `yaml:"listen_addr"      json:"listen_addr"      koanf:"listen_addr"`
-	TaskSlots       int    `yaml:"task_slots"       json:"task_slots"       koanf:"task_slots"`
+	CheckpointReplica CheckpointReplicaConfig `yaml:"checkpoint_replica" json:"checkpoint_replica" koanf:"checkpoint_replica"`
+	CoordinatorAddr   string                  `yaml:"coordinator_addr" json:"coordinator_addr" koanf:"coordinator_addr"`
+	WorkerID          string                  `yaml:"worker_id"        json:"worker_id"        koanf:"worker_id"`
+	ListenAddr        string                  `yaml:"listen_addr"      json:"listen_addr"      koanf:"listen_addr"`
+	TaskSlots         int                     `yaml:"task_slots"       json:"task_slots"       koanf:"task_slots"`
+}
+
+// CheckpointReplicaConfig enables peer checkpoint storage when ListenAddr is set.
+// Storage directories must already exist and be owned by this worker.
+type CheckpointReplicaConfig struct {
+	ListenAddr    string `yaml:"listen_addr" json:"listen_addr" koanf:"listen_addr"`
+	AdvertiseAddr string `yaml:"advertise_addr" json:"advertise_addr" koanf:"advertise_addr"`
+	StoreRoot     string `yaml:"store_root" json:"store_root" koanf:"store_root"`
+	ArtifactRoot  string `yaml:"artifact_root" json:"artifact_root" koanf:"artifact_root"`
+	StagingRoot   string `yaml:"staging_root" json:"staging_root" koanf:"staging_root"`
+	Concurrency   int    `yaml:"concurrency" json:"concurrency" koanf:"concurrency"`
 }
 
 // NodeConfig holds node identity and storage settings.

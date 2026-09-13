@@ -270,6 +270,34 @@ if err := g.Wait(); err != nil {
 | `task_slot.checkpoint_upload_concurrency` | `1` | Max concurrent checkpoint uploads per task |
 | `pebble.max_compaction_concurrency` | `2` | Max concurrent Pebble compaction goroutines |
 
+### 3.1.1 Cluster replica configuration
+
+For the cluster replication path, configure at least two workers with distinct
+replica endpoints and worker-owned storage directories. The directories must
+already exist. Leave `worker.checkpoint_replica.listen_addr` empty to disable the
+endpoint. A wildcard listener requires an explicit reachable advertised address.
+
+```yaml
+checkpoint:
+  timeout: 10m
+  max_consecutive_failures: 0 # Unlimited; a positive limit fails the task.
+worker:
+  checkpoint_replica:
+    listen_addr: ":4004"
+    advertise_addr: "worker-a.example:4004"
+    store_root: "/var/lib/wire/checkpoint-metadata"
+    artifact_root: "/var/lib/wire/checkpoint-artifacts"
+    staging_root: "/var/lib/wire/checkpoint-staging"
+    concurrency: 1
+```
+
+Receiver concurrency is shared across uploads to that worker. The separate
+`task_slot.checkpoint_upload_concurrency` limits uploads from each task. The
+coordinator checks checkpoint expiry on its maintenance tick, so abort delivery
+may follow the configured deadline by up to one tick plus dispatch time. Enabling
+replica storage does not yet establish restart restoration; that integration is
+still under development in this follow-up.
+
 ### 3.2 GOMAXPROCS
 
 Wire imports `go.uber.org/automaxprocs` in `cmd/main.go`. At startup this sets

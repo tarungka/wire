@@ -34,6 +34,7 @@ func (c *Coordinator) runScheduler(ctx context.Context) {
 			c.log.Info().Msg("scheduler stopping")
 			return
 		case <-ticker.C:
+			c.expireCheckpoints(time.Now())
 			c.scheduleTick(ctx)
 		case <-c.schedulerKick:
 			// Coalesce a short burst of submissions into one tick. The

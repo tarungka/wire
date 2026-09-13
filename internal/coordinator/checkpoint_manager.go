@@ -86,6 +86,10 @@ func (c *Coordinator) TriggerCheckpoint(jobID string) (*CheckpointMeta, error) {
 		c.mu.Unlock()
 		return nil, err
 	}
+	if c.activeCheckpoints == nil {
+		c.activeCheckpoints = make(map[string]CheckpointMeta)
+	}
+	c.activeCheckpoints[jobID] = *checkpoint
 	c.mu.Unlock()
 	for taskID, workerID := range assignment.Assignments {
 		c.EnqueueCommand(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeTakeSnapshot, JobID: jobID, TaskID: taskID, Data: trigger})
@@ -137,6 +141,9 @@ func (c *Coordinator) AbortCheckpoint(jobID string, id, epoch uint64) error {
 	if err := c.store.Set(CheckpointKey(jobID, id), encoded); err != nil {
 		c.mu.Unlock()
 		return err
+	}
+	if active, ok := c.activeCheckpoints[jobID]; ok && active.ID == id && active.EpochID == epoch {
+		delete(c.activeCheckpoints, jobID)
 	}
 	c.mu.Unlock()
 	// Retries resend the same idempotent decision after a lost command delivery.
@@ -228,6 +235,7 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 	}
 	if complete {
 		c.jobs[request.JobID].LatestCheckpoint = next.LatestCheckpoint
+		delete(c.activeCheckpoints, request.JobID)
 		notify = checkpoint.Tasks
 	}
 	return nil
@@ -262,4 +270,27 @@ func (c *Coordinator) ReportCheckpointFailure(request rpc.AcknowledgeCheckpointR
 		return errors.New("checkpoint failure does not match task assignment")
 	}
 	return c.AbortCheckpoint(request.JobID, request.CheckpointID, request.EpochID)
+}
+
+// expireCheckpoints shares the coordinator maintenance loop instead of adding
+// one timer goroutine per checkpoint. Abort rechecks identity after the lock is
+// released, so a concurrent completion cannot be overwritten by a timeout.
+func (c *Coordinator) expireCheckpoints(now time.Time) {
+	c.mu.Lock()
+	var expired []CheckpointMeta
+	for jobID, checkpoint := range c.activeCheckpoints {
+		if checkpoint.EpochID != c.epoch {
+			delete(c.activeCheckpoints, jobID)
+			continue
+		}
+		if now.Sub(checkpoint.Timestamp) >= c.config.CheckpointTimeout {
+			expired = append(expired, checkpoint)
+		}
+	}
+	c.mu.Unlock()
+	for _, checkpoint := range expired {
+		if err := c.AbortCheckpoint(checkpoint.JobID, checkpoint.ID, checkpoint.EpochID); err != nil {
+			c.log.Warn().Err(err).Str("job_id", checkpoint.JobID).Uint64("checkpoint", checkpoint.ID).Msg("checkpoint timeout abort failed")
+		}
+	}
 }

@@ -6,9 +6,10 @@ import "time"
 // These defaults match the current pflag defaults in cmd/init.go.
 func DefaultConfig() WireConfig {
 	return WireConfig{
-		TaskSlot: TaskSlotConfig{InputBufferSize: 1024, OutputBufferSize: 1024, AlignmentBufferSize: 4096, CheckpointUploadConcurrency: 1, DrainTimeout: Duration{5 * time.Second}},
-		Mode:     "coordinator",
-		Listen:   ":4002",
+		Checkpoint: CheckpointConfig{Timeout: Duration{10 * time.Minute}},
+		TaskSlot:   TaskSlotConfig{InputBufferSize: 1024, OutputBufferSize: 1024, AlignmentBufferSize: 4096, CheckpointUploadConcurrency: 1, DrainTimeout: Duration{5 * time.Second}},
+		Mode:       "coordinator",
+		Listen:     ":4002",
 		Node: NodeConfig{
 			DataDir: "data/coordinator",
 			StoreDB: "pebble",
@@ -26,8 +27,9 @@ func DefaultConfig() WireConfig {
 			LockPath: "data/coordinator/leader.lock",
 		},
 		Worker: WorkerConfig{
-			ListenAddr: ":4003",
-			TaskSlots:  4,
+			CheckpointReplica: CheckpointReplicaConfig{Concurrency: 1},
+			ListenAddr:        ":4003",
+			TaskSlots:         4,
 		},
 	}
 }

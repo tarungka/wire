@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"testing"
+	"time"
 
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
@@ -106,5 +107,100 @@ func TestCheckpointCompletesOnlyAfterEveryAssignedTask(t *testing.T) {
 	req.State.Path = "different"
 	if err := c.AcknowledgeCheckpoint(req); err == nil {
 		t.Fatal("conflicting retry accepted")
+	}
+}
+
+func TestCheckpointTimeoutAbortsOnlyExpiredBoundary(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	c.config.CheckpointTimeout = time.Second
+	c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
+	data, err := protocol.EncodeMsgPack(TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(JobAssignmentsKey("job"), data); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := c.TriggerCheckpoint("job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.expireCheckpoints(cp.Timestamp.Add(time.Second - time.Nanosecond))
+	if len(c.activeCheckpoints) != 1 {
+		t.Fatal("checkpoint expired early")
+	}
+	c.expireCheckpoints(cp.Timestamp.Add(time.Second))
+	if len(c.activeCheckpoints) != 0 {
+		t.Fatal("expired checkpoint retained")
+	}
+	stored, err := store.Get(CheckpointKey("job", cp.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state CheckpointMeta
+	if err := protocol.DecodeMsgPack(stored, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != CheckpointAborted {
+		t.Fatalf("timeout state: %v", state.Status)
+	}
+	next, err := c.TriggerCheckpoint("job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ID != cp.ID+1 {
+		t.Fatal("timeout prevented next checkpoint")
+	}
+}
+
+func TestCheckpointCompletionRacingTimeoutKeepsOneDecision(t *testing.T) {
+	for range 20 {
+		c, store := newTestCoordinator(t)
+		c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
+		assignment, err := protocol.EncodeMsgPack(TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Set(JobAssignmentsKey("job"), assignment); err != nil {
+			t.Fatal(err)
+		}
+		cp, err := c.TriggerCheckpoint("job")
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		done := make(chan struct{}, 2)
+		go func() {
+			<-start
+			_ = c.AcknowledgeCheckpoint(rpc.AcknowledgeCheckpointRequest{JobID: "job", TaskID: "task", WorkerID: "worker", CheckpointID: cp.ID, EpochID: cp.EpochID, State: &rpc.StateHandle{TaskID: "task", Path: "replica"}})
+			done <- struct{}{}
+		}()
+		go func() { <-start; c.expireCheckpoints(cp.Timestamp.Add(c.config.CheckpointTimeout)); done <- struct{}{} }()
+		close(start)
+		<-done
+		<-done
+		data, err := store.Get(CheckpointKey("job", cp.ID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var final CheckpointMeta
+		if err := protocol.DecodeMsgPack(data, &final); err != nil {
+			t.Fatal(err)
+		}
+		switch final.Status {
+		case CheckpointCompleted:
+			if c.jobs["job"].LatestCheckpoint != cp.ID {
+				t.Fatal("completed checkpoint pointer missing")
+			}
+		case CheckpointAborted:
+			if c.jobs["job"].LatestCheckpoint != 0 {
+				t.Fatal("aborted checkpoint became latest")
+			}
+		default:
+			t.Fatalf("nonterminal decision: %v", final.Status)
+		}
+		if len(c.activeCheckpoints) != 0 {
+			t.Fatal("terminal checkpoint remains active")
+		}
 	}
 }

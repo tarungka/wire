@@ -27,9 +27,13 @@ type CoordinatorConfig struct {
 	ListenAddr             string
 	HeartbeatFlushInterval time.Duration
 	WorkerTimeout          time.Duration
+	CheckpointTimeout      time.Duration
 }
 
 func (c *CoordinatorConfig) resolve() {
+	if c.CheckpointTimeout <= 0 {
+		c.CheckpointTimeout = 10 * time.Minute
+	}
 	if c.HeartbeatFlushInterval <= 0 {
 		c.HeartbeatFlushInterval = DefaultHeartbeatFlushInterval
 	}
@@ -52,8 +56,9 @@ type Coordinator struct {
 	log      zerolog.Logger
 
 	// In-memory caches (write-through to store).
-	jobs    map[string]*JobMeta
-	workers map[string]*WorkerMeta
+	jobs              map[string]*JobMeta
+	workers           map[string]*WorkerMeta
+	activeCheckpoints map[string]CheckpointMeta
 
 	// activeJobNames maps a non-terminal job's name to its ID, kept in
 	// sync with c.jobs. Provides O(1) duplicate-name detection in

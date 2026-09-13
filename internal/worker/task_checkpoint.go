@@ -36,6 +36,11 @@ func (w *Worker) prepareTaskCheckpoint(jobID, taskID string, desc rpc.TaskDescri
 		return nil, nil, err
 	}
 	runtime := handle.checkpoint
+	maxFailures := 0
+	if w.executor.taskConfig != nil {
+		maxFailures = w.executor.taskConfig.Checkpoint.MaxConsecutiveFailures
+	}
+	consecutiveFailures := 0
 	runtime.replicator = &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: rpc.NewClient(session.YamuxSession(), rpc.DefaultConfig())}
 	runtime.report = func(ctx context.Context, id, epoch uint64, uploadErr error) error {
 		request := &rpc.AcknowledgeCheckpointRequest{WorkerID: w.cfg.WorkerID, JobID: jobID, TaskID: taskID, CheckpointID: id, EpochID: epoch}
@@ -50,6 +55,14 @@ func (w *Worker) prepareTaskCheckpoint(jobID, taskID string, desc rpc.TaskDescri
 		}
 		if !response.Accepted {
 			return fmt.Errorf("checkpoint report rejected: %s", response.Message)
+		}
+		if uploadErr == nil {
+			consecutiveFailures = 0
+		} else {
+			consecutiveFailures++
+			if maxFailures > 0 && consecutiveFailures >= maxFailures {
+				return fmt.Errorf("%w: %d consecutive upload failures", engine.ErrMaxConsecutiveCheckpointFailures, consecutiveFailures)
+			}
 		}
 		return nil
 	}

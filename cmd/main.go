@@ -170,9 +170,10 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 
 	// Create coordinator.
 	coordCfg := coordinator.CoordinatorConfig{
-		DataDir:    wireCfg.Node.DataDir,
-		NodeID:     nodeID,
-		ListenAddr: wireCfg.HTTP.Addr,
+		CheckpointTimeout: wireCfg.Checkpoint.Timeout.Duration,
+		DataDir:           wireCfg.Node.DataDir,
+		NodeID:            nodeID,
+		ListenAddr:        wireCfg.HTTP.Addr,
 	}
 	coord := coordinator.New(coordCfg, store, election, log.Logger)
 
@@ -215,17 +216,24 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 
 func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger) error {
 	taskConfig := engine.DefaultTaskSlotConfig()
+	taskConfig.Checkpoint.Timeout = wireCfg.Checkpoint.Timeout.Duration
+	taskConfig.Checkpoint.MaxConsecutiveFailures = wireCfg.Checkpoint.MaxConsecutiveFailures
 	taskConfig.InputBufferSize = wireCfg.TaskSlot.InputBufferSize
 	taskConfig.OutputBufferSize = wireCfg.TaskSlot.OutputBufferSize
 	taskConfig.AlignmentBufferSize = wireCfg.TaskSlot.AlignmentBufferSize
 	taskConfig.CheckpointUploadConcurrency = wireCfg.TaskSlot.CheckpointUploadConcurrency
 	taskConfig.DrainTimeout = wireCfg.TaskSlot.DrainTimeout.Duration
+	var replicaConfig *worker.CheckpointReplicaConfig
+	if cfg := wireCfg.Worker.CheckpointReplica; cfg.ListenAddr != "" {
+		replicaConfig = &worker.CheckpointReplicaConfig{ListenAddr: cfg.ListenAddr, AdvertiseAddr: cfg.AdvertiseAddr, StoreRoot: cfg.StoreRoot, ArtifactRoot: cfg.ArtifactRoot, StagingRoot: cfg.StagingRoot, Concurrency: cfg.Concurrency}
+	}
 	w := worker.New(worker.Config{
-		TaskSlot:        &taskConfig,
-		WorkerID:        wireCfg.Worker.WorkerID,
-		CoordinatorAddr: wireCfg.Worker.CoordinatorAddr,
-		ListenAddr:      wireCfg.Worker.ListenAddr,
-		TaskSlots:       wireCfg.Worker.TaskSlots,
+		CheckpointReplica: replicaConfig,
+		TaskSlot:          &taskConfig,
+		WorkerID:          wireCfg.Worker.WorkerID,
+		CoordinatorAddr:   wireCfg.Worker.CoordinatorAddr,
+		ListenAddr:        wireCfg.Worker.ListenAddr,
+		TaskSlots:         wireCfg.Worker.TaskSlots,
 	}, log.Logger)
 
 	g, gCtx := errgroup.WithContext(ctx)

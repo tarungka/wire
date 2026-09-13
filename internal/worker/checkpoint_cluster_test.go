@@ -2,7 +2,9 @@ package worker_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,9 +35,27 @@ func (*checkpointTestSource) ReadBatch(ctx context.Context) ([]engine.Event, err
 }
 
 func TestClusterCheckpointReplicatesAndCompletes(t *testing.T) {
+	testClusterCheckpoint(t, false)
+}
+
+func TestClusterCheckpointFailureThreshold(t *testing.T) {
+	testClusterCheckpoint(t, true)
+}
+
+func TestClusterCheckpointTransactionalAbort(t *testing.T) {
+	testClusterCheckpoint(t, true, true)
+}
+
+func TestClusterCheckpointTransactionalCommit(t *testing.T) {
+	testClusterCheckpoint(t, false, true)
+}
+
+func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	coord := coordinator.New(coordinator.CoordinatorConfig{NodeID: "coordinator"}, coordinator.NewMemoryStore(), nil, zerolog.Nop())
+	metadata := coordinator.NewMemoryStore()
+	coord := coordinator.New(coordinator.CoordinatorConfig{NodeID: "coordinator"}, metadata, nil, zerolog.Nop())
 	coordDone := make(chan error, 1)
 	go func() { coordDone <- coord.Run(ctx) }()
 	waitFor(t, 2*time.Second, coord.IsReady)
@@ -56,13 +76,38 @@ func TestClusterCheckpointReplicatesAndCompletes(t *testing.T) {
 	registry.RegisterSource("checkpoint-source", func(context.Context, []byte, worker.TaskContext) (engine.SourceOperator, error) {
 		return &checkpointTestSource{}, nil
 	})
+	var committed atomic.Uint64
+	var aborted atomic.Uint64
+	var written atomic.Uint64
+	var earlyCommit atomic.Bool
+	var jobID atomic.Value
+	registry.RegisterSink("checkpoint-sink", func(context.Context, []byte, worker.TaskContext) (engine.SinkOperator, error) {
+		return &checkpointTestSink{abort: func() { aborted.Add(1) }, write: func() { written.Add(1) }, commit: func(id uint64) {
+			value := jobID.Load()
+			if value == nil {
+				earlyCommit.Store(true)
+				return
+			}
+			job, err := coord.GetJob(value.(string))
+			if err != nil || job.LatestCheckpoint < id {
+				earlyCommit.Store(true)
+			}
+			committed.Store(id)
+		}}, nil
+	})
 	var stores []string
 	var workers []*worker.Worker
 	var done []chan error
 	for i := 0; i < 2; i++ {
 		root := t.TempDir()
 		stores = append(stores, root)
-		w := worker.NewWithRegistry(worker.Config{WorkerID: fmt.Sprintf("worker-%d", i), CoordinatorAddr: server.Addr(), TaskSlots: 1, CheckpointReplica: &worker.CheckpointReplicaConfig{ListenAddr: "127.0.0.1:0", StoreRoot: root, ArtifactRoot: t.TempDir(), StagingRoot: t.TempDir(), Concurrency: 1}}, registry, zerolog.Nop())
+		replica := &worker.CheckpointReplicaConfig{ListenAddr: "127.0.0.1:0", StoreRoot: root, ArtifactRoot: t.TempDir(), StagingRoot: t.TempDir(), Concurrency: 1}
+		taskConfig := engine.DefaultTaskSlotConfig()
+		if fail {
+			replica.Authorize = func(context.Context, rpc.ReplicateCheckpointRequest) error { return errors.New("replica refused") }
+			taskConfig.Checkpoint.MaxConsecutiveFailures = 2
+		}
+		w := worker.NewWithRegistry(worker.Config{WorkerID: fmt.Sprintf("worker-%d", i), CoordinatorAddr: server.Addr(), TaskSlots: 1, TaskSlot: &taskConfig, CheckpointReplica: replica}, registry, zerolog.Nop())
 		workers = append(workers, w)
 		ch := make(chan error, 1)
 		done = append(done, ch)
@@ -79,7 +124,12 @@ func TestClusterCheckpointReplicatesAndCompletes(t *testing.T) {
 		<-coordDone
 	}()
 	waitFor(t, 3*time.Second, func() bool { return len(coord.ListWorkers()) == 2 })
-	graph, err := protocol.EncodeMsgPack(rpc.JobGraph{Operators: []rpc.OperatorDescriptor{{OperatorID: "source", ClassName: "checkpoint-source", Type: rpc.OperatorTypeSource}}})
+	graphSpec := rpc.JobGraph{Operators: []rpc.OperatorDescriptor{{OperatorID: "source", ClassName: "checkpoint-source", Type: rpc.OperatorTypeSource}}}
+	if len(transactional) > 0 && transactional[0] {
+		graphSpec.Operators = append(graphSpec.Operators, rpc.OperatorDescriptor{OperatorID: "sink", ClassName: "checkpoint-sink", Type: rpc.OperatorTypeSink})
+		graphSpec.Edges = append(graphSpec.Edges, rpc.EdgeDescriptor{SourceOperatorID: "source", TargetOperatorID: "sink"})
+	}
+	graph, err := protocol.EncodeMsgPack(graphSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +137,7 @@ func TestClusterCheckpointReplicatesAndCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	jobID.Store(job.ID)
 	waitFor(t, 5*time.Second, func() bool {
 		current, err := coord.GetJob(job.ID)
 		return err == nil && current.Status == coordinator.JobRunning
@@ -95,10 +146,46 @@ func TestClusterCheckpointReplicatesAndCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if fail {
+		waitFor(t, 3*time.Second, func() bool {
+			data, err := metadata.Get(coordinator.CheckpointKey(job.ID, checkpoint.ID))
+			if err != nil {
+				return false
+			}
+			var state coordinator.CheckpointMeta
+			return protocol.DecodeMsgPack(data, &state) == nil && state.Status == coordinator.CheckpointAborted
+		})
+		current, err := coord.GetJob(job.ID)
+		if err != nil || current.Status != coordinator.JobRunning {
+			t.Fatalf("first failure killed job: %+v, %v", current, err)
+		}
+		if len(transactional) > 0 && transactional[0] {
+			waitFor(t, 3*time.Second, func() bool { return aborted.Load() > 0 })
+			before := written.Load()
+			waitFor(t, 3*time.Second, func() bool { return written.Load() > before })
+			if committed.Load() != 0 {
+				t.Fatal("failed checkpoint committed transaction")
+			}
+		}
+		if _, err := coord.TriggerCheckpoint(job.ID); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, 3*time.Second, func() bool {
+			current, err := coord.GetJob(job.ID)
+			return err == nil && (current.Status == coordinator.JobFailing || current.Status == coordinator.JobFailed)
+		})
+		return
+	}
 	waitFor(t, 4*time.Second, func() bool {
 		current, err := coord.GetJob(job.ID)
 		return err == nil && current.LatestCheckpoint == checkpoint.ID
 	})
+	if len(transactional) > 0 && transactional[0] {
+		waitFor(t, 3*time.Second, func() bool { return committed.Load() == checkpoint.ID })
+		if earlyCommit.Load() {
+			t.Fatal("sink committed before global completion")
+		}
+	}
 	for taskID, owner := range checkpoint.Tasks {
 		index := 1
 		if owner == "worker-1" {
@@ -114,3 +201,18 @@ func TestClusterCheckpointReplicatesAndCompletes(t *testing.T) {
 		}
 	}
 }
+
+type checkpointTestSink struct {
+	commit func(uint64)
+	abort  func()
+	write  func()
+}
+
+func (*checkpointTestSink) Open(context.Context) error                  { return nil }
+func (*checkpointTestSink) Close() error                                { return nil }
+func (*checkpointTestSink) Checkpoint(uint64) ([]byte, error)           { return []byte("sink-state"), nil }
+func (s *checkpointTestSink) Write(context.Context, engine.Event) error { s.write(); return nil }
+func (*checkpointTestSink) BeginTransaction(context.Context) error      { return nil }
+func (*checkpointTestSink) PreCommit(context.Context, uint64) error     { return nil }
+func (s *checkpointTestSink) Commit(_ context.Context, id uint64) error { s.commit(id); return nil }
+func (s *checkpointTestSink) Abort(context.Context) error               { s.abort(); return nil }
