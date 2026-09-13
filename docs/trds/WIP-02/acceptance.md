@@ -74,10 +74,10 @@ cancellation. Replication errors and panics become checkpoint result errors;
 the task integration must apply WIP-05 failure thresholds rather than treating
 every failed upload as a fatal task error.
 
-These component invariants pass 50 race-enabled repetitions. This is not yet
-evidence of async replication in a running worker: chain submission, durable
-replica transport, completion/abort fencing and terminal-task handling remain
-open. No successful checkpoint may be acknowledged before replication succeeds.
+These component invariants pass 50 race-enabled repetitions. Chain submission,
+completion/abort fencing and terminal-task handling are connected as described
+below. Durable replica transport remains open. No successful checkpoint may be
+acknowledged before replication succeeds.
 
 ### Replication failure policy
 
@@ -106,3 +106,22 @@ The network TaskSlot success/failure-at-EOF scenarios pass 30 race-enabled
 repetitions. This validates runtime behavior with an injected replicator, not
 peer durability. Worker configuration/replica transport, source checkpoint
 injection, additional transactional cases and metrics remain open.
+
+### Replica storage component
+
+`FileCheckpointStore` persists inline operator bytes under a hashed
+job/task/checkpoint/epoch identity. Publication uses a synced temporary file,
+an atomic hard link that cannot replace an existing checkpoint, removal of the
+temporary link, and directory sync before success. Identical retries are
+idempotent; conflicting contents fail. Files carry a version, bounded payload
+length (64 MiB encoded), and SHA-256 checksum. Reads validate the envelope before
+allocating payload memory and verify the stored identity. The root directory
+must already exist and be durable.
+
+Twenty race-enabled repetitions cover concurrent identical and conflicting
+publication, reopening the store, job isolation, cancellation, checksum
+corruption, and malformed/truncated/oversized envelopes. Reopening is recovery
+evidence, not a simulated power-loss test. Crashes before publication may leave
+unreferenced staging files; startup cleanup remains part of worker integration.
+This component is not a remote replica adapter: peer transport and transfer of
+referenced Pebble files are still required before worker durability is complete.
