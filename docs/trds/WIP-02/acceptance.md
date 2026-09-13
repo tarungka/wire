@@ -276,3 +276,20 @@ a stream and verifies late-open cleanup releases the slot while an existing
 stream still transfers data. Five race-enabled repetitions pass.
 The existing 16 MiB RPC frame limit also means replica transfer must be chunked
 rather than sending the store's entire 64 MiB snapshot in one unary payload.
+
+### Checkpoint chunk framing
+
+RPC method 0x0009 (ReplicateCheckpoint) is reserved for replica transfer.
+`WriteCheckpointChunks` emits at most 1 MiB of snapshot data per RPC frame,
+prefixed by an eight-byte offset. `ReadCheckpointChunks` enforces method and
+request identity, contiguous offsets, nonempty chunks, declared total length,
+per-frame allocation bounds and the transfer SHA-256 digest. Bytes go to private
+staging storage; any failure requires discarding staging. The caller must check
+the declared size against its quota and own cancellation of blocked transport
+I/O. No worker endpoint or durable acknowledgement is connected yet.
+
+Tests transfer a snapshot larger than the 16 MiB unary limit, and reject wrong
+method/request IDs, gaps, empty chunks, excess data and checksum corruption.
+These validate framing, not publication, peer identity or recovery. The transfer
+request envelope, receiver admission, durable publication and client/server
+integration remain required.
