@@ -23,13 +23,13 @@
 
 ## Implementation Status — 2026-09-13
 
-This section describes the in-progress `codex/wip-02-complete` follow-up. The proposal below retains its design targets; the status remains partial until restart restoration and the full acceptance audit are complete.
+This section describes the in-progress `codex/wip-02-complete` follow-up. The proposal below retains its design targets; the status remains partial until final validation and the linked follow-up PR are complete.
 
 - **Implemented:** TaskSlot and operator-chain goroutines, bounded channels, coordinated cancellation, and alignment buffers are implemented. Alignment only counts valid inputs with the active checkpoint ID and epoch; invalid indices, checkpoint zero, and mixed identities cannot complete alignment. Operator-chain snapshot control also checks the active epoch.
 - **Connected in the follow-up:** Configured workers advertise replica endpoints; deployment assigns a remote peer and coordinator epoch. Source checkpoint commands use the TaskSlot boundary, bounded archive uploads publish peer state, and assignment-checked RPC reports drive persisted completion or abort decisions. A two-worker race test verifies source state on the remote worker after coordinator completion, using coordinator-backed replica authorization.
 - **Configured and tested:** The binary exposes replica storage, checkpoint timeout, and consecutive upload failure limits. Distributed tests cover transactional commit after coordinator completion and abort after replica failure. Checkpoint acknowledgements must name the peer captured in the replica assignment.
 - **Recovery evidence:** A two-worker race test completes a checkpoint, injects a source failure, redeploys with a new attempt ID, and verifies the new source restores the saved state before reading. Worker replica fetches are authorized against the completed checkpoint and current deployment.
-- **Remaining:** Coordinator failover/worker-loss recovery and the complete acceptance audit are unfinished. The worker executor still assembles its own linear chain. The existing tests do not establish completion of every requirement below.
+- **Remaining:** Final validation and the linked follow-up PR are unfinished. Cluster coordinator replacement is now tested; broader worker-loss and HA policy belong to WIP-09. The worker executor still assembles its own linear chain. The existing tests do not establish completion of every requirement below.
 - **Evidence:** [task_slot.go](../../../internal/engine/task_slot.go), [task_executor.go](../../../internal/worker/task_executor.go).
 
 ---
@@ -142,6 +142,12 @@ flowchart LR
 | **Watermark Emitter** | 1 per source task | Entire task lifetime (sources only) | Periodically compute and publish watermark via `atomic.Int64` (WIP-04) |
 | **Pebble Compaction** | 1-2 | Managed by Pebble | Background LSM compaction |
 | **Pebble WAL Sync** | 1 | Managed by Pebble | Write-ahead log synchronization |
+
+The implementation additionally uses one output dispatcher and one bounded
+one-entry queue per writer. Control broadcasts wait for every writer before
+later data is dispatched. Input readers use a bounded read-ahead helper, and
+TaskSlot owns shutdown/join helpers. These helpers are included in the task
+goroutine metric; shared transport and Pebble goroutines are excluded.
 
 **Typical total per Task Slot:** 5-10 goroutines (varies with number of input/output streams).
 

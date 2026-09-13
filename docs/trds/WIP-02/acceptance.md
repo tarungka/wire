@@ -10,25 +10,25 @@ waive any WIP-02 requirement.
 
 | # | Requirement | Current evidence / remaining work |
 |---|---|---|
-| 1 | Slow sink bounds source reading | Existing TaskSlot backpressure tests; audit network and output fan-out bounds. |
-| 2 | Cancellation drains and joins within five seconds | Two-phase cancellation stops intake, releases alignment buffers, drains fetched batches/read-ahead through the chain, and bounds processing/output with DrainTimeout. Helpers are joined. Six regression scenarios pass 20 race-enabled repetitions; full race/integration suite and lint pass. Transactional cleanup and operator lifecycle/resource bounds still require audit. |
+| 1 | Slow sink bounds source reading | `TestTaskSlot_Backpressure` and `TestTaskSlotCancellationBoundsBlockedOutput` exercise bounded source/output pressure. `TestOutputWritersProgressIndependentlyAndJoinOnCancel` fills a Yamux window and verifies sibling progress and cancellation; each writer has a one-entry queue. |
+| 2 | Cancellation drains and joins within five seconds | Two-phase cancellation stops intake, releases alignment buffers, drains fetched batches/read-ahead through the chain, and bounds processing/output with DrainTimeout. Helpers are joined. Six regression scenarios pass 20 race-enabled repetitions; full race/integration suite and lint pass. Worker lifecycle tests verify Open/Close and failure status; cluster transactional commit/abort tests verify decision ordering. |
 | 3 | Async checkpoint replication permits continued processing | TaskSlot now submits captured aligned snapshots to the bounded uploader. A real stream test verifies continued processing during blocked replication, delayed ACK, and EOF waiting for success or abort. Worker replica transport, source-boundary injection, source-failure restart and coordinator-replacement recovery are now connected and tested. |
 | 4 | Concurrent source read/watermark safety | `TestSourceReadAndWatermarkOverlapInTaskLifecycle` requires actual overlap of ReadBatch and GenerateWatermark, uses atomic shared state, and verifies processing and closure; three race-enabled runs pass. User-provided sources retain the documented thread-safety obligation. |
 | 5 | Two-input alignment / snapshot / release | WIP-01 ordering and atomic buffer transfer regressions exist. Retain pre-barrier snapshot and barrier-before-post-data ordering. |
-| 6 | Abort drains without snapshot | Existing abort tests; audit races with upload completion and shutdown. |
-| 7 | Operator panic fails task and joins siblings | Panic recovery and authoritative chain-error handling exist; validate worker FAILED reporting and lifecycle cleanup. |
-| 8 | Atomic watermarks | Tracker CAS and emitter concurrency tests exist; audit end-to-end publication semantics. |
-| 9 | Prompt control mailbox handling under full data channels | Control-priority test exists; audit blocking output and checkpoint-work interactions. |
+| 6 | Abort drains without snapshot | `TestOperatorChain_AbortCheckpoint_DrainsSideBufferNoBarrier`, `TestExternalCheckpointAbortReleasesFailedUpload`, and `TestTaskCheckpointUploadFailureAbortsBeforeEOF` cover abort without snapshot, failed upload release, and EOF completion. |
+| 7 | Operator panic fails task and joins siblings | `TestWorker_TaskLifecycleStatuses` covers source/map/factory panics, FAILED reports with stacks, cancellation, and cleanup. TaskSlot uses the authoritative chain error and joins siblings before returning. |
+| 8 | Atomic watermarks | Tracker CAS/stress tests verify atomic monotonic updates. `TestSourceReadAndWatermarkOverlapInTaskLifecycle` verifies concurrent source publication through the real emitter; input reader tests cover nonregressing received watermarks. |
+| 9 | Prompt control mailbox handling under full data channels | `TestOperatorChain_ControlPriority` tests control delivery under full input. Async checkpoint tests verify processing continues during upload; output cancellation tests verify blocked writes terminate. |
 
 ## Other explicit requirements
 
 | Requirement | Current evidence / remaining work |
 |---|---|
 | Per-task topology and bounded channels (§2.1–2.4) | Input reader includes one bounded read-ahead helper. Output now uses one bounded writer per stream plus a dispatcher; control fences preserve cross-partition ordering. Independent progress under a blocked Yamux window and joined cancellation pass three race-enabled runs. Mailbox capacity is at least 16, expanded for input control messages. |
-| Replication failure affects checkpoint, threshold affects task (§2.7) | Coordinator failure reporting now applies existing checkpoint thresholds and ignores stale checkpoint/epoch reports; timeout metrics exclude replication failures. TaskSlot completion delivery now feeds this policy; durable worker replication and additional transactional/abort overlap tests remain required. |
-| Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Engine upload concurrency is implemented. Pebble compaction concurrency defaults to two and is configurable in engine/embedded SDK, retained across restore. Worker configuration integration remains open. |
+| Replication failure affects checkpoint, threshold affects task (§2.7) | `TestClusterCheckpointFailureThreshold` verifies a first replica failure aborts the checkpoint while the task continues, and the configured consecutive limit fails the task. Cluster transactional abort tests check continued writes after abort; stale failure/ACK tests fence identity. |
+| Configuration (§3.1) | `cmd/main.go` transfers node input/output/alignment sizes, upload concurrency, drain and checkpoint settings into TaskSlot configuration. Config load/validation tests cover overrides. Pebble compaction defaults to two and is configurable through engine/SDK backend configuration; tests verify it survives restore. |
 | Container CPU limits (§3.2) | cmd/main.go imports automaxprocs v1.6.0 at startup. Explicit GOMAXPROCS takes precedence; quota rounding/minimum and restart behavior are documented. The real CGO-disabled linux/arm64 Wire binary was run in Docker with CPU quotas: 1.5 CPUs selected GOMAXPROCS=1, 0.5 CPUs selected the minimum 1, and explicit GOMAXPROCS=3 was honored. Startup logs verify automaxprocs applied each policy. |
-| Six observability metrics (§3.3) | Task input/output channel usage and alignment payload-byte gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Operator output blocking time is recorded on data/barrier/EOP sends. Engine-owned goroutines and callbacks are counted at entry/exit. Prometheus HTTP-handler export and gauge cleanup are tested; running-worker topology validation remains open. |
+| Six observability metrics (§3.3) | Task input/output channel usage and alignment payload-byte gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Operator output blocking time is recorded on data/barrier/EOP sends. Engine-owned goroutines and callbacks are counted at entry/exit. Prometheus HTTP-handler export verifies all six metric names, values, units and gauge cleanup. Uploader and per-output writer accounting tests verify active and joined counts; output context retains the task counter. |
 | Benchmarks (§8) | Channel handoff and deserialization-placement benchmarks added; current baseline recorded in benchmarks.md. The integrated runtime refresh at `0be50db` is recorded in benchmarks.md. Allocation counts match the earlier baseline. |
 | Documentation and PR | Update actual topology, configuration and status only after validation; linked follow-up PR to #207/#149, using personal GitHub account. |
 
@@ -39,7 +39,12 @@ Those records arrived after the barrier and must remain after it. The WIP-01
 implementation and regression preserve the correct ordering; WIP-02 must not
 reintroduce the old behavior while implementing asynchronous snapshot work.
 
-## Shutdown implementation evidence
+## Historical implementation notes
+
+The entries below record incremental work and may describe gaps subsequently
+closed by the current acceptance matrix above.
+
+### Shutdown implementation evidence
 
 `TestInputReaderDrainsReadAheadAfterIntakeCancellation` fills the bounded
 read-ahead queue before cancelling intake, then verifies every record arrives.
