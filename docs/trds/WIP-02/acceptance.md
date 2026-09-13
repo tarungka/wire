@@ -342,3 +342,14 @@ defaults. The generated configuration reference is updated. YAML override and
 negative-value tests, configuration/worker race suites, and command compilation
 pass. Worker replication is still unconnected, so configuring upload concurrency
 alone does not enable checkpoints. Pebble worker backend selection remains open.
+
+The worker's inlineCheckpointReplicator now adapts engine snapshots to the
+chunked RPC client. It fences the assigned task and exact execution epoch,
+validates identity and transfer size, preserves source/operator state in JSON,
+and binds the request to its serialized length and SHA-256. Peer errors propagate
+to the uploader's existing checkpoint failure policy. A race-enabled adapter
+test verifies old/future epochs and other tasks never contact the peer, validates
+the envelope/body, and checks receipt failures propagate. This adapter is not
+yet installed by worker task construction and is limited to self-contained
+snapshot bytes. File-backed snapshots require the artifact path; that requirement
+has not been waived or replaced by inline-only support.
