@@ -12,8 +12,8 @@ waive any WIP-02 requirement.
 |---|---|---|
 | 1 | Slow sink bounds source reading | Existing TaskSlot backpressure tests; audit network and output fan-out bounds. |
 | 2 | Cancellation drains and joins within five seconds | Two-phase cancellation stops intake, releases alignment buffers, drains fetched batches/read-ahead through the chain, and bounds processing/output with DrainTimeout. Helpers are joined. Six regression scenarios pass 20 race-enabled repetitions; full race/integration suite and lint pass. Transactional cleanup and operator lifecycle/resource bounds still require audit. |
-| 3 | Async checkpoint replication permits continued processing | TaskSlot now submits captured aligned snapshots to the bounded uploader. A real stream test verifies continued processing during blocked replication, delayed ACK, and EOF waiting for success or abort. Durable worker replica transport and source checkpoint injection remain required. |
-| 4 | Concurrent source read/watermark safety | Separate source reader and legacy watermark strategy exist; audit source implementations and add full-lifecycle race evidence. |
+| 3 | Async checkpoint replication permits continued processing | TaskSlot now submits captured aligned snapshots to the bounded uploader. A real stream test verifies continued processing during blocked replication, delayed ACK, and EOF waiting for success or abort. Worker replica transport, source-boundary injection, source-failure restart and coordinator-replacement recovery are now connected and tested. |
+| 4 | Concurrent source read/watermark safety | `TestSourceReadAndWatermarkOverlapInTaskLifecycle` requires actual overlap of ReadBatch and GenerateWatermark, uses atomic shared state, and verifies processing and closure; three race-enabled runs pass. User-provided sources retain the documented thread-safety obligation. |
 | 5 | Two-input alignment / snapshot / release | WIP-01 ordering and atomic buffer transfer regressions exist. Retain pre-barrier snapshot and barrier-before-post-data ordering. |
 | 6 | Abort drains without snapshot | Existing abort tests; audit races with upload completion and shutdown. |
 | 7 | Operator panic fails task and joins siblings | Panic recovery and authoritative chain-error handling exist; validate worker FAILED reporting and lifecycle cleanup. |
@@ -24,7 +24,7 @@ waive any WIP-02 requirement.
 
 | Requirement | Current evidence / remaining work |
 |---|---|
-| Per-task topology and bounded channels (§2.1–2.4) | Input reader includes one bounded read-ahead helper. Output uses one ordered dispatcher, not the stated per-output workers. Reconcile topology with ordering and test bounds. |
+| Per-task topology and bounded channels (§2.1–2.4) | Input reader includes one bounded read-ahead helper. Output now uses one bounded writer per stream plus a dispatcher; control fences preserve cross-partition ordering. Independent progress under a blocked Yamux window and joined cancellation pass three race-enabled runs. Mailbox capacity is at least 16, expanded for input control messages. |
 | Replication failure affects checkpoint, threshold affects task (§2.7) | Coordinator failure reporting now applies existing checkpoint thresholds and ignores stale checkpoint/epoch reports; timeout metrics exclude replication failures. TaskSlot completion delivery now feeds this policy; durable worker replication and additional transactional/abort overlap tests remain required. |
 | Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Engine upload concurrency is implemented. Pebble compaction concurrency defaults to two and is configurable in engine/embedded SDK, retained across restore. Worker configuration integration remains open. |
 | Container CPU limits (§3.2) | cmd/main.go imports automaxprocs v1.6.0 at startup. Explicit GOMAXPROCS takes precedence; quota rounding/minimum and restart behavior are documented. Command package builds locally; Linux cgroup execution remains to be verified (local Docker daemon is stopped). |
@@ -427,3 +427,12 @@ changes (local log: `/private/tmp/wip02-recovery-full-suite.log`). This is evide
 for the tested source-failure recovery path, not coordinator failover or loss of
 a worker. Those paths still need implementation/verification, alongside the
 remaining topology and lifecycle acceptance audit. WIP-02 remains partial.
+
+### Topology verification — 2026-09-13
+
+After introducing bounded per-output writers, the complete
+`go test -race -tags=integration ./...` suite passed (local log:
+`/private/tmp/wip02-topology-full-suite.log`). The synchronized source-overlap
+test was added afterward and passed three race-enabled repetitions. Remaining
+acceptance work includes final benchmark refresh, Linux quota evidence, and
+consolidation of the historical audit below into current requirement evidence.
