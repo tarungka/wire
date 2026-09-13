@@ -25,7 +25,9 @@
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
 
 - **Implemented:** YAML/JSON system-config loading, ordered file merging, environment substitution, CLI overrides, and validation are implemented.
-- **Remaining:** Pipeline YAML is not implemented (WIP-19), and some configured features such as authentication/TLS remain unwired in the runtime. Reconcile historical flag and schema examples with the current loader.
+- **Remaining:** Pipeline YAML is not implemented (WIP-19), and some configured features such as authentication/TLS remain unwired in the runtime. A formal machine-readable schema and a documented cluster walkthrough remain outstanding.
+- **Validation:** [load order, substitution semantics, and current validation rules](../../configuration-validation.md). Environment substitution now includes mode, listen, and worker string fields.
+- **Current reference:** [all accepted fields, defaults, and CLI mappings](../../configuration-reference.md), with loader-validated [coordinator](../../examples/coordinator.yaml) and [worker](../../examples/worker.yaml) examples. Run with `./wire --config docs/examples/coordinator.yaml` and `./wire --config docs/examples/worker.yaml`. The reference has a drift check against current config types and flags.
 - **Evidence:** [loader.go](../../../internal/config/loader.go), [flags.go](../../../internal/config/flags.go), [main.go](../../../cmd/main.go).
 
 ---
@@ -113,166 +115,41 @@ flowchart LR
 
 ### 3.1 CLI Flag Reference
 
-#### General Flags
+Current flags from `cmd/init.go`. TLS flags are accepted but do not yet enable
+runtime TLS. The old Raft/join/backup flags are absent, not dormant options.
 
 | Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--config` | `[]string` | `.config/config.json` | Path to one or more config files (merged in order) |
-| `--node-id` | `string` | _(hostname)_ | Unique identifier for this node |
-| `--store-db` | `string` | `pebble` | Backend database for Coordinator metadata store. **Legacy:** `bbolt` and `badgerdb` values exist in code but are superseded by PebbleDB (see WIP-09). |
-| `--debug` | `bool` | `false` | Enable debug mode (verbose logging) |
-| `--version` | `bool` | `false` | Print version information and exit |
-
-#### HTTP Server Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--http-addr` | `string` | `localhost:4001` | HTTP server bind address |
-| `--http-adv-addr` | `string` | _(same as http-addr)_ | Advertised HTTP address |
-| `--http-allow-origin` | `string` | `""` | `Access-Control-Allow-Origin` header value |
-| `--http-cert` | `string` | `""` | Path to X.509 certificate for HTTPS |
-| `--http-key` | `string` | `""` | Path to X.509 private key for HTTPS |
-| `--http-ca-cert` | `string` | `""` | Path to CA certificate for HTTPS client verification |
-| `--http-verify-client` | `bool` | `false` | Enable mutual TLS for HTTPS |
-
-#### Raft Consensus Flags (Deferred — WIP-09 Phase D)
-
-> **Note:** These flags exist in `cmd/init.go` but are **not active** in the current design. WIP-09 defers embedded Raft consensus to Phase D. These flags will only apply if/when Phase D is implemented. The current HA strategy uses PebbleDB persistence (Phase A), pluggable leader election (Phase B), and fencing tokens (Phase C).
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--raft-addr` | `string` | `localhost:4002` | Raft communication bind address |
-| `--raft-adv-addr` | `string` | _(same as raft-addr)_ | Advertised Raft address |
-| `--raft-dir` | `string` | `""` | Directory for Raft data (logs, snapshots) |
-| `--raft-timeout` | `duration` | `1s` | Raft heartbeat timeout |
-| `--raft-election-timeout` | `duration` | `1s` | Raft election timeout |
-| `--raft-apply-timeout` | `duration` | `10s` | Raft log apply timeout |
-| `--raft-snap` | `uint64` | `8192` | Outstanding log entries before snapshot |
-| `--raft-snap-int` | `duration` | `10s` | Snapshot threshold check interval |
-| `--raft-leader-lease-timeout` | `duration` | `0s` | Leader lease timeout (0 = Raft default) |
-| `--raft-log-level` | `string` | `DEBUG` | Minimum Raft log level |
-| `--raft-non-voter` | `bool` | `false` | Configure as non-voting (read-only) node |
-| `--raft-shutdown-stepdown` | `bool` | `true` | Leader steps down before shutdown |
-| `--raft-remove-shutdown` | `bool` | `false` | Shutdown Raft if node removed |
-| `--raft-cluster-remove-shutdown` | `bool` | `false` | Remove node from cluster on shutdown |
-| `--raft-reap-node-timeout` | `duration` | `0` | Reap unreachable voting nodes after this duration (0 = disabled) |
-| `--raft-reap-read-only-node-timeout` | `duration` | `0` | Reap unreachable non-voting nodes after this duration (0 = disabled) |
-
-#### Cluster Join Flags (Deferred — WIP-09 Phase D)
-
-> **Note:** These flags exist in `cmd/init.go` but are **not active** in the current design. Cluster join is part of the embedded Raft multi-node setup deferred to WIP-09 Phase D. The current single-Coordinator deployment does not use cluster join.
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--join` | `string` | `""` | Comma-delimited `host:port` list for cluster join |
-| `--join-attempts` | `int` | `5` | Number of join attempts per address |
-| `--join-interval` | `duration` | `3s` | Delay between join retries |
-| `--join-as` | `string` | `""` | Username for authenticated join |
-| `--bootstrap-expect` | `int` | `0` | Min nodes required for bootstrap (0 = single-node) |
-| `--bootstrap-expect-timeout` | `duration` | `120s` | Max time for bootstrap process |
-
-#### Node-to-Node Encryption Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--node-cert` | `string` | `""` | X.509 certificate for inter-node encryption |
-| `--node-key` | `string` | `""` | X.509 private key for inter-node encryption |
-| `--node-ca-cert` | `string` | `""` | CA certificate for verifying node certificates |
-| `--node-no-verify` | `bool` | `false` | Skip verification of node certificates |
-| `--node-verify-client` | `bool` | `false` | Enable mutual TLS for inter-node communication |
-| `--node-verify-server-name` | `string` | `""` | Expected hostname on node certificates |
-
-#### Authentication & Backup Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--auth` | `string` | `""` | Path to authentication/authorization file |
-| `--auto-backup` | `string` | `""` | Path to auto-backup configuration |
-| `--auto-restore` | `string` | `""` | Path to auto-restore configuration |
-| `--auto-vacuum-int` | `duration` | `0` | Auto-vacuum interval (0 = disabled) |
-| `--auto-optimize-int` | `duration` | `24h` | Auto-optimize interval (0 = disabled) |
-
-#### Write Queue Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--write-queue-capacity` | `int` | `1024` | Capacity of queued writes queue |
-| `--write-queue-batch-size` | `int` | `128` | Batch size for queued writes |
-| `--write-queue-timeout` | `duration` | `50ms` | Max time before partial batch flush |
-| `--write-queue-tx` | `bool` | `false` | Use transactions for queued writes |
-
-#### Cluster Communication Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--cluster-connect-timeout` | `duration` | `30s` | Timeout for initial connection to other nodes |
-
-#### Profiling Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--cpu-profile` | `string` | `""` | Path to CPU profile output |
-| `--mem-profile` | `string` | `""` | Path to memory profile output |
-| `--trace-profile` | `string` | `""` | Path to trace profile output |
+| --- | --- | --- | --- |
+| `--version` | `bool` | `false` | Show version information and exit |
+| `--config` | `stringslice` | `[]string{".config/config.json"}` | path to one or more config files (will be merged in order) |
+| `--debug` | `bool` | `false` | run in debug mode - better logs |
+| `--mode` | `string` | `"coordinator"` | operating mode: coordinator or worker |
+| `--listen` | `string` | `":4002"` | wire protocol listen address |
+| `--node-cert` | `string` | `""` | TLS certificate file |
+| `--node-key` | `string` | `""` | TLS private key file |
+| `--node-ca` | `string` | `""` | CA certificate for peer verification |
+| `--node-verify-client` | `bool` | `false` | require mutual TLS |
+| `--max-frame-size` | `uint32` | `16777216` | max wire protocol frame size |
+| `--coordinator-data-dir` | `string` | `"data/coordinator"` | coordinator metadata storage directory |
+| `--node-id` | `string` | `""` | coordinator node ID (defaults to hostname) |
+| `--http-listen` | `string` | `":4001"` | HTTP API listen address |
+| `--election-backend` | `string` | `"noop"` | leader election backend (noop, filelock) |
+| `--election-lock-path` | `string` | `"data/coordinator/leader.lock"` | file path for filelock election backend |
+| `--coordinator-addr` | `string` | `""` | coordinator address to connect to (worker mode) |
+| `--worker-id` | `string` | `""` | worker node ID (defaults to hostname) |
+| `--worker-listen` | `string` | `":4003"` | worker data-plane listen address |
+| `--task-slots` | `int` | `4` | number of task slots (worker mode) |
+| `--metrics-enabled` | `bool` | `true` | expose Prometheus /metrics scrape endpoint |
+| `--metrics-addr` | `string` | `":9090"` | bind address for the Prometheus /metrics scrape endpoint |
 
 ### 3.2 System Configuration File (wire.yaml)
 
-```yaml
-node:
-  id: "node-1"
-  data_dir: "/var/lib/wire"
-  store_db: "pebble"
-  debug: false
-
-http:
-  addr: "0.0.0.0:4001"
-  adv_addr: "node1.wire.local:4001"
-  allow_origin: "*"
-  tls:
-    cert: "/etc/wire/certs/http.crt"
-    key: "/etc/wire/certs/http.key"
-    ca_cert: "/etc/wire/certs/ca.crt"
-    verify_client: false
-
-# raft: and cluster: sections are for future multi-node HA (Phase D of WIP-09).
-# These settings are NOT active in the current single-Coordinator design.
-# raft:
-#   addr: "0.0.0.0:4002"
-#   adv_addr: "node1.wire.local:4002"
-#   heartbeat_timeout: "1s"
-#   election_timeout: "1s"
-#   apply_timeout: "10s"
-#   snapshot_threshold: 8192
-#   snapshot_interval: "10s"
-#   leader_lease_timeout: "0s"
-#   log_level: "INFO"
-#   non_voter: false
-#   shutdown_stepdown: true
-
-# cluster:
-#   join: ["node2:4002", "node3:4002"]
-#   join_attempts: 5
-#   join_interval: "3s"
-#   bootstrap_expect: 3
-#   bootstrap_expect_timeout: "120s"
-#   connect_timeout: "30s"
-
-node_tls:
-  cert: "/etc/wire/certs/node.crt"
-  key: "/etc/wire/certs/node.key"
-  ca_cert: "/etc/wire/certs/ca.crt"
-  verify_client: true
-  verify_server_name: "wire-node"
-
-auth:
-  file: "/etc/wire/auth.json"
-
-write_queue:
-  capacity: 1024
-  batch_size: 128
-  timeout: "50ms"
-  transactional: false
-```
+See the [generated field reference](../../configuration-reference.md) for all
+accepted fields, defaults, and CLI mappings. Start with the loader-validated
+[coordinator example](../../examples/coordinator.yaml) and
+[worker example](../../examples/worker.yaml). System files configure nodes;
+they do not submit streaming jobs. `--metrics-enabled`, `--metrics-addr`, and
+`--max-frame-size` are CLI-only settings with no system-file field.
 
 ### 3.3 Pipeline Configuration Schema
 

@@ -47,6 +47,11 @@ func EnvSubst(s string) (string, error) {
 // fields in cfg. Fields are enumerated explicitly (no reflection).
 func envSubstConfig(cfg *WireConfig) error {
 	fields := []*string{
+		&cfg.Mode,
+		&cfg.Listen,
+		&cfg.Worker.CoordinatorAddr,
+		&cfg.Worker.WorkerID,
+		&cfg.Worker.ListenAddr,
 		&cfg.Node.ID,
 		&cfg.Node.DataDir,
 		&cfg.Node.StoreDB,
