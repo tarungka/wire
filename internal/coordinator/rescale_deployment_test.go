@@ -7,7 +7,7 @@ import (
 )
 
 func TestRescaleDeploymentRequiresCompletedMatchingSavepoint(t *testing.T) {
-	for _, mode := range []string{"valid", "periodic", "in-progress", "wrong-epoch", "wrong-job", "future-checkpoint", "missing-topology"} {
+	for _, mode := range []string{"valid", "recovered", "periodic", "in-progress", "wrong-epoch", "wrong-job", "future-checkpoint", "missing-topology"} {
 		t.Run(mode, func(t *testing.T) {
 			c, store := newTestCoordinator(t)
 			old, err := buildPhysicalTasks("job", linearGraph(), 4)
@@ -46,9 +46,26 @@ func TestRescaleDeploymentRequiresCompletedMatchingSavepoint(t *testing.T) {
 			if err := store.Set(SavepointKey("job", "save"), encode(t, sp)); err != nil {
 				t.Fatal(err)
 			}
+			if mode == "recovered" {
+				job.Status = JobFailing
+				if err := store.Set(JobMetaKey(job.ID), encode(t, job)); err != nil {
+					t.Fatal(err)
+				}
+				oldEpoch := c.epoch
+				if err := c.recover(); err != nil {
+					t.Fatal(err)
+				}
+				job = c.jobs["job"]
+				if job == nil || job.RescaleCheckpoint != 7 || job.LatestCheckpoint != 7 || job.Status != JobFailing {
+					t.Fatalf("lost pending rescale: %+v", job)
+				}
+				if c.epoch < oldEpoch {
+					t.Fatal("recovery regressed deployment epoch")
+				}
+			}
 			assignments := map[string][]rpc.TaskDescriptor{"new-worker": targets}
 			err = c.attachCheckpointRestoreLocked(job, assignments)
-			if mode != "valid" {
+			if mode != "valid" && mode != "recovered" {
 				if err == nil {
 					t.Fatal("invalid savepoint accepted")
 				}
