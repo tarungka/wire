@@ -132,7 +132,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	// Transition CREATED → DEPLOYING and persist assignments under Lock.
 	c.mu.Lock()
 	// Re-check status under lock (another tick may have grabbed it).
-	if job.Status != JobCreated {
+	if job.Status != JobCreated || !c.assignmentsLiveLocked(assignments, time.Now()) {
 		c.mu.Unlock()
 		return
 	}
@@ -352,7 +352,7 @@ func (c *Coordinator) assignTasks(tasks []rpc.TaskDescriptor) (map[string][]rpc.
 	var eligible []workerSlot
 	totalAvail := 0
 	for _, w := range c.workers {
-		if w.TaskSlotsAvailable > 0 {
+		if w.TaskSlotsAvailable > 0 && !w.LastHeartbeat.IsZero() && time.Since(w.LastHeartbeat) < c.config.WorkerTimeout {
 			eligible = append(eligible, workerSlot{id: w.ID, avail: w.TaskSlotsAvailable})
 			totalAvail += w.TaskSlotsAvailable
 		}
@@ -374,4 +374,16 @@ func (c *Coordinator) assignTasks(tasks []rpc.TaskDescriptor) (map[string][]rpc.
 		result[w.id] = append(result[w.id], task)
 	}
 	return result, nil
+}
+
+// assignmentsLiveLocked rechecks the planning snapshot before persisting a
+// deployment. The caller holds c.mu; heartbeat updates use the same lock.
+func (c *Coordinator) assignmentsLiveLocked(assignments map[string][]rpc.TaskDescriptor, now time.Time) bool {
+	for id, tasks := range assignments {
+		worker := c.workers[id]
+		if worker == nil || worker.LastHeartbeat.IsZero() || now.Sub(worker.LastHeartbeat) >= c.config.WorkerTimeout || worker.TaskSlotsAvailable < len(tasks) {
+			return false
+		}
+	}
+	return true
 }
