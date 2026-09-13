@@ -13,16 +13,11 @@ import (
 // Natural backpressure: when downstream Yamux window fills, WriteMessage blocks,
 // outputCh fills, and the operator chain blocks on send.
 //
-// This uses a simple `for range` loop instead of a select with ctx.Done() to
-// avoid non-determinism: when the context is cancelled while outputCh still has
-// pending messages (e.g., a final EndOfPartition), Go's select picks randomly
-// between ready channels, so ctx.Done() can win and the writer exits without
-// writing remaining messages. The outputCh lifecycle is managed by producerWg
-// in task_slot.go — all producers finish before outputCh is closed, so this
-// loop naturally terminates after draining all messages.
+// TaskSlot keeps this output context alive on successful chain completion so
+// terminal frames drain, and cancels it on external cancellation or failure.
 func runOutputWriter(ctx context.Context, stream *transport.FrameStream, outputCh <-chan OutputMsg, log zerolog.Logger) error {
 	for msg := range outputCh {
-		if err := writeOutputMsg(stream, msg); err != nil {
+		if err := writeOutputMsgContext(ctx, stream, msg); err != nil {
 			log.Error().Err(err).Msg("failed to write output message")
 			return err
 		}
@@ -34,16 +29,48 @@ func runOutputWriter(ctx context.Context, stream *transport.FrameStream, outputC
 // writeOutputMsg encodes an OutputMsg into the appropriate protocol message
 // and writes it to the stream.
 func writeOutputMsg(stream *transport.FrameStream, msg OutputMsg) error {
+	return writeOutputMsgContext(context.Background(), stream, msg)
+}
+
+func writeOutputMsgContext(ctx context.Context, stream *transport.FrameStream, msg OutputMsg) error {
 	switch msg.Type {
 	case OutputData:
-		return stream.WriteMessage(msg.Event.ToProto())
+		return stream.WriteMessageContext(ctx, msg.Event.ToProto())
 	case OutputBarrier:
-		return stream.WriteMessage(msg.Barrier)
+		return stream.WriteMessageContext(ctx, msg.Barrier)
 	case OutputWatermark:
-		return stream.WriteMessage(msg.Watermark)
+		return stream.WriteMessageContext(ctx, msg.Watermark)
 	case OutputEnd:
-		return stream.WriteMessage(msg.End)
+		return stream.WriteMessageContext(ctx, msg.End)
 	default:
 		return nil
 	}
+}
+
+// runOutputRouter gives one goroutine ownership of partition ordering. Data
+// records are distributed round-robin; barriers, watermarks, and termination
+// are broadcast after all preceding records have been written. Sharing a
+// receive channel among writers would deliver each control frame to only one
+// partition and could reorder it relative to another writer's pending record.
+func runOutputRouter(ctx context.Context, streams []*transport.FrameStream, outputCh <-chan OutputMsg, log zerolog.Logger) error {
+	next := 0
+	for msg := range outputCh {
+		if len(streams) == 0 {
+			continue
+		}
+		if msg.Type == OutputData {
+			if err := writeOutputMsgContext(ctx, streams[next], msg); err != nil {
+				return err
+			}
+			next = (next + 1) % len(streams)
+			continue
+		}
+		for index, stream := range streams {
+			if err := writeOutputMsgContext(ctx, stream, msg); err != nil {
+				log.Error().Err(err).Int("output", index).Msg("failed to broadcast output control message")
+				return err
+			}
+		}
+	}
+	return nil
 }

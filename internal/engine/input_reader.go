@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"io"
+	"sync"
+	"sync/atomic"
 
 	"github.com/rs/zerolog"
 
@@ -33,13 +35,58 @@ func runInputReader(
 	tracker *InputWatermarkTracker,
 	log zerolog.Logger,
 ) error {
-	// Use a goroutine to read from the stream, enabling context cancellation
-	// even when ReadMessage blocks on network I/O.
-	msgCh := make(chan readResult, 1)
+	return runInputReaderWithReport(ctx, inputIndex, stream, eventCh, controlCh, aligner, tracker, log, stream.ReportBufferUsage)
+}
+
+func runInputReaderWithReport(
+	ctx context.Context,
+	inputIndex int,
+	stream *transport.FrameStream,
+	eventCh chan<- Event,
+	controlCh chan<- ControlMsg,
+	aligner *BarrierAligner,
+	tracker *InputWatermarkTracker,
+	log zerolog.Logger,
+	reportUsage func(int, int) error,
+) error {
+	// Keep a bounded read-ahead queue. Count the producer's in-flight send
+	// as an occupied slot; serialized reports sample the latest count, preventing
+	// stale pause signals from arriving after the queue has drained.
+	readerCtx, cancelReader := context.WithCancel(ctx)
+	defer cancelReader()
+	const queueCapacity = 4
+	msgCh := make(chan readResult, queueCapacity)
+	// A channel receive frees buffer capacity before the consumer decrements
+	// occupancy. Reserve explicit slots so a producer cannot reuse that capacity
+	// until the old message has also left the reported count.
+	slots := make(chan struct{}, queueCapacity+1)
+	var occupancy atomic.Int32
+	var reportMu sync.Mutex
+	report := func() error {
+		reportMu.Lock()
+		defer reportMu.Unlock()
+		return reportUsage(int(occupancy.Load()), queueCapacity+1)
+	}
+	readerDone := make(chan struct{})
+	defer func() { cancelReader(); _ = stream.Close(); <-readerDone }()
 	go func() {
+		defer close(readerDone)
 		for {
+			select {
+			case slots <- struct{}{}:
+			case <-readerCtx.Done():
+				return
+			}
 			msg, err := stream.ReadMessage()
-			msgCh <- readResult{msg, err}
+			occupancy.Add(1)
+			if reportErr := report(); reportErr != nil {
+				log.Warn().Err(reportErr).Int("input", inputIndex).Msg("input flow-control report failed")
+			}
+			select {
+			case msgCh <- readResult{msg, err}:
+			case <-readerCtx.Done():
+				return
+			}
 			if err != nil {
 				return
 			}
@@ -52,11 +99,19 @@ func runInputReader(
 		case <-ctx.Done():
 			return nil
 		case result = <-msgCh:
+			occupancy.Add(-1)
+			<-slots
+			if err := report(); err != nil {
+				log.Warn().Err(err).Int("input", inputIndex).Msg("input flow-control report failed")
+			}
 		}
 
 		if result.err != nil {
-			if result.err == io.EOF || ctx.Err() != nil {
+			if ctx.Err() != nil {
 				return nil
+			}
+			if result.err == io.EOF {
+				return io.ErrUnexpectedEOF
 			}
 			log.Error().Err(result.err).Int("input", inputIndex).Msg("input reader error")
 			return result.err
@@ -66,20 +121,11 @@ func runInputReader(
 		case *protocol.DataRecordMsg:
 			event := EventFromProto(m)
 			tracker.RecordActivity(inputIndex)
-			if aligner.IsAligning(inputIndex) {
-				if err := aligner.BufferEvent(ctx, inputIndex, event); err != nil {
-					log.Warn().Err(err).Int("input", inputIndex).Msg("side buffer full, blocking")
-					// Spin-wait with context check when buffer is full.
-					for {
-						if ctx.Err() != nil {
-							return ctx.Err()
-						}
-						if err := aligner.BufferEvent(ctx, inputIndex, event); err == nil {
-							break
-						}
-					}
-				}
-			} else {
+			buffered, err := aligner.BufferAlignedEvent(ctx, inputIndex, event)
+			if err != nil {
+				return err
+			}
+			if !buffered {
 				select {
 				case eventCh <- event:
 				case <-ctx.Done():
@@ -88,6 +134,12 @@ func runInputReader(
 			}
 
 		case *protocol.CheckpointBarrierMsg:
+			if stream.IsCheckpointCompleted(m.CheckpointID) {
+				continue
+			}
+			if err := aligner.WaitForPriorAlignment(ctx, inputIndex, m.CheckpointID); err != nil {
+				return err
+			}
 			aligner.OnBarrier(inputIndex, m.CheckpointID, m.EpochID)
 			ctrl := ControlMsg{
 				Type:         CtrlBarrierReceived,

@@ -39,6 +39,7 @@ type Worker struct {
 	executor *taskExecutor
 	client   *rpc.Client
 	session  *transport.Session
+	data     *transport.Mux
 	epoch    uint64
 	mu       sync.RWMutex
 	tasks    map[string]*taskHandle // taskID -> handle
@@ -79,6 +80,23 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 	}
 	w.cfg.WorkerID = workerID
+	dataConfig := transport.DefaultConfig()
+	dataConfig.NodeID = workerID
+	dataConfig.ListenAddr = w.cfg.ListenAddr
+	if dataConfig.ListenAddr == "" {
+		dataConfig.ListenAddr = "127.0.0.1:0"
+	}
+	data := transport.NewMux(dataConfig)
+	if err := data.Listen(ctx); err != nil {
+		return fmt.Errorf("worker: data listener: %w", err)
+	}
+	defer data.Close()
+	w.mu.Lock()
+	w.data = data
+	w.executor.data = data
+	w.cfg.ListenAddr = data.ListenAddr()
+	w.mu.Unlock()
+	defer w.Shutdown(context.Background())
 
 	w.log.Info().
 		Str("worker_id", workerID).
@@ -92,7 +110,9 @@ func (w *Worker) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("worker: connect to coordinator: %w", err)
 	}
+	w.mu.Lock()
 	w.session = session
+	w.mu.Unlock()
 
 	// 2. Create RPC client.
 	rpcCfg := rpc.DefaultConfig()
@@ -236,10 +256,17 @@ func (w *Worker) Shutdown(_ context.Context) error {
 	}
 	w.mu.Unlock()
 
-	if w.session != nil {
-		return w.session.Close()
+	w.mu.RLock()
+	data, session := w.data, w.session
+	w.mu.RUnlock()
+	var err error
+	if data != nil {
+		err = data.Close()
 	}
-	return nil
+	if session != nil {
+		err = errors.Join(err, session.Close())
+	}
+	return err
 }
 
 // buildHeartbeatRequest constructs a HeartbeatRequest from the worker's current state.

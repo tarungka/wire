@@ -524,9 +524,9 @@ func TestOperatorChain_AbortCheckpoint_DrainsSideBufferNoBarrier(t *testing.T) {
 	}
 }
 
-// -- Checkpoint barrier: side buffer drained before barrier --
+// -- Checkpoint barrier: side buffer drained after barrier --
 
-func TestOperatorChain_CheckpointBarrier_SideBufferDrainedBeforeBarrier(t *testing.T) {
+func TestOperatorChain_CheckpointBarrier_SideBufferDrainedAfterBarrier(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -562,30 +562,21 @@ func TestOperatorChain_CheckpointBarrier_SideBufferDrainedBeforeBarrier(t *testi
 		msgs = append(msgs, msg)
 	}
 
-	// Expect: OutputData("side-1"), OutputData("side-2"), OutputBarrier.
+	// Side-buffered records arrived after the input barrier and must stay after it.
 	if len(msgs) < 3 {
 		t.Fatalf("expected at least 3 output messages, got %d", len(msgs))
 	}
-
-	// First messages should be the drained side-buffer data.
-	for i := 0; i < 2; i++ {
-		if msgs[i].Type != OutputData {
-			t.Errorf("msgs[%d]: expected OutputData, got %v", i, msgs[i].Type)
+	if msgs[0].Type != OutputBarrier || msgs[0].Barrier == nil {
+		t.Fatalf("first message must be barrier, got %+v", msgs[0])
+	}
+	if msgs[0].Barrier.CheckpointID != 1 {
+		t.Errorf("barrier checkpoint ID: got %d, want 1", msgs[0].Barrier.CheckpointID)
+	}
+	for i, want := range []string{"side-1", "side-2"} {
+		message := msgs[i+1]
+		if message.Type != OutputData || string(message.Event.Value) != want {
+			t.Errorf("msgs[%d]: got %+v, want data %q", i+1, message, want)
 		}
-	}
-	if string(msgs[0].Event.Value) != "side-1" {
-		t.Errorf("msgs[0]: got %q, want side-1", msgs[0].Event.Value)
-	}
-	if string(msgs[1].Event.Value) != "side-2" {
-		t.Errorf("msgs[1]: got %q, want side-2", msgs[1].Event.Value)
-	}
-
-	// Barrier should come AFTER the drained data.
-	if msgs[2].Type != OutputBarrier {
-		t.Errorf("msgs[2]: expected OutputBarrier, got %v", msgs[2].Type)
-	}
-	if msgs[2].Barrier.CheckpointID != 1 {
-		t.Errorf("barrier checkpoint ID: got %d, want 1", msgs[2].Barrier.CheckpointID)
 	}
 }
 
@@ -1717,7 +1708,7 @@ func TestTransactionSideBufferWaitsForDecision(t *testing.T) {
 	}
 	cc := &chainContext{ctx: context.Background(), links: buildChainLinks([]Operator{sink}, nil), txnSink: sink, aligner: aligner, cpMetrics: NoopCheckpointMetrics(), errMetrics: NoopErrorMetrics(), log: testLogger()}
 	eof := 0
-	if err := handleControl(cc, ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 7}, &eof); err != nil {
+	if err := handleControl(cc, ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 7, EpochID: 1}, &eof); err != nil {
 		t.Fatal(err)
 	}
 	sink.mu.Lock()

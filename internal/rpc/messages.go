@@ -299,16 +299,20 @@ type KeyGroupRange struct {
 
 // UpstreamChannelInfo describes a task's upstream data source.
 type UpstreamChannelInfo struct {
-	OperatorID   string `codec:"oid"`
-	SubtaskIndex int32  `codec:"si"`
-	Address      string `codec:"addr"`
+	TaskID         string `codec:"tid,omitempty"`
+	PartitionIndex uint16 `codec:"pi,omitempty"`
+	OperatorID     string `codec:"oid"`
+	SubtaskIndex   int32  `codec:"si"`
+	Address        string `codec:"addr"`
 }
 
 // DownstreamChannelInfo describes a task's downstream data sink.
 type DownstreamChannelInfo struct {
-	OperatorID   string `codec:"oid"`
-	SubtaskIndex int32  `codec:"si"`
-	Address      string `codec:"addr"`
+	TaskID         string `codec:"tid,omitempty"`
+	PartitionIndex uint16 `codec:"pi,omitempty"`
+	OperatorID     string `codec:"oid"`
+	SubtaskIndex   int32  `codec:"si"`
+	Address        string `codec:"addr"`
 }
 
 // CheckpointRestoreInfo carries state needed to restore from a checkpoint.

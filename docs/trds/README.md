@@ -65,7 +65,7 @@ All 25 proposals, initially audited against `master` at `0e78195` on 2026-09-12 
 
 | WIP | Title | Status |
 |-----|-------|--------|
-| [WIP-01](WIP-01/README.md) | Wire Protocol & Serialization Format | Partially Implemented |
+| [WIP-01](WIP-01/README.md) | Wire Protocol & Serialization Format | Implemented (CRC latency check explicitly waived; see WIP) |
 | [WIP-02](WIP-02/README.md) | Goroutine & Concurrency Model | Partially Implemented |
 | [WIP-03](WIP-03/README.md) | Key Group Assignment & State Sharding | Partially Implemented |
 | [WIP-04](WIP-04/README.md) | Watermark Generation Algorithm | Partially Implemented |
@@ -123,7 +123,7 @@ completion merged in [#188](https://github.com/tarungka/wire/pull/188).
 
 | WIP | Individual PR | Scope of this increment |
 | --- | --- | --- |
-| [WIP-01](WIP-01/README.md) | [#208](https://github.com/tarungka/wire/pull/208) | Frame write validation |
+| [WIP-01](WIP-01/README.md) | [#210](https://github.com/tarungka/wire/pull/210), follows #208 | Full scope; CRC latency check explicitly waived |
 | [WIP-02](WIP-02/README.md) | [#207](https://github.com/tarungka/wire/pull/207) | Barrier checkpoint and epoch identity |
 | [WIP-03](WIP-03/README.md) | [#206](https://github.com/tarungka/wire/pull/206) | Validated, linear-time rescale mapping |
 | [WIP-04](WIP-04/README.md) | [#205](https://github.com/tarungka/wire/pull/205) | Startup idle timeout |

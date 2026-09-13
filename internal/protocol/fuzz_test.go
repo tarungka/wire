@@ -6,12 +6,14 @@ import (
 )
 
 func FuzzReadFrame(f *testing.F) {
-	// Seed with valid encoded frames for all 6 active message types.
+	// Seed with valid encoded frames for all active message types.
 	seeds := []struct {
 		msgType uint8
 		msg     any
 	}{
-		{MsgTypeHandshake, &HandshakeMsg{ProtocolVersion: 1, MinVersion: 1, Features: FeatureCRC32C}},
+		{MsgTypeStreamHeader, &StreamHeaderMsg{SourceTaskID: "a", TargetTaskID: "b"}},
+		{MsgTypeSessionDrain, &SessionDrainMsg{Ready: true}},
+		{MsgTypeSessionHandshake, &SessionHandshakeMsg{ProtocolVersion: 1, MinVersion: 1, Features: FeatureCRC32C}},
 		{MsgTypeDataRecord, &DataRecordMsg{Key: []byte("k"), Value: []byte("v"), EventTime: 100}},
 		{MsgTypeCheckpointBarrier, &CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000}},
 		{MsgTypeWatermark, &WatermarkMsg{Timestamp: 500, SourceID: "src-0"}},
@@ -46,12 +48,14 @@ func FuzzReadFrame(f *testing.F) {
 }
 
 func FuzzDecodePayload(f *testing.F) {
-	// Seed with valid payloads for all 6 active message types.
+	// Seed with valid payloads for all active message types.
 	seeds := []struct {
 		msgType uint8
 		msg     any
 	}{
-		{MsgTypeHandshake, &HandshakeMsg{ProtocolVersion: 1, MinVersion: 1}},
+		{MsgTypeStreamHeader, &StreamHeaderMsg{SourceTaskID: "a", TargetTaskID: "b"}},
+		{MsgTypeSessionDrain, &SessionDrainMsg{Ready: true}},
+		{MsgTypeSessionHandshake, &SessionHandshakeMsg{ProtocolVersion: 1, MinVersion: 1}},
 		{MsgTypeDataRecord, &DataRecordMsg{Value: []byte("v"), EventTime: 1}},
 		{MsgTypeCheckpointBarrier, &CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1}},
 		{MsgTypeWatermark, &WatermarkMsg{Timestamp: 1, SourceID: "s"}},

@@ -378,24 +378,16 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			cc.cpMetrics.ObserveAlignmentTime(time.Since(startTime))
 		}
 
+		// All readers enqueued their pre-barrier records before marking alignment.
+		// Consume them before snapshotting, despite control-channel priority.
+		if err := drainInputCh(cc); err != nil {
+			return err
+		}
+
 		// Snapshot all operators.
 		for i, link := range cc.links {
 			if _, err := link.Operator.Checkpoint(ctrl.CheckpointID); err != nil {
 				return fmt.Errorf("operator[%d] checkpoint: %w", i, err)
-			}
-		}
-
-		// Drain side-buffered events and process them inline.
-		drained := cc.aligner.DrainAll(ctrl.CheckpointID)
-		if cc.txnSink != nil {
-			// These records arrived after their input barriers and belong
-			// to the next transaction, not the one being prepared.
-			cc.deferredEvents = drained
-		} else {
-			for _, event := range drained {
-				if err := processEvent(cc, event); err != nil {
-					return err
-				}
 			}
 		}
 
@@ -427,7 +419,17 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			}
 		}
 
-		cc.aligner.Reset(ctrl.CheckpointID)
+		// Publish the barrier before releasing its post-barrier records.
+		drained := cc.aligner.FinishAlignment(ctrl.CheckpointID)
+		if cc.txnSink != nil {
+			cc.deferredEvents = drained
+		} else {
+			for _, event := range drained {
+				if err := processEvent(cc, event); err != nil {
+					return err
+				}
+			}
+		}
 
 	case CtrlCommitCheckpoint:
 		if cc.txnSink == nil {
@@ -471,13 +473,12 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 	case CtrlAbortCheckpoint:
 		cc.log.Warn().Uint64("checkpoint", ctrl.CheckpointID).Msg("aborting checkpoint")
 		// Drain side buffers and process them (events are still valid, just no checkpoint).
-		drained := cc.aligner.DrainAll(ctrl.CheckpointID)
+		drained := cc.aligner.FinishAlignment(ctrl.CheckpointID)
 		for _, event := range drained {
 			if err := processEvent(cc, event); err != nil {
 				return err
 			}
 		}
-		cc.aligner.Reset(ctrl.CheckpointID)
 
 	case CtrlEndOfPartition:
 		*eofCount++

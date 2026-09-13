@@ -18,19 +18,20 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
-	Config       TaskSlotConfig
-	Inputs       []*transport.FrameStream // Upstream input streams.
-	Outputs      []*transport.FrameStream // Downstream output streams.
-	Operators    []Operator               // Fused operator chain.
-	Source       SourceOperator           // Non-nil for source tasks.
-	Strategy     WatermarkStrategy        // Resolved watermark strategy (source tasks only).
-	Coordinator  *CheckpointCoordinator   // Optional checkpoint coordinator (WIP-05).
-	Metrics      CheckpointMetrics        // Optional checkpoint metrics collector.
-	ErrorMetrics ErrorMetrics             // Optional error handling metrics collector (WIP-11).
-	TaskIndex    int                      // Index of this task within the parallel subtasks.
-	TaskID       string                   // Unique identifier for this task.
-	OnRunning    func()                   // Called after all operators open, before any records are read.
-	log          zerolog.Logger
+	Config               TaskSlotConfig
+	Inputs               []*transport.FrameStream // Upstream input streams.
+	Outputs              []*transport.FrameStream // Downstream output streams.
+	Operators            []Operator               // Fused operator chain.
+	Source               SourceOperator           // Non-nil for source tasks.
+	Strategy             WatermarkStrategy        // Resolved watermark strategy (source tasks only).
+	Coordinator          *CheckpointCoordinator   // Optional checkpoint coordinator (WIP-05).
+	Metrics              CheckpointMetrics        // Optional checkpoint metrics collector.
+	ErrorMetrics         ErrorMetrics             // Optional error handling metrics collector (WIP-11).
+	TaskIndex            int                      // Index of this task within the parallel subtasks.
+	RestoredCheckpointID uint64                   // Globally completed snapshot used for recovery.
+	TaskID               string                   // Unique identifier for this task.
+	OnRunning            func()                   // Called after all operators open, before any records are read.
+	log                  zerolog.Logger
 }
 
 // NewTaskSlot creates a new TaskSlot with the given configuration.
@@ -73,6 +74,18 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	defer runCancel()
 
 	g, gctx := errgroup.WithContext(runCtx)
+	// A successful chain cancels input readers, but queued output still needs
+	// to drain through downstream backpressure. External cancellation and real
+	// failures must interrupt paused writers instead.
+	outputCtx, cancelOutput := context.WithCancel(ctx)
+	defer cancelOutput()
+	var chainSucceeded atomic.Bool
+	stopOutput := context.AfterFunc(gctx, func() {
+		if !chainSucceeded.Load() {
+			cancelOutput()
+		}
+	})
+	defer stopOutput()
 
 	numInputs := len(ts.Inputs)
 	if ts.Source != nil {
@@ -127,6 +140,10 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		// Launch input readers (one per upstream stream).
 		for i, stream := range ts.Inputs {
 			i, stream := i, stream
+			stream.MarkCheckpointCompleted(ts.RestoredCheckpointID)
+			if ts.Coordinator != nil {
+				stream.SetCheckpointCompletionReader(ts.Coordinator.LastCompletedCheckpoint)
+			}
 			g.Go(func() error {
 				return runInputReader(gctx, i, stream, eventCh, controlCh, aligner, tracker,
 					ts.log.With().Int("input", i).Logger())
@@ -236,6 +253,8 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		err := runOpenedOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics)
 		if err != nil {
 			chainErr.Store(&err)
+		} else {
+			chainSucceeded.Store(true)
 		}
 		return err
 	})
@@ -246,24 +265,11 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		close(outputCh)
 	}()
 
-	// Launch output writers (one per downstream stream).
-	for i, stream := range ts.Outputs {
-		i, stream := i, stream
-		g.Go(func() error {
-			return runOutputWriter(gctx, stream, outputCh,
-				ts.log.With().Int("output", i).Logger())
-		})
-	}
-
-	// Terminal chains have no network output writer. Drain forwarded events
-	// and control messages so pipelines larger than the buffer can finish.
-	if len(ts.Outputs) == 0 {
-		g.Go(func() error {
-			for range outputCh {
-			}
-			return nil
-		})
-	}
+	// A single dispatcher preserves record/control ordering and broadcasts
+	// control frames to every downstream stream. It also drains terminal chains.
+	g.Go(func() error {
+		return runOutputRouter(outputCtx, ts.Outputs, outputCh, ts.log)
+	})
 
 	err = g.Wait()
 	// Prefer the chain's error over errgroup's verdict — but only when

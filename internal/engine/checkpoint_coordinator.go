@@ -48,7 +48,8 @@ type CheckpointCoordinator struct {
 	totalFailures       int64
 
 	// MinPause enforcement.
-	lastCompletionTime time.Time
+	lastCompletionTime      time.Time
+	lastCompletedCheckpoint uint64
 
 	// Internal communication.
 	ackCh     chan ackMsg
@@ -413,4 +414,13 @@ func (cc *CheckpointCoordinator) completeCheckpoint() {
 	cc.activeEpochID = 0
 	cc.consecutiveFailures = 0
 	cc.lastCompletionTime = time.Now()
+	cc.lastCompletedCheckpoint = max(cc.lastCompletedCheckpoint, checkpointID)
+}
+
+// LastCompletedCheckpoint is the global completion watermark, not the most
+// recently triggered or locally aligned checkpoint.
+func (cc *CheckpointCoordinator) LastCompletedCheckpoint() uint64 {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	return cc.lastCompletedCheckpoint
 }

@@ -1,7 +1,10 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -317,45 +320,61 @@ func TestInputReader_WatermarkDoesNotRegress(t *testing.T) {
 
 func TestInputReader_EventChannelFull_UnblocksOnContextCancel(t *testing.T) {
 	writer, reader := newTestStreamPair(t)
-	defer func() { _ = reader.Close() }()
-
+	defer writer.Close()
+	defer reader.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-
-	eventCh := make(chan Event, 1) // Tiny channel.
+	defer cancel()
+	eventCh := make(chan Event, 1)
 	controlCh := make(chan ControlMsg, 10)
-	aligner := NewBarrierAligner(1, 100)
-	tracker := testTracker(1)
-
+	sent := make(chan error, 1)
 	go func() {
-		// Send enough data to fill eventCh and block the reader.
 		for i := 0; i < 10; i++ {
-			if err := writer.WriteMessage(&protocol.DataRecordMsg{
-				Value:     []byte{byte(i)},
-				EventTime: int64(i),
-			}); err != nil {
-				t.Errorf("WriteMessage data record: %v", err)
+			if err := writer.WriteMessageContext(ctx, &protocol.DataRecordMsg{Value: []byte{byte(i)}, EventTime: int64(i)}); err != nil {
+				if ctx.Err() != nil {
+					sent <- nil
+				} else {
+					sent <- err
+				}
 				return
 			}
 		}
+		sent <- nil
 	}()
-
 	done := make(chan error, 1)
 	go func() {
-		done <- runInputReader(ctx, 0, reader, eventCh, controlCh, aligner, tracker, testLogger())
+		done <- runInputReader(ctx, 0, reader, eventCh, controlCh, NewBarrierAligner(1, 100), testTracker(1), testLogger())
 	}()
-
-	// Let the reader block on the full channel, then cancel.
-	time.Sleep(100 * time.Millisecond)
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for len(eventCh) == 0 {
+		select {
+		case err := <-done:
+			t.Fatalf("reader exited before cancellation: %v", err)
+		case <-deadline.C:
+			t.Fatal("reader did not fill event channel")
+		case <-tick.C:
+		}
+	}
+	// No consumer drains the full channel. Cancellation must stop the receiver
+	// and any sender paused by its buffer, without an external stream close.
 	cancel()
-	_ = writer.Close() // Unblock the inner read goroutine.
-
 	select {
 	case err := <-done:
 		if err != nil && err != context.Canceled {
-			t.Fatalf("expected nil or context.Canceled, got: %v", err)
+			t.Fatalf("reader cancellation: %v", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("input reader did not unblock on context cancel")
+	case <-deadline.C:
+		t.Fatal("input reader did not stop on cancellation")
+	}
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Fatalf("sender failed before cancellation: %v", err)
+		}
+	case <-deadline.C:
+		t.Fatal("sender did not stop on cancellation")
 	}
 }
 
@@ -397,5 +416,69 @@ func TestInputReader_ActivityRecording(t *testing.T) {
 	// Activity should have been recorded.
 	if tracker.lastActivityNs[0].Load() != 200 {
 		t.Error("expected activity to be recorded after data record")
+	}
+}
+
+func TestInputReaderUnexpectedEOFDoesNotLeaveTaskWaiting(t *testing.T) {
+	writer, reader := newTestStreamPair(t)
+	defer reader.Close()
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := runInputReader(ctx, 0, reader, make(chan Event, 1), make(chan ControlMsg, 1), NewBarrierAligner(1, 1), testTracker(1), testLogger())
+	if err != io.ErrUnexpectedEOF {
+		t.Fatalf("closed input without EndOfPartition: %v", err)
+	}
+}
+
+func TestInputReaderPreservesMessagesWhenFlowControlFails(t *testing.T) {
+	writer, reader := newTestStreamPair(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	events := make(chan Event, 8)
+	controls := make(chan ControlMsg, 8)
+	writes := make(chan error, 1)
+	go func() {
+		for i := 0; i < 8; i++ {
+			if err := writer.WriteMessage(&protocol.DataRecordMsg{Value: []byte{byte(i)}}); err != nil {
+				writes <- err
+				return
+			}
+		}
+		writes <- writer.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "source", Reason: protocol.EndReasonExhausted})
+	}()
+	var reports atomic.Int32
+	err := runInputReaderWithReport(ctx, 0, reader, events, controls, NewBarrierAligner(1, 10), testTracker(1), testLogger(), func(int, int) error {
+		reports.Add(1)
+		return io.ErrClosedPipe
+	})
+	if err != nil {
+		t.Fatalf("flow-control failure replaced successful read: %v", err)
+	}
+	if err := <-writes; err != nil {
+		t.Fatal(err)
+	}
+	if reports.Load() == 0 {
+		t.Fatal("report failure was not exercised")
+	}
+	for i := 0; i < 8; i++ {
+		select {
+		case event := <-events:
+			if !bytes.Equal(event.Value, []byte{byte(i)}) {
+				t.Fatalf("record %d changed: %v", i, event.Value)
+			}
+		default:
+			t.Fatalf("record %d was lost", i)
+		}
+	}
+	select {
+	case control := <-controls:
+		if control.Type != CtrlEndOfPartition {
+			t.Fatalf("control: %+v", control)
+		}
+	default:
+		t.Fatal("EndOfPartition was lost")
 	}
 }
