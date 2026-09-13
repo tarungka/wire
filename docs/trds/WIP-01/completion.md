@@ -533,3 +533,15 @@ Confirmed and fixed four review findings:
 The transport regressions pass ten race-enabled repetitions and the input-reader
 reporting regression passes twenty. The full race/integration suite and
  golangci-lint v2.5.0 pass. The CRC latency acceptance waiver remains unchanged.
+
+### Reverse EOF also interrupts a window-blocked writer
+
+The first EOF fix covered only the pause wait. A new TCP/TLS regression starts
+a 2 MiB write with no caller deadline, reads only its prefix, then half-closes
+the receiver. It failed on e723c9a because the writer never woke. The rejection
+watcher now closes the local stream after reverse-read completion, waking both
+paused writers and writers inside Yamux's window wait. Unexpected EOF is retained
+as the failure cause; the shared session stays open. The regression and existing
+paused/slow-receiver cases pass 50 race-enabled repetitions. The full race and
+integration suite also passes; slow live receivers still have no fixed window
+wait timeout.

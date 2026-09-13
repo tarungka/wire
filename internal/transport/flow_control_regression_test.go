@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -120,5 +121,53 @@ func TestCancelledBacklogOpenPreservesSession(t *testing.T) {
 	}
 	if data[0] != 42 {
 		t.Fatal("live stream changed")
+	}
+}
+
+func TestWindowBlockedSenderWakesOnDownstreamHalfClose(t *testing.T) {
+	for _, secure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tls=%t", secure), func(t *testing.T) {
+			server, client, addr := newTestMuxPairSecure(t, secure)
+			out, err := client.Dial(context.Background(), addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in, err := server.Accept(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := make(chan error, 1)
+			go func() {
+				result <- out.WriteMessage(&protocol.DataRecordMsg{Value: make([]byte, 2*DefaultMaxStreamWindowSize)})
+			}()
+			// Consume only the prefix to prove the write started, leaving the
+			// 2 MiB frame larger than the receiver's available window.
+			if err := in.raw.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			var prefix [protocol.LengthFieldSize]byte
+			if _, err := io.ReadFull(in.raw, prefix[:]); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-result:
+				t.Fatalf("write finished before receiver close: %v", err)
+			default:
+			}
+			if err := in.Close(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-result:
+				if err == nil {
+					t.Fatal("partial frame succeeded after receiver close")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("window-blocked write ignored downstream EOF")
+			}
+			if out.session.IsClosed() {
+				t.Fatal("stream failure closed shared session")
+			}
+		})
 	}
 }
