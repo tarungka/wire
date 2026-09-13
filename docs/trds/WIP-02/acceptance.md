@@ -311,3 +311,14 @@ Source bytes without a source marker are rejected. Tests verify malformed and
 misidentified imports create no files, and valid source/operator snapshots
 survive reopening. This is the receiver's publication primitive; it does not
 replace transport checksum validation, peer authorization or artifact recovery.
+
+`NewCheckpointReplicaHandler` now connects chunk reception to a publication
+callback. It bounds active transfers, rejects excess admission without queueing,
+uses private temporary files with deferred cleanup, verifies chunks/checksum,
+and sends Stored only after publication succeeds. The callback owns assignment
+and epoch validation plus durable artifact/snapshot publication; the server
+owner must authenticate peers. A real Yamux test wires this handler to
+FileCheckpointStore.Import and verifies reopening after a successful receipt,
+checksum/identity rejection, and staging cleanup. Receiver admission/cancellation
+stress tests and production worker registration remain open. This test covers
+inline snapshots, not referenced Pebble artifacts or multi-worker recovery.
