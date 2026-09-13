@@ -5,13 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"github.com/tarungka/wire/internal/protocol"
 	"net"
 	"sync"
 
 	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/internal/protocol"
 )
 
 // Mux is the top-level multiplexer that manages TCP/TLS connections,
