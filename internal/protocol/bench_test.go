@@ -127,3 +127,64 @@ func BenchmarkCRC32C_Concurrent(b *testing.B) {
 	}
 	wg.Wait()
 }
+
+// BenchmarkFramingOverhead compares identical records and destinations. The
+// raw baseline includes encoding and writing; framed adds only Wire framing.
+func BenchmarkFramingOverhead(b *testing.B) {
+	msg := &DataRecordMsg{Key: []byte("benchmark-key"), Value: make([]byte, 1024), EventTime: 1708819200000}
+	for _, framed := range []bool{false, true} {
+		name := "raw_msgpack"
+		if framed {
+			name = "wire_frame"
+		}
+		b.Run(name, func(b *testing.B) {
+			var dst bytes.Buffer
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				dst.Reset()
+				if framed {
+					if err := WriteFrame(&dst, MsgTypeDataRecord, msg); err != nil {
+						b.Fatal(err)
+					}
+				} else {
+					payload, err := EncodeMsgPack(msg)
+					if err != nil {
+						b.Fatal(err)
+					}
+					if _, err := dst.Write(payload); err != nil {
+						b.Fatal(err)
+					}
+				}
+			}
+		})
+	}
+}
+
+var benchmarkCRC uint32
+
+// The software path is the bytewise Castagnoli recurrence, independent of
+// Go's CPU feature dispatch. Both variants cover exactly the same bytes.
+func BenchmarkCRC32CImplementation(b *testing.B) {
+	data := make([]byte, 1025)
+	data[0] = MsgTypeDataRecord
+	for _, hardware := range []bool{false, true} {
+		name := "software"
+		if hardware {
+			name = "native"
+		}
+		b.Run(name, func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			for i := 0; i < b.N; i++ {
+				if hardware {
+					benchmarkCRC = crc32.Checksum(data, crc32cTable)
+				} else {
+					crc := ^uint32(0)
+					for _, value := range data {
+						crc = crc32cTable[byte(crc)^value] ^ (crc >> 8)
+					}
+					benchmarkCRC = ^crc
+				}
+			}
+		})
+	}
+}

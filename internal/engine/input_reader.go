@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"io"
+	"sync"
+	"sync/atomic"
 
 	"github.com/rs/zerolog"
 
@@ -33,13 +35,35 @@ func runInputReader(
 	tracker *InputWatermarkTracker,
 	log zerolog.Logger,
 ) error {
-	// Use a goroutine to read from the stream, enabling context cancellation
-	// even when ReadMessage blocks on network I/O.
-	msgCh := make(chan readResult, 1)
+	// Keep a bounded read-ahead queue. Count the producer's in-flight send
+	// as an occupied slot; serialized reports sample the latest count, preventing
+	// stale pause signals from arriving after the queue has drained.
+	readerCtx, cancelReader := context.WithCancel(ctx)
+	defer cancelReader()
+	const queueCapacity = 4
+	msgCh := make(chan readResult, queueCapacity)
+	var occupancy atomic.Int32
+	var reportMu sync.Mutex
+	report := func() error {
+		reportMu.Lock()
+		defer reportMu.Unlock()
+		return stream.ReportBufferUsage(int(occupancy.Load()), queueCapacity+1)
+	}
+	readerDone := make(chan struct{})
+	defer func() { cancelReader(); _ = stream.Close(); <-readerDone }()
 	go func() {
+		defer close(readerDone)
 		for {
 			msg, err := stream.ReadMessage()
-			msgCh <- readResult{msg, err}
+			occupancy.Add(1)
+			if reportErr := report(); err == nil {
+				err = reportErr
+			}
+			select {
+			case msgCh <- readResult{msg, err}:
+			case <-readerCtx.Done():
+				return
+			}
 			if err != nil {
 				return
 			}
@@ -52,6 +76,10 @@ func runInputReader(
 		case <-ctx.Done():
 			return nil
 		case result = <-msgCh:
+			occupancy.Add(-1)
+			if err := report(); err != nil && result.err == nil {
+				return err
+			}
 		}
 
 		if result.err != nil {

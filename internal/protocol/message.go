@@ -2,7 +2,8 @@ package protocol
 
 // Message type discriminators per WIP-01 Section 3.2.
 const (
-	MsgTypeHandshake         uint8 = 0x00
+	MsgTypeStreamHeader      uint8 = 0x00
+	MsgTypeSessionHandshake  uint8 = 0x07
 	MsgTypeDataRecord        uint8 = 0x01
 	MsgTypeCheckpointBarrier uint8 = 0x02
 	MsgTypeWatermark         uint8 = 0x03
@@ -24,7 +25,7 @@ const (
 	EndReasonError     uint8 = 0x02
 )
 
-// Feature flags for Handshake negotiation per WIP-01 Section 3.8.
+// Feature flags for session negotiation per WIP-01 Section 3.10.
 const (
 	FeatureCRC32C      uint32 = 1 << 0
 	FeatureCompression uint32 = 1 << 1
@@ -40,16 +41,24 @@ const (
 // sent during handshake rejection.
 const HandshakeSourceID = "handshake"
 
-// HandshakeMsg is sent as the first frame on every new stream for version and feature negotiation.
-type HandshakeMsg struct {
+// StreamHeaderMsg declares routing for a unidirectional data stream.
+type StreamHeaderMsg struct {
+	SourceTaskID   string `codec:"src"`
+	TargetTaskID   string `codec:"dst"`
+	PartitionIndex uint16 `codec:"p,omitempty"`
+}
+
+// SessionHandshakeMsg negotiates one session on its dedicated control stream.
+type SessionHandshakeMsg struct {
 	ProtocolVersion uint16 `codec:"v"`
 	MinVersion      uint16 `codec:"min_v"`
-	Features        uint32 `codec:"f,omitempty"`
+	Features        uint32 `codec:"f"`
+	NodeID          string `codec:"n"`
 }
 
 // DataRecordMsg carries a single event through the stream processing pipeline.
 type DataRecordMsg struct {
-	Key       []byte            `codec:"k"`
+	Key       []byte            `codec:"k,omitempty"`
 	Value     []byte            `codec:"v"`
 	EventTime int64             `codec:"t"`
 	Headers   map[string][]byte `codec:"h,omitempty"`
@@ -84,8 +93,10 @@ type BackpressureMsg struct {
 // MsgTypeName returns a human-readable name for the given message type.
 func MsgTypeName(mt uint8) string {
 	switch mt {
-	case MsgTypeHandshake:
-		return "Handshake"
+	case MsgTypeStreamHeader:
+		return "StreamHeader"
+	case MsgTypeSessionHandshake:
+		return "SessionHandshake"
 	case MsgTypeDataRecord:
 		return "DataRecord"
 	case MsgTypeCheckpointBarrier:

@@ -75,8 +75,10 @@ func ReadFrame(r io.Reader, maxFrameSize uint32) (Frame, error) {
 
 	if _, err := io.ReadFull(r, buf); err != nil {
 		// Return buffer to pool on error.
-		*bufp = buf
-		framePool.Put(bufp)
+		if cap(buf) <= 1024*1024 {
+			*bufp = buf
+			framePool.Put(bufp)
+		}
 		return Frame{}, err
 	}
 
@@ -84,16 +86,20 @@ func ReadFrame(r io.Reader, maxFrameSize uint32) (Frame, error) {
 	msgType := buf[0]
 	crcReceived := binary.BigEndian.Uint32(buf[1:5])
 
-	// 5. Copy payload out so the pooled buffer can be returned.
-	payload := make([]byte, len(buf[5:]))
-	copy(payload, buf[5:])
-	*bufp = buf
-	framePool.Put(bufp)
-
-	// 6. Verify CRC32C over MsgType || Payload.
-	crcComputed := computeCRC32C(msgType, payload)
+	// Verify before allocating the decoded payload. Corrupt frames must not
+	// cause a second allocation of the sender-controlled frame length.
+	crcComputed := computeCRC32C(msgType, buf[5:])
 	if crcReceived != crcComputed {
+		if cap(buf) <= 1024*1024 {
+			*bufp = buf
+			framePool.Put(bufp)
+		}
 		return Frame{}, ErrCRCMismatch
+	}
+	payload := append([]byte(nil), buf[5:]...)
+	if cap(buf) <= 1024*1024 {
+		*bufp = buf
+		framePool.Put(bufp)
 	}
 
 	return Frame{MsgType: msgType, Payload: payload}, nil
@@ -146,8 +152,14 @@ func WriteFrameRaw(w io.Writer, msgType uint8, payload []byte) error {
 // DecodePayload decodes the raw payload of a Frame into the appropriate message struct.
 func DecodePayload(f Frame) (any, error) {
 	switch f.MsgType {
-	case MsgTypeHandshake:
-		var msg HandshakeMsg
+	case MsgTypeStreamHeader:
+		var msg StreamHeaderMsg
+		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+			return nil, err
+		}
+		return &msg, nil
+	case MsgTypeSessionHandshake:
+		var msg SessionHandshakeMsg
 		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
 			return nil, err
 		}
@@ -197,10 +209,12 @@ func DecodePayload(f Frame) (any, error) {
 func EncodeAndWriteFrame(w io.Writer, msg any) error {
 	var msgType uint8
 	switch msg.(type) {
-	case *HandshakeMsg:
-		msgType = MsgTypeHandshake
-	case HandshakeMsg:
-		msgType = MsgTypeHandshake
+	case *StreamHeaderMsg, StreamHeaderMsg:
+		msgType = MsgTypeStreamHeader
+	case *SessionHandshakeMsg:
+		msgType = MsgTypeSessionHandshake
+	case SessionHandshakeMsg:
+		msgType = MsgTypeSessionHandshake
 	case *DataRecordMsg:
 		msgType = MsgTypeDataRecord
 	case DataRecordMsg:

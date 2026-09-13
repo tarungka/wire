@@ -22,7 +22,7 @@ import (
 // loop naturally terminates after draining all messages.
 func runOutputWriter(ctx context.Context, stream *transport.FrameStream, outputCh <-chan OutputMsg, log zerolog.Logger) error {
 	for msg := range outputCh {
-		if err := writeOutputMsg(stream, msg); err != nil {
+		if err := writeOutputMsgContext(ctx, stream, msg); err != nil {
 			log.Error().Err(err).Msg("failed to write output message")
 			return err
 		}
@@ -34,15 +34,19 @@ func runOutputWriter(ctx context.Context, stream *transport.FrameStream, outputC
 // writeOutputMsg encodes an OutputMsg into the appropriate protocol message
 // and writes it to the stream.
 func writeOutputMsg(stream *transport.FrameStream, msg OutputMsg) error {
+	return writeOutputMsgContext(context.Background(), stream, msg)
+}
+
+func writeOutputMsgContext(ctx context.Context, stream *transport.FrameStream, msg OutputMsg) error {
 	switch msg.Type {
 	case OutputData:
-		return stream.WriteMessage(msg.Event.ToProto())
+		return stream.WriteMessageContext(ctx, msg.Event.ToProto())
 	case OutputBarrier:
-		return stream.WriteMessage(msg.Barrier)
+		return stream.WriteMessageContext(ctx, msg.Barrier)
 	case OutputWatermark:
-		return stream.WriteMessage(msg.Watermark)
+		return stream.WriteMessageContext(ctx, msg.Watermark)
 	case OutputEnd:
-		return stream.WriteMessage(msg.End)
+		return stream.WriteMessageContext(ctx, msg.End)
 	default:
 		return nil
 	}
