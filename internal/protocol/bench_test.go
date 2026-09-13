@@ -132,21 +132,22 @@ func BenchmarkCRC32C_Concurrent(b *testing.B) {
 // raw baseline includes encoding and writing; framed adds only Wire framing.
 func BenchmarkFramingOverhead(b *testing.B) {
 	msg := &DataRecordMsg{Key: []byte("benchmark-key"), Value: make([]byte, 1024), EventTime: 1708819200000}
-	for _, framed := range []bool{false, true} {
-		name := "raw_msgpack"
-		if framed {
-			name = "wire_frame"
-		}
+	for _, name := range []string{"raw_msgpack", "wire_frame", "wire_bounded"} {
 		b.Run(name, func(b *testing.B) {
 			var dst bytes.Buffer
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
 				dst.Reset()
-				if framed {
+				switch name {
+				case "wire_bounded":
+					if err := EncodeAndWriteFrameLimit(&dst, msg, DefaultMaxFrameSize); err != nil {
+						b.Fatal(err)
+					}
+				case "wire_frame":
 					if err := WriteFrame(&dst, MsgTypeDataRecord, msg); err != nil {
 						b.Fatal(err)
 					}
-				} else {
+				default:
 					payload, err := EncodeMsgPack(msg)
 					if err != nil {
 						b.Fatal(err)

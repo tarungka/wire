@@ -261,3 +261,32 @@ cleanup check was corrected. Remaining WIP gates, including performance and the
 broader acceptance audit, are not implied complete by these connection tests.
 Decoder fuzzing with the SessionDrain seed passed 1,380,331 executions in the
 10-second fuzz run (11.5 seconds including setup/finish).
+
+### CRC type-state optimization and mutual TLS retirement
+
+CRC32C now precomputes the 256 message-type starting states. Every frame still
+checks type plus payload, but avoids a one-byte allocation and a separate CRC
+update. A regression compares all 256 types at six payload lengths (including
+zero) against a checksum of the complete concatenated message. A same-process
+1 KiB microbenchmark measured median 84.33 ns/1 allocation for two CRC updates
+versus 80.89 ns/0 allocations for the precomputed start.
+
+The framing benchmark now includes the bounded writer actually used by
+transport. Three 500 ms samples on Apple M4, darwin/arm64:
+
+```text
+raw_msgpack: 505.2, 504.2, 508.1 ns/op; 6 allocations
+wire_frame: 603.0, 597.7, 601.0 ns/op; 7 allocations
+wire_bounded: 604.5, 607.8, 602.9 ns/op; 7 allocations
+```
+
+Bounded framing therefore still adds 19.7% CPU time at the medians. This is not
+a passing performance gate. The WIP does not define CPU-only versus network
+measurement methodology; clarification was requested, without relaxing either
+percentage target or claiming a passing network benchmark.
+
+The held-stream duplicate retirement test now runs over both TCP and mutual TLS
+and passed 20 iterations each under race detection. The test CA must be trusted
+for both roles because each worker is a TLS client and server. Full integration
+race tests and v2.5.0 lint pass. All CI checks, including CodeQL, passed on the
+preceding commit ec42d17; the optimized commit still requires its own CI.

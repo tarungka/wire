@@ -28,7 +28,7 @@
 Follow-up implementation starts from `master` at `6317284` and supersedes the narrow frame-write fix in #208. Status remains **Partially Implemented** until the full scope and acceptance targets pass.
 
 - **Implemented on this branch:** SessionHandshake 0x07 before data streams, routing-only StreamHeader 0x00, named task stream queues, retained control-stream backpressure with sender pause/resume, engine input-buffer reports, TLS coverage, and stream-end/cancellation enforcement.
-- **Remaining:** Distributed worker task wiring, remaining error/resource acceptance cases, and performance targets. The measured 1 KiB framing overhead is 23.1%, exceeding the 3% target. RecordBatch remains reserved and MUST NOT be sent.
+- **Remaining:** Distributed worker task wiring, remaining error/resource acceptance cases, and performance targets. The latest measured 1 KiB CPU-only bounded framing overhead is 19.7%, exceeding the 3% target; the benchmark methodology clarification is pending. RecordBatch remains reserved and MUST NOT be sent.
 - **Evidence and full checklist:** [completion.md](completion.md).
 
 ---

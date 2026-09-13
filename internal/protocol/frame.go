@@ -24,6 +24,17 @@ const (
 // Go automatically selects hardware acceleration (SSE4.2/ARM CRC) when available.
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
+// The first CRC byte is one of 256 fixed message discriminators. Precompute
+// its state once, avoiding a separate checksum call and escaping byte slice
+// for every frame. The payload still uses Go's hardware-accelerated Update.
+var crc32cTypeSeeds = func() [256]uint32 {
+	var seeds [256]uint32
+	for i := range seeds {
+		seeds[i] = crc32.Update(0, crc32cTable, []byte{byte(i)})
+	}
+	return seeds
+}()
+
 // framePool reuses frame body buffers to reduce GC pressure at high throughput.
 var framePool = sync.Pool{
 	New: func() any {
@@ -35,9 +46,7 @@ var framePool = sync.Pool{
 // computeCRC32C computes the CRC32C checksum over MsgType || Payload.
 // Uses crc32.Update to avoid hash.Hash32 allocation per call.
 func computeCRC32C(msgType byte, payload []byte) uint32 {
-	crc := crc32.Update(0, crc32cTable, []byte{msgType})
-	crc = crc32.Update(crc, crc32cTable, payload)
-	return crc
+	return crc32.Update(crc32cTypeSeeds[msgType], crc32cTable, payload)
 }
 
 // Frame represents a decoded wire protocol frame.

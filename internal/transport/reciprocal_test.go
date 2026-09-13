@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
 	"testing"
 	"time"
 
@@ -127,9 +128,24 @@ func TestMuxReciprocalDialReusesAdvertisedEndpoint(t *testing.T) {
 }
 
 func TestMuxCrossedConnectionsSelectSameSession(t *testing.T) {
+	t.Run("tcp", func(t *testing.T) { testMuxCrossedConnections(t, nil) })
+	t.Run("mutual_tls", func(t *testing.T) {
+		certs := generateTestCerts(t)
+		cfg, err := LoadTLSConfig(certs.ServerCertFile, certs.ServerKeyFile, true, certs.CACertFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Each worker acts as both TLS client and server.
+		cfg.RootCAs = cfg.ClientCAs
+		testMuxCrossedConnections(t, cfg)
+	})
+}
+
+func testMuxCrossedConnections(t *testing.T, tlsConfig *tls.Config) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cfg := DefaultConfig()
+	cfg.TLSConfig = tlsConfig
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.NodeID = "a"
 	a := NewMux(cfg)
