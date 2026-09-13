@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"strings"
 	"time"
 )
@@ -79,7 +80,13 @@ type SinkTransaction struct {
 // Validate checks structural invariants on the checkpoint metadata. It
 // collects all errors before returning so callers see the full picture.
 func (m *CheckpointMetadata) Validate() error {
+	if m == nil {
+		return fmt.Errorf("%w: metadata is nil", ErrInvalidCheckpointMetadata)
+	}
 	var errs []string
+	if m.SchemaVersion != CurrentSchemaVersion {
+		errs = append(errs, fmt.Sprintf("unsupported schema_version %d", m.SchemaVersion))
+	}
 
 	// Type must be checkpoint or savepoint.
 	if m.Type != CheckpointType && m.Type != SavepointType {
@@ -114,6 +121,12 @@ func (m *CheckpointMetadata) Validate() error {
 
 	// Validate tasks: non-empty IDs, no duplicates, operator reference integrity, key group ranges.
 	taskIDs := make(map[string]bool, len(m.Tasks))
+	operators := make(map[string]OperatorMeta, len(m.JobGraph.Operators))
+	for _, op := range m.JobGraph.Operators {
+		operators[op.OperatorID] = op
+	}
+	subtasks := make(map[string]map[int]bool)
+
 	for i, task := range m.Tasks {
 		if task.TaskID == "" {
 			errs = append(errs, fmt.Sprintf("tasks[%d]: task_id must not be empty", i))
@@ -127,6 +140,36 @@ func (m *CheckpointMetadata) Validate() error {
 			errs = append(errs, fmt.Sprintf("tasks[%d] (%s): operator_id must not be empty", i, task.TaskID))
 		} else if !operatorIDs[task.OperatorID] {
 			errs = append(errs, fmt.Sprintf("tasks[%d] (%s): references unknown operator_id %q", i, task.TaskID, task.OperatorID))
+		}
+
+		if op, ok := operators[task.OperatorID]; ok {
+			if task.SubtaskIndex < 0 || task.SubtaskIndex >= op.Parallelism {
+				errs = append(errs, fmt.Sprintf("tasks[%d]: subtask_index %d outside operator parallelism %d", i, task.SubtaskIndex, op.Parallelism))
+			}
+			if subtasks[task.OperatorID] == nil {
+				subtasks[task.OperatorID] = make(map[int]bool)
+			}
+			if subtasks[task.OperatorID][task.SubtaskIndex] {
+				errs = append(errs, fmt.Sprintf("tasks[%d]: duplicate subtask_index %d for operator %q", i, task.SubtaskIndex, task.OperatorID))
+			}
+			subtasks[task.OperatorID][task.SubtaskIndex] = true
+		}
+		// Persist portable relative paths, never paths outside the checkpoint root.
+		if !validCheckpointRelativePath(strings.TrimSuffix(task.StatePath, "/")) {
+			errs = append(errs, fmt.Sprintf("tasks[%d]: invalid state_path %q", i, task.StatePath))
+		}
+		if task.StateSizeBytes < 0 {
+			errs = append(errs, fmt.Sprintf("tasks[%d]: state_size_bytes must be non-negative", i))
+		}
+		files := make(map[string]bool, len(task.StateFiles))
+		for _, name := range task.StateFiles {
+			if !validCheckpointRelativePath(name) || strings.Contains(name, "/") {
+				errs = append(errs, fmt.Sprintf("tasks[%d]: invalid state file %q", i, name))
+			}
+			if files[name] {
+				errs = append(errs, fmt.Sprintf("tasks[%d]: duplicate state file %q", i, name))
+			}
+			files[name] = true
 		}
 
 		// Key group range: 0 <= start < end <= num_key_groups.
@@ -181,4 +224,10 @@ func UnmarshalCheckpointMetadata(data []byte) (*CheckpointMetadata, error) {
 		return nil, err
 	}
 	return &meta, nil
+}
+
+// Reject platform-specific separators and volume names as well as traversal.
+// File readers must separately reject symlinks when opening these paths.
+func validCheckpointRelativePath(name string) bool {
+	return name != "." && fs.ValidPath(name) && !strings.ContainsAny(name, "\\:\x00")
 }
