@@ -25,7 +25,7 @@ waive any WIP-02 requirement.
 | Requirement | Current evidence / remaining work |
 |---|---|
 | Per-task topology and bounded channels (§2.1–2.4) | Input reader includes one bounded read-ahead helper. Output uses one ordered dispatcher, not the stated per-output workers. Reconcile topology with ordering and test bounds. |
-| Replication failure affects checkpoint, threshold affects task (§2.7) | No replication lifecycle is connected. Integrate with checkpoint failure policy; do not silently convert upload failure to success or unconditional task failure. |
+| Replication failure affects checkpoint, threshold affects task (§2.7) | Coordinator failure reporting now applies existing checkpoint thresholds and ignores stale checkpoint/epoch reports; timeout metrics exclude replication failures. Uploader completion delivery and durable worker replication still need wiring. |
 | Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Upload concurrency and configurable task Pebble compaction bounds need implementation/integration. |
 | Container CPU limits (§3.2) | No automaxprocs import or dependency found. Verify Go runtime baseline and implement the documented behavior with explicit evidence. |
 | Six observability metrics (§3.3) | No wire_task_* metric instrumentation found. Add task channel usage, output blocking time, owned goroutines, upload duration and alignment bytes with lifecycle cleanup. |
@@ -78,3 +78,15 @@ These component invariants pass 50 race-enabled repetitions. This is not yet
 evidence of async replication in a running worker: chain submission, durable
 replica transport, completion/abort fencing and terminal-task handling remain
 open. No successful checkpoint may be acknowledged before replication succeeds.
+
+### Replication failure policy
+
+`CheckpointCoordinator.FailCheckpoint` uses a bounded, cancellable mailbox.
+The coordinator compares checkpoint ID and epoch under the state lock before
+aborting, applies its consecutive-failure/rate limits, and sends normal abort
+notifications. A timer captured for an earlier checkpoint is also checked
+against its original identity. Replication errors do not increment the timeout
+counter. Tests prove that an initial upload failure aborts only its checkpoint,
+the configured failure threshold is enforced, and stale ID/epoch failures do
+not change an active newer checkpoint. The uploader-to-runtime completion path
+remains unconnected, so these tests do not yet prove worker checkpoint durability.
