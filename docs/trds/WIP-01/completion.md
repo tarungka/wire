@@ -197,3 +197,14 @@ the failed jobs were requested to rerun. This is not yet security-check clearanc
 The bounded encoder and trailing-payload checks pass the full integration-tagged
 race suite and golangci-lint v2.5.0. A 16 MiB binary value with a 32-byte budget
 is rejected without copying the binary value into the output buffer.
+
+### Reverse streams on outbound sessions
+
+Mux now accepts peer-opened data streams on sessions it originally dialed. The
+accept loop belongs to the mux lifetime, joins during Close, and routes through
+the same task registry as incoming connections. A regression test sends records
+in both directions on one session, ends the reverse partition, and proves the
+original stream is still usable. It passed 20 race iterations; the full
+integration-tagged race suite and v2.5.0 lint also pass. Address-to-peer lookup
+and safe simultaneous-dial arbitration remain necessary for complete reciprocal
+Mux.Dial reuse; this test deliberately does not claim those are implemented.

@@ -314,5 +314,13 @@ func (m *Mux) getOrCreateSession(ctx context.Context, addr string) (*Session, er
 		return nil, fmt.Errorf("transport: mux closed")
 	}
 	m.peers[addr] = sess
+	// Yamux permits the accepting peer to open its own unidirectional data
+	// streams on this connection. Service those streams for the lifetime of
+	// the mux, independently of the caller that initiated the connection.
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.sessionAcceptLoop(m.ctx, sess)
+	}()
 	return sess, nil
 }
