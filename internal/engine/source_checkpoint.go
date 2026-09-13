@@ -16,11 +16,12 @@ type sourceCheckpointBoundary struct {
 }
 
 type sourceCheckpointInput struct {
-	requests <-chan CheckpointTrigger
-	source   SourceOperator
-	aligner  *BarrierAligner
-	control  chan<- ControlMsg
-	last     checkpointIdentity // Highest accepted trigger; owned by source reader.
+	watermarks *sourceWatermarkQueue
+	requests   <-chan CheckpointTrigger
+	source     SourceOperator
+	aligner    *BarrierAligner
+	control    chan<- ControlMsg
+	last       checkpointIdentity // Highest accepted trigger; owned by source reader.
 }
 
 // atBoundary runs only between fully dispatched batches. Until the chain
@@ -41,6 +42,12 @@ func (s *sourceCheckpointInput) atBoundary(intake, processing context.Context) e
 			return nil
 		}
 		s.last = checkpointIdentity{request.CheckpointID, request.EpochID}
+		if s.watermarks != nil {
+			// Freeze periodic boundaries with source offsets until the chain
+			// snapshots its operators and forwards the checkpoint barrier.
+			s.watermarks.mu.Lock()
+			defer s.watermarks.mu.Unlock()
+		}
 		var state []byte
 		var typed bool
 		if err := invokeOperator(func() error {

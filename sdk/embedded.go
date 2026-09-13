@@ -174,9 +174,10 @@ func (ex *embeddedExecutor) runLinearInstance(
 
 	ig, igctx := errgroup.WithContext(runCtx)
 
+	strategy, interval := embeddedWatermark(sorted)
 	// Source reader goroutine.
 	ig.Go(func() error {
-		return engine.RunSourceReader(igctx, sourceOp, nil, eventCh, controlCh, chainLog)
+		return engine.RunSourceReaderWithWatermarks(igctx, sourceOp, strategy, eventCh, controlCh, interval, chainLog)
 	})
 
 	// Operator chain goroutine.
@@ -291,6 +292,12 @@ func (ex *embeddedExecutor) runWithShuffle(
 				controlChs:  downCtrlChs,
 				routeFn:     routeFn,
 			}
+			for _, node := range stage {
+				if node.Type == NodeSource && node.Watermark != nil {
+					router.idleTimeout = node.Watermark.IdleTimeout
+					router.watermarkInterval = node.Watermark.EmitInterval
+				}
+			}
 			if stages[s+1][0].Type == NodeKeyBy {
 				router.keySelector = stages[s+1][0].KeyByFn
 			}
@@ -361,7 +368,11 @@ func (ex *embeddedExecutor) runStageInstance(
 			// For embedded mode, Process wraps to a FlatMapOperator.
 			operators = append(operators, &processAdapter{fn: node.ProcessFn, config: ex.env.stateBackend, nodeID: node.ID, instance: instanceIdx})
 		case NodeWindow, NodeReduce:
-			// Window/Reduce not yet implemented in embedded mode.
+			op, err := embeddedWindow(node)
+			if err != nil {
+				return err
+			}
+			operators = append(operators, op)
 		}
 		if len(operators) > before {
 			cfg, err := errorpolicy.Compile(node.ErrorPolicy, node.Name)
@@ -400,9 +411,10 @@ func (ex *embeddedExecutor) runStageInstance(
 
 	ig, igctx := errgroup.WithContext(runCtx)
 
+	strategy, interval := embeddedWatermark(stage)
 	if isSourceStage && sourceOp != nil {
 		ig.Go(func() error {
-			return engine.RunSourceReader(igctx, sourceOp, nil, eventCh, controlCh, chainLog)
+			return engine.RunSourceReaderWithWatermarks(igctx, sourceOp, strategy, eventCh, controlCh, interval, chainLog)
 		})
 	}
 

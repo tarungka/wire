@@ -119,3 +119,41 @@ func TestSourceCheckpointIgnoresRedeliveredIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestSourceCheckpointFreezesPeriodicWatermarks(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	queue := &sourceWatermarkQueue{}
+	requests := make(chan CheckpointTrigger, 1)
+	controls := make(chan ControlMsg, 1)
+	input := &sourceCheckpointInput{watermarks: queue, requests: requests, source: newMockSource(nil), aligner: NewBarrierAligner(1, 2), control: controls}
+	requests <- CheckpointTrigger{CheckpointID: 1, EpochID: 1}
+	done := make(chan error, 1)
+	go func() { done <- input.atBoundary(ctx, ctx) }()
+	var boundary ControlMsg
+	select {
+	case boundary = <-controls:
+	case <-ctx.Done():
+		t.Fatal("checkpoint boundary missing")
+	}
+	// The lock is held for the entire source/chain handshake, not just
+	// source offset capture. A clock-based watermark cannot cross it.
+	if queue.mu.TryLock() {
+		queue.mu.Unlock()
+		t.Fatal("watermark emission not frozen during checkpoint")
+	}
+	close(boundary.sourceBoundary.done)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	strategy := NewMonotonicTimestampsStrategy()
+	strategy.ObserveEventTime(100)
+	events := make(chan Event, 1)
+	var last int64
+	if err := queue.emit(ctx, strategy, events, &last); err != nil {
+		t.Fatal(err)
+	}
+	if event := <-events; event.watermark == nil || *event.watermark != 100 {
+		t.Fatal("watermark emission did not resume after checkpoint")
+	}
+}

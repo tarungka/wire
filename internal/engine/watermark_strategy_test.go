@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -9,9 +10,9 @@ import (
 func TestBoundedOutOfOrderness_Basic(t *testing.T) {
 	s := NewBoundedOutOfOrdernessStrategy(5 * time.Second)
 
-	// No events observed — watermark should be 0.
-	if wm := s.GenerateWatermark(); wm != 0 {
-		t.Errorf("initial watermark: got %d, want 0", wm)
+	// No events observed — no event-time progress yet.
+	if wm := s.GenerateWatermark(); wm != math.MinInt64 {
+		t.Errorf("initial watermark: got %d, want MinInt64", wm)
 	}
 
 	// Observe event at 10000ms.
@@ -29,13 +30,13 @@ func TestBoundedOutOfOrderness_Basic(t *testing.T) {
 	}
 }
 
-func TestBoundedOutOfOrderness_NegativeAvoidance(t *testing.T) {
+func TestBoundedOutOfOrderness_NegativeWatermark(t *testing.T) {
 	s := NewBoundedOutOfOrdernessStrategy(10 * time.Second)
 
-	// Observe event at 3000ms — watermark would be 3000-10000 = -7000, clamped to 0.
+	// Preserve the exact formula even before the Unix epoch.
 	s.ObserveEventTime(3000)
-	if wm := s.GenerateWatermark(); wm != 0 {
-		t.Errorf("watermark should not be negative: got %d, want 0", wm)
+	if wm := s.GenerateWatermark(); wm != -7000 {
+		t.Errorf("watermark: got %d, want -7000", wm)
 	}
 }
 
@@ -90,8 +91,8 @@ func TestBoundedOutOfOrderness_Concurrent(t *testing.T) {
 func TestMonotonicTimestamps_Basic(t *testing.T) {
 	s := NewMonotonicTimestampsStrategy()
 
-	if wm := s.GenerateWatermark(); wm != 0 {
-		t.Errorf("initial watermark: got %d, want 0", wm)
+	if wm := s.GenerateWatermark(); wm != math.MinInt64 {
+		t.Errorf("initial watermark: got %d, want MinInt64", wm)
 	}
 
 	s.ObserveEventTime(1000)

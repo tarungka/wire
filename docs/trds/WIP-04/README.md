@@ -6,11 +6,11 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-09-12`
+> **Last Updated:** `2026-09-14`
 
 ### Revision History
 
@@ -20,13 +20,13 @@
 
 ---
 
-## Implementation Status — 2026-09-12
+## Implementation Status — 2026-09-14
 
-Assessed against `master` at `bb58acd`, with the startup idle-timeout correction in this PR. This section records current implementation; the proposal below retains its original design context and targets.
-
-- **Implemented:** Bounded-out-of-orderness, monotonic, and ingestion-time strategies, idle-input tracking, and propagation primitives are implemented and tested. New inputs participate in the minimum watermark until the full idle timeout has elapsed; silence at startup no longer causes immediate exclusion. Tests cover the exact timeout boundary, reactivation, all-idle behavior, and disabled idle detection.
-- **Remaining:** Window closure and checkpoint recovery driven by these watermarks are not implemented end to end in cluster execution.
-- **Evidence:** [watermark_strategy.go](../../../internal/engine/watermark_strategy.go), [watermark_tracker.go](../../../internal/engine/watermark_tracker.go), [watermark_propagator.go](../../../internal/engine/watermark_propagator.go).
+Implementation and acceptance evidence are recorded in [the completion audit](acceptance.md).
+The follow-up to [#205](https://github.com/tarungka/wire/pull/205) adds source
+configuration, ordered watermark delivery, window callbacks, embedded execution,
+and cluster recovery coverage. Full repository tests and lint pass. Cluster acceptance covers all three
+strategies, idle inputs, late records, and transactional checkpoint recovery.
 
 ---
 
@@ -131,6 +131,12 @@ If a source partition produces no events for a configurable duration, it is mark
 
 The idle timeout starts when the input tracker is created, even if no event has arrived yet. A newly connected input therefore holds back the minimum watermark for the full configured duration.
 
+Source-specific idle timeouts configure the receiving inputs directly connected
+to that source. Subsequent operators track their own incoming records and use the
+runtime one-minute default; they do not inherit one arbitrarily selected source's
+timeout after inputs merge. Queued records, including checkpoint alignment
+buffers, keep an input active until processing catches up.
+
 When an idle source produces a new event, it is immediately un-idled and its watermark re-enters the `Min()` calculation.
 
 ---
@@ -149,18 +155,34 @@ source.SetWatermarkStrategy(sdk.IngestionTime())
 ### 3.2 YAML Configuration
 
 ```yaml
-sources:
-  - name: "events"
-    type: "http-api"
-    watermark:
-      strategy: "bounded-ooo"      # bounded-ooo | monotonic | ingestion-time
-      max_ooo: "5s"                # Only for bounded-ooo
-      emit_interval: "200ms"
-      idle_timeout: "1m"
-    config:
-      address: ":8080"
-      path: "/ingest"
+apiVersion: wire/v1
+kind: Pipeline
+metadata:
+  name: events
+spec:
+  sources:
+    - name: events
+      type: http-api
+      watermark:
+        strategy: bounded-ooo
+        max_ooo: 5s
+        emit_interval: 200ms
+        idle_timeout: 1m
+      config:
+        address: ":8080"
+        path: /ingest
+  sinks:
+    - name: output
+      type: application-sink
+      input: events
 ```
+
+`sdk.ParsePipelineYAML` validates these settings before creating connectors.
+Connector types are supplied by the application's `PipelineConnectors` registry.
+Omitting the strategy selects bounded-ooo; omitting `max_ooo` uses five seconds,
+while explicit `0s` uses zero tolerance. Emit interval and idle timeout default
+to 200ms and one minute. See [YAML pipeline support](../../../sdk/pipeline_yaml.md)
+for the execution capabilities of the pipeline parser.
 
 ### 3.3 Watermark Control Record (Wire Protocol)
 
@@ -169,9 +191,13 @@ See WIP-01 for the binary format. The Watermark message contains:
 ```
 Watermark {
     Timestamp  int64   // The watermark timestamp (Unix millis)
-    SourceID   string  // Source operator that generated this watermark
 }
 ```
+
+The receiving task identifies the input from its routed transport stream;
+source identity is not duplicated in each watermark payload. After aggregation,
+the watermark belongs to the producing task's output, rather than one original
+source.
 
 ### 3.4 Propagation Rules
 
@@ -260,5 +286,5 @@ No additional security considerations.
 | # | Question / Risk | Owner | Status |
 | -- | -- | -- | -- |
 | 1 | Should users be able to write custom WatermarkGenerator implementations? | Tarun | Open |
-| 2 | What is the right default for `max_ooo`? 0s (strict) or 5s (lenient)? | Tarun | Open |
+| 2 | What is the right default for `max_ooo`? | Tarun | Resolved: 5s when omitted; explicit 0s is strict |
 | 3 | Should watermarks be per-key (not just per-partition)? | Tarun | Open — likely No for v1 |

@@ -7,10 +7,18 @@ import (
 // Event is the internal representation of a data record flowing through the
 // operator chain.
 type Event struct {
-	Key       []byte
-	Value     []byte
-	EventTime int64
-	Headers   map[string][]byte
+	inputActivity  *inputActivity
+	inputWatermark *inputWatermarkBoundary
+	watermark      *int64 // Internal ordered boundary; never exposed as a data record.
+	Key            []byte
+	Value          []byte
+	EventTime      int64
+	Headers        map[string][]byte
+}
+
+type inputActivity struct {
+	tracker *InputWatermarkTracker
+	input   int
 }
 
 // EventFromProto converts a protocol.DataRecordMsg into an Event.
