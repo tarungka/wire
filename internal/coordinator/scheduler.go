@@ -159,6 +159,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	}
 
 	// Commit the state and assignments together before publishing DEPLOYING.
+	tam.EpochID = c.epoch
 	tam.Replicas = make(map[string]string)
 	for workerID, workerTasks := range assignments {
 		peer := c.checkpointPeerLocked(workerID, time.Now())

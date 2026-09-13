@@ -161,9 +161,11 @@ func (c *Coordinator) CancelJob(jobID string) (*JobMeta, error) {
 		if err := protocol.DecodeMsgPack(data, &tam); err == nil {
 			for taskID, workerID := range tam.Assignments {
 				c.EnqueueCommand(workerID, rpc.WorkerCommand{
-					Type:   rpc.CommandTypeCancelTask,
-					JobID:  jobID,
-					TaskID: taskID,
+					Type:      rpc.CommandTypeCancelTask,
+					AttemptID: tam.AttemptID,
+					EpochID:   tam.EpochID,
+					JobID:     jobID,
+					TaskID:    taskID,
 				})
 			}
 		}

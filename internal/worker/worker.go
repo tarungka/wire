@@ -29,6 +29,7 @@ type Config struct {
 // taskHandle tracks a running task so it can be cancelled on demand or
 // on worker shutdown.
 type taskHandle struct {
+	done       chan struct{}
 	attemptID  string
 	cancel     context.CancelFunc
 	jobID      string
@@ -299,10 +300,16 @@ func (w *Worker) workerID() string {
 }
 
 // Shutdown cancels running tasks and closes the transport session.
-func (w *Worker) Shutdown(_ context.Context) error {
+func (w *Worker) Shutdown(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var tasks []<-chan struct{}
 	w.mu.Lock()
 	w.stopping = true
 	for taskID, h := range w.tasks {
+		if h.done != nil {
+			tasks = append(tasks, h.done)
+		}
 		w.log.Info().Str("task_id", taskID).Msg("canceling task")
 		h.cancel()
 	}
@@ -320,6 +327,13 @@ func (w *Worker) Shutdown(_ context.Context) error {
 	}
 	if session != nil {
 		err = errors.Join(err, session.Close())
+	}
+	for _, done := range tasks {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return errors.Join(err, ctx.Err())
+		}
 	}
 	return err
 }
@@ -380,7 +394,7 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 		w.log.Warn().Uint64("epoch", desc.EpochID).Str("task_id", cmd.TaskID).Msg("ignoring deployment from a different coordinator epoch")
 		return
 	}
-	handle := &taskHandle{cancel: cancel, jobID: cmd.JobID, epoch: desc.EpochID, attemptID: desc.AttemptID}
+	handle := &taskHandle{done: make(chan struct{}), cancel: cancel, jobID: cmd.JobID, epoch: desc.EpochID, attemptID: desc.AttemptID}
 	if desc.CheckpointReplicaAddress != "" || desc.RestoreCheckpoint != nil {
 		handle.checkpoint = &taskCheckpointRuntime{triggers: make(chan engine.CheckpointTrigger, 1), decisions: make(chan engine.ControlMsg, 16)}
 		for _, operator := range desc.OperatorChain {
@@ -407,6 +421,14 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 // runTask reports Running after initialization, drives the executor, and reports
 // Finished/Failed on exit. Always removes the task from w.tasks when done.
 func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor, log zerolog.Logger) {
+	w.mu.RLock()
+	handle := w.tasks[taskID]
+	w.mu.RUnlock()
+	defer func() {
+		if handle != nil && handle.done != nil {
+			close(handle.done)
+		}
+	}()
 	defer func() {
 		w.mu.Lock()
 		delete(w.tasks, taskID)
@@ -488,7 +510,7 @@ func (w *Worker) handleCommands(cmds []rpc.WorkerCommand) {
 		case rpc.CommandTypeCancelTask:
 			w.log.Info().Str("task_id", cmd.TaskID).Msg("received CancelTask command")
 			w.mu.Lock()
-			if h, ok := w.tasks[cmd.TaskID]; ok {
+			if h, ok := w.tasks[cmd.TaskID]; ok && h.jobID == cmd.JobID && h.epoch == cmd.EpochID && h.attemptID == cmd.AttemptID {
 				h.cancel()
 				// Don't delete here — runTask's defer cleans up.
 			}

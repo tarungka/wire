@@ -578,8 +578,10 @@ type WatchCommandsRequest struct {
 
 // WorkerCommand carries a command from Coordinator to Worker via heartbeat.
 type WorkerCommand struct {
-	Type   CommandType `codec:"t"`
-	JobID  string      `codec:"jid,omitempty"`
-	TaskID string      `codec:"tid,omitempty"`
-	Data   []byte      `codec:"d,omitempty"`
+	AttemptID string      `codec:"attempt_id,omitempty"`
+	EpochID   uint64      `codec:"eid,omitempty"`
+	Type      CommandType `codec:"t"`
+	JobID     string      `codec:"jid,omitempty"`
+	TaskID    string      `codec:"tid,omitempty"`
+	Data      []byte      `codec:"d,omitempty"`
 }
