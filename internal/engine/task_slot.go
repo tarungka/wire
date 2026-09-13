@@ -77,11 +77,36 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// A successful chain cancels input readers, but queued output still needs
 	// to drain through downstream backpressure. External cancellation and real
 	// failures must interrupt paused writers instead.
-	outputCtx, cancelOutput := context.WithCancel(ctx)
+	outputCtx, cancelOutput := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelOutput()
+	drainTimeout := ts.Config.DrainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = DefaultDrainTimeout
+	}
+	// External cancellation stops intake/processing immediately but lets
+	// already-produced output drain. Real task failures abort output directly.
+	var drainMu sync.Mutex
+	var drainTimer *time.Timer
+	drainStarted := make(chan struct{})
+	stopDrain := context.AfterFunc(ctx, func() {
+		defer close(drainStarted)
+		drainMu.Lock()
+		drainTimer = time.AfterFunc(drainTimeout, cancelOutput)
+		drainMu.Unlock()
+	})
+	defer func() {
+		if !stopDrain() {
+			<-drainStarted
+		}
+		drainMu.Lock()
+		if drainTimer != nil {
+			drainTimer.Stop()
+		}
+		drainMu.Unlock()
+	}()
 	var chainSucceeded atomic.Bool
 	stopOutput := context.AfterFunc(gctx, func() {
-		if !chainSucceeded.Load() {
+		if !chainSucceeded.Load() && ctx.Err() == nil {
 			cancelOutput()
 		}
 	})
@@ -103,10 +128,13 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// Track output channel producers so we can close outputCh when all are done.
 	var producerWg sync.WaitGroup
 
+	var helperWg sync.WaitGroup
+	helperWg.Add(2)
 	// Close input streams when context is cancelled to unblock blocking I/O
 	// in input readers. Output streams are left open so the output writer can
 	// drain remaining messages (like the final EndOfPartition).
 	go func() {
+		defer helperWg.Done()
 		<-gctx.Done()
 		for _, s := range ts.Inputs {
 			_ = s.Close()
@@ -261,6 +289,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 
 	// Goroutine to close outputCh when all producers are done.
 	go func() {
+		defer helperWg.Done()
 		producerWg.Wait()
 		close(outputCh)
 	}()
@@ -272,6 +301,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	})
 
 	err = g.Wait()
+	helperWg.Wait()
 	// Prefer the chain's error over errgroup's verdict — but only when
 	// it's a real chain-side error (e.g. ErrOperatorPanic), not a
 	// context.Canceled produced because a peer goroutine errored first
