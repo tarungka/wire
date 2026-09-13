@@ -6,7 +6,7 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
@@ -23,8 +23,8 @@
 ## Implementation Status — 2026-09-14
 
 Implementation is in follow-up [PR #212](https://github.com/tarungka/wire/pull/212),
-based on merged #150 and #206. Status remains Partially Implemented while the
-PR's final validation is pending.
+based on merged #150 and #206. The implementation and local acceptance
+validation are complete; PR CI results remain visible on the linked review.
 
 - **Implemented:** Fixed job key-group configuration, Murmur3 hashing, shared
   range assignment, composite key encoding, distributed keyed routing,
@@ -39,7 +39,8 @@ PR's final validation is pending.
   `KeyGroupStateRestorer`. Arbitrary opaque operator bytes are rejected rather
   than guessed at. The protocol preserves the key-group count and changes
   operator parallelism uniformly. Unrelated graph changes are rejected.
-- **Remaining:** CI completion and final review of the acceptance evidence.
+- **Validation:** Full repository tests, affected-package race tests, distributed
+  rescale acceptance tests and lint pass locally. See the audit for exact scope.
 - **Evidence:** [completion audit](acceptance.md),
   [rescale manager](../../../internal/coordinator/rescale_manager.go),
   [state restoration](../../../internal/engine/state_rescale.go),
