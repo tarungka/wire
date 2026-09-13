@@ -1,8 +1,10 @@
 package sdk
 
 import (
-	"sync"
+	"context"
 	"sync/atomic"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/keygroup"
@@ -15,6 +17,7 @@ type partitionRouter struct {
 	downstreams []chan<- engine.Event
 	controlChs  []chan<- engine.ControlMsg
 	routeFn     func(event engine.Event, numDown int) int
+	keySelector KeySelector
 }
 
 // hashRouter returns a routing function that partitions by key hash.
@@ -43,57 +46,62 @@ func rebalanceRouter() func(engine.Event, int) int {
 // run starts the router. It reads from all upstream channels and routes events
 // to downstream channels. When all upstreams are exhausted, it sends an
 // EndOfPartition control message to all downstreams and closes them.
-func (r *partitionRouter) run() {
-	numDown := len(r.downstreams)
-
-	// Track how many upstreams have sent EoP.
-	var eopCount atomic.Int32
-
-	var wg sync.WaitGroup
-	for i, upstream := range r.upstreams {
-		wg.Add(1)
-		go func(idx int, ch <-chan engine.OutputMsg) {
-			defer wg.Done()
-			for msg := range ch {
+func (r *partitionRouter) run(ctx context.Context) error {
+	defer func() {
+		for _, ch := range r.downstreams {
+			close(ch)
+		}
+	}()
+	g, gctx := errgroup.WithContext(ctx)
+	for _, upstream := range r.upstreams {
+		g.Go(func() error {
+			for {
+				var msg engine.OutputMsg
+				select {
+				case <-gctx.Done():
+					return gctx.Err()
+				case value, ok := <-upstream:
+					if !ok {
+						return nil
+					}
+					msg = value
+				}
 				switch msg.Type {
 				case engine.OutputData:
-					target := r.routeFn(msg.Event, numDown)
-					r.downstreams[target] <- msg.Event
-
-				case engine.OutputEnd:
-					eopCount.Add(1)
-					// Don't forward yet — wait until all upstreams finish.
-
+					if r.keySelector != nil {
+						key, err := r.keySelector(msg.Event)
+						if err != nil {
+							return err
+						}
+						msg.Event.Key = append([]byte(nil), key...)
+					}
+					target := r.routeFn(msg.Event, len(r.downstreams))
+					select {
+					case r.downstreams[target] <- msg.Event:
+					case <-gctx.Done():
+						return gctx.Err()
+					}
 				case engine.OutputBarrier:
-					// Forward barrier to all downstreams via control channels.
-					for _, ctrlCh := range r.controlChs {
-						ctrlCh <- engine.ControlMsg{
-							Type:         engine.CtrlBarrierReceived,
-							CheckpointID: msg.Barrier.CheckpointID,
-							EpochID:      msg.Barrier.EpochID,
+					for _, ch := range r.controlChs {
+						select {
+						case ch <- engine.ControlMsg{Type: engine.CtrlBarrierReceived, CheckpointID: msg.Barrier.CheckpointID, EpochID: msg.Barrier.EpochID}:
+						case <-gctx.Done():
+							return gctx.Err()
 						}
 					}
-
-				case engine.OutputWatermark:
-					// Watermarks are not forwarded through the router in embedded mode.
 				}
 			}
-		}(i, upstream)
+		})
 	}
-
-	// Wait for all upstreams to finish.
-	wg.Wait()
-
-	// Send EoP to all downstream control channels.
-	for i, ctrlCh := range r.controlChs {
-		ctrlCh <- engine.ControlMsg{
-			Type:       engine.CtrlEndOfPartition,
-			InputIndex: i,
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	for i, ch := range r.controlChs {
+		select {
+		case ch <- engine.ControlMsg{Type: engine.CtrlEndOfPartition, InputIndex: i}:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
-
-	// Close downstream event channels.
-	for _, ch := range r.downstreams {
-		close(ch)
-	}
+	return nil
 }

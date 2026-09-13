@@ -2,6 +2,8 @@ package sdk
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -256,10 +258,10 @@ func (ex *embeddedExecutor) runWithShuffle(
 				controlChs:  downCtrlChs,
 				routeFn:     routeFn,
 			}
-			g.Go(func() error {
-				router.run()
-				return nil
-			})
+			if stages[s+1][0].Type == NodeKeyBy {
+				router.keySelector = stages[s+1][0].KeyByFn
+			}
+			g.Go(func() error { return router.run(gctx) })
 		}
 
 		// For the last stage, drain output channels.
@@ -322,7 +324,7 @@ func (ex *embeddedExecutor) runStageInstance(
 			// KeyBy is a shuffle boundary — no operator needed (routing handles it).
 		case NodeProcess:
 			// For embedded mode, Process wraps to a FlatMapOperator.
-			operators = append(operators, &processAdapter{fn: node.ProcessFn})
+			operators = append(operators, &processAdapter{fn: node.ProcessFn, config: ex.env.stateBackend, nodeID: node.ID, instance: instanceIdx})
 		case NodeWindow, NodeReduce:
 			// Window/Reduce not yet implemented in embedded mode.
 		}
@@ -374,62 +376,44 @@ func (ex *embeddedExecutor) runStageInstance(
 
 // processAdapter wraps a ProcessFunc to implement engine.FlatMapOperator.
 type processAdapter struct {
-	fn ProcessFunc
+	fn               ProcessFunc
+	config           StateBackendConfig
+	nodeID, instance int
+	backend          engine.StateBackend
+	cleanup          func()
 }
 
-func (a *processAdapter) Open(_ context.Context) error        { return nil }
-func (a *processAdapter) Close() error                        { return nil }
-func (a *processAdapter) Checkpoint(_ uint64) ([]byte, error) { return nil, nil }
-func (a *processAdapter) FlatMap(_ context.Context, event engine.Event, emit func(engine.Event)) error {
-	pctx := &embeddedProcessContext{key: event.Key}
-	results, err := a.fn(pctx, event)
+func (a *processAdapter) Open(_ context.Context) error {
+	var err error
+	a.backend, a.cleanup, err = a.config.open(a.nodeID, a.instance)
+	return err
+}
+func (a *processAdapter) Close() error {
+	if a.backend == nil {
+		return nil
+	}
+	err := a.backend.Close()
+	a.backend = nil
+	a.cleanup()
+	return err
+}
+func (a *processAdapter) Checkpoint(id uint64) ([]byte, error) {
+	handle, err := a.backend.Checkpoint(id)
 	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(handle)
+}
+func (a *processAdapter) FlatMap(_ context.Context, event engine.Event, emit func(engine.Event)) error {
+	pctx := &backendProcessContext{key: append([]byte(nil), event.Key...), backend: a.backend}
+	results, err := a.fn(pctx, event)
+	if err = errors.Join(err, pctx.err); err != nil {
 		return err
 	}
 	for _, e := range results {
 		emit(e)
 	}
 	return nil
-}
-
-// embeddedProcessContext provides a basic ProcessContext for embedded mode.
-type embeddedProcessContext struct {
-	key    []byte
-	values map[string]*mockValueState
-	lists  map[string]*mockListState
-	maps   map[string]*mockMapState
-}
-
-func (c *embeddedProcessContext) Key() []byte { return c.key }
-
-func (c *embeddedProcessContext) GetValueState(name string) ValueState {
-	if c.values == nil {
-		c.values = make(map[string]*mockValueState)
-	}
-	if _, ok := c.values[name]; !ok {
-		c.values[name] = &mockValueState{}
-	}
-	return c.values[name]
-}
-
-func (c *embeddedProcessContext) GetListState(name string) ListState {
-	if c.lists == nil {
-		c.lists = make(map[string]*mockListState)
-	}
-	if _, ok := c.lists[name]; !ok {
-		c.lists[name] = &mockListState{}
-	}
-	return c.lists[name]
-}
-
-func (c *embeddedProcessContext) GetMapState(name string) MapState {
-	if c.maps == nil {
-		c.maps = make(map[string]*mockMapState)
-	}
-	if _, ok := c.maps[name]; !ok {
-		c.maps[name] = &mockMapState{data: make(map[string][]byte)}
-	}
-	return c.maps[name]
 }
 
 // Compile-time check.
