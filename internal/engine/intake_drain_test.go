@@ -30,7 +30,8 @@ func TestInputReaderDrainsReadAheadAfterIntakeCancellation(t *testing.T) {
 			return nil
 		})
 	}()
-	// One record is held by the consumer, and five occupy read-ahead slots.
+	// Filling five read-ahead slots proves five records were decoded. The
+	// consumer may also hold a sixth, but scheduling does not guarantee it.
 	for i := 0; i < 6; i++ {
 		if err := writer.WriteMessage(&protocol.DataRecordMsg{Value: []byte{byte(i)}}); err != nil {
 			t.Fatal(err)
@@ -42,24 +43,27 @@ func TestInputReaderDrainsReadAheadAfterIntakeCancellation(t *testing.T) {
 		t.Fatal("read-ahead did not fill")
 	}
 	stop()
-	for i := 0; i < 6; i++ {
+	received := 0
+	for {
 		select {
 		case event := <-events:
-			if len(event.Value) != 1 || event.Value[0] != byte(i) {
-				t.Fatalf("record %d changed: %v", i, event.Value)
+			if len(event.Value) != 1 || event.Value[0] != byte(received) {
+				t.Fatalf("record %d changed: %v", received, event.Value)
 			}
+			received++
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+			if received < 5 || received > 6 {
+				t.Fatalf("drained %d records; at least five were read before cancellation", received)
+			}
+			return
 		case <-ctx.Done():
-			t.Fatalf("record %d lost on intake cancellation", i)
+			t.Fatalf("reader failed to drain and join after %d records", received)
 		}
 	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-ctx.Done():
-		t.Fatal("reader did not join")
-	}
+
 }
 
 func TestSourceReaderDrainsFetchedBatchAfterIntakeCancellation(t *testing.T) {
