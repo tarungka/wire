@@ -18,6 +18,7 @@ import (
 
 // Config holds worker configuration.
 type Config struct {
+	TaskSlot        *engine.TaskSlotConfig // Nil selects engine defaults.
 	WorkerID        string
 	CoordinatorAddr string
 	ListenAddr      string
@@ -59,10 +60,15 @@ func NewWithRegistry(cfg Config, reg *Registry, log zerolog.Logger) *Worker {
 	if reg == nil {
 		reg = defaultRegistry
 	}
+	executor := newTaskExecutor(reg)
+	if cfg.TaskSlot != nil {
+		copied := *cfg.TaskSlot
+		executor.taskConfig = &copied
+	}
 	return &Worker{
 		cfg:      cfg,
 		reg:      reg,
-		executor: newTaskExecutor(reg),
+		executor: executor,
 		tasks:    make(map[string]*taskHandle),
 		log:      log.With().Str("component", "worker").Logger(),
 	}

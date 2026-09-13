@@ -17,6 +17,7 @@ import (
 	"github.com/tarungka/wire/internal/cmd"
 	"github.com/tarungka/wire/internal/config"
 	"github.com/tarungka/wire/internal/coordinator"
+	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/jobcli"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/observability"
@@ -213,7 +214,14 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 }
 
 func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger) error {
+	taskConfig := engine.DefaultTaskSlotConfig()
+	taskConfig.InputBufferSize = wireCfg.TaskSlot.InputBufferSize
+	taskConfig.OutputBufferSize = wireCfg.TaskSlot.OutputBufferSize
+	taskConfig.AlignmentBufferSize = wireCfg.TaskSlot.AlignmentBufferSize
+	taskConfig.CheckpointUploadConcurrency = wireCfg.TaskSlot.CheckpointUploadConcurrency
+	taskConfig.DrainTimeout = wireCfg.TaskSlot.DrainTimeout.Duration
 	w := worker.New(worker.Config{
+		TaskSlot:        &taskConfig,
 		WorkerID:        wireCfg.Worker.WorkerID,
 		CoordinatorAddr: wireCfg.Worker.CoordinatorAddr,
 		ListenAddr:      wireCfg.Worker.ListenAddr,

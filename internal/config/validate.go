@@ -10,6 +10,14 @@ import (
 // validation errors rather than failing on the first one.
 func (c *WireConfig) Validate() error {
 	var errs []error
+	for name, value := range map[string]int{"input_buffer_size": c.TaskSlot.InputBufferSize, "output_buffer_size": c.TaskSlot.OutputBufferSize, "alignment_buffer_size": c.TaskSlot.AlignmentBufferSize, "checkpoint_upload_concurrency": c.TaskSlot.CheckpointUploadConcurrency} {
+		if value < 0 {
+			errs = append(errs, fmt.Errorf("task_slot.%s must be >= 0", name))
+		}
+	}
+	if c.TaskSlot.DrainTimeout.Duration < 0 {
+		errs = append(errs, errors.New("task_slot.drain_timeout must be >= 0"))
+	}
 
 	// Mode validation.
 	switch c.Mode {

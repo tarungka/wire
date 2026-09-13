@@ -3,6 +3,7 @@ package config
 // WireConfig is the top-level configuration for a Wire node.
 // It maps directly to the wire.yaml schema.
 type WireConfig struct {
+	TaskSlot   TaskSlotConfig   `yaml:"task_slot" json:"task_slot" koanf:"task_slot"`
 	Mode       string           `yaml:"mode"        json:"mode"        koanf:"mode"`
 	Listen     string           `yaml:"listen"      json:"listen"      koanf:"listen"`
 	Node       NodeConfig       `yaml:"node"        json:"node"        koanf:"node"`
@@ -64,4 +65,13 @@ type WriteQueueConfig struct {
 type ElectionConfig struct {
 	Backend  string `yaml:"backend"   json:"backend"   koanf:"backend"`
 	LockPath string `yaml:"lock_path" json:"lock_path" koanf:"lock_path"`
+}
+
+// TaskSlotConfig controls bounded task channels and checkpoint uploads.
+type TaskSlotConfig struct {
+	InputBufferSize             int      `yaml:"input_buffer_size" json:"input_buffer_size" koanf:"input_buffer_size"`
+	OutputBufferSize            int      `yaml:"output_buffer_size" json:"output_buffer_size" koanf:"output_buffer_size"`
+	AlignmentBufferSize         int      `yaml:"alignment_buffer_size" json:"alignment_buffer_size" koanf:"alignment_buffer_size"`
+	CheckpointUploadConcurrency int      `yaml:"checkpoint_upload_concurrency" json:"checkpoint_upload_concurrency" koanf:"checkpoint_upload_concurrency"`
+	DrainTimeout                Duration `yaml:"drain_timeout" json:"drain_timeout" koanf:"drain_timeout"`
 }

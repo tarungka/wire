@@ -16,6 +16,11 @@ into the current runtime; setting them does not enable those features.
 
 | Field | Type | Default | CLI override |
 | --- | --- | --- | --- |
+| `task_slot.input_buffer_size` | int | `1024` | — |
+| `task_slot.output_buffer_size` | int | `1024` | — |
+| `task_slot.alignment_buffer_size` | int | `4096` | — |
+| `task_slot.checkpoint_upload_concurrency` | int | `1` | — |
+| `task_slot.drain_timeout` | duration string | `5s` | — |
 | `mode` | string | `coordinator` | `--mode` |
 | `listen` | string | `:4002` | `--listen` |
 | `node.id` | string | `""` | `--node-id` |

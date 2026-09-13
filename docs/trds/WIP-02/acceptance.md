@@ -331,3 +331,14 @@ holds the only publication slot, verifies a second transfer is rejected before
 reading its body or timing out, and then completes the original transfer with
 no staging files left. Five receiver race-test repetitions and the RPC suite
 pass. Worker registration and assignment authorization are still unconnected.
+
+### Node-to-task configuration connection
+
+The top-level `task_slot` section now loads input/output/alignment buffer sizes,
+checkpoint upload concurrency and drain timeout with WIP-02 defaults. Negative
+values fail validation. cmd passes these settings through worker.Config into
+per-task execution; callers omitting worker.Config.TaskSlot retain engine
+defaults. The generated configuration reference is updated. YAML override and
+negative-value tests, configuration/worker race suites, and command compilation
+pass. Worker replication is still unconnected, so configuring upload concurrency
+alone does not enable checkpoints. Pebble worker backend selection remains open.

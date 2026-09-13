@@ -16,8 +16,9 @@ import (
 // through the shared TaskSlot runtime. Operators are resolved by name from
 // the worker registry rather than inline SDK function values.
 type taskExecutor struct {
-	reg  *Registry
-	data *transport.Mux
+	taskConfig *engine.TaskSlotConfig
+	reg        *Registry
+	data       *transport.Mux
 }
 
 func newTaskExecutor(reg *Registry) *taskExecutor {
@@ -122,6 +123,9 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 	}
 	defer cleanup()
 	config := engine.DefaultTaskSlotConfig()
+	if te.taskConfig != nil {
+		config = *te.taskConfig
+	}
 	config.ErrorConfigs = errorConfigs
 	slot := engine.NewTaskSlot(config, inputs, outputs, operators, sourceOp)
 	slot.TaskID = taskID
