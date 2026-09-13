@@ -24,8 +24,8 @@
 
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Graph construction, basic transformations, embedded execution, named cluster operators, and a test harness are implemented.
-- **Remaining:** Complete windows/reductions, durable managed state, side outputs, pipeline YAML, and distributed keyed execution. MiniCluster currently wraps the embedded executor.
+- **Implemented:** Graph construction, basic transformations, embedded execution, named cluster operators, a test harness, and ordered single-source embedded tumbling/sliding/session windows with Aggregate/Reduce/Apply are implemented. See [window execution and limits](../../sdk/windows.md).
+- **Remaining:** Parallel/distributed window execution, durable managed state and recovery, side outputs, pipeline YAML integration, and distributed keyed execution. MiniCluster currently wraps the embedded executor. This SDK window change depends on the WIP-12 processor PR.
 - **Evidence:** [embedded.go](../../../sdk/embedded.go), [cluster.go](../../../sdk/cluster.go), [mini_cluster.go](../../../sdk/mini_cluster.go).
 
 ---
