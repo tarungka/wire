@@ -1,7 +1,10 @@
 package coordinator
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -529,5 +532,49 @@ func TestRecovery_CheckpointsToAbortPersisted(t *testing.T) {
 		if cp.Status != CheckpointAborted {
 			t.Fatalf("checkpoint %d: expected ABORTED, got %s", cpID, cp.Status)
 		}
+	}
+}
+
+func TestRecoveryRejectsInvalidEpochWithoutOverwrite(t *testing.T) {
+	for _, data := range [][]byte{{1}, make([]byte, 7), make([]byte, 9), binary.BigEndian.AppendUint64(nil, math.MaxUint64)} {
+		store := NewMemoryStore()
+		if err := store.Set(ClusterEpochKey(), data); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := recoverFromStore(store); err == nil {
+			t.Fatalf("accepted invalid epoch %x", data)
+		}
+		got, err := store.Get(ClusterEpochKey())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, data) {
+			t.Fatalf("invalid epoch overwritten: %x", got)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRecoveryRejectsMismatchedJobIdentity(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+	data, err := protocol.EncodeMsgPack(&JobMeta{ID: "different", Name: "job", Status: JobCreated, Parallelism: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(JobMetaKey("expected"), data); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recoverFromStore(store); !errors.Is(err, ErrStoreCorrupted) {
+		t.Fatalf("identity mismatch: %v", err)
+	}
+	epoch, err := store.Get(ClusterEpochKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epoch != nil {
+		t.Fatal("failed recovery advanced epoch")
 	}
 }

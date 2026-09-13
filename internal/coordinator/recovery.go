@@ -3,6 +3,7 @@ package coordinator
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -52,6 +53,10 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 			decodeErr = fmt.Errorf("%w: corrupt job entry %q: %v", ErrStoreCorrupted, k, err)
 			return false
 		}
+		if job.ID != jobID {
+			decodeErr = fmt.Errorf("%w: job identity does not match key %q", ErrStoreCorrupted, k)
+			return false
+		}
 		state.jobs[jobID] = &job
 		return true
 	})
@@ -94,6 +99,10 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 			decodeErr = fmt.Errorf("%w: corrupt worker entry %q: %v", ErrStoreCorrupted, k, err)
 			return false
 		}
+		if worker.ID != workerID {
+			decodeErr = fmt.Errorf("%w: worker identity does not match key %q", ErrStoreCorrupted, k)
+			return false
+		}
 		// Mark worker as stale by zeroing heartbeat.
 		worker.LastHeartbeat = time.Time{}
 		state.workers[workerID] = &worker
@@ -110,6 +119,9 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 	epochData, err := store.Get(ClusterEpochKey())
 	if err != nil {
 		return nil, fmt.Errorf("%w: reading epoch: %v", ErrRecoveryFailed, err)
+	}
+	if epochData != nil && len(epochData) != 8 {
+		return nil, fmt.Errorf("%w: epoch must contain exactly 8 bytes", ErrStoreCorrupted)
 	}
 	if len(epochData) == 8 {
 		state.epoch = binary.BigEndian.Uint64(epochData)
@@ -128,6 +140,10 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 		state.config = &cfg
 	}
 
+	// Never wrap the fencing token: zero could admit stale coordinators.
+	if state.epoch == math.MaxUint64 {
+		return nil, fmt.Errorf("%w: epoch exhausted", ErrRecoveryFailed)
+	}
 	// 6. Increment epoch and persist (fence stale coordinators).
 	state.epoch++
 	epochBuf := make([]byte, 8)
