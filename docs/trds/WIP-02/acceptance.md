@@ -2,8 +2,10 @@
 
 Baseline: master `5d7ac4b` (includes merged WIP-01 PR #210). This follow-up
 supersedes the limited barrier-identity change in #207 and initial #149.
-Status remains Partially Implemented until all applicable items below have
-implementation and executable evidence. The WIP-01 CRC latency waiver does not
+Status: Implemented in PR #211 (merge pending). All remote checks passed on
+runtime commit `769bbcb`: full race suite, integration suite, lint, builds,
+CodeQL and secret scanning. The matrix below records implementation and
+executable evidence for the scoped requirements. The WIP-01 CRC latency waiver does not
 waive any WIP-02 requirement.
 
 ## Acceptance scenarios (§8.1)
@@ -30,7 +32,7 @@ waive any WIP-02 requirement.
 | Container CPU limits (§3.2) | cmd/main.go imports automaxprocs v1.6.0 at startup. Explicit GOMAXPROCS takes precedence; quota rounding/minimum and restart behavior are documented. The real CGO-disabled linux/arm64 Wire binary was run in Docker with CPU quotas: 1.5 CPUs selected GOMAXPROCS=1, 0.5 CPUs selected the minimum 1, and explicit GOMAXPROCS=3 was honored. Startup logs verify automaxprocs applied each policy. |
 | Six observability metrics (§3.3) | Task input/output channel usage and alignment payload-byte gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Operator output blocking time is recorded on data/barrier/EOP sends. Engine-owned goroutines and callbacks are counted at entry/exit. Prometheus HTTP-handler export verifies all six metric names, values, units and gauge cleanup. Uploader and per-output writer accounting tests verify active and joined counts; output context retains the task counter. |
 | Benchmarks (§8) | Channel handoff and deserialization-placement benchmarks added; current baseline recorded in benchmarks.md. The integrated runtime refresh at `0be50db` is recorded in benchmarks.md. Allocation counts match the earlier baseline. |
-| Documentation and PR | Update actual topology, configuration and status only after validation; linked follow-up PR to #207/#149, using personal GitHub account. |
+| Documentation and PR | Actual topology, configuration, limits and completion status are documented. Non-draft PR #211 follows #207/#149 and is authored by personal account tarungka. All runtime CI gates pass on `769bbcb`. |
 
 ## Specification correction carried forward from WIP-01
 

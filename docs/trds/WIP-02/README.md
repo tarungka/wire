@@ -6,7 +6,7 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
@@ -23,13 +23,13 @@
 
 ## Implementation Status — 2026-09-13
 
-This section describes the in-progress `codex/wip-02-complete` follow-up. The proposal below retains its design targets; the status remains partial until final validation and the linked follow-up PR are complete.
+Implemented in the `codex/wip-02-complete` follow-up, PR #211; merge is pending. The acceptance matrix in [acceptance.md](acceptance.md) maps the scoped requirements to executable evidence and records the specification correction carried forward from WIP-01.
 
 - **Implemented:** TaskSlot and operator-chain goroutines, bounded channels, coordinated cancellation, and alignment buffers are implemented. Alignment only counts valid inputs with the active checkpoint ID and epoch; invalid indices, checkpoint zero, and mixed identities cannot complete alignment. Operator-chain snapshot control also checks the active epoch.
 - **Connected in the follow-up:** Configured workers advertise replica endpoints; deployment assigns a remote peer and coordinator epoch. Source checkpoint commands use the TaskSlot boundary, bounded archive uploads publish peer state, and assignment-checked RPC reports drive persisted completion or abort decisions. A two-worker race test verifies source state on the remote worker after coordinator completion, using coordinator-backed replica authorization.
 - **Configured and tested:** The binary exposes replica storage, checkpoint timeout, and consecutive upload failure limits. Distributed tests cover transactional commit after coordinator completion and abort after replica failure. Checkpoint acknowledgements must name the peer captured in the replica assignment.
 - **Recovery evidence:** A two-worker race test completes a checkpoint, injects a source failure, redeploys with a new attempt ID, and verifies the new source restores the saved state before reading. Worker replica fetches are authorized against the completed checkpoint and current deployment.
-- **Review:** [PR #211](https://github.com/tarungka/wire/pull/211) is open as a follow-up to #149/#207. Local full race/integration tests and lint pass; remote CI/review remain pending. Cluster coordinator replacement is now tested; broader worker-loss and HA policy belong to WIP-09. The worker executor still assembles its own linear chain. The existing tests do not establish completion of every requirement below.
+- **Review:** [PR #211](https://github.com/tarungka/wire/pull/211) is open as a follow-up to #149/#207. Local full race/integration tests and lint pass. All remote checks on runtime commit `769bbcb` pass, including the full race suite, integration tests, lint, builds, and CodeQL. Review and merge remain pending. Cluster coordinator replacement is now tested; broader worker-loss and HA policy belong to WIP-09. The worker executor still assembles its own linear chain. The acceptance matrix covers all nine scenarios in §8.1, configuration, metrics, topology, benchmarks, and Linux CPU-quota startup behavior.
 - **Evidence:** [task_slot.go](../../../internal/engine/task_slot.go), [task_executor.go](../../../internal/worker/task_executor.go).
 
 ---
@@ -304,8 +304,10 @@ Receiver concurrency is shared across uploads to that worker. The separate
 coordinator checks checkpoint expiry on its maintenance tick, so abort delivery
 may follow the configured deadline by up to one tick plus dispatch time. A failed task can restart from its completed checkpoint after the old tasks
 report terminal status. Recovery fetches import state into worker-owned storage
-before task processing. Coordinator failover and worker-loss recovery still
-require validation in this follow-up.
+before task processing. The coordinator-replacement test retains its metadata
+store, advances the epoch, and verifies worker reconnection and checkpoint
+restore. Recovery from lost coordinator storage and broader worker-loss/HA
+policy remain under WIP-09.
 
 Trigger a checkpoint for a running job with
 `POST /api/v1/jobs/{job_id}/checkpoints`. The `202` response contains its ID,

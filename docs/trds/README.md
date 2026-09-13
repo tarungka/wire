@@ -66,7 +66,7 @@ All 25 proposals, initially audited against `master` at `0e78195` on 2026-09-12 
 | WIP | Title | Status |
 |-----|-------|--------|
 | [WIP-01](WIP-01/README.md) | Wire Protocol & Serialization Format | Implemented (CRC latency check explicitly waived; see WIP) |
-| [WIP-02](WIP-02/README.md) | Goroutine & Concurrency Model | Partially Implemented |
+| [WIP-02](WIP-02/README.md) | Goroutine & Concurrency Model | Implemented |
 | [WIP-03](WIP-03/README.md) | Key Group Assignment & State Sharding | Partially Implemented |
 | [WIP-04](WIP-04/README.md) | Watermark Generation Algorithm | Partially Implemented |
 | [WIP-05](WIP-05/README.md) | Barrier Alignment Timeout & Failure Handling | Partially Implemented |
@@ -124,7 +124,7 @@ completion merged in [#188](https://github.com/tarungka/wire/pull/188).
 | WIP | Individual PR | Scope of this increment |
 | --- | --- | --- |
 | [WIP-01](WIP-01/README.md) | [#210](https://github.com/tarungka/wire/pull/210), follows #208 | Full scope; CRC latency check explicitly waived |
-| [WIP-02](WIP-02/README.md) | [#211](https://github.com/tarungka/wire/pull/211), follows #207/#149 | Concurrency runtime, checkpoint replication and recovery; CI/review pending |
+| [WIP-02](WIP-02/README.md) | [#211](https://github.com/tarungka/wire/pull/211), follows #207/#149 | Concurrency runtime, checkpoint replication and recovery; validated in PR, review/merge pending |
 | [WIP-03](WIP-03/README.md) | [#206](https://github.com/tarungka/wire/pull/206) | Validated, linear-time rescale mapping |
 | [WIP-04](WIP-04/README.md) | [#205](https://github.com/tarungka/wire/pull/205) | Startup idle timeout |
 | [WIP-05](WIP-05/README.md) | [#204](https://github.com/tarungka/wire/pull/204) | Abort cleanup at failure thresholds |
