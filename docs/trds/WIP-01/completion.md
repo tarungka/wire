@@ -472,3 +472,30 @@ so the median comparison is not a guarantee for every run or environment.
 These results improve on the earlier failing CPU result and fall below the 3%
 median throughput target in this setup. The independent <1% CRC latency gate
 remains unproven; hardware acceleration alone does not establish that result.
+
+### 2026-09-13 — isolated CRC latency measurements
+
+`BenchmarkCPUCRCVerificationLatency` and `BenchmarkTCPCRCVerificationLatency`
+compare identical frame readers with checksum computation as the only variable.
+The comparison reader is test-only; production always verifies CRC. A parity
+test checks the verifying reference against production for valid, corrupted,
+truncated, undersized and oversized frames. Both timed variants deserialize the
+payload. TCP sends one pre-encoded frame at a time and acknowledges only after
+decode, so its result includes the network/scheduling round trip; it is not a
+CPU verification measurement.
+
+Apple M4, Go 1.25, 1 KiB values, five one-second samples:
+
+| Measurement | Without CRC median | With CRC median | Added latency |
+|---|---:|---:|---:|
+| CPU parse/decode | 399.3 ns | 482.3 ns | 20.79% (83 ns) |
+| Acknowledged loopback TCP | 14493 ns | 14533 ns | 0.28% (40 ns) |
+
+TCP samples without CRC: 14300, 14364, 14509, 14505, 14493 ns.
+TCP samples with CRC: 14508, 14587, 14533, 14213, 16701 ns.
+The sample spread is larger than the median difference; these five runs do not
+establish a robust sub-percent bound. CPU samples consistently fail a CPU-only
+interpretation of the <1% target. The acceptance measurement requires an explicit
+decision; the target has not been relaxed and is not marked complete.
+
+Reproduce with `go test ./internal/protocol -run '^TestCRCComparisonMatchesProduction$' -bench '^Benchmark(CPU|TCP)CRCVerificationLatency$' -count=5 -benchtime=1s`.
