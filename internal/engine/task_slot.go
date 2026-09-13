@@ -11,6 +11,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/internal/observability"
 	"github.com/tarungka/wire/internal/transport"
 )
 
@@ -159,6 +160,17 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	eventCh := make(chan Event, ts.Config.InputBufferSize)
 	controlCh := make(chan ControlMsg, numInputs*2+4) // barrier + EoP per input, +4 for 2PC control messages (CtrlCommitCheckpoint, CtrlAbortTransaction).
 	outputCh := make(chan OutputMsg, ts.Config.OutputBufferSize)
+	unregisterChannels, err := observability.ObserveTaskChannels(ts.TaskID, func() (int, int) {
+		return len(eventCh), len(outputCh)
+	})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := unregisterChannels(); err != nil {
+			ts.log.Warn().Err(err).Msg("unregister task channel metrics")
+		}
+	}()
 	if checkpoint != nil {
 		if err := ts.Coordinator.BindTaskControl(ts.TaskIndex, controlCh); err != nil {
 			return err

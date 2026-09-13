@@ -28,7 +28,7 @@ waive any WIP-02 requirement.
 | Replication failure affects checkpoint, threshold affects task (§2.7) | Coordinator failure reporting now applies existing checkpoint thresholds and ignores stale checkpoint/epoch reports; timeout metrics exclude replication failures. TaskSlot completion delivery now feeds this policy; durable worker replication and additional transactional/abort overlap tests remain required. |
 | Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Engine upload concurrency is implemented. Pebble compaction concurrency defaults to two and is configurable in engine/embedded SDK, retained across restore. Worker configuration integration remains open. |
 | Container CPU limits (§3.2) | cmd/main.go imports automaxprocs v1.6.0 at startup. Explicit GOMAXPROCS takes precedence; quota rounding/minimum and restart behavior are documented. Command package builds locally; Linux cgroup execution remains to be verified (local Docker daemon is stopped). |
-| Six observability metrics (§3.3) | No wire_task_* metric instrumentation found. Add task channel usage, output blocking time, owned goroutines, upload duration and alignment bytes with lifecycle cleanup. |
+| Six observability metrics (§3.3) | Task input/output channel usage gauges are registered in TaskSlot.Run and unregistered on exit. Output blocking time, owned goroutines, upload duration and alignment bytes remain open. |
 | Benchmarks (§8) | Engine benchmarks exist. Establish and record concurrency/channel/deserialization baselines after implementation. |
 | Documentation and PR | Update actual topology, configuration and status only after validation; linked follow-up PR to #207/#149, using personal GitHub account. |
 
@@ -135,3 +135,14 @@ restored generations pass the limit to Pebble. The embedded SDK exposes
 instance. Tests inspect Pebble's saved OPTIONS after creation, restore and
 reopen, and verify the SDK path reaches the database. This covers backend and
 embedded execution configuration; the worker configuration path is still open.
+
+### Task channel metrics
+
+TaskSlot registers `wire_task_input_channel_usage` and
+`wire_task_output_channel_usage` through the existing observability meter, so
+worker tasks use the configured exporter. Scrapes read current bounded channel
+lengths without polling goroutines. Each observation carries `task_id`;
+unregistration on Run exit releases the callback and its channel references.
+The manual-reader test verifies occupancy changes, identity, and absence of
+observations after unregistering. Prometheus endpoint verification and the
+other four task metrics remain required.
