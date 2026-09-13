@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -68,5 +69,61 @@ func TestSnapshotImportRejectsUnsafeArchives(t *testing.T) {
 				t.Fatalf("failed import retained files: %v %v", entries, err)
 			}
 		})
+	}
+}
+
+func TestSnapshotImportRetryUsesStableVerifiedHandle(t *testing.T) {
+	ctx := context.Background()
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "data"), []byte("state"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	hashes, err := stateSnapshotHashes(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := json.Marshal(pebbleSnapshotManifest{Version: 1, CheckpointID: 7, Path: source, Files: hashes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	if err := ExportPebbleSnapshot(ctx, SnapshotHandle{CheckpointID: 7, BackendType: StateBackendPebble, Data: metadata}, &archive); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	handles := make(chan SnapshotHandle, 8)
+	errors := make(chan error, 8)
+	for range 8 {
+		go func() {
+			handle, err := ImportPebbleSnapshot(ctx, bytes.NewReader(archive.Bytes()), root, int64(archive.Len()))
+			handles <- handle
+			errors <- err
+		}()
+	}
+	var first SnapshotHandle
+	for i := range 8 {
+		handle := <-handles
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = handle
+		} else if !bytes.Equal(first.Data, handle.Data) {
+			t.Fatal("retry changed relocated handle")
+		}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("replica directories: %v, %v", entries, err)
+	}
+	var relocated pebbleSnapshotManifest
+	if err := json.Unmarshal(first.Data, &relocated); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(relocated.Path, "data"), []byte("wrong"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportPebbleSnapshot(ctx, bytes.NewReader(archive.Bytes()), root, int64(archive.Len())); err == nil {
+		t.Fatal("reused corrupt existing artifact")
 	}
 }

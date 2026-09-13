@@ -63,3 +63,35 @@ func TestInlineCheckpointReplicationFencesExecution(t *testing.T) {
 		t.Fatalf("calls=%d", calls)
 	}
 }
+
+func TestInlineCheckpointReplicationTypedBackends(t *testing.T) {
+	for _, backend := range []engine.StateBackendType{engine.StateBackendHashMap, engine.StateBackendPebble} {
+		t.Run(string(backend), func(t *testing.T) {
+			data, err := json.Marshal(engine.SnapshotHandle{CheckpointID: 7, BackendType: backend, Data: []byte("state")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot := engine.TaskCheckpoint{TaskID: "task", CheckpointID: 7, EpochID: 2, HasSource: true, Source: data, Operators: [][]byte{data}, StateHandleIndexes: []int{-1, 0}}
+			called := false
+			r := inlineCheckpointReplicator{jobID: "job", taskID: "task", epoch: 2, client: checkpointReplicaClientFunc(func(_ context.Context, _ rpc.ReplicateCheckpointRequest, body io.Reader) error {
+				called = true
+				var received engine.TaskCheckpoint
+				if err := json.NewDecoder(body).Decode(&received); err != nil {
+					return err
+				}
+				if !reflect.DeepEqual(snapshot, received) {
+					t.Fatal("typed snapshot changed in transit")
+				}
+				return nil
+			})}
+			err = r.Replicate(context.Background(), snapshot)
+			if backend == engine.StateBackendHashMap {
+				if err != nil || !called {
+					t.Fatalf("self-contained snapshot was not replicated: %v", err)
+				}
+			} else if err == nil || called {
+				t.Fatal("file-backed snapshot reached inline transfer")
+			}
+		})
+	}
+}

@@ -196,16 +196,20 @@ Yamux Reader B ─────────────────────�
 Operator Chain Goroutine ───────────┤
   Receives BarrierReceived from     │
   ALL inputs → alignment complete:  │
-  1. Snapshot state: Checkpoint(N)  │
-  2. Drain side buffers → input     │
-  3. Forward barrier downstream     │
+  1. Process queued pre-barrier data│
+  2. Snapshot state: Checkpoint(N)  │
+  3. Forward barrier downstream    │
+  4. Submit asynchronous upload    │
+  5. Release post-barrier buffers  │
 ```
 
 **Side buffer semantics:**
 
 - Each input stream has a dedicated side buffer: `[]Event` with capacity `task_slot.alignment_buffer_size` (default 4096 events).
 - When the side buffer is full, the Yamux reader blocks on write, propagating backpressure upstream. This is bounded and safe.
-- If `AbortCheckpoint(N)` arrives via the control mailbox (WIP-05), side buffers are drained into the main input channel immediately and alignment state is discarded.
+- The chain processes queued pre-barrier records before capturing state. It enqueues the barrier on the ordered output path before processing post-barrier records from the side buffers; upload completion is not required to resume processing.
+- A transactional sink prepares its transaction instead of forwarding a barrier. It retains post-barrier events until the checkpoint decision.
+- If `AbortCheckpoint(N)` arrives via the control mailbox (WIP-05), alignment state is discarded and the chain processes the released side-buffer records without taking a snapshot. Records are not sent back through the bounded input channel from its own consumer.
 - Side buffers are only allocated when a barrier is received (lazy allocation).
 
 ### 2.6 Deserialization Point

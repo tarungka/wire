@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,12 +13,22 @@ import (
 )
 
 func stateSnapshotHashes(path string) (map[string]string, error) {
+	return stateSnapshotHashesContext(context.Background(), path)
+}
+
+func stateSnapshotHashesContext(ctx context.Context, path string) (map[string]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return nil, err
 	}
 	hashes := make(map[string]string, len(entries))
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return nil, err
@@ -30,7 +41,7 @@ func stateSnapshotHashes(path string) (map[string]string, error) {
 			return nil, err
 		}
 		hash := sha256.New()
-		_, copyErr := io.Copy(hash, f)
+		_, copyErr := io.Copy(hash, snapshotContextReader{ctx: ctx, reader: f})
 		closeErr := f.Close()
 		if copyErr != nil {
 			return nil, copyErr

@@ -361,17 +361,21 @@ removes the originating-worker path, orders filenames deterministically, and
 checks each copied file against its recorded SHA-256. Cancellation is checked
 between files and reads; the destination owner must interrupt blocked writes.
 The recovery test exports a real Pebble checkpoint, closes and deletes the
-original backend directory, extracts the archive into a separate test directory,
+original backend directory, imports the archive into a separate test directory,
 and restores the original value through Pebble's existing checksum-verifying
-Restore path. The race-enabled test and engine lint pass. Production bounded
-archive import, artifact transport, operator-handle relocation and worker wiring
-remain required; test extraction is not the production receiver.
+Restore path. The race-enabled test and engine lint pass. Artifact transport
+and worker wiring remain required.
 
 ImportPebbleSnapshot now provides the production archive import primitive. It
 bounds total archive bytes, manifest size and file count; rejects path traversal,
 links, duplicates, undeclared/missing files, invalid checksums and nonzero trailing
 data; and removes the candidate directory on failure. Each file and both the
 snapshot and parent directories are synced before returning a relocated handle.
+Verified snapshots are published at a content-derived path, so identical retries
+produce identical serialized handles. Concurrent imports reuse an existing
+destination only after verifying its files; verification checks cancellation
+between reads. Eight concurrent imports produce one artifact directory in the
+regression test, and a later retry rejects a corrupted destination.
 Only that returned handle denotes completion, not discovery of a staging path.
 The original-removal recovery test now uses this importer. Additional tests
 cover unsafe paths, symlinks, corruption, missing files, quota overflow and
@@ -383,15 +387,16 @@ RestoreState is called after Open and before records are processed. The SDK
 processAdapter implements this interface, preserving its existing serialized
 Checkpoint behavior. A race-enabled test exports its Pebble state, removes the
 original directory, imports elsewhere, and restores through the operator's new
-method. Calling restore before Open returns ErrBackendClosed. Task-level artifact
-tracking/capture selection and deployment restoration are still unconnected.
+method. Calling restore before Open returns ErrBackendClosed. Deployment
+restoration is still unconnected.
 
 Task checkpoint capture now selects StateHandleOperator.CheckpointState instead
 of invoking both snapshot methods. Explicit StateHandleIndexes preserve the
 operator positions (or -1 for source state), are copied by the uploader, and
 are validated before storage publication. Handle IDs and backend kinds must
-match the enclosing checkpoint. The inline-only adapter rejects these markers
-rather than acknowledging local paths as durable state. A real TaskSlot test
+match the enclosing checkpoint. The inline adapter accepts self-contained HashMap
+handles, including source handles, but rejects Pebble handles until their files
+can be replicated. A real TaskSlot test
 uses an operator whose opaque Checkpoint method panics, proving the typed path
 is selected and its marker reaches replication. Engine/worker race suites pass.
 Artifact-aware transfer must now consume these markers and relocate their

@@ -34,8 +34,21 @@ func (r *inlineCheckpointReplicator) Replicate(ctx context.Context, snapshot eng
 	if snapshot.TaskID != r.taskID || snapshot.EpochID != r.epoch {
 		return errors.New("checkpoint does not belong to task execution")
 	}
-	if len(snapshot.StateHandleIndexes) != 0 {
-		return errors.New("typed snapshots require artifact-aware replication")
+	if err := snapshot.ValidateStateHandles(); err != nil {
+		return err
+	}
+	for _, index := range snapshot.StateHandleIndexes {
+		data := snapshot.Source
+		if index >= 0 {
+			data = snapshot.Operators[index]
+		}
+		var handle engine.SnapshotHandle
+		if err := json.Unmarshal(data, &handle); err != nil {
+			return err
+		}
+		if handle.BackendType == engine.StateBackendPebble {
+			return errors.New("file-backed snapshots require artifact-aware replication")
+		}
 	}
 	if r.client == nil {
 		return errors.New("checkpoint replica client is unavailable")

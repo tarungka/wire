@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 )
 
@@ -110,7 +111,27 @@ func ImportPebbleSnapshot(ctx context.Context, source io.Reader, root string, ma
 	if err := ctx.Err(); err != nil {
 		return SnapshotHandle{}, err
 	}
+	// Content-derived destinations keep relocated handles identical on retries.
+	// Publish only after syncing all staged files and the directory itself.
+	canonical, err := json.Marshal(manifest)
+	if err != nil {
+		return SnapshotHandle{}, err
+	}
+	digest := sha256.Sum256(canonical)
+	destination := filepath.Join(root, "snapshot-"+hex.EncodeToString(digest[:]))
 	for _, path := range []string{directory, root} {
+		if path == root {
+			if err := os.Rename(directory, destination); err != nil {
+				// A concurrent import or retry may already have published it.
+				actual, verifyErr := stateSnapshotHashesContext(ctx, destination)
+				if verifyErr != nil || !reflect.DeepEqual(actual, manifest.Files) {
+					return SnapshotHandle{}, errors.Join(err, verifyErr, ErrSnapshotCorrupt)
+				}
+				if err := os.RemoveAll(directory); err != nil {
+					return SnapshotHandle{}, err
+				}
+			}
+		}
 		dir, err := os.Open(path)
 		if err != nil {
 			return SnapshotHandle{}, err
@@ -121,7 +142,7 @@ func ImportPebbleSnapshot(ctx context.Context, source io.Reader, root string, ma
 			return SnapshotHandle{}, err
 		}
 	}
-	manifest.Path = directory
+	manifest.Path = destination
 	data, err := json.Marshal(manifest)
 	if err != nil {
 		return SnapshotHandle{}, err
