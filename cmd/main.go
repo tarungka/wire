@@ -186,6 +186,9 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 		}
 	}
 	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger, httpTLS)
+	if err := httpSrv.ConfigureAuth(wireCfg.Auth.File); err != nil {
+		return fmt.Errorf("HTTP authentication: %w", err)
+	}
 
 	// Create transport server for worker RPC connections.
 	var nodeTLS *tls.Config
