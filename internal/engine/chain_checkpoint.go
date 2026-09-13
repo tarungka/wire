@@ -12,16 +12,19 @@ type chainCheckpointState struct {
 	notify     func(context.Context, checkpointUploadResult) error
 }
 
-func (c *chainCheckpointState) submit(ctx context.Context, id, epoch uint64, data [][]byte, source ...*sourceCheckpointBoundary) error {
+func (c *chainCheckpointState) submit(ctx context.Context, id, epoch uint64, data [][]byte, stateHandleIndexes []int, source ...*sourceCheckpointBoundary) error {
 	key := checkpointIdentity{id, epoch}
 	if c.pending[key] {
 		return nil
 	}
 	c.pending[key] = true
-	snapshot := TaskCheckpoint{TaskID: c.taskID, CheckpointID: id, EpochID: epoch, Operators: data}
+	snapshot := TaskCheckpoint{TaskID: c.taskID, CheckpointID: id, EpochID: epoch, Operators: data, StateHandleIndexes: stateHandleIndexes}
 	if len(source) > 0 && source[0] != nil {
 		snapshot.HasSource = true
 		snapshot.Source = source[0].state
+		if source[0].stateHandle {
+			snapshot.StateHandleIndexes = append(snapshot.StateHandleIndexes, -1)
+		}
 	}
 	err := c.uploader.Submit(snapshot)
 	if err != nil {

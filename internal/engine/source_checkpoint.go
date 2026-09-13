@@ -10,8 +10,9 @@ import (
 type CheckpointTrigger struct{ CheckpointID, EpochID uint64 }
 
 type sourceCheckpointBoundary struct {
-	state []byte
-	done  chan struct{}
+	state       []byte
+	stateHandle bool
+	done        chan struct{}
 }
 
 type sourceCheckpointInput struct {
@@ -41,14 +42,16 @@ func (s *sourceCheckpointInput) atBoundary(intake, processing context.Context) e
 		}
 		s.last = checkpointIdentity{request.CheckpointID, request.EpochID}
 		var state []byte
+		var typed bool
 		if err := invokeOperator(func() error {
-			data, err := s.source.Checkpoint(request.CheckpointID)
+			data, isTyped, err := captureOperatorCheckpoint(s.source, request.CheckpointID)
+			typed = isTyped
 			state = append([]byte(nil), data...)
 			return err
 		}); err != nil {
 			return err
 		}
-		boundary := &sourceCheckpointBoundary{state: state, done: make(chan struct{})}
+		boundary := &sourceCheckpointBoundary{state: state, stateHandle: typed, done: make(chan struct{})}
 		s.aligner.OnBarrier(0, request.CheckpointID, request.EpochID)
 		select {
 		case s.control <- ControlMsg{Type: CtrlBarrierReceived, InputIndex: 0, CheckpointID: request.CheckpointID, EpochID: request.EpochID, sourceBoundary: boundary}:

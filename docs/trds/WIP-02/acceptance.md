@@ -385,3 +385,14 @@ Checkpoint behavior. A race-enabled test exports its Pebble state, removes the
 original directory, imports elsewhere, and restores through the operator's new
 method. Calling restore before Open returns ErrBackendClosed. Task-level artifact
 tracking/capture selection and deployment restoration are still unconnected.
+
+Task checkpoint capture now selects StateHandleOperator.CheckpointState instead
+of invoking both snapshot methods. Explicit StateHandleIndexes preserve the
+operator positions (or -1 for source state), are copied by the uploader, and
+are validated before storage publication. Handle IDs and backend kinds must
+match the enclosing checkpoint. The inline-only adapter rejects these markers
+rather than acknowledging local paths as durable state. A real TaskSlot test
+uses an operator whose opaque Checkpoint method panics, proving the typed path
+is selected and its marker reaches replication. Engine/worker race suites pass.
+Artifact-aware transfer must now consume these markers and relocate their
+serialized handles before worker publication and deployment recovery.

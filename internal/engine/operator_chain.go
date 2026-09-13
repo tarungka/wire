@@ -415,16 +415,20 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 
 		// Capture snapshot bytes synchronously at the aligned boundary.
 		var snapshots [][]byte
+		var stateHandleIndexes []int
 		if cc.checkpoint != nil {
 			snapshots = make([][]byte, len(cc.links))
 		}
 		for i, link := range cc.links {
-			data, err := link.Operator.Checkpoint(ctrl.CheckpointID)
+			data, typed, err := captureOperatorCheckpoint(link.Operator, ctrl.CheckpointID)
 			if err != nil {
 				return fmt.Errorf("operator[%d] checkpoint: %w", i, err)
 			}
 			if snapshots != nil {
 				snapshots[i] = append([]byte(nil), data...)
+				if typed {
+					stateHandleIndexes = append(stateHandleIndexes, i)
+				}
 			}
 		}
 
@@ -455,7 +459,7 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		}
 
 		if cc.checkpoint != nil {
-			if err := cc.checkpoint.submit(cc.ctx, ctrl.CheckpointID, ctrl.EpochID, snapshots, ctrl.sourceBoundary); err != nil {
+			if err := cc.checkpoint.submit(cc.ctx, ctrl.CheckpointID, ctrl.EpochID, snapshots, stateHandleIndexes, ctrl.sourceBoundary); err != nil {
 				return err
 			}
 		}

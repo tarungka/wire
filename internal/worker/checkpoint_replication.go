@@ -34,6 +34,9 @@ func (r *inlineCheckpointReplicator) Replicate(ctx context.Context, snapshot eng
 	if snapshot.TaskID != r.taskID || snapshot.EpochID != r.epoch {
 		return errors.New("checkpoint does not belong to task execution")
 	}
+	if len(snapshot.StateHandleIndexes) != 0 {
+		return errors.New("typed snapshots require artifact-aware replication")
+	}
 	if r.client == nil {
 		return errors.New("checkpoint replica client is unavailable")
 	}

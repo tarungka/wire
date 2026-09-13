@@ -92,6 +92,9 @@ func (s *FileCheckpointStore) Put(ctx context.Context, jobID string, snapshot Ta
 	if !snapshot.HasSource && len(snapshot.Source) != 0 {
 		return errors.New("checkpoint source state without source marker")
 	}
+	if err := snapshot.ValidateStateHandles(); err != nil {
+		return err
+	}
 	destination, err := s.path(jobID, snapshot.TaskID, snapshot.CheckpointID, snapshot.EpochID)
 	if err != nil {
 		return err

@@ -15,11 +15,15 @@ func TestTaskCheckpointUploadDoesNotBlockProcessingOrAckEarly(t *testing.T) {
 func TestTaskCheckpointUploadFailureAbortsBeforeEOF(t *testing.T) {
 	testTaskCheckpointUpload(t, true)
 }
-func testTaskCheckpointUpload(t *testing.T, fail bool) {
+func testTaskCheckpointUpload(t *testing.T, fail bool, typed ...bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	input, output, slot := newTestPipeline(t, []Operator{&noopMap{}}, nil)
+	var operator Operator = &noopMap{}
+	if len(typed) > 0 && typed[0] {
+		operator = &typedCheckpointProbe{}
+	}
+	input, output, slot := newTestPipeline(t, []Operator{operator}, nil)
 	cc, _ := newTestCoordinator(CheckpointConfig{Timeout: 2 * time.Second}, 1)
 	slot.Coordinator = cc
 	slot.TaskID = "task"
@@ -46,6 +50,14 @@ func testTaskCheckpointUpload(t *testing.T, fail bool) {
 	}
 	select {
 	case s := <-started:
+		if len(typed) > 0 && typed[0] {
+			if len(s.StateHandleIndexes) != 1 || s.StateHandleIndexes[0] != 0 {
+				t.Fatalf("typed handle marker lost: %+v", s)
+			}
+			if err := s.ValidateStateHandles(); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if s.CheckpointID != 7 || s.TaskID != "task" {
 			t.Fatalf("snapshot: %+v", s)
 		}
@@ -227,3 +239,14 @@ func TestSourceTaskReplicatesBoundaryAndContinues(t *testing.T) {
 		})
 	}
 }
+
+type typedCheckpointProbe struct{ noopMap }
+
+func (*typedCheckpointProbe) Checkpoint(uint64) ([]byte, error) {
+	panic("opaque checkpoint must not be called for typed state")
+}
+func (*typedCheckpointProbe) CheckpointState(id uint64) (SnapshotHandle, error) {
+	return SnapshotHandle{CheckpointID: id, BackendType: StateBackendHashMap, Data: []byte("state")}, nil
+}
+func (*typedCheckpointProbe) RestoreState(SnapshotHandle) error { return nil }
+func TestTaskCapturesTypedCheckpoint(t *testing.T)              { testTaskCheckpointUpload(t, false, true) }
