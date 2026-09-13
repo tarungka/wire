@@ -270,6 +270,9 @@ wake a blocked read. Streaming calls clean up on parent cancellation and reader
 exit, and error delivery respects cancellation under a full result channel.
 The RPC race suite passes; ten cancellation regression runs verify a blocked
 call exits and a sibling call on the same session still succeeds. Saturated
-stream-open coverage remains required before relying on this for peer transfer.
+stream-open coverage now fills the real Yamux SYN backlog, cancels the blocked
+open, verifies ten subsequent callers wait for the occupied slot, then accepts
+a stream and verifies late-open cleanup releases the slot while an existing
+stream still transfers data. Five race-enabled repetitions pass.
 The existing 16 MiB RPC frame limit also means replica transfer must be chunked
 rather than sending the store's entire 64 MiB snapshot in one unary payload.
