@@ -96,14 +96,41 @@ func TestSessionNegotiationVersionsAndFeatures(t *testing.T) {
 			if err != nil || again != params {
 				t.Fatal("negotiation not reusable")
 			}
-			stream, err := client.OpenStream()
+			header := protocol.StreamHeaderMsg{SourceTaskID: "source", TargetTaskID: "target"}
+			stream, err := client.OpenDataStream(context.Background(), a, header)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if stream.StreamID() != 3 {
 				t.Fatalf("control stream was not first: data stream=%d", stream.StreamID())
 			}
-			_ = stream.Close()
+			defer stream.Close()
+			input, err := server.AcceptDataStream(b, func(got protocol.StreamHeaderMsg) bool { return got == header })
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer input.Close()
+			inherited, err := input.ReceiveHandshake()
+			if err != nil || *inherited != params {
+				t.Fatalf("stream parameters: %v %v", inherited, err)
+			}
+			if err := stream.WriteMessage(&protocol.DataRecordMsg{Value: []byte("version-one-record")}); err != nil {
+				t.Fatal(err)
+			}
+			message, err := input.ReadMessage()
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, ok := message.(*protocol.DataRecordMsg)
+			if !ok || string(record.Value) != "version-one-record" {
+				t.Fatalf("record after negotiation: %#v", message)
+			}
+			if err := stream.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "source"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := input.ReadMessage(); err != nil {
+				t.Fatal(err)
+			}
 		})
 	}
 }

@@ -254,7 +254,20 @@ func TestCRC32C_Validation(t *testing.T) {
 
 	// Manually compute CRC over MsgType + Payload.
 	payload := data[9:]
-	crcManual := computeCRC32C(MsgTypeDataRecord, payload)
+	// Independent bitwise reflected Castagnoli recurrence: no production
+	// checksum helper, table, or hardware dispatch is reused here.
+	crcManual := ^uint32(0)
+	for _, value := range append([]byte{MsgTypeDataRecord}, payload...) {
+		crcManual ^= uint32(value)
+		for bit := 0; bit < 8; bit++ {
+			if crcManual&1 != 0 {
+				crcManual = (crcManual >> 1) ^ 0x82f63b78
+			} else {
+				crcManual >>= 1
+			}
+		}
+	}
+	crcManual = ^crcManual
 
 	if crcInFrame != crcManual {
 		t.Errorf("CRC mismatch: frame=0x%08X manual=0x%08X", crcInFrame, crcManual)

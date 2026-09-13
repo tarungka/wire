@@ -409,3 +409,20 @@ stress tests passed ten runs. Lint v2.5.0 reports zero issues.
 This does not add a positive header acknowledgment or make Dial prove that the
 target is registered. Deployment ordering remains the caller's responsibility;
 rejection handling is asynchronous and must not be described as a delivery ACK.
+
+### Acceptance mapping and independent checks
+
+[acceptance.md](acceptance.md) maps all 22 original scenarios to actual tests and
+calls out unproven parity/performance gates. Compatible and rolling-upgrade tests
+now send records and EOP over a routed stream and verify inherited negotiated
+parameters, instead of stopping after opening an empty raw stream. CRC header
+validation now uses an independent bitwise Castagnoli recurrence rather than the
+production helper. Unknown-type tests include reserved 0x06 and 0xFF over TCP/TLS.
+
+The same native CRC benchmark measured 84.43, 84.84 and 84.24 ns normally versus
+325.9, 321.1 and 318.3 ns with GODEBUG=cpu.crc32=off on Apple M4. This confirms
+hardware dispatch, without claiming the separate <1% verification latency target.
+Full integration race tests passed after the negotiation/CRC changes; the final
+unknown-type extension passed targeted protocol/transport race runs. Lint v2.5.0
+passes. Current PR review inspection found no submitted reviews; automated
+security-evidence recommendations still require final-head evidence at completion.

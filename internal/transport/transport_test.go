@@ -495,9 +495,11 @@ func runTestUnknownMsgType_Skipped(t *testing.T, secure bool) {
 		t.Fatalf("WriteFrame[handshake]: %v", err)
 	}
 
-	// Send unknown MsgType (0x40).
-	if err := protocol.WriteFrameRaw(raw, 0x40, []byte{0x80}); err != nil {
-		t.Fatalf("WriteFrameRaw[unknown]: %v", err)
+	// Reserved batching and both extension ranges must be skipped.
+	for _, kind := range []uint8{protocol.MsgTypeRecordBatch, 0x40, 0xff} {
+		if err := protocol.WriteFrameRaw(raw, kind, []byte{0x80}); err != nil {
+			t.Fatalf("WriteFrameRaw[unknown]: %v", err)
+		}
 	}
 
 	// Send valid DataRecord.
