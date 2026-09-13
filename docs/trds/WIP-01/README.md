@@ -190,7 +190,7 @@ Every message transmitted on a Yamux stream is wrapped in a frame with the follo
 | **Length** | 0 | 4 bytes | Big-endian uint32 | Total number of bytes following this field: `1 + 4 + len(Payload)` = `5 + len(Payload)`. Does **not** include the 4-byte length field itself. Default maximum value: 16,777,216 (16 MiB), configurable as specified in §4.2. Minimum valid value: 5 (MsgType + CRC32C, zero-length payload). |
 | **MsgType** | 4 | 1 byte | uint8 | Message type discriminator. See Section 3.2. |
 | **CRC32C** | 5 | 4 bytes | Big-endian uint32 | CRC-32C (Castagnoli) checksum computed over the `MsgType` byte concatenated with the `Payload` bytes. Uses the polynomial `0x1EDC6F41`. Hardware-accelerated via SSE4.2 (x86-64) or CRC instructions (ARM64). Detects all single-bit errors, all double-bit errors, and all burst errors up to 32 bits. **Always active** — every frame includes a valid CRC32C; receivers MUST always verify. |
-| **Payload** | 9 | N bytes | msgpack | Message-type-specific payload. Encoded using `hashicorp/go-msgpack/v2` with `codec.MsgpackHandle{}`. Length is `Length - 5` bytes. |
+| **Payload** | 9 | N bytes | msgpack | Message-type-specific payload. Encoded using `hashicorp/go-msgpack/v2` with `codec.MsgpackHandle{WriteExt: true}`. Length is `Length - 5` bytes. |
 
 **Total frame size:** `4 + 1 + 4 + N = 9 + N` bytes, where `N = len(Payload)`.
 
@@ -301,6 +301,13 @@ The primary data-carrying message. Each DataRecord represents a single event flo
 | **Value** | `"v"` | `bin` (bytes) | Yes | The event payload. Opaque bytes; serialization format is user-defined. |
 | **EventTime** | `"t"` | `int64` | Yes | Event timestamp in Unix milliseconds. Used for watermark tracking and window assignment. |
 | **Headers** | `"h"` | `map[str]bin` | No | Optional key-value metadata. Omitted from the msgpack encoding when empty (not present in the map, not encoded as an empty map). |
+
+Message payloads use the current MessagePack specification: byte slices use
+`bin8`, `bin16`, or `bin32`, not the legacy raw-string representation. Required
+map fields must be present even when their value is zero. Repeated required
+fields are rejected rather than selecting one of conflicting values. Unknown
+fields may contain nested MessagePack values up to 64 levels; declared lengths
+and container counts are validated against the available frame bytes.
 
 **Compact msgpack key rationale:** Single-character keys minimize per-record overhead. At 100K records/sec, saving 10 bytes per key name saves ~1 MB/sec of bandwidth per stream.
 
@@ -771,7 +778,7 @@ Stream timeline:
 | **Decision** | Option A: msgpack |
 | **Rationale** | (1) Already in use: `hashicorp/go-msgpack/v2` is a dependency and `EncodeMsgPack`/`DecodeMsgPack` are implemented in `internal/utils/utils.go`. Zero new dependencies. (2) Schema-less: no `.proto` files to maintain, no code generation step. Payloads are plain Go structs with codec tags. (3) Compact: msgpack is typically 15-30% smaller than JSON and comparable to protobuf for small messages. (4) Fast: the hashicorp codec is well-optimized and avoids reflection for registered types. (5) Debuggable: msgpack can be inspected with standard tools (`msgpack-inspect`, Python `msgpack` library). |
 | **Options Rejected** | Protobuf: requires `.proto` files and code generation. Adds build complexity. FlatBuffers: zero-copy reads are attractive but add significant complexity and require schema files. JSON: too verbose for high-throughput binary data (2-3x overhead). CBOR: similar to msgpack but less ecosystem support in Go. |
-| **Trade-offs Accepted** | No static schema enforcement (typos in codec tags cause silent failures). No built-in schema evolution rules (protobuf has field numbering). We mitigate by keeping payloads small (3-5 fields) with extensive tests. |
+| **Trade-offs Accepted** | No generated static schema or field numbering. Receivers validate required field presence, reject repeated required fields, and use typed decoding. Unknown fields are skipped for forward compatibility, with nesting limited to 64 levels and all lengths bounded by the frame. Codec tags and encoded binary representations are covered by tests. |
 | **Revisit Trigger** | If Wire adds cross-language workers (Python/Rust), protobuf with shared `.proto` files may be preferable. If zero-copy performance matters (records > 1 MB), FlatBuffers should be re-evaluated. |
 
 ### Decision 2: Length-prefixed framing (not delimiter-based, not fixed-size)

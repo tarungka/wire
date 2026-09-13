@@ -312,3 +312,23 @@ Tests cover all eight active types, including the negotiated drain extension.
 Required-field presence/type conventions still need the final schema audit.
 Full integration-tagged race tests and golangci-lint v2.5.0 pass for this change;
 protocol tests were rerun after the linter's equivalent boolean simplification.
+
+### Binary encoding and required-field presence
+
+The shared protocol codec was still in legacy MessagePack mode, which encoded
+byte slices as raw strings despite WIP-01 specifying binary fields. WriteExt is
+now enabled. A byte-level test checks bin8 markers and non-UTF-8 contents in
+record keys, values, and header values; the framed payload matches the encoded
+message. The complete integration race suite, including RPC users of this
+codec, passes with current MessagePack encoding.
+
+An allocation-free boundary scanner rejects malformed maps, missing required
+fields, repeated required fields, impossible lengths/counts, and nesting beyond
+64 levels before typed decoding. It skips unknown fields without copying record
+payloads. Each active message is tested with each required field removed; valid
+zero values and nested forward extensions still decode. Final value/type and
+nil-versus-empty conventions remain to audit; field presence alone does not
+prove those semantics.
+
+Full integration-tagged race tests and v2.5.0 lint pass. Decoder fuzzing with the
+scanner passed 1,783,310 executions in the 10-second run (11.5 seconds overall).

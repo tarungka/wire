@@ -8,7 +8,9 @@ import (
 )
 
 // msgpackHandle is the shared msgpack handle used for all encode/decode operations.
-var msgpackHandle codec.MsgpackHandle
+// WriteExt selects the current MessagePack spec, including bin8/bin16/bin32
+// for byte slices instead of the legacy raw-string representation.
+var msgpackHandle = codec.MsgpackHandle{WriteExt: true}
 
 // payloadBuffer bounds retained encoded bytes before a frame reaches the wire.
 // A rejected write is atomic, including large binary values handed to Write.
@@ -60,6 +62,28 @@ func DecodeMsgPack(data []byte, v any) error {
 // decodeFramePayload requires exactly one MessagePack object per frame.
 // RPC callers of DecodeMsgPack retain their existing decoding contract.
 func decodeFramePayload(data []byte, v any) error {
+	var required []string
+	switch v.(type) {
+	case *StreamHeaderMsg:
+		required = []string{"src", "dst"}
+	case *SessionHandshakeMsg:
+		required = []string{"v", "min_v", "f", "n"}
+	case *DataRecordMsg:
+		required = []string{"v", "t"}
+	case *CheckpointBarrierMsg:
+		required = []string{"c", "e", "ts"}
+	case *WatermarkMsg:
+		required = []string{"t", "s"}
+	case *EndOfPartitionMsg:
+		required = []string{"s", "r"}
+	case *BackpressureMsg:
+		required = []string{"id", "st"}
+	case *SessionDrainMsg:
+		required = []string{"r"}
+	}
+	if !hasRequiredFields(data, required) {
+		return fmt.Errorf("%w: malformed map or missing/duplicate required field", ErrDecodePayload)
+	}
 	// Every active Wire message is a map. The generic codec also accepts nil
 	// and positional struct arrays, which are not this protocol's schema.
 	if len(data) == 0 || ((data[0] < 0x80 || data[0] > 0x8f) && data[0] != 0xde && data[0] != 0xdf) {
