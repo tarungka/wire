@@ -322,3 +322,12 @@ FileCheckpointStore.Import and verifies reopening after a successful receipt,
 checksum/identity rejection, and staging cleanup. Receiver admission/cancellation
 stress tests and production worker registration remain open. This test covers
 inline snapshots, not referenced Pebble artifacts or multi-worker recovery.
+
+Replica transfer now has an admission response before chunk transmission.
+The client reads and validates acceptance before touching its body reader;
+a saturated receiver sends rejection without creating staging. This prevents
+writing a large body into a rejected, half-closed Yamux stream. A regression
+holds the only publication slot, verifies a second transfer is rejected before
+reading its body or timing out, and then completes the original transfer with
+no staging files left. Five receiver race-test repetitions and the RPC suite
+pass. Worker registration and assignment authorization are still unconnected.

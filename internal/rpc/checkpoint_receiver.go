@@ -41,7 +41,7 @@ func NewCheckpointReplicaHandler(stagingDir string, concurrency int, publish Che
 		select {
 		case slots <- struct{}{}:
 		default:
-			return errors.New("replica receiver capacity exhausted")
+			return EncodeRPCRequest(stream, MethodReplicateCheckpoint, requestID, CheckpointReplicaAdmission{Accepted: false})
 		}
 		defer func() { <-slots }()
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
@@ -58,6 +58,9 @@ func NewCheckpointReplicaHandler(stagingDir string, concurrency int, publish Che
 		}
 		defer func() { _ = os.Remove(file.Name()) }()
 		defer file.Close()
+		if err := EncodeRPCRequest(stream, MethodReplicateCheckpoint, requestID, CheckpointReplicaAdmission{Accepted: true}); err != nil {
+			return err
+		}
 		if err := ReadCheckpointChunks(ctx, stream, requestID, request.Size, request.SHA256, file); err != nil {
 			return err
 		}

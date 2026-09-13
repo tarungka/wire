@@ -42,6 +42,11 @@ type CheckpointReplicaReceipt struct {
 	Snapshot ReplicateCheckpointRequest `codec:"snapshot"`
 }
 
+// CheckpointReplicaAdmission grants capacity before the sender writes chunks.
+type CheckpointReplicaAdmission struct {
+	Accepted bool `codec:"accepted"`
+}
+
 func (c *Client) ReplicateCheckpoint(ctx context.Context, request ReplicateCheckpointRequest, body io.Reader) error {
 	if err := request.Validate(); err != nil {
 		return err
@@ -65,6 +70,20 @@ func (c *Client) ReplicateCheckpoint(ctx context.Context, request ReplicateCheck
 	requestID := c.nextRequestID()
 	if err := EncodeRPCRequest(stream, MethodReplicateCheckpoint, requestID, request); err != nil {
 		return err
+	}
+	admissionFrame, err := ReadRPCFrame(stream, 1024)
+	if err != nil {
+		return err
+	}
+	if admissionFrame.MethodID != MethodReplicateCheckpoint || admissionFrame.RequestID != requestID {
+		return errors.New("checkpoint admission identity mismatch")
+	}
+	var admission CheckpointReplicaAdmission
+	if err := DecodeRPCPayload(admissionFrame, &admission); err != nil {
+		return err
+	}
+	if !admission.Accepted {
+		return errors.New("checkpoint replica admission rejected")
 	}
 	if err := WriteCheckpointChunks(ctx, stream, requestID, body, request.Size); err != nil {
 		return err

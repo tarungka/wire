@@ -27,6 +27,9 @@ func TestCheckpointReplicaReceipt(t *testing.T) {
 				if err := request.Validate(); err != nil {
 					return err
 				}
+				if err := EncodeRPCRequest(stream, MethodReplicateCheckpoint, id, CheckpointReplicaAdmission{Accepted: true}); err != nil {
+					return err
+				}
 				if err := ReadCheckpointChunks(ctx, stream, id, request.Size, request.SHA256, io.Discard); err != nil {
 					return err
 				}
