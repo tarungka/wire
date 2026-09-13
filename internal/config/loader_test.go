@@ -61,6 +61,29 @@ func TestLoad_SingleJSON(t *testing.T) {
 	}
 }
 
+func TestLoad_ObservabilityFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+observability:
+  enabled: false
+  metrics_addr: ":19090"
+`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Observability.Enabled {
+		t.Error("Observability.Enabled = true, want false (from YAML)")
+	}
+	if cfg.Observability.MetricsAddr != ":19090" {
+		t.Errorf("Observability.MetricsAddr = %q, want :19090", cfg.Observability.MetricsAddr)
+	}
+}
+
 func TestLoad_TwoFileMerge(t *testing.T) {
 	dir := t.TempDir()
 	first := filepath.Join(dir, "base.yaml")

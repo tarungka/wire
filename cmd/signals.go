@@ -2,37 +2,34 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
 	"os/signal"
+
+	"github.com/rs/zerolog"
 )
 
 const (
 	sigChSize = 32
 )
 
-// HandleSignals returns a channel on which to receive the specified signals.
-func HandleSignals(sigs ...os.Signal) <-chan os.Signal {
-	ch := make(chan os.Signal, sigChSize)
+// signalContext returns a child context that is canceled when any of sigs is
+// received. The returned cancel function also unregisters the signal handler.
+func signalContext(parent context.Context, log zerolog.Logger, sigs ...os.Signal) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	sigCh := make(chan os.Signal, sigChSize)
+	signal.Notify(sigCh, sigs...)
+
 	go func() {
-		sigCh := make(chan os.Signal, sigChSize)
-		signal.Notify(sigCh, sigs...)
-		for {
-			sig := <-sigCh
-			log.Printf(`received signal "%s"`, sig.String())
-			ch <- sig
+		select {
+		case sig := <-sigCh:
+			log.Info().Str("signal", sig.String()).Msg("received signal")
+			cancel()
+		case <-ctx.Done():
 		}
 	}()
-	return ch
-}
 
-// CreateContext creates a context which is canceled if signals are received
-// on the given channel.
-func CreateContext(ch <-chan os.Signal) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		<-ch
+	return ctx, func() {
+		signal.Stop(sigCh)
 		cancel()
-	}()
-	return ctx, cancel
+	}
 }

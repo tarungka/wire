@@ -3,15 +3,22 @@ package config
 // WireConfig is the top-level configuration for a Wire node.
 // It maps directly to the wire.yaml schema.
 type WireConfig struct {
-	Mode       string           `yaml:"mode"        json:"mode"        koanf:"mode"`
-	Listen     string           `yaml:"listen"      json:"listen"      koanf:"listen"`
-	Node       NodeConfig       `yaml:"node"        json:"node"        koanf:"node"`
-	HTTP       HTTPConfig       `yaml:"http"        json:"http"        koanf:"http"`
-	NodeTLS    TLSConfig        `yaml:"node_tls"    json:"node_tls"    koanf:"node_tls"`
-	Auth       AuthConfig       `yaml:"auth"        json:"auth"        koanf:"auth"`
-	WriteQueue WriteQueueConfig `yaml:"write_queue" json:"write_queue" koanf:"write_queue"`
-	Election   ElectionConfig   `yaml:"election"    json:"election"    koanf:"election"`
-	Worker     WorkerConfig     `yaml:"worker"      json:"worker"      koanf:"worker"`
+	Mode          string              `yaml:"mode"        json:"mode"        koanf:"mode"`
+	Listen        string              `yaml:"listen"      json:"listen"      koanf:"listen"`
+	Node          NodeConfig          `yaml:"node"        json:"node"        koanf:"node"`
+	HTTP          HTTPConfig          `yaml:"http"        json:"http"        koanf:"http"`
+	NodeTLS       TLSConfig           `yaml:"node_tls"    json:"node_tls"    koanf:"node_tls"`
+	Auth          AuthConfig          `yaml:"auth"        json:"auth"        koanf:"auth"`
+	WriteQueue    WriteQueueConfig    `yaml:"write_queue" json:"write_queue" koanf:"write_queue"`
+	Election      ElectionConfig      `yaml:"election"      json:"election"      koanf:"election"`
+	Worker        WorkerConfig        `yaml:"worker"        json:"worker"        koanf:"worker"`
+	Observability ObservabilityConfig `yaml:"observability" json:"observability" koanf:"observability"`
+}
+
+// ObservabilityConfig holds metrics and tracing export settings.
+type ObservabilityConfig struct {
+	Enabled     bool   `yaml:"enabled"      json:"enabled"      koanf:"enabled"`
+	MetricsAddr string `yaml:"metrics_addr" json:"metrics_addr" koanf:"metrics_addr"`
 }
 
 // WorkerConfig holds settings for running in worker mode.

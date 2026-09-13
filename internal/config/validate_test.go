@@ -104,6 +104,25 @@ func TestValidate_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestValidate_ObservabilityEnabledRequiresAddr(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Observability.Enabled = true
+	cfg.Observability.MetricsAddr = ""
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error when observability is enabled with empty metrics_addr")
+	}
+}
+
+func TestValidate_ObservabilityDisabledAllowsEmptyAddr(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Observability.Enabled = false
+	cfg.Observability.MetricsAddr = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("disabled observability with empty addr should validate: %v", err)
+	}
+}
+
 func TestValidate_MultipleErrors(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.NodeTLS.Cert = "/missing/cert.pem" // cert without key

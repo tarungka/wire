@@ -28,5 +28,9 @@ func DefaultConfig() WireConfig {
 			ListenAddr: ":4003",
 			TaskSlots:  4,
 		},
+		Observability: ObservabilityConfig{
+			Enabled:     true,
+			MetricsAddr: ":9090",
+		},
 	}
 }

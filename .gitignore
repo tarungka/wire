@@ -52,3 +52,5 @@ raft_database3/
 raft.db
 wire
 data/
+
+.claude/

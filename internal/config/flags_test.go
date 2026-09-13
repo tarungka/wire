@@ -161,3 +161,73 @@ func TestApplyFlags_NilFlagSet(t *testing.T) {
 		t.Errorf("HTTP.Addr = %q, want :4001", cfg.HTTP.Addr)
 	}
 }
+
+func TestApplyFlags_ObservabilityDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.Bool("metrics-enabled", true, "")
+	fs.String("metrics-addr", ":9090", "")
+
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if err := ApplyFlags(&cfg, fs); err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.Observability.Enabled {
+		t.Error("Observability.Enabled = false, want true (default)")
+	}
+	if cfg.Observability.MetricsAddr != ":9090" {
+		t.Errorf("Observability.MetricsAddr = %q, want :9090 (default)", cfg.Observability.MetricsAddr)
+	}
+}
+
+func TestApplyFlags_ObservabilityCLIOverridesFile(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Observability.Enabled = false       // simulates config file value
+	cfg.Observability.MetricsAddr = ":9999" // simulates config file value
+
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.Bool("metrics-enabled", true, "")
+	fs.String("metrics-addr", ":9090", "")
+
+	if err := fs.Parse([]string{"--metrics-enabled=true", "--metrics-addr", ":8888"}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if err := ApplyFlags(&cfg, fs); err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.Observability.Enabled {
+		t.Error("Observability.Enabled = false, want true (CLI should override)")
+	}
+	if cfg.Observability.MetricsAddr != ":8888" {
+		t.Errorf("Observability.MetricsAddr = %q, want :8888 (CLI should override)", cfg.Observability.MetricsAddr)
+	}
+}
+
+func TestApplyFlags_ObservabilityUnchangedPreservesFile(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Observability.Enabled = false
+	cfg.Observability.MetricsAddr = ":7777"
+
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	fs.Bool("metrics-enabled", true, "")
+	fs.String("metrics-addr", ":9090", "")
+
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if err := ApplyFlags(&cfg, fs); err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Observability.Enabled {
+		t.Error("Observability.Enabled = true, want false (unchanged flag should not override file)")
+	}
+	if cfg.Observability.MetricsAddr != ":7777" {
+		t.Errorf("Observability.MetricsAddr = %q, want :7777 (unchanged flag should not override)", cfg.Observability.MetricsAddr)
+	}
+}
