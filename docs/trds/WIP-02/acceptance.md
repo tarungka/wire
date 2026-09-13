@@ -259,3 +259,17 @@ completion occurs before the upload resolves. Success completes checkpoint 7;
 replica failure aborts the checkpoint and permits normal EOF. Both cases pass
 ten race-enabled repetitions. Remote replica persistence, command dispatch,
 global decisions and recovery remain required.
+
+### RPC cancellation prerequisite for peer transfer
+
+RPC clients now bound unresolved stream opens to one per client and clean up
+late streams after cancellation without closing the shared session. Unary
+method timeouts cover opening as well as I/O. Cancellation expires the affected
+stream's deadline before closing it, because Yamux half-close alone does not
+wake a blocked read. Streaming calls clean up on parent cancellation and reader
+exit, and error delivery respects cancellation under a full result channel.
+The RPC race suite passes; ten cancellation regression runs verify a blocked
+call exits and a sibling call on the same session still succeeds. Saturated
+stream-open coverage remains required before relying on this for peer transfer.
+The existing 16 MiB RPC frame limit also means replica transfer must be chunked
+rather than sending the store's entire 64 MiB snapshot in one unary payload.

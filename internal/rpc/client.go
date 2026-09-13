@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 // Client opens Yamux streams to send RPC requests and read responses.
 type Client struct {
 	session   *yamux.Session
+	openGate  chan struct{}
+	openOnce  sync.Once
 	cfg       Config
 	nextReqID atomic.Uint64
 	log       zerolog.Logger
@@ -29,8 +32,9 @@ type Client struct {
 func NewClient(session *yamux.Session, cfg Config) *Client {
 	return &Client{
 		session: session,
-		cfg:     cfg,
-		log:     logger.GetLogger("rpc-client"),
+
+		cfg: cfg,
+		log: logger.GetLogger("rpc-client"),
 	}
 }
 
@@ -43,9 +47,14 @@ func (c *Client) nextRequestID() uint64 {
 // reads the response, and closes the stream. The response is decoded into the
 // provided response pointer. If the server returns an RPCError, it is returned.
 func (c *Client) Call(ctx context.Context, method MethodID, request any, response any) error {
-	stream, err := c.session.OpenStream()
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.cfg.methodTimeout(method))
+		defer cancel()
+	}
+	stream, err := c.openStreamContext(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrRPCClosed, err)
+		return fmt.Errorf("%w: %w", ErrRPCClosed, err)
 	}
 	defer func() { _ = stream.Close() }()
 
@@ -58,6 +67,8 @@ func (c *Client) Call(ctx context.Context, method MethodID, request any, respons
 	if err := stream.SetDeadline(deadline); err != nil {
 		return fmt.Errorf("set deadline: %w", err)
 	}
+	stopClose := context.AfterFunc(ctx, func() { _ = stream.SetDeadline(time.Now()); _ = stream.Close() })
+	defer stopClose()
 
 	reqID := c.nextRequestID()
 
@@ -77,7 +88,7 @@ func (c *Client) Call(ctx context.Context, method MethodID, request any, respons
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			return fmt.Errorf("%w: %v", ErrRPCTimeout, err)
 		}
-		return fmt.Errorf("%w: %v", ErrRPCClosed, err)
+		return fmt.Errorf("%w: %w", ErrRPCClosed, err)
 	}
 
 	// Check for error response.
@@ -110,11 +121,14 @@ func (c *Client) Call(ctx context.Context, method MethodID, request any, respons
 // Errors received during reading are surfaced via StreamFrame.Err and
 // terminate the channel. The caller MUST drain or call cancel().
 func (c *Client) CallStream(ctx context.Context, method MethodID, request any) (<-chan StreamFrame, func(), error) {
-	stream, err := c.session.OpenStream()
+	stream, err := c.openStreamContext(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrRPCClosed, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrRPCClosed, err)
 	}
 
+	streamCtx, cancel := context.WithCancel(ctx)
+	stopClose := context.AfterFunc(streamCtx, func() { _ = stream.SetDeadline(time.Now()); _ = stream.Close() })
+	cleanup := func() { cancel(); stopClose(); _ = stream.SetDeadline(time.Now()); _ = stream.Close() }
 	reqID := c.nextRequestID()
 	c.log.Debug().
 		Str("method", MethodName(method)).
@@ -122,14 +136,14 @@ func (c *Client) CallStream(ctx context.Context, method MethodID, request any) (
 		Msg("opening stream RPC")
 
 	if err := EncodeRPCRequest(stream, method, reqID, request); err != nil {
-		_ = stream.Close()
+		cleanup()
 		return nil, nil, err
 	}
 
 	out := make(chan StreamFrame, 16)
-	streamCtx, cancel := context.WithCancel(ctx)
 
 	go func() {
+		defer cleanup()
 		defer close(out)
 		for {
 			frame, readErr := ReadRPCFrame(stream, c.cfg.MaxPayloadSize)
@@ -145,10 +159,16 @@ func (c *Client) CallStream(ctx context.Context, method MethodID, request any) (
 			if frame.MethodID == MethodError {
 				var rpcErr RPCError
 				if decErr := protocol.DecodeMsgPack(frame.Payload, &rpcErr); decErr != nil {
-					out <- StreamFrame{Err: fmt.Errorf("%w: %v", ErrRPCDecodeFailed, decErr)}
+					select {
+					case out <- StreamFrame{Err: fmt.Errorf("%w: %v", ErrRPCDecodeFailed, decErr)}:
+					case <-streamCtx.Done():
+					}
 					return
 				}
-				out <- StreamFrame{Err: &rpcErr}
+				select {
+				case out <- StreamFrame{Err: &rpcErr}:
+				case <-streamCtx.Done():
+				}
 				return
 			}
 			select {
@@ -159,10 +179,6 @@ func (c *Client) CallStream(ctx context.Context, method MethodID, request any) (
 		}
 	}()
 
-	cleanup := func() {
-		cancel()
-		_ = stream.Close()
-	}
 	return out, cleanup, nil
 }
 
