@@ -51,7 +51,7 @@ func (s *Session) NegotiateSession(ctx context.Context, cfg Config, initiator bo
 	if err = stream.SetDeadline(until); err != nil {
 		return NegotiatedParams{}, err
 	}
-	local := protocol.SessionHandshakeMsg{ProtocolVersion: cfg.LocalProtocolVersion, MinVersion: cfg.LocalMinVersion, Features: cfg.LocalFeatures, NodeID: cfg.NodeID}
+	local := protocol.SessionHandshakeMsg{ProtocolVersion: cfg.LocalProtocolVersion, MinVersion: cfg.LocalMinVersion, Features: cfg.LocalFeatures, NodeID: cfg.NodeID, ListenPort: cfg.sessionListenPort}
 	send := func() error { return protocol.EncodeAndWriteFrameLimit(stream, &local, cfg.MaxFrameSize) }
 	receive := func() (*protocol.SessionHandshakeMsg, error) {
 		frame, err := protocol.ReadFrame(stream, cfg.MaxFrameSize)
@@ -99,6 +99,7 @@ func (s *Session) NegotiateSession(ctx context.Context, cfg Config, initiator bo
 	s.negotiated = &params
 	s.control = stream
 	s.peerNodeID = remote.NodeID
+	s.peerListenPort = remote.ListenPort
 	go s.runControl(cfg)
 	return params, nil
 }

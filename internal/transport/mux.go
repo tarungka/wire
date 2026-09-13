@@ -24,6 +24,7 @@ type Mux struct {
 	cfg       Config
 	listener  net.Listener
 	peers     map[string]*Session
+	sessions  map[*Session]struct{}
 	streamCh  chan *FrameStream
 	log       zerolog.Logger
 	ctx       context.Context
@@ -44,6 +45,7 @@ func NewMux(cfg Config) *Mux {
 	return &Mux{
 		cfg:      cfg,
 		peers:    make(map[string]*Session),
+		sessions: make(map[*Session]struct{}),
 		dialing:  make(map[string]chan struct{}),
 		tasks:    make(map[string]*taskQueue),
 		streamCh: make(chan *FrameStream, 64),
@@ -148,10 +150,11 @@ func (m *Mux) Close() error {
 		if m.listener != nil {
 			_ = m.listener.Close()
 		}
-		for addr, sess := range m.peers {
+		for sess := range m.sessions {
 			_ = sess.Close()
-			delete(m.peers, addr)
 		}
+		clear(m.peers)
+		clear(m.sessions)
 		m.mu.Unlock()
 		m.wg.Wait()
 		close(m.streamCh)
@@ -197,11 +200,14 @@ func (m *Mux) acceptLoop(ctx context.Context) {
 				return
 			}
 
-			if _, err := sess.NegotiateSession(m.ctx, m.cfg, false); err != nil {
+			if _, err := sess.NegotiateSession(m.ctx, m.sessionConfig(), false); err != nil {
 				m.log.Debug().Err(err).Msg("session negotiation failed")
 				return
 			}
 			addr := sess.Addr()
+			if endpoint := sess.peerListenAddress(); endpoint != "" {
+				addr = endpoint
+			}
 			m.mu.Lock()
 			if m.ctx.Err() != nil {
 				m.mu.Unlock()
@@ -209,7 +215,9 @@ func (m *Mux) acceptLoop(ctx context.Context) {
 				return
 			}
 			m.peers[addr] = sess
+			m.sessions[sess] = struct{}{}
 			m.mu.Unlock()
+			defer m.forgetSession(sess)
 
 			m.sessionAcceptLoop(ctx, sess)
 		}(conn)
@@ -304,7 +312,7 @@ func (m *Mux) getOrCreateSession(ctx context.Context, addr string) (*Session, er
 	}
 	stop := context.AfterFunc(m.ctx, func() { _ = sess.Close() })
 	defer stop()
-	if _, err := sess.NegotiateSession(ctx, m.cfg, true); err != nil {
+	if _, err := sess.NegotiateSession(ctx, m.sessionConfig(), true); err != nil {
 		return nil, err
 	}
 	m.mu.Lock()
@@ -314,12 +322,14 @@ func (m *Mux) getOrCreateSession(ctx context.Context, addr string) (*Session, er
 		return nil, fmt.Errorf("transport: mux closed")
 	}
 	m.peers[addr] = sess
+	m.sessions[sess] = struct{}{}
 	// Yamux permits the accepting peer to open its own unidirectional data
 	// streams on this connection. Service those streams for the lifetime of
 	// the mux, independently of the caller that initiated the connection.
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
+		defer m.forgetSession(sess)
 		m.sessionAcceptLoop(m.ctx, sess)
 	}()
 	return sess, nil

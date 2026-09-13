@@ -54,6 +54,7 @@ type SessionHandshakeMsg struct {
 	MinVersion      uint16 `codec:"min_v"`
 	Features        uint32 `codec:"f"`
 	NodeID          string `codec:"n"`
+	ListenPort      uint16 `codec:"lp,omitempty"`
 }
 
 // DataRecordMsg carries a single event through the stream processing pipeline.

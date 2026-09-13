@@ -22,6 +22,7 @@ type Session struct {
 	negotiated     *NegotiatedParams
 	control        *yamux.Stream
 	peerNodeID     string
+	peerListenPort uint16
 	mu             sync.Mutex
 	yamux          *yamux.Session
 	conn           net.Conn

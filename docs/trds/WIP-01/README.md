@@ -581,6 +581,14 @@ This design follows the industry pattern established by Kafka (`ApiVersionsReque
 | **MinVersion** | `"min_v"` | `uint16` | Yes | Minimum protocol version the sender supports. Current: `1`. |
 | **Features** | `"f"` | `uint32` | Yes | Bitmask of supported feature flags. Bit 0: CRC32C checksums. Bit 1: LZ4 compression (reserved). Bits 2-31: reserved (must be 0). |
 | **NodeID** | `"n"` | `str` | Yes | Identifier of the sending node. Used for logging, debugging, and session tracking. |
+| **ListenPort** | `"lp"` | `uint16` | No | Bound data listener port. Omitted for dial-only nodes and older peers. Used with the observed TCP peer IP to find the existing session for reverse dials. |
+
+The optional listening-port advertisement does not cause a connection to be
+opened. It supplies a cache key for subsequent explicit dials and cannot select
+a different host from the observed TCP peer. A zero/omitted port preserves the
+original dial-only behavior. This assumes directly reachable worker endpoints;
+NAT port translation and address aliases require membership-provided endpoint
+mapping. Concurrent first dials still require connection arbitration.
 
 **Go struct:**
 
@@ -590,6 +598,7 @@ type SessionHandshakeMsg struct {
     MinVersion      uint16 `codec:"min_v"`
     Features        uint32 `codec:"f"`
     NodeID          string `codec:"n"`
+    ListenPort      uint16 `codec:"lp,omitempty"`
 }
 
 const (

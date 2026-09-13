@@ -76,3 +76,52 @@ func TestMuxAcceptsPeerOpenedStreamsOnOutboundSession(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMuxReciprocalDialReusesAdvertisedEndpoint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cfg := DefaultConfig()
+	cfg.ListenAddr = "127.0.0.1:0"
+	a, b := NewMux(cfg), NewMux(cfg)
+	defer a.Close()
+	defer b.Close()
+	for _, mux := range []*Mux{a, b} {
+		if err := mux.Listen(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	forward, err := a.Dial(ctx, b.ListenAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer forward.Close()
+	input, err := b.Accept(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	reverse, err := b.Dial(ctx, a.ListenAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reverse.Close()
+	if reverse.session != input.session {
+		t.Fatal("reciprocal dial created another session")
+	}
+	reverseInput, err := a.Accept(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reverseInput.Close()
+	if reverseInput.session != forward.session {
+		t.Fatal("receiver used another session")
+	}
+	for _, mux := range []*Mux{a, b} {
+		mux.mu.RLock()
+		count := len(mux.sessions)
+		mux.mu.RUnlock()
+		if count != 1 {
+			t.Fatalf("got %d connections", count)
+		}
+	}
+}

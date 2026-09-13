@@ -208,3 +208,19 @@ original stream is still usable. It passed 20 race iterations; the full
 integration-tagged race suite and v2.5.0 lint also pass. Address-to-peer lookup
 and safe simultaneous-dial arbitration remain necessary for complete reciprocal
 Mux.Dial reuse; this test deliberately does not claim those are implemented.
+
+### Listening endpoint advertisement and reverse Dial reuse
+
+SessionHandshake has an optional `lp` listening port, populated from the actual
+bound Mux listener. Incoming sessions are indexed by observed peer IP plus this
+port, allowing sequential reciprocal Mux.Dial calls to reuse the connection.
+Dial-only peers omit the field; no advertised address causes an automatic dial.
+All live sessions are tracked separately from address cache entries so concurrent
+connections cannot become unowned when an entry is replaced. Accept-loop exit
+removes only entries belonging to that session.
+
+The reciprocal-dial regression checks the actual Session pointers on both ends
+and asserts one live connection per mux; it passed 20 race iterations. Safe
+simultaneous-first-dial arbitration and membership endpoint aliases remain open.
+The full integration-tagged race suite and golangci-lint v2.5.0 pass with endpoint
+advertisement and session ownership tracking.

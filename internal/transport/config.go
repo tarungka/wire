@@ -22,6 +22,7 @@ const (
 
 // Config holds transport-level configuration.
 type Config struct {
+	sessionListenPort      uint16 // Set from the bound Mux listener for negotiation.
 	NodeID                 string
 	ListenAddr             string
 	TLSConfig              *tls.Config
