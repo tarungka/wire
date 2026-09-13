@@ -160,9 +160,10 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	eventCh := make(chan Event, ts.Config.InputBufferSize)
 	controlCh := make(chan ControlMsg, numInputs*2+4) // barrier + EoP per input, +4 for 2PC control messages (CtrlCommitCheckpoint, CtrlAbortTransaction).
 	outputCh := make(chan OutputMsg, ts.Config.OutputBufferSize)
+	aligner := NewBarrierAligner(numInputs, ts.Config.AlignmentBufferSize)
 	unregisterChannels, err := observability.ObserveTaskChannels(ts.TaskID, func() (int, int) {
 		return len(eventCh), len(outputCh)
-	})
+	}, aligner.BufferedBytes)
 	if err != nil {
 		return err
 	}
@@ -176,9 +177,6 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 			return err
 		}
 	}
-
-	// Create barrier aligner.
-	aligner := NewBarrierAligner(numInputs, ts.Config.AlignmentBufferSize)
 
 	// Track output channel producers so we can close outputCh when all are done.
 	var producerWg sync.WaitGroup

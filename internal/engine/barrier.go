@@ -15,6 +15,7 @@ type BarrierAligner struct {
 	mu             sync.Mutex
 	changed        chan struct{}
 	draining       bool
+	bufferedBytes  int64
 	numInputs      int
 	maxBufferSize  int
 	activeID       uint64          // 0 = no active alignment.
@@ -87,6 +88,7 @@ func (ba *BarrierAligner) BufferEvent(ctx context.Context, inputIndex int, event
 	}
 
 	ba.sideBuffers[inputIndex] = append(buf, event)
+	ba.bufferedBytes += eventPayloadBytes(event)
 	return nil
 }
 
@@ -112,10 +114,12 @@ func (ba *BarrierAligner) DrainAll(checkpointID uint64) []Event {
 	for i := 0; i < ba.numInputs; i++ {
 		buf := ba.sideBuffers[i]
 		all = append(all, buf...)
-		// Reset length, keep capacity.
+		// Release payload references while retaining event slot capacity.
+		clear(buf)
 		ba.sideBuffers[i] = buf[:0]
 	}
 
+	ba.bufferedBytes = 0
 	ba.signalChangeLocked()
 	return all
 }
@@ -136,8 +140,10 @@ func (ba *BarrierAligner) Reset(checkpointID uint64) {
 	ba.arrived = make(map[int]bool)
 	// Keep sideBuffers allocated but empty.
 	for i := range ba.sideBuffers {
+		clear(ba.sideBuffers[i])
 		ba.sideBuffers[i] = ba.sideBuffers[i][:0]
 	}
+	ba.bufferedBytes = 0
 	ba.signalChangeLocked()
 }
 
@@ -193,6 +199,7 @@ func (ba *BarrierAligner) BufferAlignedEvent(ctx context.Context, input int, eve
 		}
 		if len(ba.sideBuffers[input]) < ba.maxBufferSize {
 			ba.sideBuffers[input] = append(ba.sideBuffers[input], event)
+			ba.bufferedBytes += eventPayloadBytes(event)
 			ba.mu.Unlock()
 			return true, nil
 		}
@@ -217,12 +224,14 @@ func (ba *BarrierAligner) FinishAlignment(checkpointID uint64) []Event {
 	var events []Event
 	for i := 0; i < ba.numInputs; i++ {
 		events = append(events, ba.sideBuffers[i]...)
+		clear(ba.sideBuffers[i])
 		ba.sideBuffers[i] = ba.sideBuffers[i][:0]
 	}
 	ba.activeID = 0
 	ba.activeEpoch = 0
 	ba.alignStartTime = time.Time{}
 	ba.arrived = make(map[int]bool)
+	ba.bufferedBytes = 0
 	ba.signalChangeLocked()
 	return events
 }
@@ -266,6 +275,24 @@ func (ba *BarrierAligner) BeginDrain() []Event {
 	ba.activeEpoch = 0
 	ba.arrived = make(map[int]bool)
 	ba.alignStartTime = time.Time{}
+	ba.bufferedBytes = 0
 	ba.signalChangeLocked()
 	return events
+}
+
+// BufferedBytes returns logical retained event payload bytes: key, value,
+// timestamp (8 bytes), and header names/values. It excludes Go allocation and
+// container overhead. Transferred events are no longer owned by the aligner.
+func (ba *BarrierAligner) BufferedBytes() int64 {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	return ba.bufferedBytes
+}
+
+func eventPayloadBytes(event Event) int64 {
+	size := int64(len(event.Key)) + int64(len(event.Value)) + 8
+	for key, value := range event.Headers {
+		size += int64(len(key)) + int64(len(value))
+	}
+	return size
 }

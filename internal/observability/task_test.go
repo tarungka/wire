@@ -15,7 +15,7 @@ func TestTaskChannelMetricsLifecycle(t *testing.T) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	defer func() { _ = provider.Shutdown(ctx) }()
 	input, output := make(chan int, 3), make(chan int, 2)
-	unregister, err := observeTaskChannels(provider.Meter("test"), "task-1", func() (int, int) { return len(input), len(output) })
+	unregister, err := observeTaskChannels(provider.Meter("test"), "task-1", func() (int, int) { return len(input), len(output) }, func() int64 { return int64(len(input) * 19) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,10 +53,10 @@ func TestTaskChannelMetricsLifecycle(t *testing.T) {
 			}
 		}
 	}
-	check(map[string]int64{"wire_task_input_channel_usage": 2, "wire_task_output_channel_usage": 1})
+	check(map[string]int64{"wire_task_input_channel_usage": 2, "wire_task_output_channel_usage": 1, "wire_task_alignment_buffer_bytes": 38})
 	<-input
 	<-output
-	check(map[string]int64{"wire_task_input_channel_usage": 1, "wire_task_output_channel_usage": 0})
+	check(map[string]int64{"wire_task_input_channel_usage": 1, "wire_task_output_channel_usage": 0, "wire_task_alignment_buffer_bytes": 19})
 	if err := unregister(); err != nil {
 		t.Fatal(err)
 	}

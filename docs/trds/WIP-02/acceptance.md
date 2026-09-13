@@ -28,7 +28,7 @@ waive any WIP-02 requirement.
 | Replication failure affects checkpoint, threshold affects task (§2.7) | Coordinator failure reporting now applies existing checkpoint thresholds and ignores stale checkpoint/epoch reports; timeout metrics exclude replication failures. TaskSlot completion delivery now feeds this policy; durable worker replication and additional transactional/abort overlap tests remain required. |
 | Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Engine upload concurrency is implemented. Pebble compaction concurrency defaults to two and is configurable in engine/embedded SDK, retained across restore. Worker configuration integration remains open. |
 | Container CPU limits (§3.2) | cmd/main.go imports automaxprocs v1.6.0 at startup. Explicit GOMAXPROCS takes precedence; quota rounding/minimum and restart behavior are documented. Command package builds locally; Linux cgroup execution remains to be verified (local Docker daemon is stopped). |
-| Six observability metrics (§3.3) | Task input/output channel usage gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Output blocking time, owned goroutines and alignment bytes remain open. |
+| Six observability metrics (§3.3) | Task input/output channel usage and alignment payload-byte gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Output blocking time and owned goroutines remain open. |
 | Benchmarks (§8) | Engine benchmarks exist. Establish and record concurrency/channel/deserialization baselines after implementation. |
 | Documentation and PR | Update actual topology, configuration and status only after validation; linked follow-up PR to #207/#149, using personal GitHub account. |
 
@@ -154,3 +154,11 @@ through ten minutes; existing second-based latency views only match instruments
 with unit `s`. A manual-reader test verifies fractional milliseconds, cancelled
 contexts and histogram bounds. This instrumentation is exercised by uploader
 tests, but worker peer replication remains unconnected.
+
+`wire_task_alignment_buffer_bytes` counts logical key/value/header bytes plus
+eight bytes per timestamp under the aligner lock. It excludes Go allocation and
+container overhead. Both buffer entry paths increment it; finish, drain, reset
+and shutdown clear it as ownership transfers. Retained event arrays are cleared
+when reused so released payloads are not kept alive. Tests verify admission
+limits, byte accounting, preserved transferred records, released references,
+and metric observation/unregistration.
