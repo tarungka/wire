@@ -60,6 +60,11 @@ func DecodeMsgPack(data []byte, v any) error {
 // decodeFramePayload requires exactly one MessagePack object per frame.
 // RPC callers of DecodeMsgPack retain their existing decoding contract.
 func decodeFramePayload(data []byte, v any) error {
+	// Every active Wire message is a map. The generic codec also accepts nil
+	// and positional struct arrays, which are not this protocol's schema.
+	if len(data) == 0 || ((data[0] < 0x80 || data[0] > 0x8f) && data[0] != 0xde && data[0] != 0xdf) {
+		return fmt.Errorf("%w: message must be a map", ErrDecodePayload)
+	}
 	dec := codec.NewDecoderBytes(data, &msgpackHandle)
 	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("%w: %v", ErrDecodePayload, err)

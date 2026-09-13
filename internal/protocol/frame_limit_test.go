@@ -78,3 +78,25 @@ func TestFrameRejectsTrailingPayload(t *testing.T) {
 		}
 	}
 }
+
+func TestFramePayloadRequiresMap(t *testing.T) {
+	for _, mt := range []uint8{MsgTypeStreamHeader, MsgTypeSessionHandshake, MsgTypeDataRecord, MsgTypeCheckpointBarrier, MsgTypeWatermark, MsgTypeEndOfPartition, MsgTypeBackpressure, MsgTypeSessionDrain} {
+		for _, payload := range [][]byte{{0xc0}, {0x90}, {0x91, 0xc0}, {0xa0}, {0x00}} {
+			if _, err := DecodePayload(Frame{MsgType: mt, Payload: payload}); !errors.Is(err, ErrDecodePayload) {
+				t.Fatalf("type %d payload %x: %v", mt, payload, err)
+			}
+		}
+	}
+}
+
+func TestNilMessageRejectedBeforeWrite(t *testing.T) {
+	for _, msg := range []any{(*StreamHeaderMsg)(nil), (*SessionHandshakeMsg)(nil), (*DataRecordMsg)(nil), (*CheckpointBarrierMsg)(nil), (*WatermarkMsg)(nil), (*EndOfPartitionMsg)(nil), (*BackpressureMsg)(nil), (*SessionDrainMsg)(nil)} {
+		var wire bytes.Buffer
+		if err := EncodeAndWriteFrame(&wire, msg); !errors.Is(err, ErrEncodePayload) {
+			t.Fatalf("%T: %v", msg, err)
+		}
+		if wire.Len() != 0 {
+			t.Fatalf("%T wrote bytes", msg)
+		}
+	}
+}

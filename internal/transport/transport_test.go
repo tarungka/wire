@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -16,9 +17,25 @@ import (
 
 // newTestMuxPair creates a server and client Mux connected via loopback.
 func newTestMuxPair(t *testing.T) (server *Mux, client *Mux, serverAddr string) {
-	t.Helper()
+	return newTestMuxPairSecure(t, false)
+}
 
+func newTestMuxPairSecure(t *testing.T, secure bool) (server *Mux, client *Mux, serverAddr string) {
+	t.Helper()
 	sCfg := DefaultConfig()
+	cCfg := DefaultConfig()
+	if secure {
+		certs := generateTestCerts(t)
+		var err error
+		sCfg.TLSConfig, err = LoadTLSConfig(certs.ServerCertFile, certs.ServerKeyFile, true, certs.CACertFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cCfg.TLSConfig, err = NewTLSClientConfig(certs.ClientCertFile, certs.ClientKeyFile, certs.CACertFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	sCfg.ListenAddr = "127.0.0.1:0"
 	server = NewMux(sCfg)
 
@@ -28,7 +45,6 @@ func newTestMuxPair(t *testing.T) (server *Mux, client *Mux, serverAddr string) 
 	}
 	serverAddr = server.ListenAddr()
 
-	cCfg := DefaultConfig()
 	client = NewMux(cCfg)
 
 	t.Cleanup(func() {
@@ -314,71 +330,102 @@ func TestBackpressure_PauseResume(t *testing.T) {
 }
 
 func TestConcurrentStreams(t *testing.T) {
-	server, client, addr := newTestMuxPair(t)
-	ctx := context.Background()
+	for _, secure := range []bool{false, true} {
+		name := "tcp"
+		if secure {
+			name = "mutual_tls"
+		}
+		t.Run(name, func(t *testing.T) { testConcurrentMixedStreams(t, secure) })
+	}
+}
 
+func concurrentStreamMessages(index int) []any {
+	source := fmt.Sprintf("stream-%d", index)
+	messages := make([]any, 0, 301)
+	for j := 0; j < 100; j++ {
+		messages = append(messages,
+			&protocol.DataRecordMsg{Key: []byte(source), Value: []byte(fmt.Sprintf("msg-%d-%d", index, j)), EventTime: int64(j), Headers: map[string][]byte{"source": []byte(source)}},
+			&protocol.CheckpointBarrierMsg{CheckpointID: uint64(j + 1), EpochID: 1, Timestamp: int64(j)},
+			&protocol.WatermarkMsg{SourceID: source, Timestamp: int64(j)},
+		)
+	}
+	return append(messages, &protocol.EndOfPartitionMsg{SourceID: source, Reason: protocol.EndReasonExhausted})
+}
+
+func testConcurrentMixedStreams(t *testing.T, secure bool) {
+	server, client, addr := newTestMuxPairSecure(t, secure)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	stop := context.AfterFunc(ctx, func() { _ = client.Close(); _ = server.Close() })
+	defer stop()
 	const numStreams = 100
-	const msgsPerStream = 100
-
 	var wg sync.WaitGroup
-
-	// Writer goroutines.
 	for i := 0; i < numStreams; i++ {
-		wg.Add(1)
-		go func(streamIdx int) {
+		wg.Add(2)
+		go func(index int) {
 			defer wg.Done()
-			cs, err := client.Dial(ctx, addr)
+			stream, err := client.Dial(ctx, addr, protocol.StreamHeaderMsg{SourceTaskID: fmt.Sprintf("stream-%d", index), TargetTaskID: "default", PartitionIndex: uint16(index)})
 			if err != nil {
-				t.Errorf("Dial[%d]: %v", streamIdx, err)
+				t.Errorf("dial %d: %v", index, err)
+				cancel()
 				return
 			}
-			defer func() { _ = cs.Close() }()
-
-			for j := 0; j < msgsPerStream; j++ {
-				msg := &protocol.DataRecordMsg{
-					Key:       []byte(fmt.Sprintf("stream-%d", streamIdx)),
-					Value:     []byte(fmt.Sprintf("msg-%d", j)),
-					EventTime: int64(j),
-				}
-				if err := cs.WriteMessage(msg); err != nil {
-					t.Errorf("WriteMessage[%d][%d]: %v", streamIdx, j, err)
+			defer stream.Close()
+			for j, message := range concurrentStreamMessages(index) {
+				if err := stream.WriteMessageContext(ctx, message); err != nil {
+					t.Errorf("write %d/%d: %v", index, j, err)
+					cancel()
 					return
 				}
+			}
+			if err := stream.WriteMessage(&protocol.DataRecordMsg{}); err == nil {
+				t.Error("write after EOP succeeded")
+				cancel()
 			}
 		}(i)
-	}
-
-	// Reader goroutines.
-	var readWg sync.WaitGroup
-	for i := 0; i < numStreams; i++ {
-		readWg.Add(1)
 		go func() {
-			defer readWg.Done()
-			ss, err := server.Accept(ctx)
+			defer wg.Done()
+			stream, err := server.Accept(ctx)
 			if err != nil {
-				t.Errorf("Accept: %v", err)
+				t.Errorf("accept: %v", err)
+				cancel()
 				return
 			}
-			defer func() { _ = ss.Close() }()
-
-			_, err = ss.ReceiveHandshake()
-			if err != nil {
-				t.Errorf("ReceiveHandshake: %v", err)
+			defer stream.Close()
+			header, ok := stream.Header()
+			if !ok || header.SourceTaskID != fmt.Sprintf("stream-%d", header.PartitionIndex) {
+				t.Error("routing header changed")
+				cancel()
 				return
 			}
-
-			for j := 0; j < msgsPerStream; j++ {
-				_, err := ss.ReadMessage()
+			for j, want := range concurrentStreamMessages(int(header.PartitionIndex)) {
+				got, err := stream.ReadMessage()
 				if err != nil {
-					t.Errorf("ReadMessage: %v", err)
+					t.Errorf("read stream %d message %d: %v", header.PartitionIndex, j, err)
+					cancel()
 					return
 				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("stream %d message %d: got %#v, want %#v", header.PartitionIndex, j, got, want)
+					cancel()
+					return
+				}
+			}
+			if _, err := stream.ReadMessage(); !errors.Is(err, io.EOF) {
+				t.Errorf("after EOP: %v", err)
+				cancel()
 			}
 		}()
 	}
-
 	wg.Wait()
-	readWg.Wait()
+	for _, mux := range []*Mux{server, client} {
+		mux.mu.RLock()
+		count := len(mux.sessions)
+		mux.mu.RUnlock()
+		if count != 1 {
+			t.Errorf("100 streams used %d sessions", count)
+		}
+	}
 }
 
 func TestSessionReuse(t *testing.T) {
@@ -422,11 +469,16 @@ func TestSessionReuse(t *testing.T) {
 }
 
 func TestUnknownMsgType_Skipped(t *testing.T) {
-	server, _, addr := newTestMuxPair(t)
+	t.Run("tcp", func(t *testing.T) { runTestUnknownMsgType_Skipped(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestUnknownMsgType_Skipped(t, true) })
+}
+
+func runTestUnknownMsgType_Skipped(t *testing.T, secure bool) {
+	server, client, addr := newTestMuxPairSecure(t, secure)
 	ctx := context.Background()
 
 	// Raw client — send unknown type then a valid DataRecord.
-	sess, err := newNegotiatedTestClient(t, addr, DefaultConfig())
+	sess, err := newNegotiatedTestClient(t, addr, client.cfg)
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}
@@ -476,10 +528,15 @@ func TestUnknownMsgType_Skipped(t *testing.T) {
 }
 
 func TestCRCErrorThreshold(t *testing.T) {
-	server, _, addr := newTestMuxPair(t)
+	t.Run("tcp", func(t *testing.T) { runTestCRCErrorThreshold(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestCRCErrorThreshold(t, true) })
+}
+
+func runTestCRCErrorThreshold(t *testing.T, secure bool) {
+	server, client, addr := newTestMuxPairSecure(t, secure)
 	ctx := context.Background()
 
-	sess, err := newNegotiatedTestClient(t, addr, DefaultConfig())
+	sess, err := newNegotiatedTestClient(t, addr, client.cfg)
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}
@@ -521,10 +578,15 @@ func TestCRCErrorThreshold(t *testing.T) {
 }
 
 func TestDecodeErrorThreshold(t *testing.T) {
-	server, _, addr := newTestMuxPair(t)
+	t.Run("tcp", func(t *testing.T) { runTestDecodeErrorThreshold(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestDecodeErrorThreshold(t, true) })
+}
+
+func runTestDecodeErrorThreshold(t *testing.T, secure bool) {
+	server, client, addr := newTestMuxPairSecure(t, secure)
 	ctx := context.Background()
 
-	sess, err := newNegotiatedTestClient(t, addr, DefaultConfig())
+	sess, err := newNegotiatedTestClient(t, addr, client.cfg)
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}
@@ -756,13 +818,18 @@ func TestDialTimeout_Config(t *testing.T) {
 }
 
 func TestErrorCounterResetAfterSuccess_CRC(t *testing.T) {
+	t.Run("tcp", func(t *testing.T) { runTestErrorCounterResetAfterSuccess_CRC(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestErrorCounterResetAfterSuccess_CRC(t, true) })
+}
+
+func runTestErrorCounterResetAfterSuccess_CRC(t *testing.T, secure bool) {
 	// Verify that consecutive CRC error count resets after a valid frame.
 	// This ensures intermittent CRC errors don't accumulate across successes
 	// and prematurely close the stream.
-	server, _, addr := newTestMuxPair(t)
+	server, client, addr := newTestMuxPairSecure(t, secure)
 	ctx := context.Background()
 
-	sess, err := newNegotiatedTestClient(t, addr, DefaultConfig())
+	sess, err := newNegotiatedTestClient(t, addr, client.cfg)
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}
@@ -830,11 +897,16 @@ func TestErrorCounterResetAfterSuccess_CRC(t *testing.T) {
 }
 
 func TestErrorCounterResetAfterSuccess_Decode(t *testing.T) {
+	t.Run("tcp", func(t *testing.T) { runTestErrorCounterResetAfterSuccess_Decode(t, false) })
+	t.Run("mutual_tls", func(t *testing.T) { runTestErrorCounterResetAfterSuccess_Decode(t, true) })
+}
+
+func runTestErrorCounterResetAfterSuccess_Decode(t *testing.T, secure bool) {
 	// Same as CRC test but for decode errors.
-	server, _, addr := newTestMuxPair(t)
+	server, client, addr := newTestMuxPairSecure(t, secure)
 	ctx := context.Background()
 
-	sess, err := newNegotiatedTestClient(t, addr, DefaultConfig())
+	sess, err := newNegotiatedTestClient(t, addr, client.cfg)
 	if err != nil {
 		t.Fatalf("NewClientSession: %v", err)
 	}

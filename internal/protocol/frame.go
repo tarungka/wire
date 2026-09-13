@@ -275,5 +275,8 @@ func EncodeAndWriteFrameLimit(w io.Writer, msg any, maxFrameSize uint32) error {
 	if err != nil {
 		return err
 	}
+	if len(payload) == 1 && payload[0] == 0xc0 {
+		return fmt.Errorf("%w: nil message", ErrEncodePayload)
+	}
 	return WriteFrameRaw(w, msgType, payload)
 }

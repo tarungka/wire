@@ -290,3 +290,25 @@ and passed 20 iterations each under race detection. The test CA must be trusted
 for both roles because each worker is a TLS client and server. Full integration
 race tests and v2.5.0 lint pass. All CI checks, including CodeQL, passed on the
 preceding commit ec42d17; the optimized commit still requires its own CI.
+
+### Concurrent mixed-message and TLS failure-path acceptance
+
+Section 8.1 scenario 13 previously only counted DataRecord reads. It now runs
+100 streams over one session, on both TCP and mutual TLS, comparing every field
+of 100 records, 100 barriers, 100 watermarks, and EOP per stream in exact order.
+It verifies routing headers, rejects post-EOP writes, checks terminal EOF, and
+asserts one session per endpoint. Five runs per transport passed under race
+checking (301,000 messages total).
+
+Unknown-type skipping, CRC/decode failure thresholds, and independent counter
+reset tests now each run over TCP and mutual TLS. Ten iterations of all five
+cases passed. This strengthens scenario 14 with failure-path evidence instead
+of inferring TLS transparency only from a successful handshake.
+
+Frame payload decoding now enforces the MessagePack map envelope specified for
+all active message types; nil, positional arrays, strings, and scalars are
+rejected. Typed nil outgoing messages fail before any bytes reach the wire.
+Tests cover all eight active types, including the negotiated drain extension.
+Required-field presence/type conventions still need the final schema audit.
+Full integration-tagged race tests and golangci-lint v2.5.0 pass for this change;
+protocol tests were rerun after the linter's equivalent boolean simplification.
