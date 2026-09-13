@@ -293,3 +293,13 @@ method/request IDs, gaps, empty chunks, excess data and checksum corruption.
 These validate framing, not publication, peer identity or recovery. The transfer
 request envelope, receiver admission, durable publication and client/server
 integration remain required.
+
+`Client.ReplicateCheckpoint` now sends a validated transfer envelope followed
+by chunks on one cancellable stream. It waits for a receipt whose request ID,
+method, stored flag, and complete snapshot identity/size/checksum match. A
+missing caller deadline uses the ten-minute checkpoint budget. The receipt
+contract requires the receiver to publish durably before setting Stored;
+referenced artifacts must also be recoverable. Real Yamux tests verify that
+finishing the body does not complete the client and reject negative, wrong-epoch
+and wrong-request receipts. The RPC race suite and lint pass. The test receiver
+discards bytes and simulates receipts; durable receiver integration remains open.
