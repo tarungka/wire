@@ -129,6 +129,7 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 	config.ErrorConfigs = errorConfigs
 	slot := engine.NewTaskSlot(config, inputs, outputs, operators, sourceOp)
 	slot.TaskID = taskID
+	slot.OutputKeyGroups = desc.OutputKeyGroups
 	slot.TaskIndex = int(desc.SubtaskIndex)
 	slot.OnRunning = onRunning
 	if len(checkpoints) > 0 && checkpoints[0] != nil {

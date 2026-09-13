@@ -256,8 +256,10 @@ type SubmitJobResponse struct {
 
 // JobGraph describes the DAG of operators and edges.
 type JobGraph struct {
-	Operators []OperatorDescriptor `codec:"ops"`
-	Edges     []EdgeDescriptor     `codec:"edges"`
+	// NumKeyGroups is fixed for the job lifetime; zero selects the default 128.
+	NumKeyGroups int                  `codec:"key_groups,omitempty"`
+	Operators    []OperatorDescriptor `codec:"ops"`
+	Edges        []EdgeDescriptor     `codec:"edges"`
 }
 
 // OperatorDescriptor describes a single operator in the job graph.
@@ -293,6 +295,8 @@ type CheckpointRestoreDescriptor struct {
 }
 
 type TaskDescriptor struct {
+	OutputKeyGroups          int                          `codec:"output_key_groups,omitempty"`
+	NumKeyGroups             int                          `codec:"key_groups,omitempty"`
 	AttemptID                string                       `codec:"attempt_id,omitempty"`
 	RestoreCheckpoint        *CheckpointRestoreDescriptor `codec:"restore,omitempty"`
 	CheckpointReplicaAddress string                       `codec:"checkpoint_replica_addr,omitempty"`
@@ -307,7 +311,8 @@ type TaskDescriptor struct {
 	Downstream               []DownstreamChannelInfo      `codec:"dn,omitempty"`
 }
 
-// KeyGroupRange defines the key-group range assigned to a task.
+// KeyGroupRange defines the inclusive key-group range [Start, End] assigned
+// to a task. Convert half-open keygroup.KeyGroupRange ends by subtracting one.
 type KeyGroupRange struct {
 	Start int32 `codec:"s"`
 	End   int32 `codec:"e"`

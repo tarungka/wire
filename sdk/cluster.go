@@ -44,6 +44,7 @@ func (ex *clusterExecutor) run(ctx context.Context, jobName string) (*JobResult,
 
 	// Encode the graph.
 	graph := ex.env.graph.toJobGraph(ex.env.parallelism)
+	graph.NumKeyGroups = ex.env.numKeyGroups
 	graphBytes, err := protocol.EncodeMsgPack(&graph)
 	if err != nil {
 		return nil, fmt.Errorf("sdk: encode job graph: %w", err)

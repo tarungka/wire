@@ -31,6 +31,15 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 		return nil, fmt.Errorf("%w: parallelism must be >= 1", ErrInvalidConfig)
 	}
 
+	// Legacy opaque configurations remain accepted. Structured graphs are
+	// validated before reserving a job name or writing any metadata.
+	var graph rpc.JobGraph
+	if err := protocol.DecodeMsgPack(config, &graph); err == nil {
+		if _, err := validateGraphKeyGroups(graph, parallelism); err != nil {
+			return nil, err
+		}
+	}
+
 	now := time.Now().UTC()
 	job := &JobMeta{
 		ID:          generateJobID(),

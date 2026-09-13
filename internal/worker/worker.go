@@ -119,6 +119,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.log.Info().Str("addr", addr).Msg("checkpoint replica listener started")
 	}
 	dataConfig := transport.DefaultConfig()
+	dataConfig.TaskRegistrationTimeout = 5 * time.Second
 	dataConfig.NodeID = workerID
 	dataConfig.ListenAddr = w.cfg.ListenAddr
 	if dataConfig.ListenAddr == "" {

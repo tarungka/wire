@@ -17,6 +17,7 @@ func TestTaskExecutorProcessesAcrossWorkerStreams(t *testing.T) {
 	defer cancel()
 	newMux := func(id string) *transport.Mux {
 		cfg := transport.DefaultConfig()
+		cfg.TaskRegistrationTimeout = 5 * time.Second
 		cfg.NodeID = id
 		cfg.ListenAddr = "127.0.0.1:0"
 		mux := transport.NewMux(cfg)
@@ -70,5 +71,54 @@ func TestTaskExecutorProcessesAcrossWorkerStreams(t *testing.T) {
 	}
 	if downstream.IsTaskRegistered(sinkID) {
 		t.Fatal("finished task left a stale routing registration")
+	}
+}
+
+// A coordinator can deliver producer deployments before consumer deployments.
+// Stream startup must tolerate that ordering without losing the first record.
+func TestTaskStreamsProducerStartsBeforeConsumer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	newMux := func(id string) *transport.Mux {
+		cfg := transport.DefaultConfig()
+		cfg.TaskRegistrationTimeout = 5 * time.Second
+		cfg.NodeID, cfg.ListenAddr = id, "127.0.0.1:0"
+		mux := transport.NewMux(cfg)
+		if err := mux.Listen(ctx); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = mux.Close() })
+		return mux
+	}
+	producer, consumer := newMux("early-producer"), newMux("late-consumer")
+	var running atomic.Bool
+	source := &lifecycleSource{remaining: 1, running: &running}
+	sink := &lifecycleSink{}
+	registry, chain := lifecyclePipeline(source, &lifecycleMap{}, sink)
+	src, dst := newTaskExecutor(registry), newTaskExecutor(registry)
+	src.data, dst.data = producer, consumer
+	const sourceID, sinkID = "job/source/0", "job/sink/0"
+	sourceDesc := rpc.TaskDescriptor{TaskID: sourceID, OperatorChain: chain.OperatorChain[:1], Downstream: []rpc.DownstreamChannelInfo{{TaskID: sinkID, Address: consumer.ListenAddr()}}}
+	sourceDone := make(chan error, 1)
+	go func() {
+		sourceDone <- src.run(ctx, "job", sourceID, sourceDesc, zerolog.Nop(), func() { running.Store(true) })
+	}()
+	// Model delayed command delivery on the consumer worker.
+	time.Sleep(50 * time.Millisecond)
+	sinkDesc := rpc.TaskDescriptor{TaskID: sinkID, OperatorChain: chain.OperatorChain[1:], Upstream: []rpc.UpstreamChannelInfo{{TaskID: sourceID}}}
+	sinkDone := make(chan error, 1)
+	go func() { sinkDone <- dst.run(ctx, "job", sinkID, sinkDesc, zerolog.Nop(), func() {}) }()
+	for _, result := range []<-chan error{sourceDone, sinkDone} {
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Errorf("deployment: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	if sink.count.Load() != 1 {
+		t.Fatalf("received %d records, want 1", sink.count.Load())
 	}
 }

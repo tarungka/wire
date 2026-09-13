@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -18,21 +19,22 @@ import (
 // Mux is the top-level multiplexer that manages TCP/TLS connections,
 // Yamux sessions, and stream lifecycle.
 type Mux struct {
-	mu        sync.RWMutex
-	dialing   map[string]chan struct{}
-	closeOnce sync.Once
-	tasks     map[string]*taskQueue
-	cfg       Config
-	listener  net.Listener
-	peers     map[string]*Session
-	sessions  map[*Session]struct{}
-	nodes     map[string]*Session
-	changed   chan struct{}
-	streamCh  chan *FrameStream
-	log       zerolog.Logger
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup // tracks acceptLoop and sessionAcceptLoop goroutines
+	mu          sync.RWMutex
+	dialing     map[string]chan struct{}
+	closeOnce   sync.Once
+	taskChanged chan struct{}
+	tasks       map[string]*taskQueue
+	cfg         Config
+	listener    net.Listener
+	peers       map[string]*Session
+	sessions    map[*Session]struct{}
+	nodes       map[string]*Session
+	changed     chan struct{}
+	streamCh    chan *FrameStream
+	log         zerolog.Logger
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup // tracks acceptLoop and sessionAcceptLoop goroutines
 }
 
 // NewMux creates a new Mux with the given configuration.
@@ -46,17 +48,18 @@ func NewMux(cfg Config) *Mux {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Mux{
-		cfg:      cfg,
-		peers:    make(map[string]*Session),
-		sessions: make(map[*Session]struct{}),
-		nodes:    make(map[string]*Session),
-		changed:  make(chan struct{}),
-		dialing:  make(map[string]chan struct{}),
-		tasks:    make(map[string]*taskQueue),
-		streamCh: make(chan *FrameStream, 64),
-		log:      logger.GetLogger("mux"),
-		ctx:      ctx,
-		cancel:   cancel,
+		cfg:         cfg,
+		peers:       make(map[string]*Session),
+		sessions:    make(map[*Session]struct{}),
+		nodes:       make(map[string]*Session),
+		changed:     make(chan struct{}),
+		dialing:     make(map[string]chan struct{}),
+		tasks:       make(map[string]*taskQueue),
+		taskChanged: make(chan struct{}),
+		streamCh:    make(chan *FrameStream, 64),
+		log:         logger.GetLogger("mux"),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 }
 
@@ -137,6 +140,8 @@ func (m *Mux) RegisterTask(taskID string) error {
 		return fmt.Errorf("transport: task already registered")
 	}
 	m.tasks[taskID] = newTaskQueue()
+	close(m.taskChanged)
+	m.taskChanged = make(chan struct{})
 	return nil
 }
 
@@ -253,10 +258,11 @@ func (m *Mux) sessionAcceptLoop(ctx context.Context, sess *Session) {
 	for {
 		var target *taskQueue
 		fs, err := sess.AcceptDataStream(m.cfg, func(header protocol.StreamHeaderMsg) bool {
-			m.mu.RLock()
-			defer m.mu.RUnlock()
-			target = m.tasks[header.TargetTaskID]
-			return header.TargetTaskID == "default" || target != nil
+			if header.TargetTaskID == "default" {
+				return true
+			}
+			target = m.waitForTask(ctx, sess, header.TargetTaskID)
+			return target != nil
 		})
 		if err != nil {
 			if !sess.IsClosed() && m.ctx.Err() == nil && ctx.Err() == nil {
@@ -369,4 +375,36 @@ func (m *Mux) getOrCreateSession(ctx context.Context, addr string) (*Session, er
 		m.sessionAcceptLoop(m.ctx, sess)
 	}()
 	return selected, nil
+}
+
+// waitForTask uses one bounded wait in the session accept loop, without
+// allocating a goroutine or a queue for an unregistered task.
+func (m *Mux) waitForTask(ctx context.Context, sess *Session, id string) *taskQueue {
+	var timer *time.Timer
+	for {
+		m.mu.RLock()
+		queue, changed := m.tasks[id], m.taskChanged
+		m.mu.RUnlock()
+		if queue != nil {
+			return queue
+		}
+		if m.cfg.TaskRegistrationTimeout <= 0 {
+			return nil
+		}
+		if timer == nil {
+			timer = time.NewTimer(m.cfg.TaskRegistrationTimeout)
+			defer timer.Stop()
+		}
+		select {
+		case <-changed:
+		case <-timer.C:
+			return nil
+		case <-ctx.Done():
+			return nil
+		case <-m.ctx.Done():
+			return nil
+		case <-sess.yamux.CloseChan():
+			return nil
+		}
+	}
 }
