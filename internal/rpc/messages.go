@@ -293,6 +293,7 @@ type CheckpointRestoreDescriptor struct {
 }
 
 type TaskDescriptor struct {
+	AttemptID                string                       `codec:"attempt_id,omitempty"`
 	RestoreCheckpoint        *CheckpointRestoreDescriptor `codec:"restore,omitempty"`
 	CheckpointReplicaAddress string                       `codec:"checkpoint_replica_addr,omitempty"`
 	EpochID                  uint64                       `codec:"eid,omitempty"`
@@ -370,13 +371,14 @@ type TaskDeploymentStatus struct {
 
 // UpdateTaskStatusRequest is sent from Worker to Coordinator to report a task's status change.
 type UpdateTaskStatusRequest struct {
-	WorkerID string           `codec:"wid"`
-	JobID    string           `codec:"jid"`
-	TaskID   string           `codec:"tid"`
-	Status   TaskStatus       `codec:"st"`
-	EpochID  uint64           `codec:"eid"`
-	Metrics  *TaskMetrics     `codec:"met,omitempty"`
-	Failure  *TaskFailureInfo `codec:"fi,omitempty"`
+	AttemptID string           `codec:"attempt_id,omitempty"`
+	WorkerID  string           `codec:"wid"`
+	JobID     string           `codec:"jid"`
+	TaskID    string           `codec:"tid"`
+	Status    TaskStatus       `codec:"st"`
+	EpochID   uint64           `codec:"eid"`
+	Metrics   *TaskMetrics     `codec:"met,omitempty"`
+	Failure   *TaskFailureInfo `codec:"fi,omitempty"`
 }
 
 // UpdateTaskStatusResponse is the Coordinator's reply.

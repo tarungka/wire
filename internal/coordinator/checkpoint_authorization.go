@@ -83,7 +83,7 @@ func (c *Coordinator) HandleAuthorizeCheckpointFetch(_ context.Context, _ uint64
 	if err := protocol.DecodeMsgPack(data, &assignment); err != nil {
 		return denied, nil
 	}
-	if assignment.JobID != fetch.JobID || assignment.Assignments[fetch.TaskID] != fetch.WorkerID {
+	if assignment.JobID != fetch.JobID || assignment.Assignments[fetch.TaskID] != fetch.WorkerID || assignment.AttemptID != fetch.AttemptID {
 		return denied, nil
 	}
 	return &rpc.AcknowledgeCheckpointResponse{Accepted: true}, nil

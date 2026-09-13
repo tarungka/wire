@@ -2,6 +2,8 @@ package coordinator
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"time"
@@ -119,8 +121,14 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		return
 	}
 
+	var attempt [16]byte
+	if _, err := rand.Read(attempt[:]); err != nil {
+		c.log.Error().Err(err).Msg("cannot generate deployment attempt identity")
+		return
+	}
 	// Build TaskAssignmentMap.
 	tam := TaskAssignmentMap{
+		AttemptID:   hex.EncodeToString(attempt[:]),
 		JobID:       job.ID,
 		Assignments: make(map[string]string, len(tasks)),
 	}
@@ -192,6 +200,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	for workerID, wTasks := range assignments {
 		for i := range wTasks {
 			wTasks[i].EpochID = c.epoch
+			wTasks[i].AttemptID = tam.AttemptID
 		}
 		w, ok := c.workers[workerID]
 		if !ok {

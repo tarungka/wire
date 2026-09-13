@@ -29,6 +29,7 @@ type Config struct {
 // taskHandle tracks a running task so it can be cancelled on demand or
 // on worker shutdown.
 type taskHandle struct {
+	attemptID  string
 	cancel     context.CancelFunc
 	jobID      string
 	epoch      uint64
@@ -379,7 +380,7 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 		w.log.Warn().Uint64("epoch", desc.EpochID).Str("task_id", cmd.TaskID).Msg("ignoring deployment from a different coordinator epoch")
 		return
 	}
-	handle := &taskHandle{cancel: cancel, jobID: cmd.JobID, epoch: desc.EpochID}
+	handle := &taskHandle{cancel: cancel, jobID: cmd.JobID, epoch: desc.EpochID, attemptID: desc.AttemptID}
 	if desc.CheckpointReplicaAddress != "" || desc.RestoreCheckpoint != nil {
 		handle.checkpoint = &taskCheckpointRuntime{triggers: make(chan engine.CheckpointTrigger, 1), decisions: make(chan engine.ControlMsg, 16)}
 		for _, operator := range desc.OperatorChain {
@@ -439,18 +440,21 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 func (w *Worker) reportTaskStatus(jobID, taskID string, status rpc.TaskStatus, failure *rpc.TaskFailureInfo) {
 	w.mu.RLock()
 	epoch := w.epoch
+	attemptID := ""
 	if handle := w.tasks[taskID]; handle != nil && handle.jobID == jobID {
 		epoch = handle.epoch
+		attemptID = handle.attemptID
 	}
 	w.mu.RUnlock()
 
 	req := &rpc.UpdateTaskStatusRequest{
-		WorkerID: w.cfg.WorkerID,
-		JobID:    jobID,
-		TaskID:   taskID,
-		Status:   status,
-		EpochID:  epoch,
-		Failure:  failure,
+		AttemptID: attemptID,
+		WorkerID:  w.cfg.WorkerID,
+		JobID:     jobID,
+		TaskID:    taskID,
+		Status:    status,
+		EpochID:   epoch,
+		Failure:   failure,
 	}
 	if _, err := w.client.UpdateTaskStatus(context.Background(), req); err != nil {
 		w.log.Error().Err(err).

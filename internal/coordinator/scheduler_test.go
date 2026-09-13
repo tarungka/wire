@@ -262,6 +262,17 @@ func TestScheduleRecoveryCarriesCompletedCheckpoint(t *testing.T) {
 			if err := protocol.DecodeMsgPack(commands[0].Data, &task); err != nil {
 				t.Fatal(err)
 			}
+			assignmentData, err := store.Get(JobAssignmentsKey("job"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var assignment TaskAssignmentMap
+			if err := protocol.DecodeMsgPack(assignmentData, &assignment); err != nil {
+				t.Fatal(err)
+			}
+			if task.AttemptID == "" || task.AttemptID != assignment.AttemptID {
+				t.Fatal("deployment attempt was not persisted before dispatch")
+			}
 			restore := task.RestoreCheckpoint
 			if task.EpochID != 5 || restore == nil || restore.EpochID != 2 || restore.CheckpointID != 7 || restore.ReplicaAddress != "replica:1" {
 				t.Fatalf("deployment: %+v restore: %+v", task, restore)

@@ -12,6 +12,7 @@ import (
 // FetchCheckpointRequest names a stored snapshot and the deployment requesting
 // recovery. EpochID belongs to the snapshot; DeploymentEpoch fences its reader.
 type FetchCheckpointRequest struct {
+	AttemptID       string `codec:"attempt_id,omitempty"`
 	WorkerID        string `codec:"wid"`
 	DeploymentEpoch uint64 `codec:"deid"`
 	JobID           string `codec:"jid"`

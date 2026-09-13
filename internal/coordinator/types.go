@@ -122,6 +122,7 @@ type JobMeta struct {
 
 // TaskAssignmentMap maps task IDs to the worker IDs they are assigned to.
 type TaskAssignmentMap struct {
+	AttemptID   string            `codec:"attempt_id,omitempty"`
 	Replicas    map[string]string `codec:"replicas,omitempty"`
 	JobID       string            `codec:"job_id"`
 	Assignments map[string]string `codec:"assignments"` // task_id → worker_id

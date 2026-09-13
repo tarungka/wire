@@ -9,20 +9,22 @@ import (
 )
 
 func TestTaskStatusFencesEpochAndAssignment(t *testing.T) {
-	for _, mode := range []string{"valid", "old-epoch", "wrong-worker", "wrong-job", "wrong-task", "follower", "terminal"} {
+	for _, mode := range []string{"valid", "old-epoch", "old-attempt", "wrong-worker", "wrong-job", "wrong-task", "follower", "terminal"} {
 		t.Run(mode, func(t *testing.T) {
 			c, store := newTestCoordinator(t)
 			c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
 			c.taskStatuses["task"] = rpc.TaskStatusRunning
-			assignment, err := protocol.EncodeMsgPack(TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}})
+			assignment, err := protocol.EncodeMsgPack(TaskAssignmentMap{AttemptID: "current", JobID: "job", Assignments: map[string]string{"task": "worker"}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if err := store.Set(JobAssignmentsKey("job"), assignment); err != nil {
 				t.Fatal(err)
 			}
-			req := rpc.UpdateTaskStatusRequest{WorkerID: "worker", JobID: "job", TaskID: "task", EpochID: 5, Status: rpc.TaskStatusFailed}
+			req := rpc.UpdateTaskStatusRequest{AttemptID: "current", WorkerID: "worker", JobID: "job", TaskID: "task", EpochID: 5, Status: rpc.TaskStatusFailed}
 			switch mode {
+			case "old-attempt":
+				req.AttemptID = "previous"
 			case "old-epoch":
 				req.EpochID--
 			case "wrong-worker":

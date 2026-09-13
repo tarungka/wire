@@ -169,7 +169,7 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 		return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, err.Error())
 	}
 	var assignment TaskAssignmentMap
-	if err := protocol.DecodeMsgPack(assignmentData, &assignment); err != nil || assignment.JobID != req.JobID || assignment.Assignments[req.TaskID] != req.WorkerID {
+	if err := protocol.DecodeMsgPack(assignmentData, &assignment); err != nil || assignment.JobID != req.JobID || assignment.Assignments[req.TaskID] != req.WorkerID || assignment.AttemptID != req.AttemptID {
 		c.mu.Unlock()
 		return denied, nil
 	}

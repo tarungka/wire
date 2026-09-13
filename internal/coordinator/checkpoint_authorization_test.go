@@ -51,15 +51,17 @@ func TestCheckpointReplicaAuthorizationFencesAssignment(t *testing.T) {
 }
 
 func TestCheckpointFetchAuthorization(t *testing.T) {
-	for _, mode := range []string{"valid-old-snapshot", "stale-deployment", "wrong-reader", "wrong-replica", "uncommitted", "wrong-snapshot-epoch", "not-latest", "wrong-state-path"} {
+	for _, mode := range []string{"valid-old-snapshot", "stale-deployment", "old-attempt", "wrong-reader", "wrong-replica", "uncommitted", "wrong-snapshot-epoch", "not-latest", "wrong-state-path"} {
 		t.Run(mode, func(t *testing.T) {
 			c, store := newTestCoordinator(t)
 			c.jobs["job"] = &JobMeta{ID: "job", Status: JobDeploying, LatestCheckpoint: 7}
 			c.workers["replica"] = &WorkerMeta{ID: "replica", CheckpointAddress: "replica:1"}
 			cp := CheckpointMeta{ID: 7, JobID: "job", EpochID: 2, Status: CheckpointCompleted, Tasks: map[string]string{"task": "old-worker"}, Replicas: map[string]string{"task": "replica:1"}, StatePaths: map[string]string{"task": "replica:1"}}
-			assignment := TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "new-worker"}}
-			request := rpc.AuthorizeCheckpointFetchRequest{ReplicaWorkerID: "replica", Fetch: rpc.FetchCheckpointRequest{WorkerID: "new-worker", DeploymentEpoch: 5, JobID: "job", TaskID: "task", CheckpointID: 7, EpochID: 2}}
+			assignment := TaskAssignmentMap{AttemptID: "current", JobID: "job", Assignments: map[string]string{"task": "new-worker"}}
+			request := rpc.AuthorizeCheckpointFetchRequest{ReplicaWorkerID: "replica", Fetch: rpc.FetchCheckpointRequest{AttemptID: "current", WorkerID: "new-worker", DeploymentEpoch: 5, JobID: "job", TaskID: "task", CheckpointID: 7, EpochID: 2}}
 			switch mode {
+			case "old-attempt":
+				request.Fetch.AttemptID = "previous"
 			case "stale-deployment":
 				request.Fetch.DeploymentEpoch--
 			case "wrong-reader":

@@ -73,7 +73,7 @@ func (w *Worker) fetchTaskCheckpoint(ctx context.Context, jobID, taskID string, 
 	if cfg == nil {
 		return nil, fmt.Errorf("checkpoint recovery requires local storage")
 	}
-	request := rpc.FetchCheckpointRequest{WorkerID: w.cfg.WorkerID, DeploymentEpoch: desc.EpochID, JobID: jobID, TaskID: taskID, CheckpointID: restore.CheckpointID, EpochID: restore.EpochID}
+	request := rpc.FetchCheckpointRequest{AttemptID: desc.AttemptID, WorkerID: w.cfg.WorkerID, DeploymentEpoch: desc.EpochID, JobID: jobID, TaskID: taskID, CheckpointID: restore.CheckpointID, EpochID: restore.EpochID}
 	if err := request.Validate(); err != nil {
 		return nil, err
 	}
