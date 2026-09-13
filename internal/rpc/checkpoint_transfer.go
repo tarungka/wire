@@ -13,6 +13,10 @@ const CheckpointChunkSize = 1024 * 1024
 // WriteCheckpointChunks streams exactly size bytes without buffering the whole
 // snapshot. Cancellation of a blocked transport write is owned by the caller.
 func WriteCheckpointChunks(ctx context.Context, w io.Writer, requestID uint64, r io.Reader, size uint64) error {
+	return writeCheckpointChunks(ctx, w, MethodReplicateCheckpoint, requestID, r, size)
+}
+
+func writeCheckpointChunks(ctx context.Context, w io.Writer, method MethodID, requestID uint64, r io.Reader, size uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -26,7 +30,7 @@ func WriteCheckpointChunks(ctx context.Context, w io.Writer, requestID uint64, r
 		if _, err := io.ReadFull(r, buffer[8:8+int(n)]); err != nil {
 			return err
 		}
-		if err := WriteRPCFrame(w, RPCFrame{MethodID: MethodReplicateCheckpoint, RequestID: requestID, Payload: buffer[:8+int(n)]}); err != nil {
+		if err := WriteRPCFrame(w, RPCFrame{MethodID: method, RequestID: requestID, Payload: buffer[:8+int(n)]}); err != nil {
 			return err
 		}
 		offset += n
@@ -39,6 +43,10 @@ func WriteCheckpointChunks(ctx context.Context, w io.Writer, requestID uint64, r
 // error, and fsync/publish it before sending a success acknowledgement. size
 // must already have been checked against the receiver's storage quota.
 func ReadCheckpointChunks(ctx context.Context, r io.Reader, requestID uint64, size uint64, digest [sha256.Size]byte, staging io.Writer) error {
+	return readCheckpointChunks(ctx, r, MethodReplicateCheckpoint, requestID, size, digest, staging)
+}
+
+func readCheckpointChunks(ctx context.Context, r io.Reader, method MethodID, requestID uint64, size uint64, digest [sha256.Size]byte, staging io.Writer) error {
 	hash := sha256.New()
 	for offset := uint64(0); offset < size; {
 		if err := ctx.Err(); err != nil {
@@ -48,7 +56,7 @@ func ReadCheckpointChunks(ctx context.Context, r io.Reader, requestID uint64, si
 		if err != nil {
 			return err
 		}
-		if frame.MethodID != MethodReplicateCheckpoint || frame.RequestID != requestID {
+		if frame.MethodID != method || frame.RequestID != requestID {
 			return errors.New("checkpoint chunk identity mismatch")
 		}
 		if len(frame.Payload) <= 8 {

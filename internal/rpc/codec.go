@@ -54,6 +54,7 @@ const (
 	MethodWatchCommands              MethodID = 0x0008
 	MethodReplicateCheckpoint        MethodID = 0x0009
 	MethodAuthorizeCheckpointReplica MethodID = 0x000A
+	MethodFetchCheckpoint            MethodID = 0x000B
 	MethodError                      MethodID = 0x00FF
 )
 
@@ -201,6 +202,8 @@ func MethodName(id MethodID) string {
 		return "ReplicateCheckpoint"
 	case MethodAuthorizeCheckpointReplica:
 		return "AuthorizeCheckpointReplica"
+	case MethodFetchCheckpoint:
+		return "FetchCheckpoint"
 	case MethodError:
 		return "Error"
 	default:
