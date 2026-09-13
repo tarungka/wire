@@ -54,21 +54,32 @@ func TestClusterCheckpointTransactionalCommit(t *testing.T) {
 	testClusterCheckpoint(t, false, true)
 }
 
+func TestClusterCheckpointCoordinatorFailover(t *testing.T) {
+	testClusterCheckpoint(t, false, false, false, true)
+}
+
 func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	failover := len(transactional) > 2 && transactional[2]
+	timeout := 15 * time.Second
+	if failover {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	coordCtx, stopCoordinator := context.WithCancel(ctx)
+	defer func() { stopCoordinator() }()
 	metadata := coordinator.NewMemoryStore()
 	coord := coordinator.New(coordinator.CoordinatorConfig{NodeID: "coordinator"}, metadata, nil, zerolog.Nop())
 	coordDone := make(chan error, 1)
-	go func() { coordDone <- coord.Run(ctx) }()
+	go func() { coordDone <- coord.Run(coordCtx) }()
 	waitFor(t, 2*time.Second, coord.IsReady)
 	server := coordinator.NewTransportServer(coord, "127.0.0.1:0", zerolog.Nop())
 	if err := server.Listen(); err != nil {
 		t.Fatal(err)
 	}
 	serverDone := make(chan error, 1)
-	go func() { serverDone <- server.Serve(ctx) }()
+	go func() { serverDone <- server.Serve(coordCtx) }()
 	defer func() {
 		cancel()
 		_ = server.Shutdown(context.Background())
@@ -82,7 +93,7 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 	var restoredRead atomic.Bool
 	registry := worker.NewRegistry()
 	registry.RegisterSource("checkpoint-source", func(context.Context, []byte, worker.TaskContext) (engine.SourceOperator, error) {
-		if restart {
+		if restart || failover {
 			return &restartCheckpointSource{fail: &failSource, needsRestore: instances.Add(1) > 1, readAfterRestore: &restoredRead}, nil
 		}
 		return &checkpointTestSource{}, nil
@@ -210,6 +221,33 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 		if err != nil || string(snapshot.Source) != "source-offset" {
 			t.Fatalf("remote snapshot: %+v, %v", snapshot, err)
 		}
+	}
+	if failover {
+		oldEpoch := coord.CurrentEpoch()
+		address := server.Addr()
+		stopCoordinator()
+		_ = server.Shutdown(context.Background())
+		<-serverDone
+		<-coordDone
+		coordCtx, stopCoordinator = context.WithCancel(ctx)
+		defer stopCoordinator()
+		coord = coordinator.New(coordinator.CoordinatorConfig{NodeID: "replacement"}, metadata, nil, zerolog.Nop())
+		coordDone = make(chan error, 1)
+		go func() { coordDone <- coord.Run(coordCtx) }()
+		waitFor(t, 2*time.Second, coord.IsReady)
+		if coord.CurrentEpoch() <= oldEpoch {
+			t.Fatal("replacement epoch did not advance")
+		}
+		server = coordinator.NewTransportServer(coord, address, zerolog.Nop())
+		if err := server.Listen(); err != nil {
+			t.Fatal(err)
+		}
+		serverDone = make(chan error, 1)
+		go func() { serverDone <- server.Serve(coordCtx) }()
+		waitFor(t, 45*time.Second, func() bool {
+			current, err := coord.GetJob(job.ID)
+			return err == nil && current.Status == coordinator.JobRunning && current.RestartCount == 1 && restoredRead.Load()
+		})
 	}
 	if restart {
 		failSource.Store(true)
