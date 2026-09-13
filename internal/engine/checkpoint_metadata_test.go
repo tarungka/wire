@@ -523,7 +523,7 @@ func TestValidate_LargeMetadataRoundTrip(t *testing.T) {
 		meta.JobGraph.Operators[i] = OperatorMeta{
 			OperatorID:  fmt.Sprintf("op-%d", i),
 			Type:        "map",
-			Parallelism: i + 1,
+			Parallelism: 2,
 		}
 	}
 	meta.Tasks = make([]TaskMeta, 100)
@@ -532,7 +532,7 @@ func TestValidate_LargeMetadataRoundTrip(t *testing.T) {
 		meta.Tasks[i] = TaskMeta{
 			TaskID:         fmt.Sprintf("task-%d", i),
 			OperatorID:     meta.JobGraph.Operators[opIdx].OperatorID,
-			SubtaskIndex:   i,
+			SubtaskIndex:   i / len(meta.JobGraph.Operators),
 			KeyGroupRange:  KeyGroupRangeMeta{Start: 0, End: 1024},
 			StatePath:      fmt.Sprintf("task-%d-state/", i),
 			StateSizeBytes: int64(i * 100),
@@ -556,5 +556,60 @@ func TestValidate_LargeMetadataRoundTrip(t *testing.T) {
 	}
 	if len(got.Tasks) != 100 {
 		t.Errorf("tasks = %d, want 100", len(got.Tasks))
+	}
+}
+
+// Exercise the persisted JSON boundary: corrupt metadata must not reach restore.
+func TestUnmarshalCheckpointMetadata_RejectsInvalidStateManifest(t *testing.T) {
+	cases := map[string]func(*CheckpointMetadata){
+		"negative subtask":           func(m *CheckpointMetadata) { m.Tasks[0].SubtaskIndex = -1 },
+		"subtask beyond parallelism": func(m *CheckpointMetadata) { m.Tasks[0].SubtaskIndex = 2 },
+		"duplicate subtask": func(m *CheckpointMetadata) {
+			duplicate := m.Tasks[0]
+			duplicate.TaskID = "another-task"
+			m.Tasks = append(m.Tasks, duplicate)
+		},
+		"negative size":  func(m *CheckpointMetadata) { m.Tasks[0].StateSizeBytes = -1 },
+		"duplicate file": func(m *CheckpointMetadata) { m.Tasks[0].StateFiles = []string{"data.sst", "data.sst"} },
+	}
+	for _, path := range []string{"", ".", "../outside", "/absolute", "state/../../outside", `C:\state`, `state\..\outside`, "state\x00"} {
+		cases["path "+path] = func(m *CheckpointMetadata) { m.Tasks[0].StatePath = path }
+	}
+	for _, name := range []string{"", ".", "..", "../data.sst", "/data.sst", "nested/data.sst", `C:\data.sst`, `..\data.sst`, "data\x00"} {
+		cases["file "+name] = func(m *CheckpointMetadata) { m.Tasks[0].StateFiles = []string{name} }
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			meta := testCheckpointMetadata()
+			mutate(meta)
+			data, err := json.Marshal(meta)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := UnmarshalCheckpointMetadata(data)
+			if !errors.Is(err, ErrInvalidCheckpointMetadata) || got != nil {
+				t.Fatalf("decoded invalid manifest: got=%v err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestCheckpointMetadata_ValidateNilAndVersion(t *testing.T) {
+	var nilMeta *CheckpointMetadata
+	if !errors.Is(nilMeta.Validate(), ErrInvalidCheckpointMetadata) {
+		t.Fatal("nil metadata accepted")
+	}
+	meta := testCheckpointMetadata()
+	meta.SchemaVersion++
+	if !errors.Is(meta.Validate(), ErrInvalidCheckpointMetadata) {
+		t.Fatal("unsupported version accepted")
+	}
+}
+
+func TestCheckpointMetadata_NestedRelativeStatePath(t *testing.T) {
+	meta := testCheckpointMetadata()
+	meta.Tasks[0].StatePath = "operators/source/task-0/"
+	if err := meta.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }

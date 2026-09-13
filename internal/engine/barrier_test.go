@@ -412,3 +412,54 @@ func TestBarrierAligner_BufferedEventCount(t *testing.T) {
 		t.Fatalf("expected 0 buffered events after drain, got %d", ba.BufferedEventCount())
 	}
 }
+
+func TestBarrierAligner_RejectsMixedIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		input             int
+		checkpoint, epoch uint64
+	}{
+		{"different checkpoint", 1, 8, 3},
+		{"different epoch", 1, 7, 4},
+		{"negative input", -1, 7, 3},
+		{"out of range input", 2, 7, 3},
+		{"zero checkpoint", 1, 0, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ba := NewBarrierAligner(2, 10)
+			ba.OnBarrier(0, 7, 3)
+			if ba.OnBarrier(tc.input, tc.checkpoint, tc.epoch) || ba.AllAligned(7) {
+				t.Fatal("invalid barrier completed alignment")
+			}
+			if ba.IsAligning(1) {
+				t.Fatal("invalid barrier blocked the valid second input")
+			}
+			if !ba.OnBarrier(1, 7, 3) {
+				t.Fatal("matching barrier failed to complete alignment")
+			}
+		})
+	}
+}
+
+func TestBarrierAligner_InvalidFirstBarrier(t *testing.T) {
+	ba := NewBarrierAligner(2, 10)
+	ba.OnBarrier(-1, 7, 3)
+	ba.OnBarrier(2, 7, 3)
+	ba.OnBarrier(0, 0, 3)
+	if ba.ActiveCheckpointID() != 0 || !ba.AlignmentStartTime().IsZero() || ba.AllAligned(0) {
+		t.Fatal("invalid barrier started alignment")
+	}
+}
+
+func TestBarrierControl_RejectsWrongEpoch(t *testing.T) {
+	ba := NewBarrierAligner(1, 10)
+	ba.OnBarrier(0, 7, 3)
+	cc := &chainContext{aligner: ba}
+	eof := 0
+	if err := handleControl(cc, ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 7, EpochID: 4}, &eof); err != nil {
+		t.Fatal(err)
+	}
+	if !ba.AllAligned(7) || ba.ActiveEpochID() != 3 {
+		t.Fatal("stale control consumed the active checkpoint")
+	}
+}

@@ -35,6 +35,9 @@ func AssignedTask(keyGroup uint16, numKeyGroups, parallelism int) int {
 //	Start = taskIndex * numKeyGroups / parallelism
 //	End   = (taskIndex + 1) * numKeyGroups / parallelism
 func TaskKeyGroupRange(taskIndex, numKeyGroups, parallelism int) (KeyGroupRange, error) {
+	if err := (Config{NumKeyGroups: numKeyGroups, Parallelism: parallelism}).Validate(); err != nil {
+		return KeyGroupRange{}, err
+	}
 	if taskIndex < 0 || taskIndex >= parallelism {
 		return KeyGroupRange{}, ErrInvalidTaskIndex
 	}
@@ -48,6 +51,9 @@ func TaskKeyGroupRange(taskIndex, numKeyGroups, parallelism int) (KeyGroupRange,
 
 // AllTaskRanges returns the key group ranges for all tasks.
 func AllTaskRanges(numKeyGroups, parallelism int) ([]KeyGroupRange, error) {
+	if err := (Config{NumKeyGroups: numKeyGroups, Parallelism: parallelism}).Validate(); err != nil {
+		return nil, err
+	}
 	ranges := make([]KeyGroupRange, parallelism)
 	for i := range parallelism {
 		r, err := TaskKeyGroupRange(i, numKeyGroups, parallelism)
@@ -74,15 +80,22 @@ func RescaleMapping(numKeyGroups, oldParallelism, newParallelism int) (map[int][
 	}
 
 	result := make(map[int][]KeyGroupRange, newParallelism)
-	for newIdx, nr := range newRanges {
-		for _, or := range oldRanges {
-			// Compute the intersection of the old and new ranges.
-			start := max(nr.Start, or.Start)
-			end := min(nr.End, or.End)
-			if start < end {
-				result[newIdx] = append(result[newIdx], KeyGroupRange{Start: start, End: end})
-			}
+	// Both partitions are sorted and cover the same key space. Walk their
+	// boundaries once instead of comparing every pair of tasks.
+	for oldIdx, newIdx := 0, 0; oldIdx < len(oldRanges) && newIdx < len(newRanges); {
+		oldRange, newRange := oldRanges[oldIdx], newRanges[newIdx]
+		start := max(newRange.Start, oldRange.Start)
+		end := min(newRange.End, oldRange.End)
+		if start < end {
+			result[newIdx] = append(result[newIdx], KeyGroupRange{Start: start, End: end})
+		}
+		if oldRange.End <= newRange.End {
+			oldIdx++
+		}
+		if newRange.End <= oldRange.End {
+			newIdx++
 		}
 	}
+
 	return result, nil
 }

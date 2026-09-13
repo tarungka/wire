@@ -543,3 +543,56 @@ func TestHandleExhausted_DLQOverflow_MetricsAccuracy(t *testing.T) {
 		t.Errorf("DLQ overflow metric: got %d, want 3", metrics.get(metrics.dlqOverflows, "op"))
 	}
 }
+
+func TestInvokeWithRetry_CancellationWithoutBackoff(t *testing.T) {
+	metrics := newTrackingErrorMetrics()
+	cc := newTestChainContext(t, nil, metrics)
+	ctx, cancel := context.WithCancel(cc.ctx)
+	defer cancel()
+	cc.ctx = ctx
+	calls := 0
+	err := invokeWithRetry(cc, ChainLink{Config: ErrorHandlerConfig{MaxRetries: 100, OnExhausted: DropEvent}}, Event{}, func() error {
+		calls++
+		cancel()
+		return ErrTransient
+	})
+	if !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("canceled retries: calls=%d err=%v", calls, err)
+	}
+	if metrics.get(metrics.retries, "") != 0 || metrics.get(metrics.drops, "") != 0 {
+		t.Fatal("cancellation counted as a retry or dropped event")
+	}
+}
+
+func TestHandleExhausted_UnavailableDLQCountsDrop(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		var ch chan DLQEvent
+		if full {
+			ch = make(chan DLQEvent, 1)
+			ch <- DLQEvent{}
+		}
+		metrics := newTrackingErrorMetrics()
+		err := handleExhausted(ErrorHandlerConfig{OperatorName: "parse", OnExhausted: RouteToDLQ}, Event{}, errors.New("bad record"), 0, ch, metrics, testLogger())
+		if err != nil || metrics.get(metrics.drops, "parse") != 1 || metrics.get(metrics.dlqs, "parse") != 0 {
+			t.Fatalf("unavailable DLQ full=%t: err=%v drops=%v", full, err, metrics.drops)
+		}
+	}
+}
+
+func TestHandleExhausted_DLQWriterFailureAndPanic(t *testing.T) {
+	for _, panics := range []bool{false, true} {
+		metrics := newTrackingErrorMetrics()
+		cfg := ErrorHandlerConfig{OperatorName: "parse", OnExhausted: RouteToDLQ, DLQWriter: func(DLQEvent) error {
+			if panics {
+				panic("sink failed")
+			}
+			return errors.New("sink failed")
+		}}
+		if err := handleExhausted(cfg, Event{}, errors.New("bad record"), 0, nil, metrics, testLogger()); err != nil {
+			t.Fatal(err)
+		}
+		if metrics.get(metrics.drops, "parse") != 1 || metrics.get(metrics.dlqs, "parse") != 0 {
+			t.Fatal("failed DLQ delivery not counted as drop")
+		}
+	}
+}

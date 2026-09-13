@@ -22,11 +22,11 @@
 
 ## Implementation Status — 2026-09-12
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Base audit assessed `master` at `0e78195`; the implementation evidence below includes this WIP-12 change. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** The SDK contains window descriptions and an AllowedLateness builder setting. This is API scaffolding, not working late-data processing.
-- **Remaining:** Implement window execution, updated results, too-late side outputs, state purge, and recovery. The embedded executor currently skips Window/Reduce nodes.
-- **Evidence:** [windowed_stream.go](../../../sdk/windowed_stream.go), [embedded.go](../../../sdk/embedded.go).
+- **Implemented:** The SDK contains window descriptions and AllowedLateness settings. The engine now has a WindowProcessor for tumbling/sliding/session assignment, initial and updated results, per-event too-late decisions, watermark-driven purge, local counters, bounded retained-window count, and checksummed snapshots preserving watermark/update flags.
+- **Remaining:** Connect the processor to ordered runtime watermark/event delivery, SDK Window/Reduce execution, named side-output routing, metrics export, and durable state/checkpoint restore. The embedded executor still skips Window/Reduce nodes; this processor API alone is not end-to-end window execution.
+- **Evidence:** [windowed_stream.go](../../../sdk/windowed_stream.go), [embedded.go](../../../sdk/embedded.go), [window_processor.go](../../../internal/engine/window_processor.go), [window_snapshot.go](../../../internal/engine/window_snapshot.go), [tests](../../../internal/engine/window_processor_test.go).
 
 ---
 
@@ -38,7 +38,7 @@ Wire's execution-model.md mentions "Allowed Lateness: Users can configure a grac
 
 ### 1.2 Proposed Solution (Technical Summary)
 
-Define "late data" as any event with `EventTime < CurrentWatermark`. Implement a configurable `AllowedLateness` duration per window operator. Late events within the allowed lateness re-open the window and trigger an updated result emission. Late events beyond the allowed lateness are routed to a configurable side output (DLQ). Window state is retained for `WindowEnd + AllowedLateness` before purge.
+Define "late data" as any event with `EventTime < CurrentWatermark`. Implement a configurable `AllowedLateness` duration per window operator. Events assigned to a window with `CurrentWatermark < WindowEnd + AllowedLateness` remain eligible. If that window has already fired, an accepted event triggers an updated result. An event is too late only when all its assigned windows have expired; runtime integration routes that event to a configured side output (or drops it). Window state is retained for `WindowEnd + AllowedLateness` before purge.
 
 ### 1.3 Goals & Non-Goals
 
@@ -55,45 +55,33 @@ Define "late data" as any event with `EventTime < CurrentWatermark`. Implement a
 
 ### 2.1 Late Data Flow
 
-```
-Event arrives: EventTime = T
+For each assigned window, compare the **current watermark** with the window's
+retention deadline. Comparing event time with `WindowEnd - AllowedLateness` is
+incorrect: that would classify the same event identically before and after purge.
 
-Is T >= CurrentWatermark?
-  ├── Yes → Normal processing (assign to window)
-  └── No → Event is LATE
-            │
-            Is AllowedLateness configured for this window?
-              ├── No → Drop event (default) or route to side output
-              └── Yes → Is T >= WindowEnd - AllowedLateness?
-                          ├── Yes → Re-open window, update aggregation, emit updated result
-                          └── No → Event is TOO LATE → route to side output
+```text
+Assign event to its window(s), merging retained sessions when appropriate.
+  For each window:
+    Watermark >= WindowEnd + AllowedLateness -> expired; do not recreate it.
+    Watermark < WindowEnd -> accumulate; window has not closed yet.
+    Otherwise -> accumulate and emit an updated result for the closed window.
+  If every assigned window is expired -> route the event once to late output.
 ```
 
-```mermaid
-flowchart TD
-    A["Event arrives<br/>EventTime = T"] --> B{"T >= CurrentWatermark?"}
-    B -- Yes --> C[Normal processing]
-    B -- No --> D["Event is LATE"]
-    D --> E{"AllowedLateness<br/>configured?"}
-    E -- No --> F["Drop event<br/>(increment late-dropped metric)"]
-    E -- Yes --> G{"T >= WindowEnd −<br/>AllowedLateness?"}
-    G -- Yes --> H["Re-open window<br/>Update result<br/>(IsUpdate=true)"]
-    G -- No --> I["TOO LATE<br/>Route to side output"]
-
-    style C fill:#c8e6c9
-    style F fill:#ffcdd2
-    style H fill:#fff3e0
-    style I fill:#fff9c4
-```
+An event older than the watermark may still belong to an open sliding/session
+window. Even with zero allowed lateness, that open window can accept it. Zero
+lateness means no retention after window end, rather than dropping every event
+whose timestamp is below the watermark. Session merges that extend an already
+emitted window fire an update at the extended end; earlier results are not retracted.
 
 ### 2.2 Window State Retention
 
 Without allowed lateness:
-- Window state purged when `Watermark > WindowEnd`
+- Window state purged when `Watermark >= WindowEnd`
 
 With allowed lateness:
-- Window state purged when `Watermark > WindowEnd + AllowedLateness`
-- During `[WindowEnd, WindowEnd + AllowedLateness]`, the window is "closed but retained"
+- Window state purged when `Watermark >= WindowEnd + AllowedLateness`
+- During `[WindowEnd, WindowEnd + AllowedLateness)`, the window is "closed but retained"
 - Late events re-trigger the window function, emitting an **updated** result
 
 ---
@@ -177,9 +165,9 @@ type WindowResult struct {
 stateDiagram-v2
     [*] --> Open : first event assigned to window
     Open --> Open : events arrive (accumulate)
-    Open --> ClosedRetained : Watermark > WindowEnd
+    Open --> ClosedRetained : Watermark >= WindowEnd
     ClosedRetained --> ClosedRetained : late event within AllowedLateness<br/>(re-trigger, emit updated result)
-    ClosedRetained --> Purged : Watermark > WindowEnd + AllowedLateness
+    ClosedRetained --> Purged : Watermark >= WindowEnd + AllowedLateness
     Purged --> [*] : state deleted
 
     note right of ClosedRetained : Late events re-trigger\nwindow function with\nIsUpdate=true
@@ -204,15 +192,15 @@ AllowedLateness increases state retention duration. For tumbling windows with `s
 | **Trade-offs Accepted** | Append-only sinks will see duplicate records for the same window. Users must handle `IsUpdate` flag. |
 | **Revisit Trigger** | If users need true retraction semantics for SQL-style materialized views. |
 
-### Decision 2: Drop by default (no AllowedLateness = drop late events)
+### Decision 2: Drop expired-window events by default (zero retention)
 
 |  |  |
 | -- | -- |
-| **Context** | What happens to late events when AllowedLateness is not configured? |
+| **Context** | What happens to events whose assigned windows have expired when AllowedLateness is not configured? |
 | **Options Considered** | (A) Drop silently, (B) Drop with metric, (C) Route to global DLQ |
 | **Decision** | Option B: Drop with metric |
 | **Rationale** | Dropping silently is dangerous (users don't know they're losing data). Routing everything to DLQ is noisy. Metric-only is a good default — users monitor `wire_late_events_dropped_total` and add AllowedLateness if needed. |
-| **Trade-offs Accepted** | Data loss by default if events are late. Users must configure AllowedLateness for correctness. |
+| **Trade-offs Accepted** | Events for expired windows are dropped by default; events for still-open windows remain eligible. Users configure retention to tolerate arrivals after window end. |
 | **Revisit Trigger** | If users frequently lose data without realizing it. Consider making AllowedLateness mandatory. |
 
 ---

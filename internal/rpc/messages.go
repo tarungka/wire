@@ -256,12 +256,14 @@ type JobGraph struct {
 
 // OperatorDescriptor describes a single operator in the job graph.
 type OperatorDescriptor struct {
-	OperatorID  string       `codec:"oid"`
-	Name        string       `codec:"n"`
-	Type        OperatorType `codec:"t"`
-	Parallelism int32        `codec:"p"`
-	ClassName   string       `codec:"cn,omitempty"`
-	Config      []byte       `codec:"cfg,omitempty"`
+	DLQSink     *DLQSinkDescriptor `codec:"dlq,omitempty"`
+	ErrorPolicy *ErrorPolicy       `codec:"error_policy,omitempty"`
+	OperatorID  string             `codec:"oid"`
+	Name        string             `codec:"n"`
+	Type        OperatorType       `codec:"t"`
+	Parallelism int32              `codec:"p"`
+	ClassName   string             `codec:"cn,omitempty"`
+	Config      []byte             `codec:"cfg,omitempty"`
 }
 
 // EdgeDescriptor describes a connection between two operators.

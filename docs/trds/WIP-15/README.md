@@ -25,7 +25,8 @@
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
 
 - **Implemented:** Job submission, inspection, cancellation, lifecycle state transitions, cluster endpoints, and savepoint metadata APIs are implemented.
-- **Remaining:** Real pause/resume, completed savepoints and restore, upgrades/rescaling, checkpoint-based recovery, binary submission, and the proposed job-management CLI remain incomplete.
+- **Remaining:** Real pause/resume, completed savepoints and restore, upgrades/rescaling, checkpoint-based recovery, binary submission, remain incomplete. The CLI now wraps existing REST operations but does not complete those runtime workflows.
+- **CLI:** [current commands and limits](../../job-cli.md); JSON submission, inspection, cancellation, cluster status, and savepoint metadata operations are implemented with bounded requests and explicit server errors.
 - **Evidence:** [http_jobs.go](../../../internal/coordinator/http_jobs.go), [job_manager.go](../../../internal/coordinator/job_manager.go), [savepoint_manager.go](../../../internal/coordinator/savepoint_manager.go).
 
 ---

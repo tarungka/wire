@@ -22,10 +22,10 @@
 
 ## Implementation Status — 2026-09-12
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Assessed against `master` at `bb58acd`, with the timeout cleanup changes in this PR. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Engine-level barrier alignment, checkpoint timeout/abort handling, failure tracking, and metrics primitives are implemented.
-- **Remaining:** Wire the cluster checkpoint trigger/ACK/abort path through workers and validate distributed timeout and recovery behavior.
+- **Implemented:** Engine-level barrier alignment, checkpoint timeout/abort handling, failure tracking, and metrics primitives are implemented. Reaching either failure threshold now sends transaction-abort notifications before checkpoint-abort notifications, clears checkpoint tracking, and then returns the terminal failure. If cancellation interrupts notification delivery, the returned error preserves both the threshold failure and cancellation.
+- **Remaining:** Wire the cluster checkpoint trigger/ACK/abort path through workers and validate distributed timeout and recovery behavior. Local control-channel delivery is cancellation-aware but is not a durable abort acknowledgement; shutdown during delivery can still require transaction recovery.
 - **Evidence:** [barrier.go](../../../internal/engine/barrier.go), [checkpoint_coordinator.go](../../../internal/engine/checkpoint_coordinator.go), [worker.go](../../../internal/worker/worker.go).
 
 ---

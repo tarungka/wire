@@ -585,3 +585,57 @@ func TestEncodeAndWriteFrame_AllValueTypes(t *testing.T) {
 		}
 	}
 }
+
+type frameTestWriter struct {
+	calls    int
+	failCall int
+	count    int
+	err      error
+}
+
+func (w *frameTestWriter) Write(p []byte) (int, error) {
+	w.calls++
+	if w.calls == w.failCall {
+		return w.count, w.err
+	}
+	return len(p), nil
+}
+
+func TestWriteFrameRaw_PropagatesIncompleteWrites(t *testing.T) {
+	sentinel := errors.New("connection failed")
+	for _, tc := range []struct {
+		name        string
+		call, count int
+		err, want   error
+	}{
+		{"short header", 1, HeaderSize - 1, nil, io.ErrShortWrite},
+		{"zero header", 1, 0, nil, io.ErrShortWrite},
+		{"short payload", 2, 2, nil, io.ErrShortWrite},
+		{"zero payload", 2, 0, nil, io.ErrShortWrite},
+		{"header error", 1, 0, sentinel, sentinel},
+		{"partial header error", 1, 2, sentinel, sentinel},
+		{"payload error", 2, 0, sentinel, sentinel},
+		{"partial payload error", 2, 2, sentinel, sentinel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writer := &frameTestWriter{failCall: tc.call, count: tc.count, err: tc.err}
+			err := WriteFrameRaw(writer, MsgTypeDataRecord, []byte("payload"))
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("got %v, want %v", err, tc.want)
+			}
+			if writer.calls != tc.call {
+				t.Fatalf("continued writing after failure: %d calls", writer.calls)
+			}
+		})
+	}
+}
+
+func TestWriteFrameRaw_EmptyPayload(t *testing.T) {
+	writer := &frameTestWriter{}
+	if err := WriteFrameRaw(writer, MsgTypeDataRecord, nil); err != nil {
+		t.Fatal(err)
+	}
+	if writer.calls != 1 {
+		t.Fatalf("empty payload made %d writes", writer.calls)
+	}
+}

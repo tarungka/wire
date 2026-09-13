@@ -64,14 +64,15 @@ type Server struct {
 	log            zerolog.Logger
 	mu             sync.RWMutex
 	wg             sync.WaitGroup
-	cancel         context.CancelFunc
-	session        *yamux.Session
+	sessions       map[*yamux.Session]context.CancelFunc
+	stopping       bool
 }
 
 // NewServer creates a new RPC server with the given configuration.
 func NewServer(cfg Config) *Server {
 	return &Server{
 		cfg:            cfg,
+		sessions:       make(map[*yamux.Session]context.CancelFunc),
 		handlers:       make(map[MethodID]Handler),
 		streamHandlers: make(map[MethodID]StreamHandler),
 		log:            logger.GetLogger("rpc-server"),
@@ -113,9 +114,31 @@ func (s *Server) getStreamHandler(method MethodID) StreamHandler {
 // It blocks until the context is canceled or the session is closed.
 func (s *Server) ServeSession(ctx context.Context, session *yamux.Session) {
 	ctx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
-	s.session = session
-	defer cancel()
+	s.mu.Lock()
+	if s.stopping {
+		s.mu.Unlock()
+		cancel()
+		_ = session.Close()
+		return
+	}
+	if s.sessions == nil {
+		s.sessions = make(map[*yamux.Session]context.CancelFunc)
+	}
+	s.sessions[session] = cancel
+	s.wg.Add(1)
+	s.mu.Unlock()
+	var handlers sync.WaitGroup
+	stopClose := context.AfterFunc(ctx, func() { _ = session.Close() })
+	defer func() {
+		cancel()
+		stopClose()
+		_ = session.Close()
+		handlers.Wait()
+		s.mu.Lock()
+		delete(s.sessions, session)
+		s.mu.Unlock()
+		s.wg.Done()
+	}()
 
 	sem := make(chan struct{}, s.cfg.MaxConcurrentRPCs)
 
@@ -132,11 +155,16 @@ func (s *Server) ServeSession(ctx context.Context, session *yamux.Session) {
 			return
 		}
 
-		sem <- struct{}{}
-		s.wg.Add(1)
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			_ = stream.Close()
+			return
+		}
+		handlers.Add(1)
 		go func(stream *yamux.Stream) {
 			defer func() { <-sem }()
-			defer s.wg.Done()
+			defer handlers.Done()
 			s.serveStream(ctx, stream)
 		}(stream)
 	}
@@ -253,11 +281,16 @@ func (s *Server) writeSuccessResponse(w net.Conn, method MethodID, requestID uin
 // Stop cancels the server context, closes the session to unblock AcceptStream,
 // and waits for all in-flight RPCs to complete.
 func (s *Server) Stop() {
-	if s.cancel != nil {
-		s.cancel()
+	s.mu.Lock()
+	s.stopping = true
+	sessions := make(map[*yamux.Session]context.CancelFunc, len(s.sessions))
+	for session, cancel := range s.sessions {
+		sessions[session] = cancel
 	}
-	if s.session != nil {
-		_ = s.session.Close()
+	s.mu.Unlock()
+	for session, cancel := range sessions {
+		cancel()
+		_ = session.Close()
 	}
 	s.wg.Wait()
 }

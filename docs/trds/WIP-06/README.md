@@ -22,10 +22,10 @@
 
 ## Implementation Status — 2026-09-12
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Assessed against `master` at `bb58acd`, with the manifest validation changes in this PR. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Metadata types, JSON serialization, validation, paths, and savepoint compatibility checks are implemented and tested.
-- **Remaining:** Use the metadata in a complete cluster checkpoint/restore path, including state-file recovery and fallback from invalid checkpoints.
+- **Implemented:** Metadata types, JSON serialization, validation, paths, and savepoint compatibility checks are implemented and tested. The JSON decoder now rejects out-of-range or duplicate operator subtask indices, negative state sizes, duplicate state filenames, and non-portable or escaping state paths. Direct validation also rejects nil metadata and unsupported schema versions.
+- **Remaining:** Use the metadata in a complete cluster checkpoint/restore path, including state-file recovery and fallback from invalid checkpoints. Structural validation does not verify file existence, contents, or symlinks; the eventual state reader must enforce filesystem containment when opening files. It does not yet prove complete task coverage or non-overlapping key-group ownership.
 - **Evidence:** [checkpoint_metadata.go](../../../internal/engine/checkpoint_metadata.go), [checkpoint_metadata_validation.go](../../../internal/engine/checkpoint_metadata_validation.go), [recovery.go](../../../internal/coordinator/recovery.go).
 
 ---
@@ -323,9 +323,9 @@ classDiagram
 | `subtask_index` | int | Yes | Parallel instance index (0-based) |
 | `key_group_range.start` | int | Yes | First Key Group owned (inclusive) |
 | `key_group_range.end` | int | Yes | Last Key Group owned (exclusive) |
-| `state_path` | string | Yes | Relative path to state files directory |
+| `state_path` | string | Yes | Portable slash-separated relative directory; optional trailing slash. No absolute paths, traversal, backslashes, or volume names. |
 | `state_size_bytes` | int64 | Yes | Total size of state files |
-| `state_files` | []string | Yes | List of Pebble SSTable and manifest files |
+| `state_files` | []string | Yes | Unique filenames within `state_path`, without directory separators or traversal. |
 | `source_offsets` | object | No | Only for source operators. Connector-specific offset data. |
 
 #### Sink Transaction Fields

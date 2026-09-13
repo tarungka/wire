@@ -42,7 +42,7 @@ Draft --> In Review --> Approved --> Partially Implemented --> Implemented --> S
 | **Approved** | Approved for implementation |
 | **Partially Implemented** | Some scoped work has landed; remaining implementation or specification differences are recorded in the WIP |
 | **Implemented** | Scoped work has landed; explicitly deferred follow-ups are not implied complete |
-| **Proposed** | Initial proposal without a pipeline implementation (currently WIP-19) |
+| **Proposed** | Initial proposal without an implementation |
 | **Rejected** | Not moving forward |
 | **Superseded** | Replaced by a newer WIP |
 
@@ -93,7 +93,7 @@ All 25 proposals, initially audited against `master` at `0e78195` on 2026-09-12 
 | [WIP-14](WIP-14/README.md) | User API & Go SDK | Partially Implemented |
 | [WIP-15](WIP-15/README.md) | Job Lifecycle & REST API | Partially Implemented |
 | [WIP-16](WIP-16/README.md) | Connector SDK & Built-in Connectors | Partially Implemented |
-| [WIP-19](WIP-19/README.md) | YAML Pipeline Parser | Proposed |
+| [WIP-19](WIP-19/README.md) | YAML Pipeline Parser | Partially Implemented |
 
 ### Security
 
@@ -110,3 +110,46 @@ All 25 proposals, initially audited against `master` at `0e78195` on 2026-09-12 
 | [WIP-23](WIP-23/README.md) | Coordinator Submit Lock/Fsync Contention | Partially Implemented |
 | [WIP-24](WIP-24/README.md) | TaskSlot Operator-Error Propagation | Implemented |
 | [WIP-25](WIP-25/README.md) | Constant-Time Active Job Name Lookup | Implemented |
+
+## Implementation review — 2026-09-12
+
+The status tables above describe `master`. Open PRs below are proposed increments,
+not evidence that the entire WIP is complete. Each PR records its implemented
+scope, validation, and remaining work. The initial status audit merged in
+[#187](https://github.com/tarungka/wire/pull/187).
+
+WIPs **20, 21, 22, 24, and 25** are implemented on `master`. WIP-20's lifecycle
+completion merged in [#188](https://github.com/tarungka/wire/pull/188).
+
+| WIP | Individual PR | Scope of this increment |
+| --- | --- | --- |
+| [WIP-01](WIP-01/README.md) | [#208](https://github.com/tarungka/wire/pull/208) | Frame write validation |
+| [WIP-02](WIP-02/README.md) | [#207](https://github.com/tarungka/wire/pull/207) | Barrier checkpoint and epoch identity |
+| [WIP-03](WIP-03/README.md) | [#206](https://github.com/tarungka/wire/pull/206) | Validated, linear-time rescale mapping |
+| [WIP-04](WIP-04/README.md) | [#205](https://github.com/tarungka/wire/pull/205) | Startup idle timeout |
+| [WIP-05](WIP-05/README.md) | [#204](https://github.com/tarungka/wire/pull/204) | Abort cleanup at failure thresholds |
+| [WIP-06](WIP-06/README.md) | [#203](https://github.com/tarungka/wire/pull/203) | Checkpoint manifest validation |
+| [WIP-07](WIP-07/README.md) | [#202](https://github.com/tarungka/wire/pull/202) | Concurrent RPC session shutdown |
+| [WIP-08](WIP-08/README.md) | [#201](https://github.com/tarungka/wire/pull/201) | Live-worker placement |
+| [WIP-09](WIP-09/README.md) | [#200](https://github.com/tarungka/wire/pull/200) | Recovery fencing metadata validation |
+| [WIP-10](WIP-10/README.md) | [#199](https://github.com/tarungka/wire/pull/199) | Local transaction boundaries |
+| [WIP-11](WIP-11/README.md) | [#194](https://github.com/tarungka/wire/pull/194) | Runtime error policies and DLQ sinks |
+| [WIP-12](WIP-12/README.md) | [#193](https://github.com/tarungka/wire/pull/193) | Window lateness and snapshots |
+| [WIP-13](WIP-13/README.md) | [#195](https://github.com/tarungka/wire/pull/195) | Configuration reference and substitution |
+| [WIP-14](WIP-14/README.md) | [#198](https://github.com/tarungka/wire/pull/198) | Ordered SDK window execution |
+| [WIP-15](WIP-15/README.md) | [#196](https://github.com/tarungka/wire/pull/196) | Job and savepoint CLI |
+| [WIP-16](WIP-16/README.md) | [#191](https://github.com/tarungka/wire/pull/191) | HTTP ingest and delivery connectors |
+| [WIP-17](WIP-17/README.md) | [#197](https://github.com/tarungka/wire/pull/197) | Runtime HTTPS and worker RPC TLS |
+| [WIP-18](WIP-18/README.md) | [#190](https://github.com/tarungka/wire/pull/190) | Pebble state backend and SDK state |
+| [WIP-19](WIP-19/README.md) | [#192](https://github.com/tarungka/wire/pull/192) | YAML parsing and CEL transforms |
+| [WIP-23](WIP-23/README.md) | [#189](https://github.com/tarungka/wire/pull/189) | Metadata durability and heartbeat fsync reduction; merged, targets remain unmet |
+
+WIP-14's PR #198 is stacked on WIP-12's PR #193. Review/merge #193 first, then
+retarget #198 to `master`. The repository's CI workflows only run for PRs targeting
+`main` or `master`, so #198's local race-enabled integration validation must not be
+represented as a successful GitHub CI run. Recheck CI after retargeting.
+
+No other open PR in this table is merged by this audit. The existing WIP-26
+optimization proposal is tracked separately in
+[#178](https://github.com/tarungka/wire/pull/178); it is not part of the WIP-01–25
+catalog on `master`.

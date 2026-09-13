@@ -151,15 +151,35 @@ func TestInputWatermarkTracker_NoIdleTimeout(t *testing.T) {
 	}
 }
 
-func TestInputWatermarkTracker_NeverSeenActivity(t *testing.T) {
-	// Inputs with no activity and a configured timeout are treated as idle.
-	tracker := NewInputWatermarkTracker(2)
+func TestInputWatermarkTracker_StartupIdleTimeout(t *testing.T) {
+	// Starting at zero must not be confused with missing activity.
+	var now int64
+	tracker := newInputWatermarkTracker(2, func() int64 { return now })
 	tracker.AdvanceWatermark(0, 100)
-	tracker.AdvanceWatermark(1, 200)
-
-	_, allIdle := tracker.MinWatermark(time.Minute)
-	if !allIdle {
-		t.Error("expected all idle when no activity recorded")
+	tracker.RecordActivity(0)
+	if wm, idle := tracker.MinWatermark(time.Minute); wm != 0 || idle {
+		t.Fatalf("new input excluded immediately: watermark=%d allIdle=%v", wm, idle)
+	}
+	now = int64(time.Minute - time.Nanosecond)
+	tracker.RecordActivity(0)
+	if wm, idle := tracker.MinWatermark(time.Minute); wm != 0 || idle {
+		t.Fatalf("new input excluded before timeout: watermark=%d allIdle=%v", wm, idle)
+	}
+	now = int64(time.Minute)
+	if wm, idle := tracker.MinWatermark(time.Minute); wm != 100 || idle {
+		t.Fatalf("silent input not excluded at timeout: watermark=%d allIdle=%v", wm, idle)
+	}
+	tracker.RecordActivity(1)
+	tracker.AdvanceWatermark(1, 50)
+	if wm, idle := tracker.MinWatermark(time.Minute); wm != 50 || idle {
+		t.Fatalf("input did not rejoin after activity: watermark=%d allIdle=%v", wm, idle)
+	}
+	now += int64(time.Minute)
+	if _, idle := tracker.MinWatermark(time.Minute); !idle {
+		t.Fatal("all silent inputs should expire")
+	}
+	if wm, idle := tracker.MinWatermark(0); wm != 50 || idle {
+		t.Fatal("disabled timeout must retain all inputs")
 	}
 }
 

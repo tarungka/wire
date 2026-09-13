@@ -1,6 +1,6 @@
 # WIP-19: YAML Pipeline Parser
 
-**Status:** `Proposed`
+**Status:** `Partially Implemented`
 **Author:** TBD
 **Dependencies:** WIP-14 (User API & Go SDK)
 
@@ -8,9 +8,9 @@
 
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** The proposal defines a pipeline schema and intended conversion to StreamGraph; no pipeline parser is implemented.
-- **Remaining:** Implement parsing, expression evaluation, transform resolution, validation, graph conversion, and the proposed reload behavior. Existing YAML system configuration is a different feature.
-- **Evidence:** [stream_graph.go](../../../sdk/stream_graph.go), [loader.go](../../../internal/config/loader.go).
+- **Implemented:** Strict single-document parsing for the proposed schema, input/name/type validation, cycle detection, forward references, CEL compilation with bounded evaluation, all listed transform graph mappings, and conversion to the SDK StreamGraph. Stateless single-source/single-sink pipelines execute through the SDK.
+- **Remaining:** Hot reload and safe switchover, savepoint migration, configuration-only live updates, CLI/worker expression deployment, and integration with parallel/keyed/window/checkpoint/restart execution. These execution capabilities are explicitly rejected rather than silently skipped. Connector types are supplied by the caller; the historical Kafka/stdout example does not make those connectors available. Existing YAML system configuration is a different feature.
+- **Evidence:** [parser](../../../sdk/pipeline_yaml.go), [transform compiler](../../../sdk/pipeline_transforms.go), [CEL evaluation](../../../sdk/pipeline_expression.go), [tests](../../../sdk/pipeline_yaml_test.go), [usage and execution limits](../../../sdk/pipeline_yaml.md).
 
 ## Summary
 

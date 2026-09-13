@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"os"
@@ -220,9 +221,21 @@ func TestTLS_InvalidCert(t *testing.T) {
 	clientMux := NewMux(cCfg)
 	defer func() { _ = clientMux.Close() }()
 
-	_, err = clientMux.Dial(ctx, addr)
+	stream, err := clientMux.Dial(ctx, addr)
 	if err == nil {
-		t.Fatal("expected TLS handshake error with invalid/missing client cert")
+		// TLS 1.3 may expose the server rejection only on subsequent I/O.
+		defer func() { _ = stream.Close() }()
+		if err := stream.raw.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		_, err = stream.ReadMessage()
+	}
+	if err == nil {
+		t.Fatal("connection accepted a missing client certificate")
+	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		t.Fatalf("timed out instead of observing certificate rejection: %v", err)
 	}
 }
 

@@ -904,6 +904,8 @@ func TestOperatorChain_TransactionalSink_CommitError(t *testing.T) {
 
 	sink := &mockTransactionalSink{commitErr: errors.New("commit timeout")}
 
+	aligner.OnBarrier(0, 1, 1)
+	controlCh <- ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 1, EpochID: 1}
 	controlCh <- ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 1, EpochID: 1}
 	close(inputCh)
 
@@ -938,8 +940,8 @@ func TestOperatorChain_TransactionalSink_AbortThenRestart(t *testing.T) {
 	if sink.BeginTxnCalls() != 2 {
 		t.Errorf("BeginTransaction calls: got %d, want 2", sink.BeginTxnCalls())
 	}
-	if sink.AbortCallCount() != 1 {
-		t.Errorf("Abort calls: got %d, want 1", sink.AbortCallCount())
+	if sink.AbortCallCount() != 2 {
+		t.Errorf("Abort calls: got %d, want 2", sink.AbortCallCount())
 	}
 }
 
@@ -982,10 +984,19 @@ func TestOperatorChain_NonTransactionalSink_Unchanged(t *testing.T) {
 		done <- runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), nil, nil, nil, nil, NoopErrorMetrics())
 	}()
 
-	// Send event — the sink is terminal so no output to wait on. We rely on
-	// control message ordering: the barrier is processed after the event
-	// because the operator chain drains inputCh before handling controlCh.
+	// Event and control channels have no cross-channel ordering. Wait until
+	// the terminal sink consumes the event before testing barrier forwarding.
 	inputCh <- Event{Value: []byte("x")}
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for sink.Count() != 1 {
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatal("sink did not consume the event")
+		}
+	}
 
 	// Send barrier — should be forwarded to outputCh for non-transactional sink.
 	aligner.OnBarrier(0, 1, 1)
@@ -1029,7 +1040,9 @@ func TestOperatorChain_TransactionalSink_IdempotentCommit(t *testing.T) {
 
 	sink := &mockTransactionalSink{}
 
-	// Send commit twice.
+	// Prepare once, then deliver the same commit decision twice.
+	aligner.OnBarrier(0, 1, 1)
+	controlCh <- ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 1, EpochID: 1}
 	controlCh <- ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 1, EpochID: 1}
 	controlCh <- ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 1, EpochID: 1}
 	controlCh <- ControlMsg{Type: CtrlShutdown}
@@ -1041,13 +1054,13 @@ func TestOperatorChain_TransactionalSink_IdempotentCommit(t *testing.T) {
 	}
 
 	commits := sink.CommitCallIDs()
-	if len(commits) != 2 {
-		t.Errorf("Commit calls: got %d, want 2", len(commits))
+	if len(commits) != 1 {
+		t.Errorf("Commit calls: got %d, want 1", len(commits))
 	}
 
-	// BeginTransaction: 1 at startup + 2 after each commit = 3
-	if sink.BeginTxnCalls() != 3 {
-		t.Errorf("BeginTransaction calls: got %d, want 3", sink.BeginTxnCalls())
+	// BeginTransaction: startup plus one committed transaction.
+	if sink.BeginTxnCalls() != 2 {
+		t.Errorf("BeginTransaction calls: got %d, want 2", sink.BeginTxnCalls())
 	}
 }
 
@@ -1635,4 +1648,91 @@ func (m *selectiveErrorMap) Map(ctx context.Context, e Event) (Event, error) {
 		return Event{}, errors.New("selective failure")
 	}
 	return e, nil
+}
+
+func TestPreparedTransactionDefersEOFAcrossCommit(t *testing.T) {
+	sink := &mockTransactionalSink{}
+	input := make(chan Event, 1)
+	input <- Event{Value: []byte("next transaction")}
+	output := make(chan OutputMsg, 1)
+	cc := &chainContext{ctx: context.Background(), links: buildChainLinks([]Operator{sink}, nil), inputCh: input, outputCh: output, txnSink: sink, numInputs: 1, transactionPrepared: true, preparedCheckpoint: 7, log: testLogger(), errMetrics: NoopErrorMetrics()}
+	eof := 0
+	if err := handleControl(cc, ControlMsg{Type: CtrlEndOfPartition}, &eof); err != nil {
+		t.Fatal(err)
+	}
+	if len(input) != 1 || eof != 0 {
+		t.Fatal("EOF drained records before commit")
+	}
+	err := handleControl(cc, ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 7}, &eof)
+	if err != errChainDone {
+		t.Fatalf("deferred EOF: %v", err)
+	}
+	if len(input) != 0 || sink.BeginTxnCalls() != 1 || len(sink.CommitCallIDs()) != 1 {
+		t.Fatal("pending records did not resume after commit")
+	}
+}
+
+func TestPreparedTransactionRejectsWrongCommit(t *testing.T) {
+	sink := &mockTransactionalSink{}
+	cc := &chainContext{ctx: context.Background(), txnSink: sink, transactionPrepared: true, preparedCheckpoint: 7, log: testLogger()}
+	eof := 0
+	if err := handleControl(cc, ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 8}, &eof); err == nil {
+		t.Fatal("wrong checkpoint committed")
+	}
+	if len(sink.CommitCallIDs()) != 0 || !cc.transactionPrepared {
+		t.Fatal("mismatched decision changed transaction")
+	}
+}
+
+type cleanupTransactionalSink struct {
+	mockTransactionalSink
+	cleanupContextErr error
+	cleanupDeadline   bool
+}
+
+func (s *cleanupTransactionalSink) Abort(ctx context.Context) error {
+	s.cleanupContextErr = ctx.Err()
+	_, s.cleanupDeadline = ctx.Deadline()
+	return s.mockTransactionalSink.Abort(ctx)
+}
+func TestTransactionCleanupPreservesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sink := &cleanupTransactionalSink{}
+	err := runOperatorChain(ctx, []Operator{sink}, make(chan Event), make(chan ControlMsg), make(chan OutputMsg), NewBarrierAligner(1, 10), 1, NoopCheckpointMetrics(), testLogger(), sink, nil, nil, nil, NoopErrorMetrics())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("lost cancellation: %v", err)
+	}
+	if sink.AbortCallCount() != 1 || sink.cleanupContextErr != nil || !sink.cleanupDeadline {
+		t.Fatalf("invalid cleanup context: %+v", sink)
+	}
+}
+
+func TestTransactionSideBufferWaitsForDecision(t *testing.T) {
+	sink := &mockTransactionalSink{}
+	aligner := NewBarrierAligner(1, 10)
+	aligner.OnBarrier(0, 7, 1)
+	if err := aligner.BufferEvent(context.Background(), 0, Event{Value: []byte("post-barrier")}); err != nil {
+		t.Fatal(err)
+	}
+	cc := &chainContext{ctx: context.Background(), links: buildChainLinks([]Operator{sink}, nil), txnSink: sink, aligner: aligner, cpMetrics: NoopCheckpointMetrics(), errMetrics: NoopErrorMetrics(), log: testLogger()}
+	eof := 0
+	if err := handleControl(cc, ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 7}, &eof); err != nil {
+		t.Fatal(err)
+	}
+	sink.mu.Lock()
+	written := len(sink.written)
+	sink.mu.Unlock()
+	if written != 0 || len(cc.deferredEvents) != 1 {
+		t.Fatal("post-barrier event entered prepared transaction")
+	}
+	if err := handleControl(cc, ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 7}, &eof); err != nil {
+		t.Fatal(err)
+	}
+	sink.mu.Lock()
+	written = len(sink.written)
+	sink.mu.Unlock()
+	if written != 1 || len(cc.deferredEvents) != 0 {
+		t.Fatal("post-barrier event not replayed into next transaction")
+	}
 }

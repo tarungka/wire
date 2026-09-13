@@ -1,0 +1,246 @@
+package sdk
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// PipelineConnectors supplies available connector types. Factories configure
+// instances but must leave I/O startup to Open. No factory runs before validation.
+type PipelineConnectors struct {
+	Sources map[string]func(map[string]any) (Source, error)
+	Sinks   map[string]func(map[string]any) (Sink, error)
+}
+
+type pipelineOperator struct {
+	Name   string         `yaml:"name"`
+	Type   string         `yaml:"type"`
+	Input  string         `yaml:"input"`
+	Config map[string]any `yaml:"config"`
+}
+type pipelineDocument struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name   string            `yaml:"name"`
+		Labels map[string]string `yaml:"labels"`
+	} `yaml:"metadata"`
+	Spec struct {
+		Parallelism int `yaml:"parallelism"`
+		Checkpoint  struct {
+			Interval time.Duration `yaml:"interval"`
+			Timeout  time.Duration `yaml:"timeout"`
+		} `yaml:"checkpoint"`
+		Restart struct {
+			Strategy    string        `yaml:"strategy"`
+			MaxAttempts int           `yaml:"max-attempts"`
+			Delay       time.Duration `yaml:"delay"`
+		} `yaml:"restart"`
+		Sources    []pipelineOperator `yaml:"sources"`
+		Transforms []pipelineOperator `yaml:"transforms"`
+		Sinks      []pipelineOperator `yaml:"sinks"`
+	} `yaml:"spec"`
+}
+
+// YAMLPipeline is a validated definition compiled to the SDK StreamGraph.
+// Execute rejects capabilities that the embedded runtime cannot yet provide.
+type YAMLPipeline struct {
+	Name   string
+	Labels map[string]string
+	env    *StreamExecutionEnvironment
+}
+
+func (p *YAMLPipeline) Graph() *StreamGraph { return p.env.graph }
+func (p *YAMLPipeline) Execute(ctx context.Context) (*JobResult, error) {
+	sources, sinks := 0, 0
+	outgoing := map[int]int{}
+	for _, edge := range p.env.graph.edges {
+		outgoing[edge.SourceID]++
+	}
+	for _, node := range p.env.graph.nodes {
+		switch node.Type {
+		case NodeSource:
+			sources++
+		case NodeSink:
+			sinks++
+		case NodeKeyBy, NodeWindow, NodeReduce:
+			return nil, fmt.Errorf("%w: YAML execution of %q requires runtime integration", ErrInvalidConfig, node.Name)
+		}
+		if outgoing[node.ID] > 1 {
+			return nil, fmt.Errorf("%w: YAML branching execution is not supported", ErrInvalidConfig)
+		}
+	}
+	if p.env.parallelism != 1 {
+		return nil, fmt.Errorf("%w: YAML parallel execution requires per-instance connector factories", ErrInvalidConfig)
+	}
+	if sources != 1 || sinks != 1 {
+		return nil, fmt.Errorf("%w: YAML execution requires one source and sink", ErrInvalidConfig)
+	}
+	if p.env.checkpointInterval != 0 || p.env.restartStrategy.Type != RestartNone {
+		return nil, fmt.Errorf("%w: YAML checkpoint/restart execution is not supported", ErrInvalidConfig)
+	}
+	return p.env.ExecuteWithName(ctx, p.Name)
+}
+
+// ParsePipelineYAML parses one strict wire/v1 Pipeline document, validates its
+// graph and expressions, and resolves connector factories into the SDK graph.
+func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipeline, error) {
+	var doc pipelineDocument
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("%w: YAML: %v", ErrInvalidConfig, err)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return nil, fmt.Errorf("%w: expected one YAML document", ErrInvalidConfig)
+	}
+	if doc.APIVersion != "wire/v1" || doc.Kind != "Pipeline" || strings.TrimSpace(doc.Metadata.Name) == "" {
+		return nil, fmt.Errorf("%w: expected wire/v1 Pipeline with metadata.name", ErrInvalidConfig)
+	}
+	if doc.Spec.Parallelism == 0 {
+		doc.Spec.Parallelism = 1
+	}
+	if doc.Spec.Parallelism < 1 {
+		return nil, fmt.Errorf("%w: parallelism must be positive", ErrInvalidConfig)
+	}
+	if doc.Spec.Checkpoint.Interval < 0 || doc.Spec.Checkpoint.Timeout < 0 {
+		return nil, fmt.Errorf("%w: negative checkpoint duration", ErrInvalidConfig)
+	}
+	if len(doc.Spec.Sources) == 0 {
+		return nil, ErrNoSources
+	}
+	if len(doc.Spec.Sinks) == 0 {
+		return nil, ErrNoSinks
+	}
+	env := New().SetParallelism(doc.Spec.Parallelism).SetCheckpointInterval(doc.Spec.Checkpoint.Interval)
+	if doc.Spec.Checkpoint.Timeout > 0 {
+		env.SetCheckpointTimeout(doc.Spec.Checkpoint.Timeout)
+	}
+	switch doc.Spec.Restart.Strategy {
+	case "", "none":
+		if doc.Spec.Restart.MaxAttempts != 0 || doc.Spec.Restart.Delay != 0 {
+			return nil, fmt.Errorf("%w: restart options require a strategy", ErrInvalidConfig)
+		}
+	case "fixed-delay":
+		if doc.Spec.Restart.MaxAttempts < 1 || doc.Spec.Restart.Delay <= 0 {
+			return nil, fmt.Errorf("%w: invalid restart policy", ErrInvalidConfig)
+		}
+		env.SetRestartStrategy(FixedDelay(doc.Spec.Restart.MaxAttempts, doc.Spec.Restart.Delay))
+	default:
+		return nil, fmt.Errorf("%w: unsupported restart strategy", ErrInvalidConfig)
+	}
+	definitions := append(append(append([]pipelineOperator{}, doc.Spec.Sources...), doc.Spec.Transforms...), doc.Spec.Sinks...)
+	byName := map[string]pipelineOperator{}
+	kinds := map[string]StreamNodeType{}
+	for i, op := range definitions {
+		if op.Name == "" || op.Type == "" {
+			return nil, fmt.Errorf("%w: operator name/type required", ErrInvalidConfig)
+		}
+		if _, ok := byName[op.Name]; ok {
+			return nil, fmt.Errorf("%w: %s", ErrDuplicateName, op.Name)
+		}
+		byName[op.Name] = op
+		switch {
+		case i < len(doc.Spec.Sources):
+			kinds[op.Name] = NodeSource
+			if op.Input != "" || connectors.Sources[op.Type] == nil {
+				return nil, fmt.Errorf("%w: invalid or unavailable source %q", ErrInvalidConfig, op.Name)
+			}
+		case i >= len(doc.Spec.Sources)+len(doc.Spec.Transforms):
+			kinds[op.Name] = NodeSink
+			if connectors.Sinks[op.Type] == nil {
+				return nil, fmt.Errorf("%w: unavailable sink type %q", ErrInvalidConfig, op.Type)
+			}
+		default:
+			kinds[op.Name] = NodeMap
+		}
+	}
+	var ordered []pipelineOperator
+	visited := map[string]uint8{}
+	var visit func(string) error
+	visit = func(name string) error {
+		if visited[name] == 1 {
+			return fmt.Errorf("%w: %s", ErrCyclicGraph, name)
+		}
+		if visited[name] == 2 {
+			return nil
+		}
+		visited[name] = 1
+		op := byName[name]
+		if kinds[name] != NodeSource {
+			if _, ok := byName[op.Input]; !ok || kinds[op.Input] == NodeSink {
+				return fmt.Errorf("%w: %q input %q is not a source or transform", ErrInvalidConfig, name, op.Input)
+			}
+			if err := visit(op.Input); err != nil {
+				return err
+			}
+		}
+		visited[name] = 2
+		ordered = append(ordered, op)
+		return nil
+	}
+	for _, op := range definitions {
+		if err := visit(op.Name); err != nil {
+			return nil, err
+		}
+	}
+	variables := []string{"key", "value", "event_time", "headers", "payload"}
+	for _, op := range doc.Spec.Transforms {
+		if op.Type == "json-parse" {
+			if target, ok := op.Config["target-field"].(string); ok {
+				variables = append(variables, target)
+			}
+		}
+	}
+	expressionEnv, err := newPipelineExpressionEnv(variables)
+	if err != nil {
+		return nil, err
+	}
+	nodes := map[string]*StreamNode{}
+	// Compile all transform/configuration errors before invoking any connector.
+	for _, op := range ordered {
+		node := &StreamNode{Name: op.Name, Type: kinds[op.Name], Parallelism: doc.Spec.Parallelism}
+		if node.Type != NodeSource && node.Type != NodeSink {
+			if err := compilePipelineTransform(node, op, expressionEnv); err != nil {
+				return nil, fmt.Errorf("%w: transform %q: %v", ErrInvalidConfig, op.Name, err)
+			}
+		}
+		nodes[op.Name] = node
+	}
+	for _, op := range ordered {
+		node := nodes[op.Name]
+		switch node.Type {
+		case NodeSource:
+			node.Source, err = connectors.Sources[op.Type](op.Config)
+			if err == nil && node.Source == nil {
+				err = fmt.Errorf("nil source")
+			}
+		case NodeSink:
+			node.Sink, err = connectors.Sinks[op.Type](op.Config)
+			if err == nil && node.Sink == nil {
+				err = fmt.Errorf("nil sink")
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%w: connector %q: %v", ErrInvalidConfig, op.Name, err)
+		}
+		env.graph.addNode(node)
+		if node.Type != NodeSource {
+			shuffle := ShuffleForward
+			if node.Type == NodeKeyBy {
+				shuffle = ShuffleHash
+			}
+			env.graph.addEdge(nodes[op.Input].ID, node.ID, shuffle)
+		}
+	}
+	if err = env.graph.validate(); err != nil {
+		return nil, err
+	}
+	return &YAMLPipeline{Name: doc.Metadata.Name, Labels: doc.Metadata.Labels, env: env}, nil
+}

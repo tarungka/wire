@@ -22,9 +22,9 @@
 
 ## Implementation Status — 2026-09-12
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Assessed against `master` at `bb58acd`, with the range-validation and rescale-mapping changes in this PR. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Key hashing, range assignment, key encoding, and rescale-mapping calculations are implemented.
+- **Implemented:** Key hashing, range assignment, key encoding, and rescale-mapping calculations are implemented. Range construction and rescale mapping reject invalid key-group counts and parallelism before constructing ranges. Rescale mapping walks the two sorted partitions in O(old parallelism + new parallelism) time, preserving each old-owner boundary. Tests compare every combination of 1–32 old/new tasks against a pairwise reference and exercise the maximum 32,768-task partition.
 - **Remaining:** Distributed keyed routing and actual savepoint-based state transfer/rescaling are missing; RescaleMapping only calculates ownership changes.
 - **Evidence:** [assignment.go](../../../internal/keygroup/assignment.go), [hasher.go](../../../internal/keygroup/hasher.go), [scheduler.go](../../../internal/coordinator/scheduler.go).
 

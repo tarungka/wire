@@ -1,0 +1,5 @@
+mode: worker
+worker:
+  coordinator_addr: localhost:4002
+  listen_addr: ':4003'
+  task_slots: 4

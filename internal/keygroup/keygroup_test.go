@@ -432,3 +432,76 @@ func assertRanges(t *testing.T, got, want []KeyGroupRange) {
 		}
 	}
 }
+
+func TestAssignment_InvalidConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		groups, parallelism int
+		want                error
+	}{
+		{0, 1, ErrKeyGroupsOutOfRange},
+		{65536, 1, ErrKeyGroupsOutOfRange},
+		{3, 1, ErrNotPowerOfTwo},
+		{128, -1, ErrInvalidParallelism},
+		{128, 0, ErrInvalidParallelism},
+		{128, 129, ErrParallelismExceedsKeyGroups},
+	} {
+		if _, err := TaskKeyGroupRange(0, tc.groups, tc.parallelism); !errors.Is(err, tc.want) {
+			t.Fatalf("task range: %+v: %v", tc, err)
+		}
+		if _, err := AllTaskRanges(tc.groups, tc.parallelism); !errors.Is(err, tc.want) {
+			t.Fatalf("all ranges: %+v: %v", tc, err)
+		}
+		if _, err := RescaleMapping(tc.groups, tc.parallelism, 1); !errors.Is(err, tc.want) {
+			t.Fatalf("old parallelism: %+v: %v", tc, err)
+		}
+		if _, err := RescaleMapping(tc.groups, 1, tc.parallelism); !errors.Is(err, tc.want) {
+			t.Fatalf("new parallelism: %+v: %v", tc, err)
+		}
+	}
+}
+
+func TestRescale_AllSmallPartitions(t *testing.T) {
+	const groups = 32
+	for oldP := 1; oldP <= groups; oldP++ {
+		for newP := 1; newP <= groups; newP++ {
+			mapping, err := RescaleMapping(groups, oldP, newP)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for newTask := 0; newTask < newP; newTask++ {
+				// Independent pairwise reference verifies both coverage and the split
+				// boundaries needed to read state from individual old tasks.
+				var expected []KeyGroupRange
+				for oldTask := 0; oldTask < oldP; oldTask++ {
+					start := max(oldTask*groups/oldP, newTask*groups/newP)
+					end := min((oldTask+1)*groups/oldP, (newTask+1)*groups/newP)
+					if start < end {
+						expected = append(expected, KeyGroupRange{uint16(start), uint16(end)})
+					}
+				}
+				actual := mapping[newTask]
+				if len(actual) != len(expected) {
+					t.Fatalf("%d -> %d task %d: got %v want %v", oldP, newP, newTask, actual, expected)
+				}
+				for i := range expected {
+					if actual[i] != expected[i] {
+						t.Fatalf("%d -> %d task %d: got %v want %v", oldP, newP, newTask, actual, expected)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestRescale_MaxParallelism(t *testing.T) {
+	mapping, err := RescaleMapping(MaxKeyGroups, MaxKeyGroups, MaxKeyGroups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for task := 0; task < MaxKeyGroups; task++ {
+		ranges := mapping[task]
+		if len(ranges) != 1 || ranges[0] != (KeyGroupRange{uint16(task), uint16(task + 1)}) {
+			t.Fatalf("invalid task %d: %v", task, ranges)
+		}
+	}
+}

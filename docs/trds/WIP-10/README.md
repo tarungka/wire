@@ -25,8 +25,8 @@
 
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Engine transactional-sink interfaces, transaction state, and checkpoint-linked commit handling are implemented and tested.
-- **Remaining:** The cluster worker executor passes no transactional sink or checkpoint ACK callback. External exactly-once delivery and failure recovery are not complete.
+- **Implemented:** Engine transactional-sink interfaces, transaction state, and checkpoint-linked commit handling are implemented and tested. Prepared transactions now pause normal input, defer EOF and post-barrier side-buffer records, validate matching commit decisions, ignore duplicate commits, and abort remaining transactions before close with a separate cleanup context.
+- **Remaining:** The cluster worker executor passes no transactional sink or checkpoint ACK callback. Durable transaction-decision recovery, checkpoint epoch fencing, and cluster integration remain incomplete; these local ordering fixes do not establish external exactly-once delivery.
 - **Evidence:** [operator.go](../../../internal/engine/operator.go), [checkpoint_coordinator.go](../../../internal/engine/checkpoint_coordinator.go), [task_executor.go](../../../internal/worker/task_executor.go).
 
 ---
