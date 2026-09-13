@@ -376,3 +376,12 @@ Only that returned handle denotes completion, not discovery of a staging path.
 The original-removal recovery test now uses this importer. Additional tests
 cover unsafe paths, symlinks, corruption, missing files, quota overflow and
 cleanup. Artifact transport and operator-handle integration remain required.
+
+StateHandleOperator now makes backend checkpoint handles explicit for replication
+and recovery. CheckpointState replaces the opaque Checkpoint call at a capture;
+RestoreState is called after Open and before records are processed. The SDK
+processAdapter implements this interface, preserving its existing serialized
+Checkpoint behavior. A race-enabled test exports its Pebble state, removes the
+original directory, imports elsewhere, and restores through the operator's new
+method. Calling restore before Open returns ErrBackendClosed. Task-level artifact
+tracking/capture selection and deployment restoration are still unconnected.
