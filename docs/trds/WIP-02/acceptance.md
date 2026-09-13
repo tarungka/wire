@@ -353,3 +353,16 @@ the envelope/body, and checks receipt failures propagate. This adapter is not
 yet installed by worker task construction and is limited to self-contained
 snapshot bytes. File-backed snapshots require the artifact path; that requirement
 has not been waived or replaced by inline-only support.
+
+### Portable Pebble snapshot export
+
+ExportPebbleSnapshot archives the manifest and immutable checkpoint files,
+removes the originating-worker path, orders filenames deterministically, and
+checks each copied file against its recorded SHA-256. Cancellation is checked
+between files and reads; the destination owner must interrupt blocked writes.
+The recovery test exports a real Pebble checkpoint, closes and deletes the
+original backend directory, extracts the archive into a separate test directory,
+and restores the original value through Pebble's existing checksum-verifying
+Restore path. The race-enabled test and engine lint pass. Production bounded
+archive import, artifact transport, operator-handle relocation and worker wiring
+remain required; test extraction is not the production receiver.
