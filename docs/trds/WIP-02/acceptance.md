@@ -242,3 +242,10 @@ batch and verifies both records precede the boundary, source state reflects one
 fetched batch, and the next batch remains blocked until release. Further task
 replication/abort/EOF overlap tests and coordinator epoch fencing are required
 before this path is considered complete.
+
+Source trigger redelivery is fenced within a running reader: duplicate IDs,
+lower IDs in the accepted epoch, and older epochs are ignored before snapshot
+capture. This prevents heartbeat/push redelivery from capturing advanced source
+state under an existing identity. Ten race-enabled boundary/identity test runs
+pass. This is not a replacement for worker assignment-epoch validation, which
+must reject unexpected future epochs as well as commands from old leaders.

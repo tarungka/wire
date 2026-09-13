@@ -19,6 +19,7 @@ type sourceCheckpointInput struct {
 	source   SourceOperator
 	aligner  *BarrierAligner
 	control  chan<- ControlMsg
+	last     checkpointIdentity // Highest accepted trigger; owned by source reader.
 }
 
 // atBoundary runs only between fully dispatched batches. Until the chain
@@ -33,6 +34,12 @@ func (s *sourceCheckpointInput) atBoundary(intake, processing context.Context) e
 		if request.CheckpointID == 0 {
 			return errors.New("source checkpoint ID must be nonzero")
 		}
+		// WatchCommands and heartbeat fallback can redeliver a command. Never
+		// capture newer source state under an already-used snapshot identity.
+		if request.EpochID < s.last.epoch || (request.EpochID == s.last.epoch && request.CheckpointID <= s.last.id) {
+			return nil
+		}
+		s.last = checkpointIdentity{request.CheckpointID, request.EpochID}
 		var state []byte
 		if err := invokeOperator(func() error {
 			data, err := s.source.Checkpoint(request.CheckpointID)
