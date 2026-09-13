@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hashicorp/yamux"
+
 	"github.com/tarungka/wire/internal/protocol"
 )
 
@@ -35,18 +37,9 @@ func (s *Session) OpenDataStream(ctx context.Context, cfg Config, header protoco
 	}
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	// Yamux OpenStream can block on its backlog and has no context API.
-	// Closing the session is necessary to interrupt an abandoned open.
-	stopOpen := context.AfterFunc(deadline, func() { _ = s.Close() })
-	raw, err := s.OpenStream()
-	if !stopOpen() || deadline.Err() != nil {
-		if raw != nil {
-			_ = raw.Close()
-		}
-		return nil, sessionHandshakeError(deadline, deadline.Err())
-	}
+	raw, err := s.openStreamContext(deadline)
 	if err != nil {
-		return nil, err
+		return nil, sessionHandshakeError(deadline, err)
 	}
 	fs := NewFrameStream(raw, cfg)
 	fs.negotiated = &params
@@ -142,4 +135,53 @@ func (fs *FrameStream) Header() (protocol.StreamHeaderMsg, bool) {
 		return protocol.StreamHeaderMsg{}, false
 	}
 	return *fs.header, true
+}
+
+// openStreamContext isolates cancellation from other tasks on the session.
+// Yamux has no context-aware open. Permit at most one pending open worker per
+// session; cancelled callers return immediately, and a late stream is closed.
+// Session shutdown releases a worker blocked in Yamux's SYN backlog.
+func (s *Session) openStreamContext(ctx context.Context) (*yamux.Stream, error) {
+	s.dataMu.Lock()
+	if s.openGate == nil {
+		s.openGate = make(chan struct{}, 1)
+	}
+	gate := s.openGate
+	s.dataMu.Unlock()
+	select {
+	case gate <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	s.dataMu.Lock()
+	s.opening++
+	s.dataMu.Unlock()
+	type result struct {
+		stream *yamux.Stream
+		err    error
+	}
+	ready := make(chan result)
+	go func() {
+		defer func() { <-gate; s.dataMu.Lock(); s.opening--; s.dataMu.Unlock() }()
+		raw, err := s.OpenStream()
+		select {
+		case ready <- result{raw, err}:
+		case <-ctx.Done():
+			if raw != nil {
+				_ = raw.Close()
+			}
+		}
+	}()
+	select {
+	case got := <-ready:
+		if err := ctx.Err(); err != nil {
+			if got.stream != nil {
+				_ = got.stream.Close()
+			}
+			return nil, err
+		}
+		return got.stream, got.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }

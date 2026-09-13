@@ -114,6 +114,9 @@ func (fs *FrameStream) WriteMessageContext(ctx context.Context, msg any) error {
 		}
 		select {
 		case <-resume:
+		case <-fs.senderReadDone:
+			_ = fs.Close()
+			return fmt.Errorf("transport: paused sender lost downstream: %w", io.ErrUnexpectedEOF)
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-fs.done:
@@ -132,13 +135,11 @@ func (fs *FrameStream) WriteMessageContext(ctx context.Context, msg any) error {
 			return fmt.Errorf("transport: message is not permitted on a data stream")
 		}
 	}
-	// A Yamux stream-window wait does not use ConnectionWriteTimeout by
-	// itself; set a stream deadline and wake it on caller cancellation.
-	timeout := fs.cfg.ConnectionWriteTimeout
-	if timeout <= 0 {
-		timeout = DefaultConnectionWriteTimeout
-	}
-	_ = fs.raw.SetWriteDeadline(time.Now().Add(timeout))
+	// Receiver window exhaustion is backpressure, not a connection failure.
+	// Only the caller's deadline bounds this wait; Yamux separately bounds
+	// writes to the underlying connection with ConnectionWriteTimeout.
+	until, _ := ctx.Deadline()
+	_ = fs.raw.SetWriteDeadline(until)
 	callbackDone := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() { _ = fs.raw.SetWriteDeadline(time.Now()); close(callbackDone) })
 	defer func() {

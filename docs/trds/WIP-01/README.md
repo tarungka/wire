@@ -157,7 +157,7 @@ Wire uses a **partial mesh** topology. Connections are established on demand: Wo
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
 | `KeepAliveInterval` | 15 seconds | Detect dead peers within ~30s (2 missed keep-alives) |
-| `ConnectionWriteTimeout` | 10 seconds | Prevent indefinite blocking on slow peers |
+| `ConnectionWriteTimeout` | 10 seconds | Bound writes to the underlying connection; receiver-window backpressure is bounded only by the data writer’s caller context |
 | `MaxStreamWindowSize` | 1 MB (1,048,576 bytes) | Allow sufficient buffering for bursty traffic without unbounded memory growth |
 
 ---
@@ -910,7 +910,7 @@ The wire protocol itself does not include authentication fields (e.g., tokens, s
 |---------------|------------|
 | Oversized frame (memory exhaustion) | `max_frame_size` enforced at the reader (default 16 MB). Frames exceeding the limit are rejected without allocating a buffer. |
 | Connection flood | Session reuse and graceful duplicate retirement avoid persistent healthy-peer duplicates. Listener-level quotas/rate limiting remain infrastructure responsibilities outside this spec. |
-| Slowloris (slow reads) | `ConnectionWriteTimeout` (10s) in Yamux config. Writers that cannot flush within the timeout are disconnected. |
+| Slowloris (slow reads) | `ConnectionWriteTimeout` (10s) bounds underlying connection writes. Data-stream window exhaustion remains backpressure; caller cancellation/deadlines interrupt blocked data writes without imposing a fixed receiver-stall timeout. |
 | Replay attacks | CRC32C does not prevent replay. Completed-checkpoint barriers are suppressed; record replay correctness depends on the checkpoint/recovery subsystem, not framing alone. |
 
 ---

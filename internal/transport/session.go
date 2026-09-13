@@ -17,6 +17,7 @@ import (
 // Session wraps a yamux.Session and its underlying net.Conn.
 type Session struct {
 	dataMu         sync.Mutex
+	openGate       chan struct{}
 	draining       bool
 	opening        int
 	peerDrained    chan struct{}

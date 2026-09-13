@@ -625,7 +625,9 @@ func runTestDataWindowWriteTimeout(t *testing.T, secure bool) {
 	out.cfg.ConnectionWriteTimeout = 40 * time.Millisecond
 	done := make(chan error, 1)
 	go func() {
-		done <- out.WriteMessage(&protocol.DataRecordMsg{Value: make([]byte, 2*DefaultMaxStreamWindowSize)})
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+		defer cancel()
+		done <- out.WriteMessageContext(ctx, &protocol.DataRecordMsg{Value: make([]byte, 2*DefaultMaxStreamWindowSize)})
 	}()
 	select {
 	case err := <-done:
@@ -634,7 +636,7 @@ func runTestDataWindowWriteTimeout(t *testing.T, secure bool) {
 			t.Fatalf("window timeout: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("stream ignored configured write timeout")
+		t.Fatal("stream ignored caller deadline")
 	}
 	select {
 	case <-out.done:

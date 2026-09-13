@@ -35,6 +35,20 @@ func runInputReader(
 	tracker *InputWatermarkTracker,
 	log zerolog.Logger,
 ) error {
+	return runInputReaderWithReport(ctx, inputIndex, stream, eventCh, controlCh, aligner, tracker, log, stream.ReportBufferUsage)
+}
+
+func runInputReaderWithReport(
+	ctx context.Context,
+	inputIndex int,
+	stream *transport.FrameStream,
+	eventCh chan<- Event,
+	controlCh chan<- ControlMsg,
+	aligner *BarrierAligner,
+	tracker *InputWatermarkTracker,
+	log zerolog.Logger,
+	reportUsage func(int, int) error,
+) error {
 	// Keep a bounded read-ahead queue. Count the producer's in-flight send
 	// as an occupied slot; serialized reports sample the latest count, preventing
 	// stale pause signals from arriving after the queue has drained.
@@ -51,7 +65,7 @@ func runInputReader(
 	report := func() error {
 		reportMu.Lock()
 		defer reportMu.Unlock()
-		return stream.ReportBufferUsage(int(occupancy.Load()), queueCapacity+1)
+		return reportUsage(int(occupancy.Load()), queueCapacity+1)
 	}
 	readerDone := make(chan struct{})
 	defer func() { cancelReader(); _ = stream.Close(); <-readerDone }()
@@ -65,8 +79,8 @@ func runInputReader(
 			}
 			msg, err := stream.ReadMessage()
 			occupancy.Add(1)
-			if reportErr := report(); err == nil {
-				err = reportErr
+			if reportErr := report(); reportErr != nil {
+				log.Warn().Err(reportErr).Int("input", inputIndex).Msg("input flow-control report failed")
 			}
 			select {
 			case msgCh <- readResult{msg, err}:
@@ -87,8 +101,8 @@ func runInputReader(
 		case result = <-msgCh:
 			occupancy.Add(-1)
 			<-slots
-			if err := report(); err != nil && result.err == nil {
-				return err
+			if err := report(); err != nil {
+				log.Warn().Err(err).Int("input", inputIndex).Msg("input flow-control report failed")
 			}
 		}
 

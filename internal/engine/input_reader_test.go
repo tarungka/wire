@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -428,5 +430,55 @@ func TestInputReaderUnexpectedEOFDoesNotLeaveTaskWaiting(t *testing.T) {
 	err := runInputReader(ctx, 0, reader, make(chan Event, 1), make(chan ControlMsg, 1), NewBarrierAligner(1, 1), testTracker(1), testLogger())
 	if err != io.ErrUnexpectedEOF {
 		t.Fatalf("closed input without EndOfPartition: %v", err)
+	}
+}
+
+func TestInputReaderPreservesMessagesWhenFlowControlFails(t *testing.T) {
+	writer, reader := newTestStreamPair(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	events := make(chan Event, 8)
+	controls := make(chan ControlMsg, 8)
+	writes := make(chan error, 1)
+	go func() {
+		for i := 0; i < 8; i++ {
+			if err := writer.WriteMessage(&protocol.DataRecordMsg{Value: []byte{byte(i)}}); err != nil {
+				writes <- err
+				return
+			}
+		}
+		writes <- writer.WriteMessage(&protocol.EndOfPartitionMsg{SourceID: "source", Reason: protocol.EndReasonExhausted})
+	}()
+	var reports atomic.Int32
+	err := runInputReaderWithReport(ctx, 0, reader, events, controls, NewBarrierAligner(1, 10), testTracker(1), testLogger(), func(int, int) error {
+		reports.Add(1)
+		return io.ErrClosedPipe
+	})
+	if err != nil {
+		t.Fatalf("flow-control failure replaced successful read: %v", err)
+	}
+	if err := <-writes; err != nil {
+		t.Fatal(err)
+	}
+	if reports.Load() == 0 {
+		t.Fatal("report failure was not exercised")
+	}
+	for i := 0; i < 8; i++ {
+		select {
+		case event := <-events:
+			if !bytes.Equal(event.Value, []byte{byte(i)}) {
+				t.Fatalf("record %d changed: %v", i, event.Value)
+			}
+		default:
+			t.Fatalf("record %d was lost", i)
+		}
+	}
+	select {
+	case control := <-controls:
+		if control.Type != CtrlEndOfPartition {
+			t.Fatalf("control: %+v", control)
+		}
+	default:
+		t.Fatal("EndOfPartition was lost")
 	}
 }

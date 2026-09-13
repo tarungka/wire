@@ -508,3 +508,28 @@ The initiator can therefore decode the version mismatch before teardown.
 TCP and TLS; incompatible-version negotiation passed 1,000 race-enabled runs.
 The full race/integration suite passes with this fix. This is separate from the
 explicitly waived CRC latency check; correctness and CI remain required.
+
+### Review follow-up — flow control and cancellation isolation
+
+Confirmed and fixed four review findings:
+
+- A paused managed sender now wakes on reverse-read completion and returns an
+  error when the downstream half-closes; it does not require the shared session
+  to close or a resume signal to arrive.
+- Receiver-window waits no longer inherit ConnectionWriteTimeout. Caller
+  deadlines/cancellation still interrupt partial data writes; Yamux continues
+  to enforce the underlying connection write timeout. A slow receiver test
+  stalls beyond the configured connection timeout, then drains the full record.
+- Flow-control reporting failures are logged without replacing successful read
+  results. A regression injects reporting failures through both producer and
+  consumer paths and verifies all records and EndOfPartition are retained.
+- Cancelling a data-stream open no longer closes its session. A per-session gate
+  bounds the non-cancellable Yamux open worker to one; late results are closed.
+  An abandoned worker remains until backlog progress or session shutdown, while
+  subsequent callers can cancel waiting for the gate. Pending work remains
+  counted for graceful session retirement. A full-SYN-backlog cancellation test
+  verifies that an existing stream on the same session still transfers data.
+
+The transport regressions pass ten race-enabled repetitions and the input-reader
+reporting regression passes twenty. The full race/integration suite and
+ golangci-lint v2.5.0 pass. The CRC latency acceptance waiver remains unchanged.
