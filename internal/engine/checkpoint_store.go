@@ -26,6 +26,39 @@ var ErrCheckpointFileCorrupt = errors.New("checkpoint file corrupt")
 // state-backend files must be transferred separately before acknowledging them.
 type FileCheckpointStore struct{ root string }
 
+// Import validates a received task snapshot before using the same durable
+// publication path as Put. The transfer layer must first verify its checksum
+// and ensure any referenced artifacts are recoverable on this worker.
+func (s *FileCheckpointStore) Import(ctx context.Context, jobID, taskID string, id, epoch uint64, r io.Reader) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := s.path(jobID, taskID, id, epoch); err != nil {
+		return err
+	}
+	payload, err := io.ReadAll(io.LimitReader(r, maxStoredCheckpointBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(payload) > maxStoredCheckpointBytes {
+		return errors.New("checkpoint exceeds storage size limit")
+	}
+	var snapshot TaskCheckpoint
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&snapshot); err != nil {
+		return fmt.Errorf("decode checkpoint import: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("checkpoint import has trailing content")
+	}
+	if snapshot.TaskID != taskID || snapshot.CheckpointID != id || snapshot.EpochID != epoch {
+		return errors.New("checkpoint import identity mismatch")
+	}
+	return s.Put(ctx, jobID, snapshot)
+}
+
 func NewFileCheckpointStore(root string) (*FileCheckpointStore, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
@@ -55,6 +88,9 @@ func (s *FileCheckpointStore) path(jobID, taskID string, id, epoch uint64) (stri
 func (s *FileCheckpointStore) Put(ctx context.Context, jobID string, snapshot TaskCheckpoint) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if !snapshot.HasSource && len(snapshot.Source) != 0 {
+		return errors.New("checkpoint source state without source marker")
 	}
 	destination, err := s.path(jobID, snapshot.TaskID, snapshot.CheckpointID, snapshot.EpochID)
 	if err != nil {

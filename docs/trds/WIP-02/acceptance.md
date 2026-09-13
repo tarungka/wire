@@ -303,3 +303,11 @@ referenced artifacts must also be recoverable. Real Yamux tests verify that
 finishing the body does not complete the client and reject negative, wrong-epoch
 and wrong-request receipts. The RPC race suite and lint pass. The test receiver
 discards bytes and simulates receipts; durable receiver integration remains open.
+
+`FileCheckpointStore.Import` validates received JSON under the storage size
+limit, rejects unknown fields/trailing content and mismatched task/checkpoint/
+epoch identity, then invokes the existing atomic fsync publication path.
+Source bytes without a source marker are rejected. Tests verify malformed and
+misidentified imports create no files, and valid source/operator snapshots
+survive reopening. This is the receiver's publication primitive; it does not
+replace transport checksum validation, peer authorization or artifact recovery.
