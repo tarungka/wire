@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/tarungka/wire/internal/transport"
 )
@@ -48,30 +49,94 @@ func writeOutputMsgContext(ctx context.Context, stream *transport.FrameStream, m
 	}
 }
 
-// runOutputRouter gives one goroutine ownership of partition ordering. Data
-// records are distributed round-robin; barriers, watermarks, and termination
-// are broadcast after all preceding records have been written. Sharing a
-// receive channel among writers would deliver each control frame to only one
-// partition and could reorder it relative to another writer's pending record.
+// runOutputRouter assigns data to dedicated bounded per-stream writers.
+// A control-frame fence waits for every writer before dispatching later data,
+// preserving barrier/watermark/EOP ordering across all partitions.
 func runOutputRouter(ctx context.Context, streams []*transport.FrameStream, outputCh <-chan OutputMsg, log zerolog.Logger) error {
-	next := 0
-	for msg := range outputCh {
-		if len(streams) == 0 {
-			continue
-		}
-		if msg.Type == OutputData {
-			if err := writeOutputMsgContext(ctx, streams[next], msg); err != nil {
-				return err
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	group, writerCtx := errgroup.WithContext(ctx)
+	type work struct {
+		message   OutputMsg
+		completed chan<- struct{}
+	}
+	queues := make([]chan work, len(streams))
+	for i, stream := range streams {
+		queue := make(chan work, 1)
+		queues[i] = queue
+		group.Go(func() error {
+			defer taskGoroutineStarted(writerCtx)()
+			for {
+				select {
+				case <-writerCtx.Done():
+					return writerCtx.Err()
+				case item, ok := <-queue:
+					if !ok {
+						return nil
+					}
+					if err := writeOutputMsgContext(writerCtx, stream, item.message); err != nil {
+						return err
+					}
+					if item.completed != nil {
+						select {
+						case item.completed <- struct{}{}:
+						case <-writerCtx.Done():
+							return writerCtx.Err()
+						}
+					}
+				}
 			}
-			next = (next + 1) % len(streams)
-			continue
-		}
-		for index, stream := range streams {
-			if err := writeOutputMsgContext(ctx, stream, msg); err != nil {
-				log.Error().Err(err).Int("output", index).Msg("failed to broadcast output control message")
-				return err
+		})
+	}
+	dispatch := func() error {
+		next := 0
+		for {
+			select {
+			case <-writerCtx.Done():
+				return writerCtx.Err()
+			case message, ok := <-outputCh:
+				if !ok {
+					return nil
+				}
+				if len(queues) == 0 {
+					continue
+				}
+				if message.Type == OutputData {
+					select {
+					case queues[next] <- work{message: message}:
+					case <-writerCtx.Done():
+						return writerCtx.Err()
+					}
+					next = (next + 1) % len(queues)
+					continue
+				}
+				completed := make(chan struct{}, len(queues))
+				for _, queue := range queues {
+					select {
+					case queue <- work{message: message, completed: completed}:
+					case <-writerCtx.Done():
+						return writerCtx.Err()
+					}
+				}
+				for range queues {
+					select {
+					case <-completed:
+					case <-writerCtx.Done():
+						return writerCtx.Err()
+					}
+				}
 			}
 		}
 	}
-	return nil
+	err := dispatch()
+	if err != nil {
+		cancel()
+	}
+	for _, queue := range queues {
+		close(queue)
+	}
+	if writeErr := group.Wait(); writeErr != nil {
+		return writeErr
+	}
+	return err
 }

@@ -189,7 +189,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 
 	// Create channels.
 	eventCh := make(chan Event, ts.Config.InputBufferSize)
-	controlCh := make(chan ControlMsg, numInputs*2+4) // barrier + EoP per input, +4 for 2PC control messages (CtrlCommitCheckpoint, CtrlAbortTransaction).
+	controlCh := make(chan ControlMsg, max(16, numInputs*2+4)) // barrier + EoP per input, +4 for 2PC control messages (CtrlCommitCheckpoint, CtrlAbortTransaction).
 	outputCh := make(chan OutputMsg, ts.Config.OutputBufferSize)
 	recordBackpressure, err := observability.TaskBackpressureRecorder(ts.TaskID)
 	if err != nil {
