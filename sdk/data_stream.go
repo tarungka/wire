@@ -134,6 +134,15 @@ func (ds *DataStream) KeyBy(selector KeySelector) *KeyedStream {
 	return ds.keyByWithName(selector, "")
 }
 
+// KeyByNamed selects keys using a worker.RegisterKeyBy factory in cluster mode.
+// Config is passed to the factory; key selection runs before network partitioning.
+func (ds *DataStream) KeyByNamed(name, className string, config []byte) *KeyedStream {
+	node := &StreamNode{Name: name, Type: NodeKeyBy, ClassName: className, Config: append([]byte(nil), config...)}
+	id := ds.env.graph.addNode(node)
+	ds.env.graph.addEdge(ds.nodeID, id, ShuffleHash)
+	return &KeyedStream{env: ds.env, nodeID: id}
+}
+
 // KeyByWithName partitions the stream by key with a named operator.
 func (ds *DataStream) KeyByWithName(name string, selector KeySelector) *KeyedStream {
 	return ds.keyByWithName(selector, name)

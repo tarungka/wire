@@ -4,6 +4,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+
+	"github.com/tarungka/wire/internal/protocol"
+	"github.com/tarungka/wire/internal/rpc"
 )
 
 // submitJobRequest is the JSON body for POST /api/v1/jobs.
@@ -34,6 +37,15 @@ func (s *HTTPServer) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		decoded, err := base64.StdEncoding.DecodeString(req.GraphBytes)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "graph_bytes is not valid base64")
+			return
+		}
+		var graph rpc.JobGraph
+		if err := protocol.DecodeMsgPack(decoded, &graph); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "graph_bytes is not a valid job graph")
+			return
+		}
+		if _, err := validateGraphKeyGroups(graph, req.Parallelism); err != nil {
+			writeJobError(w, err)
 			return
 		}
 		configBytes = decoded

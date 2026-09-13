@@ -77,3 +77,27 @@ func TestExecuteDoubleExecute(t *testing.T) {
 		t.Errorf("expected ErrAlreadyExecuted, got %v", err)
 	}
 }
+
+func TestEnvironmentKeyGroupValidation(t *testing.T) {
+	if got := New().numKeyGroups; got != 128 {
+		t.Fatalf("default=%d", got)
+	}
+	for _, count := range []int{1, 128, 256, 32768} {
+		if err := New().SetKeyGroups(count).validateKeyGroups(); err != nil {
+			t.Fatalf("count=%d: %v", count, err)
+		}
+	}
+	for _, count := range []int{0, -1, 3, 65536} {
+		if err := New().SetKeyGroups(count).validateKeyGroups(); !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("count=%d error=%v", count, err)
+		}
+	}
+	if err := New().SetKeyGroups(16).SetParallelism(17).validateKeyGroups(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("excess parallelism: %v", err)
+	}
+	env := New().SetKeyGroups(16)
+	env.graph.addNode(&StreamNode{Name: "oversized", Type: NodeMap, Parallelism: 17})
+	if err := env.validateKeyGroups(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("operator parallelism: %v", err)
+	}
+}

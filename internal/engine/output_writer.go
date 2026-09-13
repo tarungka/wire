@@ -2,10 +2,12 @@ package engine
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/tarungka/wire/internal/keygroup"
 	"github.com/tarungka/wire/internal/transport"
 )
 
@@ -52,7 +54,16 @@ func writeOutputMsgContext(ctx context.Context, stream *transport.FrameStream, m
 // runOutputRouter assigns data to dedicated bounded per-stream writers.
 // A control-frame fence waits for every writer before dispatching later data,
 // preserving barrier/watermark/EOP ordering across all partitions.
-func runOutputRouter(ctx context.Context, streams []*transport.FrameStream, outputCh <-chan OutputMsg, log zerolog.Logger) error {
+func runOutputRouter(ctx context.Context, streams []*transport.FrameStream, outputCh <-chan OutputMsg, log zerolog.Logger, keyGroups ...int) error {
+	count := 0
+	if len(keyGroups) > 0 {
+		count = keyGroups[0]
+	}
+	if count != 0 {
+		if err := (keygroup.Config{NumKeyGroups: count, Parallelism: len(streams)}).Validate(); err != nil {
+			return fmt.Errorf("output key routing: %w", err)
+		}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	group, writerCtx := errgroup.WithContext(ctx)
@@ -102,8 +113,12 @@ func runOutputRouter(ctx context.Context, streams []*transport.FrameStream, outp
 					continue
 				}
 				if message.Type == OutputData {
+					target := next
+					if count != 0 {
+						target = keygroup.AssignedTask(keygroup.KeyGroup(message.Event.Key, count), count, len(queues))
+					}
 					select {
-					case queues[next] <- work{message: message}:
+					case queues[target] <- work{message: message}:
 					case <-writerCtx.Done():
 						return writerCtx.Err()
 					}

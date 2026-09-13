@@ -119,6 +119,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.log.Info().Str("addr", addr).Msg("checkpoint replica listener started")
 	}
 	dataConfig := transport.DefaultConfig()
+	dataConfig.TaskRegistrationTimeout = 5 * time.Second
 	dataConfig.NodeID = workerID
 	dataConfig.ListenAddr = w.cfg.ListenAddr
 	if dataConfig.ListenAddr == "" {
@@ -444,7 +445,7 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 		return
 	}
 	handle := &taskHandle{done: make(chan struct{}), cancel: cancel, jobID: cmd.JobID, epoch: desc.EpochID, attemptID: desc.AttemptID}
-	if desc.CheckpointReplicaAddress != "" || desc.RestoreCheckpoint != nil {
+	if desc.CheckpointReplicaAddress != "" || desc.RestoreCheckpoint != nil || desc.RestoreRescale != nil {
 		handle.checkpoint = &taskCheckpointRuntime{triggers: make(chan engine.CheckpointTrigger, 1), decisions: make(chan engine.ControlMsg, 16)}
 		for _, operator := range desc.OperatorChain {
 			if operator.Type == rpc.OperatorTypeSource {

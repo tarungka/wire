@@ -73,7 +73,11 @@ func (w *Worker) fetchTaskCheckpoint(ctx context.Context, jobID, taskID string, 
 	if cfg == nil {
 		return nil, fmt.Errorf("checkpoint recovery requires local storage")
 	}
-	request := rpc.FetchCheckpointRequest{AttemptID: desc.AttemptID, WorkerID: w.cfg.WorkerID, DeploymentEpoch: desc.EpochID, JobID: jobID, TaskID: taskID, CheckpointID: restore.CheckpointID, EpochID: restore.EpochID}
+	sourceTaskID, targetTaskID := taskID, ""
+	if restore.SourceTaskID != "" {
+		sourceTaskID, targetTaskID = restore.SourceTaskID, taskID
+	}
+	request := rpc.FetchCheckpointRequest{AttemptID: desc.AttemptID, WorkerID: w.cfg.WorkerID, DeploymentEpoch: desc.EpochID, JobID: jobID, TaskID: sourceTaskID, TargetTaskID: targetTaskID, CheckpointID: restore.CheckpointID, EpochID: restore.EpochID}
 	if err := request.Validate(); err != nil {
 		return nil, err
 	}
@@ -97,10 +101,10 @@ func (w *Worker) fetchTaskCheckpoint(ctx context.Context, jobID, taskID string, 
 	if err != nil {
 		return nil, err
 	}
-	if err := store.ImportArchive(ctx, jobID, taskID, restore.CheckpointID, restore.EpochID, file, cfg.ArtifactRoot, rpc.MaxCheckpointTransferSize); err != nil {
+	if err := store.ImportArchive(ctx, jobID, sourceTaskID, restore.CheckpointID, restore.EpochID, file, cfg.ArtifactRoot, rpc.MaxCheckpointTransferSize); err != nil {
 		return nil, err
 	}
-	snapshot, err := store.Get(ctx, jobID, taskID, restore.CheckpointID, restore.EpochID)
+	snapshot, err := store.Get(ctx, jobID, sourceTaskID, restore.CheckpointID, restore.EpochID)
 	if err != nil {
 		return nil, err
 	}

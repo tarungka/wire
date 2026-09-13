@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/tarungka/wire/internal/keygroup"
 )
 
 // StreamExecutionEnvironment is the entry point for building and executing
 // streaming pipelines. It holds configuration and the logical stream graph.
 type StreamExecutionEnvironment struct {
 	parallelism        int
+	numKeyGroups       int
 	checkpointInterval time.Duration
 	checkpointTimeout  time.Duration
 	restartStrategy    RestartStrategy
@@ -25,6 +28,7 @@ type StreamExecutionEnvironment struct {
 func New() *StreamExecutionEnvironment {
 	return &StreamExecutionEnvironment{
 		parallelism:       1,
+		numKeyGroups:      keygroup.DefaultNumKeyGroups,
 		checkpointTimeout: 10 * time.Minute,
 		restartStrategy:   NoRestart(),
 		mode:              Embedded,
@@ -36,6 +40,28 @@ func New() *StreamExecutionEnvironment {
 func (env *StreamExecutionEnvironment) SetParallelism(p int) *StreamExecutionEnvironment {
 	env.parallelism = p
 	return env
+}
+
+// SetKeyGroups sets the fixed number of key groups for this job. The count
+// must be a power of two in [1, 32768] and at least each operator's parallelism.
+// Invalid settings are rejected by Execute before submission.
+func (env *StreamExecutionEnvironment) SetKeyGroups(count int) *StreamExecutionEnvironment {
+	env.numKeyGroups = count
+	return env
+}
+
+func (env *StreamExecutionEnvironment) validateKeyGroups() error {
+	if err := (keygroup.Config{NumKeyGroups: env.numKeyGroups, Parallelism: env.parallelism}).Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	}
+	for _, node := range env.graph.nodes {
+		if node.Parallelism > 0 {
+			if err := (keygroup.Config{NumKeyGroups: env.numKeyGroups, Parallelism: node.Parallelism}).Validate(); err != nil {
+				return fmt.Errorf("%w: operator %q: %v", ErrInvalidConfig, node.Name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // SetCheckpointInterval enables periodic checkpointing at the given interval.
@@ -112,6 +138,10 @@ func (env *StreamExecutionEnvironment) ExecuteWithName(ctx context.Context, jobN
 	env.executed = true
 
 	if err := env.graph.validate(); err != nil {
+		return nil, err
+	}
+
+	if err := env.validateKeyGroups(); err != nil {
 		return nil, err
 	}
 

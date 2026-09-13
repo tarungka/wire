@@ -20,6 +20,7 @@ import (
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
 	RestoreCheckpoint *TaskCheckpoint
+	RescaleState      []OperatorRescaleState
 	// CheckpointReport delivers checkpoint ID, epoch, and upload error to an
 	// external coordinator. It must honor cancellation. Nil means report acceptance,
 	// not global commit; commit and abort arrive through CheckpointDecisions.
@@ -31,16 +32,19 @@ type TaskSlot struct {
 	Config               TaskSlotConfig
 	Inputs               []*transport.FrameStream // Upstream input streams.
 	Outputs              []*transport.FrameStream // Downstream output streams.
-	Operators            []Operator               // Fused operator chain.
-	Source               SourceOperator           // Non-nil for source tasks.
-	Strategy             WatermarkStrategy        // Resolved watermark strategy (source tasks only).
-	Coordinator          *CheckpointCoordinator   // Optional checkpoint coordinator (WIP-05).
-	Metrics              CheckpointMetrics        // Optional checkpoint metrics collector.
-	ErrorMetrics         ErrorMetrics             // Optional error handling metrics collector (WIP-11).
-	TaskIndex            int                      // Index of this task within the parallel subtasks.
-	RestoredCheckpointID uint64                   // Globally completed snapshot used for recovery.
-	TaskID               string                   // Unique identifier for this task.
-	OnRunning            func()                   // Called after all operators open, before any records are read.
+	// OutputKeyGroups enables keyed routing over outputs ordered by target subtask.
+	// Zero retains round-robin routing.
+	OutputKeyGroups      int
+	Operators            []Operator             // Fused operator chain.
+	Source               SourceOperator         // Non-nil for source tasks.
+	Strategy             WatermarkStrategy      // Resolved watermark strategy (source tasks only).
+	Coordinator          *CheckpointCoordinator // Optional checkpoint coordinator (WIP-05).
+	Metrics              CheckpointMetrics      // Optional checkpoint metrics collector.
+	ErrorMetrics         ErrorMetrics           // Optional error handling metrics collector (WIP-11).
+	TaskIndex            int                    // Index of this task within the parallel subtasks.
+	RestoredCheckpointID uint64                 // Globally completed snapshot used for recovery.
+	TaskID               string                 // Unique identifier for this task.
+	OnRunning            func()                 // Called after all operators open, before any records are read.
 	log                  zerolog.Logger
 }
 
@@ -84,6 +88,14 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		return err
 	}
 	defer closeOperators()
+	if ts.RestoreCheckpoint != nil && len(ts.RescaleState) > 0 {
+		return errors.New("task cannot combine ordinary and rescaled restoration")
+	}
+	if len(ts.RescaleState) > 0 {
+		if err := ts.restoreRescaledOperators(ctx); err != nil {
+			return err
+		}
+	}
 	if ts.RestoreCheckpoint != nil {
 		if err := ts.restoreCheckpoint(); err != nil {
 			return err
@@ -448,7 +460,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// control frames to every downstream stream. It also drains terminal chains.
 	g.Go(func() error {
 		defer taskGoroutineStarted(runCtx)()
-		return runOutputRouter(outputCtx, ts.Outputs, outputCh, ts.log)
+		return runOutputRouter(outputCtx, ts.Outputs, outputCh, ts.log, ts.OutputKeyGroups)
 	})
 
 	err = g.Wait()

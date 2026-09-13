@@ -100,3 +100,37 @@ func TestCheckpointFetchAuthorization(t *testing.T) {
 		})
 	}
 }
+
+func TestRescaleFetchRequiresAssignedSourceAndTarget(t *testing.T) {
+	for _, mode := range []string{"valid", "wrong-source", "wrong-target", "wrong-attempt"} {
+		t.Run(mode, func(t *testing.T) {
+			c, store := newTestCoordinator(t)
+			c.jobs["job"] = &JobMeta{ID: "job", Status: JobDeploying, LatestCheckpoint: 7}
+			c.workers["replica"] = &WorkerMeta{ID: "replica", CheckpointAddress: "replica:1"}
+			cp := CheckpointMeta{ID: 7, JobID: "job", EpochID: 2, Status: CheckpointCompleted, Tasks: map[string]string{"old": "old-worker", "unassigned": "old-worker"}, Replicas: map[string]string{"old": "replica:1", "unassigned": "replica:1"}, StatePaths: map[string]string{"old": "replica:1", "unassigned": "replica:1"}}
+			assignment := TaskAssignmentMap{JobID: "job", AttemptID: "current", Assignments: map[string]string{"new": "worker"}, RescaleParts: map[string][]RescaleStatePart{"new": {{SourceTaskID: "old", ReplicaAddress: "replica:1"}}}}
+			request := rpc.AuthorizeCheckpointFetchRequest{ReplicaWorkerID: "replica", Fetch: rpc.FetchCheckpointRequest{WorkerID: "worker", AttemptID: "current", DeploymentEpoch: 5, JobID: "job", TaskID: "old", TargetTaskID: "new", CheckpointID: 7, EpochID: 2}}
+			switch mode {
+			case "wrong-source":
+				request.Fetch.TaskID = "unassigned"
+			case "wrong-target":
+				request.Fetch.TargetTaskID = "other"
+			case "wrong-attempt":
+				request.Fetch.AttemptID = "previous"
+			}
+			if err := store.Set(CheckpointKey("job", 7), encode(t, cp)); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Set(JobAssignmentsKey("job"), encode(t, assignment)); err != nil {
+				t.Fatal(err)
+			}
+			result, rpcErr := c.HandleAuthorizeCheckpointFetch(context.Background(), 1, encode(t, request))
+			if rpcErr != nil {
+				t.Fatal(rpcErr)
+			}
+			if result.(*rpc.AcknowledgeCheckpointResponse).Accepted != (mode == "valid") {
+				t.Fatalf("authorization=%+v", result)
+			}
+		})
+	}
+}

@@ -14,7 +14,6 @@ import (
 
 const (
 	schedulerInterval = 2 * time.Second
-	totalKeyGroups    = 128
 )
 
 // runScheduler periodically scans for CREATED jobs and deploys them to workers.
@@ -158,10 +157,35 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		return
 	}
 
+	if err := c.attachTaskAddressesLocked(assignments); err != nil {
+		c.mu.Unlock()
+		c.log.Error().Err(err).Str("job_id", job.ID).Msg("cannot resolve task streams")
+		return
+	}
+
 	if err := c.attachCheckpointRestoreLocked(job, assignments); err != nil {
 		c.mu.Unlock()
 		c.log.Error().Err(err).Str("job_id", job.ID).Msg("cannot deploy checkpoint recovery")
 		return
+	}
+
+	// Persist fetch grants atomically with task ownership before deployment.
+	tam.RescaleParts = make(map[string][]RescaleStatePart)
+	for _, workerTasks := range assignments {
+		for _, task := range workerTasks {
+			if task.RestoreRescale != nil {
+				tam.RescaleParts[task.TaskID] = task.RestoreRescale.Parts
+			}
+		}
+	}
+
+	// Persist the physical topology used by this deployment. A later rescale
+	// must restore the old chains/ranges, not regenerate them from a new graph.
+	for _, task := range tasks {
+		task.Upstream, task.Downstream = nil, nil
+		task.RestoreCheckpoint = nil
+		task.RestoreRescale = nil
+		tam.TaskDescriptors = append(tam.TaskDescriptors, task)
 	}
 
 	// Commit the state and assignments together before publishing DEPLOYING.
@@ -276,10 +300,8 @@ func (c *Coordinator) checkpointPeerLocked(sourceID string, now time.Time) strin
 // the persisted JobGraph (stored verbatim as job.Config, msgpack-encoded)
 // and producing one descriptor per subtask.
 //
-// Phase 1: linear pipelines only. Every subtask carries the full operator
-// chain (topo-sorted from the graph). Cross-worker shuffle comes in Phase 2,
-// at which point this splits the graph at shuffle boundaries and populates
-// Upstream/Downstream channel info.
+// Compatible forward operators are fused. Shuffle boundaries produce separate
+// task chains with explicit upstream and downstream stream descriptors.
 func generateTaskDescriptors(job *JobMeta) ([]rpc.TaskDescriptor, error) {
 	if len(job.Config) == 0 {
 		return nil, fmt.Errorf("job %q has no graph (config is empty)", job.ID)
@@ -298,50 +320,11 @@ func generateTaskDescriptors(job *JobMeta) ([]rpc.TaskDescriptor, error) {
 	if len(sorted) == 0 {
 		return nil, fmt.Errorf("job %q has no operators", job.ID)
 	}
-	if hasShuffleEdge(graph) {
-		return nil, fmt.Errorf("job %q has shuffle edges; cross-worker shuffle is not yet supported (Phase 2)", job.ID)
-	}
-
 	p := job.Parallelism
 	if p < 1 {
 		p = 1
 	}
-
-	tasks := make([]rpc.TaskDescriptor, p)
-	groupsPerTask := totalKeyGroups / p
-	remainder := totalKeyGroups % p
-
-	// The task's OperatorID is the first non-source operator's ID, or the
-	// source itself if the chain is source-only. This preserves the
-	// "one task per subtask of a logical operator" shape for Phase 2.
-	primaryOpID := sorted[0].OperatorID
-	for _, od := range sorted {
-		if od.Type != rpc.OperatorTypeSource {
-			primaryOpID = od.OperatorID
-			break
-		}
-	}
-
-	offset := int32(0)
-	for i := 0; i < p; i++ {
-		size := int32(groupsPerTask)
-		if i < remainder {
-			size++
-		}
-		tasks[i] = rpc.TaskDescriptor{
-			TaskID:       fmt.Sprintf("%s/%s/%d", job.ID, primaryOpID, i),
-			OperatorID:   primaryOpID,
-			SubtaskIndex: int32(i),
-			Parallelism:  int32(p),
-			KeyGroup: rpc.KeyGroupRange{
-				Start: offset,
-				End:   offset + size - 1,
-			},
-			OperatorChain: sorted,
-		}
-		offset += size
-	}
-	return tasks, nil
+	return buildPhysicalTasks(job.ID, graph, p)
 }
 
 // topoSortOperators returns the operators of the graph in topological order.
@@ -392,18 +375,6 @@ func topoSortOperators(graph rpc.JobGraph) ([]rpc.OperatorDescriptor, error) {
 		return nil, fmt.Errorf("job graph has a cycle")
 	}
 	return result, nil
-}
-
-// hasShuffleEdge returns true if any edge requires partitioning (Hash /
-// Rebalance / Broadcast). Forward edges are safe for Phase 1.
-func hasShuffleEdge(graph rpc.JobGraph) bool {
-	for _, edge := range graph.Edges {
-		switch edge.Shuffle {
-		case rpc.ShuffleStrategyHash, rpc.ShuffleStrategyRebalance, rpc.ShuffleStrategyBroadcast:
-			return true
-		}
-	}
-	return false
 }
 
 // assignTasks distributes tasks across available workers.

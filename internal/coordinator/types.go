@@ -1,6 +1,10 @@
 package coordinator
 
-import "time"
+import (
+	"time"
+
+	"github.com/tarungka/wire/internal/rpc"
+)
 
 // CoordinatorState represents the current operational state of a coordinator node.
 type CoordinatorState uint8
@@ -105,41 +109,48 @@ func (s CheckpointStatus) String() string {
 
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
-	ID               string    `codec:"id"`
-	Name             string    `codec:"name"`
-	Status           JobStatus `codec:"status"`
-	Parallelism      int       `codec:"parallelism"`
-	ConfigHash       string    `codec:"config_hash"`
-	CreatedAt        time.Time `codec:"created_at"`
-	UpdatedAt        time.Time `codec:"updated_at"`
-	StartedAt        time.Time `codec:"started_at,omitempty"`
-	FinishedAt       time.Time `codec:"finished_at,omitempty"`
-	RestartCount     int       `codec:"restart_count,omitempty"`
-	LatestCheckpoint uint64    `codec:"latest_checkpoint,omitempty"`
-	Config           []byte    `codec:"config,omitempty"`
-	SavepointPath    string    `codec:"savepoint_path,omitempty"`
+	// RescaleCheckpoint selects a completed savepoint for changed ownership.
+	RescaleCheckpoint uint64    `codec:"rescale_checkpoint,omitempty"`
+	ID                string    `codec:"id"`
+	Name              string    `codec:"name"`
+	Status            JobStatus `codec:"status"`
+	Parallelism       int       `codec:"parallelism"`
+	ConfigHash        string    `codec:"config_hash"`
+	CreatedAt         time.Time `codec:"created_at"`
+	UpdatedAt         time.Time `codec:"updated_at"`
+	StartedAt         time.Time `codec:"started_at,omitempty"`
+	FinishedAt        time.Time `codec:"finished_at,omitempty"`
+	RestartCount      int       `codec:"restart_count,omitempty"`
+	LatestCheckpoint  uint64    `codec:"latest_checkpoint,omitempty"`
+	Config            []byte    `codec:"config,omitempty"`
+	SavepointPath     string    `codec:"savepoint_path,omitempty"`
 }
 
 // TaskAssignmentMap maps task IDs to the worker IDs they are assigned to.
 type TaskAssignmentMap struct {
-	EpochID     uint64            `codec:"eid,omitempty"`
-	AttemptID   string            `codec:"attempt_id,omitempty"`
-	Replicas    map[string]string `codec:"replicas,omitempty"`
-	JobID       string            `codec:"job_id"`
-	Assignments map[string]string `codec:"assignments"` // task_id → worker_id
+	RescaleParts    map[string][]RescaleStatePart `codec:"rescale_parts,omitempty"`
+	TaskDescriptors []rpc.TaskDescriptor          `codec:"task_descriptors,omitempty"`
+	EpochID         uint64                        `codec:"eid,omitempty"`
+	AttemptID       string                        `codec:"attempt_id,omitempty"`
+	Replicas        map[string]string             `codec:"replicas,omitempty"`
+	JobID           string                        `codec:"job_id"`
+	Assignments     map[string]string             `codec:"assignments"` // task_id → worker_id
 }
 
 // CheckpointMeta holds persisted metadata for a single checkpoint.
 type CheckpointMeta struct {
-	Replicas   map[string]string `codec:"replicas,omitempty"`
-	EpochID    uint64            `codec:"epoch_id,omitempty"`
-	Tasks      map[string]string `codec:"tasks,omitempty"`
-	ID         uint64            `codec:"id"`
-	JobID      string            `codec:"job_id"`
-	Status     CheckpointStatus  `codec:"status"`
-	Offsets    map[string]int64  `codec:"offsets"`     // source → offset
-	StatePaths map[string]string `codec:"state_paths"` // task_id → path
-	Timestamp  time.Time         `codec:"timestamp"`
+	TaskDescriptors []rpc.TaskDescriptor `codec:"task_descriptors,omitempty"`
+	NumKeyGroups    int                  `codec:"key_groups,omitempty"`
+	SavepointID     string               `codec:"savepoint_id,omitempty"`
+	Replicas        map[string]string    `codec:"replicas,omitempty"`
+	EpochID         uint64               `codec:"epoch_id,omitempty"`
+	Tasks           map[string]string    `codec:"tasks,omitempty"`
+	ID              uint64               `codec:"id"`
+	JobID           string               `codec:"job_id"`
+	Status          CheckpointStatus     `codec:"status"`
+	Offsets         map[string]int64     `codec:"offsets"`     // source → offset
+	StatePaths      map[string]string    `codec:"state_paths"` // task_id → path
+	Timestamp       time.Time            `codec:"timestamp"`
 }
 
 // SavepointStatus represents the lifecycle state of a savepoint.
@@ -166,6 +177,9 @@ func (s SavepointStatus) String() string {
 
 // SavepointMeta holds persisted metadata for a single savepoint.
 type SavepointMeta struct {
+	NumKeyGroups   int             `codec:"key_groups,omitempty"`
+	CheckpointID   uint64          `codec:"checkpoint_id,omitempty"`
+	EpochID        uint64          `codec:"epoch_id,omitempty"`
 	ID             string          `codec:"id"`
 	JobID          string          `codec:"job_id"`
 	Status         SavepointStatus `codec:"status"`

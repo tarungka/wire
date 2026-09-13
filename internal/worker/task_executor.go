@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/engine"
+	"github.com/tarungka/wire/internal/keygroup"
 	"github.com/tarungka/wire/internal/rpc"
 	"github.com/tarungka/wire/internal/transport"
 )
@@ -38,7 +39,12 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		return fmt.Errorf("worker: task %q has empty OperatorChain", taskID)
 	}
 
+	groups := desc.NumKeyGroups
+	if groups == 0 {
+		groups = keygroup.DefaultNumKeyGroups
+	}
 	tc := TaskContext{
+		NumKeyGroups: groups,
 		TaskID:       taskID,
 		JobID:        jobID,
 		OperatorID:   desc.OperatorID,
@@ -129,11 +135,14 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 	config.ErrorConfigs = errorConfigs
 	slot := engine.NewTaskSlot(config, inputs, outputs, operators, sourceOp)
 	slot.TaskID = taskID
+	slot.OutputKeyGroups = desc.OutputKeyGroups
 	slot.TaskIndex = int(desc.SubtaskIndex)
 	slot.OnRunning = onRunning
 	if len(checkpoints) > 0 && checkpoints[0] != nil {
 		checkpoint := checkpoints[0]
 		slot.RestoreCheckpoint = checkpoint.restore
+		slot.RescaleState = checkpoint.rescale
+		slot.RestoredCheckpointID = checkpoint.restoredID
 		slot.CheckpointReplicator = checkpoint.replicator
 		slot.CheckpointReport = checkpoint.report
 		slot.CheckpointDecisions = checkpoint.decisions

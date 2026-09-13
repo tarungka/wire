@@ -256,8 +256,10 @@ type SubmitJobResponse struct {
 
 // JobGraph describes the DAG of operators and edges.
 type JobGraph struct {
-	Operators []OperatorDescriptor `codec:"ops"`
-	Edges     []EdgeDescriptor     `codec:"edges"`
+	// NumKeyGroups is fixed for the job lifetime; zero selects the default 128.
+	NumKeyGroups int                  `codec:"key_groups,omitempty"`
+	Operators    []OperatorDescriptor `codec:"ops"`
+	Edges        []EdgeDescriptor     `codec:"edges"`
 }
 
 // OperatorDescriptor describes a single operator in the job graph.
@@ -287,12 +289,32 @@ type EdgeDescriptor struct {
 // is the full source→ops→sink chain. In later phases, it's the slice of
 // operators between two shuffle boundaries.
 type CheckpointRestoreDescriptor struct {
+	// SourceTaskID is set for rescaling; empty restores the receiving task itself.
+	SourceTaskID   string `codec:"source_task_id,omitempty"`
 	CheckpointID   uint64 `codec:"cid"`
 	EpochID        uint64 `codec:"eid"`
 	ReplicaAddress string `codec:"addr"`
 }
 
+// RescaleStatePart identifies the stored snapshot and inclusive range to import.
+type RescaleStatePart struct {
+	SourceTaskID   string        `codec:"source_task_id"`
+	ReplicaAddress string        `codec:"replica_address"`
+	Groups         KeyGroupRange `codec:"groups"`
+}
+
+// RescaleRestoreDescriptor retains the savepoint identity while ownership changes.
+type RescaleRestoreDescriptor struct {
+	CheckpointID uint64             `codec:"cid"`
+	EpochID      uint64             `codec:"eid"`
+	NumKeyGroups int                `codec:"key_groups"`
+	Parts        []RescaleStatePart `codec:"parts"`
+}
+
 type TaskDescriptor struct {
+	RestoreRescale           *RescaleRestoreDescriptor    `codec:"restore_rescale,omitempty"`
+	OutputKeyGroups          int                          `codec:"output_key_groups,omitempty"`
+	NumKeyGroups             int                          `codec:"key_groups,omitempty"`
 	AttemptID                string                       `codec:"attempt_id,omitempty"`
 	RestoreCheckpoint        *CheckpointRestoreDescriptor `codec:"restore,omitempty"`
 	CheckpointReplicaAddress string                       `codec:"checkpoint_replica_addr,omitempty"`
@@ -307,7 +329,8 @@ type TaskDescriptor struct {
 	Downstream               []DownstreamChannelInfo      `codec:"dn,omitempty"`
 }
 
-// KeyGroupRange defines the key-group range assigned to a task.
+// KeyGroupRange defines the inclusive key-group range [Start, End] assigned
+// to a task. Convert half-open keygroup.KeyGroupRange ends by subtracting one.
 type KeyGroupRange struct {
 	Start int32 `codec:"s"`
 	End   int32 `codec:"e"`

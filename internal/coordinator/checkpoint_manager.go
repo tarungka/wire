@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/tarungka/wire/internal/keygroup"
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
 )
@@ -15,6 +16,10 @@ import (
 // before dispatching commands. Completion requires durable receipts from every
 // task in that set; command delivery alone does not complete the checkpoint.
 func (c *Coordinator) TriggerCheckpoint(jobID string) (*CheckpointMeta, error) {
+	return c.triggerCheckpoint(jobID, "")
+}
+
+func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointMeta, error) {
 	c.mu.Lock()
 	if c.state != StateLeader || !c.recovered {
 		c.mu.Unlock()
@@ -71,18 +76,41 @@ func (c *Coordinator) TriggerCheckpoint(jobID string) (*CheckpointMeta, error) {
 		c.mu.Unlock()
 		return nil, errors.New("checkpoint IDs exhausted")
 	}
-	checkpoint := &CheckpointMeta{ID: highest + 1, EpochID: c.epoch, JobID: jobID, Status: CheckpointInProgress, Timestamp: time.Now().UTC(), Tasks: assignment.Assignments, Replicas: assignment.Replicas}
+	count := keygroup.DefaultNumKeyGroups
+	var graph rpc.JobGraph
+	if err := protocol.DecodeMsgPack(job.Config, &graph); err == nil {
+		count, err = validateGraphKeyGroups(graph, max(1, job.Parallelism))
+		if err != nil {
+			c.mu.Unlock()
+			return nil, err
+		}
+	}
+	checkpoint := &CheckpointMeta{TaskDescriptors: assignment.TaskDescriptors, NumKeyGroups: count, SavepointID: savepointID, ID: highest + 1, EpochID: c.epoch, JobID: jobID, Status: CheckpointInProgress, Timestamp: time.Now().UTC(), Tasks: assignment.Assignments, Replicas: assignment.Replicas}
 	encoded, err := protocol.EncodeMsgPack(checkpoint)
 	if err != nil {
 		c.mu.Unlock()
 		return nil, err
 	}
-	trigger, err := protocol.EncodeMsgPack(rpc.TriggerCheckpointRequest{JobID: jobID, CheckpointID: checkpoint.ID, EpochID: checkpoint.EpochID, Type: rpc.CheckpointTypePeriodic, Timestamp: checkpoint.Timestamp.UnixMilli()})
+	kind := rpc.CheckpointTypePeriodic
+	if savepointID != "" {
+		kind = rpc.CheckpointTypeSavepoint
+	}
+	trigger, err := protocol.EncodeMsgPack(rpc.TriggerCheckpointRequest{JobID: jobID, CheckpointID: checkpoint.ID, EpochID: checkpoint.EpochID, Type: kind, Timestamp: checkpoint.Timestamp.UnixMilli()})
 	if err != nil {
 		c.mu.Unlock()
 		return nil, err
 	}
-	if err := c.store.Set(CheckpointKey(jobID, checkpoint.ID), encoded); err != nil {
+	batch := []KVPair{{Key: CheckpointKey(jobID, checkpoint.ID), Value: encoded}}
+	if savepointID != "" {
+		savepoint := SavepointMeta{NumKeyGroups: count, ID: savepointID, JobID: jobID, CheckpointID: checkpoint.ID, EpochID: checkpoint.EpochID, Status: SavepointInProgress, TriggerTime: checkpoint.Timestamp}
+		raw, err := protocol.EncodeMsgPack(savepoint)
+		if err != nil {
+			c.mu.Unlock()
+			return nil, err
+		}
+		batch = append(batch, KVPair{Key: SavepointKey(jobID, savepointID), Value: raw})
+	}
+	if err := c.store.WriteBatch(batch); err != nil {
 		c.mu.Unlock()
 		return nil, err
 	}
@@ -127,6 +155,7 @@ func (c *Coordinator) AbortCheckpoint(jobID string, id, epoch uint64) error {
 		c.mu.Unlock()
 		return errors.New("checkpoint already has a different terminal decision")
 	}
+	alreadyAborted := checkpoint.Status == CheckpointAborted
 	checkpoint.Status = CheckpointAborted
 	encoded, err := protocol.EncodeMsgPack(checkpoint)
 	if err != nil {
@@ -138,7 +167,19 @@ func (c *Coordinator) AbortCheckpoint(jobID string, id, epoch uint64) error {
 		c.mu.Unlock()
 		return err
 	}
-	if err := c.store.Set(CheckpointKey(jobID, id), encoded); err != nil {
+	batch := []KVPair{{Key: CheckpointKey(jobID, id), Value: encoded}}
+	var savepointWrite *KVPair
+	if !alreadyAborted {
+		savepointWrite, err = c.savepointDecisionLocked(checkpoint)
+	}
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	if savepointWrite != nil {
+		batch = append(batch, *savepointWrite)
+	}
+	if err := c.store.WriteBatch(batch); err != nil {
 		c.mu.Unlock()
 		return err
 	}
@@ -232,6 +273,13 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 			return err
 		}
 		batch = append(batch, KVPair{Key: JobMetaKey(request.JobID), Value: jobData})
+		savepointWrite, err := c.savepointDecisionLocked(checkpoint)
+		if err != nil {
+			return err
+		}
+		if savepointWrite != nil {
+			batch = append(batch, *savepointWrite)
+		}
 	}
 	if err := c.store.WriteBatch(batch); err != nil {
 		return err

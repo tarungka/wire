@@ -36,3 +36,13 @@ func (ks *KeyedStream) Window(assigner WindowAssigner) *WindowedStream {
 		assigner: assigner,
 	}
 }
+
+// MapNamed applies a registered map after keyed partitioning in cluster mode.
+func (ks *KeyedStream) MapNamed(name, className string, config []byte) *DataStream {
+	return (&DataStream{env: ks.env, nodeID: ks.nodeID}).MapNamed(name, className, config)
+}
+
+// AddSinkNamed attaches a registered sink after keyed partitioning.
+func (ks *KeyedStream) AddSinkNamed(name, className string, config []byte) *DataStream {
+	return (&DataStream{env: ks.env, nodeID: ks.nodeID}).AddSinkNamed(name, className, config)
+}
