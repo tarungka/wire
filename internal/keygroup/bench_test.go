@@ -36,3 +36,12 @@ func BenchmarkDecodePebbleKey(b *testing.B) {
 		_, _, _, _ = DecodePebbleKey(encoded)
 	}
 }
+
+func BenchmarkRescaleMappingMaxParallelism(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := RescaleMapping(MaxKeyGroups, MaxKeyGroups, MaxKeyGroups); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
