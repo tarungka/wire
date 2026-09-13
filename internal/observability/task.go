@@ -11,7 +11,10 @@ import (
 // ObserveTaskGoroutines exposes engine-owned task goroutines, excluding shared
 // transport and storage subsystem goroutines. Unregister when the task exits.
 func ObserveTaskGoroutines(taskID string, read func() int64) (func() error, error) {
-	m := Meter()
+	return observeTaskGoroutines(Meter(), taskID, read)
+}
+
+func observeTaskGoroutines(m metric.Meter, taskID string, read func() int64) (func() error, error) {
 	gauge, err := m.Int64ObservableGauge("wire_task_goroutine_count", metric.WithDescription("Active engine-owned task goroutines and callbacks"))
 	if err != nil {
 		return nil, err
@@ -28,7 +31,11 @@ func ObserveTaskGoroutines(taskID string, read func() int64) (func() error, erro
 }
 
 func TaskBackpressureRecorder(taskID string) (func(time.Duration), error) {
-	counter, err := Meter().Float64Counter("wire_task_backpressure_time_ms", metric.WithDescription("Cumulative operator chain wait for output capacity in milliseconds"))
+	return taskBackpressureRecorder(Meter(), taskID)
+}
+
+func taskBackpressureRecorder(m metric.Meter, taskID string) (func(time.Duration), error) {
+	counter, err := m.Float64Counter("wire_task_backpressure_time_ms", metric.WithDescription("Cumulative operator chain wait for output capacity in milliseconds"))
 	if err != nil {
 		return nil, err
 	}

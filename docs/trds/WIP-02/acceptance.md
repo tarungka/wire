@@ -28,7 +28,7 @@ waive any WIP-02 requirement.
 | Replication failure affects checkpoint, threshold affects task (§2.7) | Coordinator failure reporting now applies existing checkpoint thresholds and ignores stale checkpoint/epoch reports; timeout metrics exclude replication failures. TaskSlot completion delivery now feeds this policy; durable worker replication and additional transactional/abort overlap tests remain required. |
 | Configuration (§3.1) | Input/output/alignment sizes and DrainTimeout exist. Engine upload concurrency is implemented. Pebble compaction concurrency defaults to two and is configurable in engine/embedded SDK, retained across restore. Worker configuration integration remains open. |
 | Container CPU limits (§3.2) | cmd/main.go imports automaxprocs v1.6.0 at startup. Explicit GOMAXPROCS takes precedence; quota rounding/minimum and restart behavior are documented. Command package builds locally; Linux cgroup execution remains to be verified (local Docker daemon is stopped). |
-| Six observability metrics (§3.3) | Task input/output channel usage and alignment payload-byte gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Operator output blocking time is recorded on data/barrier/EOP sends. Engine-owned goroutines and callbacks are counted at entry/exit. Endpoint validation remains open. |
+| Six observability metrics (§3.3) | Task input/output channel usage and alignment payload-byte gauges are registered in TaskSlot.Run and unregistered on exit. Upload duration is recorded around replication. Operator output blocking time is recorded on data/barrier/EOP sends. Engine-owned goroutines and callbacks are counted at entry/exit. Prometheus HTTP-handler export and gauge cleanup are tested; running-worker topology validation remains open. |
 | Benchmarks (§8) | Engine benchmarks exist. Establish and record concurrency/channel/deserialization baselines after implementation. |
 | Documentation and PR | Update actual topology, configuration and status only after validation; linked follow-up PR to #207/#149, using personal GitHub account. |
 
@@ -144,8 +144,8 @@ worker tasks use the configured exporter. Scrapes read current bounded channel
 lengths without polling goroutines. Each observation carries `task_id`;
 unregistration on Run exit releases the callback and its channel references.
 The manual-reader test verifies occupancy changes, identity, and absence of
-observations after unregistering. Prometheus endpoint verification and the
-other task metrics remain required.
+observations after unregistering. Prometheus HTTP-handler verification is described below; running-worker
+checkpoint integration remains required.
 
 Checkpoint uploads record `wire_task_checkpoint_upload_duration_ms` around the
 replicator invocation, including error/panic recovery and cancellation. Capture
@@ -169,8 +169,7 @@ initial nonblocking attempt cannot send. Data, barrier and EOP sends share this
 path; cancelled waits are included, and ready sends do not read the clock.
 TaskSlot attaches its task-labelled recorder to the chain context. The unit
 test checks that ready sends produce no sample and that a full-channel wait
-ended by a deadline records time without emitting a message. Live Prometheus
-counter verification remains part of the endpoint acceptance check.
+ended by a deadline records time without emitting a message. Prometheus counter export and unit conversion are covered below.
 
 
 `wire_task_goroutine_count` counts running engine-owned task workers, read-ahead
@@ -178,5 +177,17 @@ helpers, upload workers and explicit shutdown callbacks. It excludes the caller
 running TaskSlot.Run, shared transport goroutines, runtime timers and Pebble's
 internal workers. Counting starts at goroutine entry, not admission. A blocked
 upload test verifies zero while idle, one while replicating, and zero after
-Close joins cancellation. Full task topology/endpoint verification remains
+Close joins cancellation. Full running-task topology verification remains
 required; this counter does not claim process-wide or Pebble attribution.
+
+
+`TestTaskPrometheusExportAndCleanup` scrapes the Prometheus HTTP handler backed
+by the production OTel exporter and an isolated registry. It verifies all six
+metric families, queue/alignment/goroutine values, millisecond counter and
+histogram values, and absence of live-task gauges after callback cleanup.
+Prometheus exports the monotonic counter as
+`wire_task_backpressure_time_ms_total`; histogram samples use the usual
+`_bucket`, `_sum`, and `_count` suffixes. Cumulative counter/histogram series
+remain exporter history after task exit; only live gauges are removed. This
+is an exporter integration test with controlled values, not evidence of a
+worker performing durable checkpoint replication.
