@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/tarungka/wire/internal/jobcli"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/observability"
+	"github.com/tarungka/wire/internal/transport"
 	"github.com/tarungka/wire/internal/worker"
 )
 
@@ -174,11 +176,30 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 	}
 	coord := coordinator.New(coordCfg, store, election, log.Logger)
 
-	// Create HTTP server.
-	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger)
+	// Load configured HTTPS credentials before starting any server.
+	var httpTLS *tls.Config
+	if wireCfg.HTTP.TLS.Cert != "" || wireCfg.HTTP.TLS.Key != "" || wireCfg.HTTP.TLS.VerifyClient || wireCfg.HTTP.TLS.CACert != "" {
+		var err error
+		httpTLS, err = transport.LoadTLSConfig(wireCfg.HTTP.TLS.Cert, wireCfg.HTTP.TLS.Key, wireCfg.HTTP.TLS.VerifyClient, wireCfg.HTTP.TLS.CACert)
+		if err != nil {
+			return fmt.Errorf("HTTP TLS: %w", err)
+		}
+	}
+	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger, httpTLS)
+	if err := httpSrv.ConfigureAuth(wireCfg.Auth.File); err != nil {
+		return fmt.Errorf("HTTP authentication: %w", err)
+	}
 
 	// Create transport server for worker RPC connections.
-	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger)
+	var nodeTLS *tls.Config
+	if wireCfg.NodeTLS.Cert != "" || wireCfg.NodeTLS.Key != "" || wireCfg.NodeTLS.VerifyClient || wireCfg.NodeTLS.CACert != "" {
+		var err error
+		nodeTLS, err = transport.LoadTLSConfig(wireCfg.NodeTLS.Cert, wireCfg.NodeTLS.Key, wireCfg.NodeTLS.VerifyClient, wireCfg.NodeTLS.CACert)
+		if err != nil {
+			return fmt.Errorf("node TLS: %w", err)
+		}
+	}
+	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger, nodeTLS)
 
 	// Start everything in an errgroup.
 	g, gCtx := errgroup.WithContext(ctx)
@@ -212,7 +233,17 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 }
 
 func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger) error {
+	var nodeTLS *tls.Config
+	if wireCfg.NodeTLS.Cert != "" || wireCfg.NodeTLS.Key != "" || wireCfg.NodeTLS.CACert != "" || wireCfg.NodeTLS.VerifyServerName != "" {
+		var err error
+		nodeTLS, err = transport.NewTLSClientConfig(wireCfg.NodeTLS.Cert, wireCfg.NodeTLS.Key, wireCfg.NodeTLS.CACert)
+		if err != nil {
+			return fmt.Errorf("worker TLS: %w", err)
+		}
+		nodeTLS.ServerName = wireCfg.NodeTLS.VerifyServerName
+	}
 	w := worker.New(worker.Config{
+		TLSConfig:       nodeTLS,
 		WorkerID:        wireCfg.Worker.WorkerID,
 		CoordinatorAddr: wireCfg.Worker.CoordinatorAddr,
 		ListenAddr:      wireCfg.Worker.ListenAddr,

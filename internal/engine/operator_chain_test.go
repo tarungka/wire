@@ -1717,7 +1717,7 @@ func TestTransactionSideBufferWaitsForDecision(t *testing.T) {
 	}
 	cc := &chainContext{ctx: context.Background(), links: buildChainLinks([]Operator{sink}, nil), txnSink: sink, aligner: aligner, cpMetrics: NoopCheckpointMetrics(), errMetrics: NoopErrorMetrics(), log: testLogger()}
 	eof := 0
-	if err := handleControl(cc, ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 7}, &eof); err != nil {
+	if err := handleControl(cc, ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 7, EpochID: 1}, &eof); err != nil {
 		t.Fatal(err)
 	}
 	sink.mu.Lock()

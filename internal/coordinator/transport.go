@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 // TransportServer listens for worker RPC connections over TCP/Yamux.
 type TransportServer struct {
+	tlsConfig  *tls.Config
 	coord      *Coordinator
 	listenAddr string
 	rpcServer  *rpc.Server
@@ -32,7 +34,11 @@ type TransportServer struct {
 
 // NewTransportServer creates a TransportServer that bridges worker RPC
 // connections to the coordinator.
-func NewTransportServer(coord *Coordinator, listenAddr string, log zerolog.Logger) *TransportServer {
+func NewTransportServer(coord *Coordinator, listenAddr string, log zerolog.Logger, tlsConfig ...*tls.Config) *TransportServer {
+	var nodeTLS *tls.Config
+	if len(tlsConfig) > 0 && tlsConfig[0] != nil {
+		nodeTLS = tlsConfig[0].Clone()
+	}
 	rpcCfg := rpc.DefaultConfig()
 	srv := rpc.NewServer(rpcCfg)
 
@@ -42,6 +48,7 @@ func NewTransportServer(coord *Coordinator, listenAddr string, log zerolog.Logge
 	srv.RegisterStream(rpc.MethodWatchCommands, coord.HandleWatchCommands)
 
 	return &TransportServer{
+		tlsConfig:  nodeTLS,
 		coord:      coord,
 		listenAddr: listenAddr,
 		rpcServer:  srv,
@@ -117,6 +124,7 @@ func (ts *TransportServer) ListenAndServe(ctx context.Context) error {
 // serves RPCs on it.
 func (ts *TransportServer) handleConn(ctx context.Context, conn net.Conn) {
 	tcfg := transport.DefaultConfig()
+	tcfg.TLSConfig = ts.tlsConfig
 	session, err := transport.NewServerSession(conn, tcfg)
 	if err != nil {
 		ts.log.Warn().Err(err).Str("remote", conn.RemoteAddr().String()).Msg("session setup failed")

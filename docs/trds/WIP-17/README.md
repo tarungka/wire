@@ -24,8 +24,8 @@
 
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Configuration structures, transport TLS utilities/tests, and environment substitution exist.
-- **Remaining:** HTTP authentication/RBAC and HTTPS/mTLS are not wired through the main runtime. Config fields and transport tests do not establish a secured running cluster.
+- **Implemented:** Configuration structures, transport TLS utilities, coordinator HTTPS, worker/coordinator RPC TLS, explicit CA-based client verification, and server-name verification are wired into runtime startup. See [runtime TLS configuration](../../runtime-tls.md).
+- **Remaining:** HTTP authentication/RBAC, certificate-to-worker identity mapping, certificate rotation, metrics listener security, and future distributed data-plane security. Runtime TLS tests establish encrypted HTTP and worker registration, not a fully authorized cluster.
 - **Evidence:** [config.go](../../../internal/config/config.go), [tls.go](../../../internal/transport/tls.go), [main.go](../../../cmd/main.go).
 
 ---

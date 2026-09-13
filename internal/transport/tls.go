@@ -9,6 +9,9 @@ import (
 
 // LoadTLSConfig creates a server-side TLS configuration.
 func LoadTLSConfig(certFile, keyFile string, verifyClient bool, caFile string) (*tls.Config, error) {
+	if verifyClient && caFile == "" {
+		return nil, fmt.Errorf("transport: client verification requires a CA file")
+	}
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("transport: failed to load TLS certificate: %w", err)
@@ -35,6 +38,9 @@ func LoadTLSConfig(certFile, keyFile string, verifyClient bool, caFile string) (
 
 // NewTLSClientConfig creates a client-side TLS configuration.
 func NewTLSClientConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
+	if (certFile == "") != (keyFile == "") {
+		return nil, fmt.Errorf("transport: client certificate and key must both be supplied")
+	}
 	cfg := &tls.Config{
 		MinVersion: tls.VersionTLS13,
 	}
