@@ -55,6 +55,9 @@ func TestClusterCheckpointTransactionalCommit(t *testing.T) {
 }
 
 func TestClusterCheckpointCoordinatorFailover(t *testing.T) {
+	if testing.Short() {
+		t.Skip("coordinator contact-loss policy requires 30 seconds; covered by full and integration suites")
+	}
 	testClusterCheckpoint(t, false, false, false, true)
 }
 

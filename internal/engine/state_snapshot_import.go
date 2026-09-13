@@ -76,11 +76,16 @@ func ImportPebbleSnapshot(ctx context.Context, source io.Reader, root string, ma
 			return SnapshotHandle{}, err
 		}
 		name := strings.TrimPrefix(header.Name, "files/")
+		// Validate the archive entry itself, not only the manifest key it
+		// references. Only a single local filename may reach filesystem I/O.
+		if !filepath.IsLocal(name) || filepath.Base(name) != name || strings.ContainsAny(name, "/\\") {
+			return SnapshotHandle{}, ErrSnapshotCorrupt
+		}
 		expected, exists := manifest.Files[name]
 		if !exists || seen[name] || header.Name != "files/"+name || header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > limited.N {
 			return SnapshotHandle{}, ErrSnapshotCorrupt
 		}
-		if err := importSnapshotFile(archive, filepath.Join(directory, name), header.Size, expected); err != nil {
+		if err := importSnapshotFile(archive, filepath.Join(directory, filepath.Base(name)), header.Size, expected); err != nil {
 			return SnapshotHandle{}, err
 		}
 		seen[name] = true
