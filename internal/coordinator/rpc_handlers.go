@@ -200,7 +200,7 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 			}
 		}
 
-	case rpc.TaskStatusFailed:
+	case rpc.TaskStatusFailed, rpc.TaskStatusCanceled:
 		c.mu.RLock()
 		currentStatus := job.Status
 		c.mu.RUnlock()

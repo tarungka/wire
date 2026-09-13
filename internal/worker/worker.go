@@ -593,7 +593,11 @@ func (w *Worker) joinTasksForReconnect() error {
 		}
 	}
 	w.mu.RUnlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	drain := engine.DefaultDrainTimeout
+	if w.executor.taskConfig != nil && w.executor.taskConfig.DrainTimeout > 0 {
+		drain = w.executor.taskConfig.DrainTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), drain+5*time.Second)
 	defer cancel()
 	for _, done := range tasks {
 		select {

@@ -48,6 +48,12 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 		c.mu.Unlock()
 		return nil, errors.New("checkpoint has no task assignments")
 	}
+	for taskID := range assignment.Assignments {
+		if assignment.Replicas[taskID] == "" {
+			c.mu.Unlock()
+			return nil, fmt.Errorf("%w: task %s has no assigned replica", ErrCheckpointUnavailable, taskID)
+		}
+	}
 	var highest uint64
 	var scanErr error
 	err = c.store.PrefixScan([]byte(fmt.Sprintf("jobs/%s/checkpoints/", jobID)), func(key, value []byte) bool {

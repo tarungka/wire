@@ -11,7 +11,7 @@ import (
 func TestHTTPCheckpointTriggerAndStatus(t *testing.T) {
 	c, store := newReadyCoordinator(t)
 	c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
-	data, err := protocol.EncodeMsgPack(TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}})
+	data, err := protocol.EncodeMsgPack(TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": "peer:4004"}})
 	if err != nil {
 		t.Fatal(err)
 	}

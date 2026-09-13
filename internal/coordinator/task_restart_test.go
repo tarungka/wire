@@ -45,3 +45,44 @@ func TestRestartWaitsForOldTasksAndDeploysCheckpoint(t *testing.T) {
 		t.Fatal("old terminal status retained")
 	}
 }
+
+func TestRestartDoesNotWaitForExpiredWorker(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	job := &JobMeta{ID: "job", Status: JobRunning, LatestCheckpoint: 7}
+	c.jobs[job.ID] = job
+	c.workers["dead"] = &WorkerMeta{LastHeartbeat: time.Now().Add(-2 * c.config.WorkerTimeout)}
+	if err := store.Set(JobAssignmentsKey(job.ID), encode(t, TaskAssignmentMap{JobID: job.ID, Assignments: map[string]string{"task": "dead"}})); err != nil {
+		t.Fatal(err)
+	}
+	c.taskStatuses["task"] = rpc.TaskStatusRunning
+	c.detectLostTaskWorkers()
+	if job.Status != JobFailing {
+		t.Fatal("worker loss did not fail running job")
+	}
+	if !c.prepareTaskRestart(job) {
+		t.Fatal("expired worker prevented recovery")
+	}
+	if len(c.DrainCommands("dead")) != 0 {
+		t.Fatal("cancellation queued for dead worker")
+	}
+}
+
+func TestRestartBudgetAndBackoff(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	job := &JobMeta{ID: "job", Status: JobFailing, LatestCheckpoint: 7, RestartCount: 1, UpdatedAt: time.Now()}
+	c.jobs[job.ID] = job
+	if err := store.Set(JobAssignmentsKey(job.ID), encode(t, TaskAssignmentMap{JobID: job.ID})); err != nil {
+		t.Fatal(err)
+	}
+	if c.prepareTaskRestart(job) {
+		t.Fatal("restart skipped backoff")
+	}
+	job.UpdatedAt = time.Now().Add(-2 * c.config.RestartBackoff)
+	if !c.prepareTaskRestart(job) {
+		t.Fatal("elapsed backoff prevented recovery")
+	}
+	job.RestartCount = c.config.RestartMaxAttempts
+	if c.prepareTaskRestart(job) || job.Status != JobFailed {
+		t.Fatal("exhausted restart budget not terminal")
+	}
+}

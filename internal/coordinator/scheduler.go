@@ -77,6 +77,7 @@ func (c *Coordinator) scheduleTick(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	c.detectLostTaskWorkers()
 
 	// Snapshot CREATED jobs under RLock.
 	c.mu.RLock()
