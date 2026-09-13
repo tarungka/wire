@@ -100,6 +100,7 @@ func (s *Session) NegotiateSession(ctx context.Context, cfg Config, initiator bo
 	s.control = stream
 	s.peerNodeID = remote.NodeID
 	s.peerListenPort = remote.ListenPort
+	s.initiator = initiator
 	go s.runControl(cfg)
 	return params, nil
 }

@@ -588,7 +588,10 @@ opened. It supplies a cache key for subsequent explicit dials and cannot select
 a different host from the observed TCP peer. A zero/omitted port preserves the
 original dial-only behavior. This assumes directly reachable worker endpoints;
 NAT port translation and address aliases require membership-provided endpoint
-mapping. Concurrent first dials still require connection arbitration.
+mapping. When first dials cross, both endpoints select the connection initiated by the
+lexicographically lower NodeID for subsequent streams. Connections in the same
+direction are ordered by the initiator TCP endpoint. Active streams retain their
+original connection; duplicate connection retirement remains implementation work.
 
 **Go struct:**
 

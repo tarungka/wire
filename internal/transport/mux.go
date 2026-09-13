@@ -25,6 +25,7 @@ type Mux struct {
 	listener  net.Listener
 	peers     map[string]*Session
 	sessions  map[*Session]struct{}
+	nodes     map[string]*Session
 	streamCh  chan *FrameStream
 	log       zerolog.Logger
 	ctx       context.Context
@@ -46,6 +47,7 @@ func NewMux(cfg Config) *Mux {
 		cfg:      cfg,
 		peers:    make(map[string]*Session),
 		sessions: make(map[*Session]struct{}),
+		nodes:    make(map[string]*Session),
 		dialing:  make(map[string]chan struct{}),
 		tasks:    make(map[string]*taskQueue),
 		streamCh: make(chan *FrameStream, 64),
@@ -155,6 +157,7 @@ func (m *Mux) Close() error {
 		}
 		clear(m.peers)
 		clear(m.sessions)
+		clear(m.nodes)
 		m.mu.Unlock()
 		m.wg.Wait()
 		close(m.streamCh)
@@ -214,8 +217,7 @@ func (m *Mux) acceptLoop(ctx context.Context) {
 				_ = sess.Close()
 				return
 			}
-			m.peers[addr] = sess
-			m.sessions[sess] = struct{}{}
+			m.publishSession(addr, sess)
 			m.mu.Unlock()
 			defer m.forgetSession(sess)
 
@@ -321,8 +323,7 @@ func (m *Mux) getOrCreateSession(ctx context.Context, addr string) (*Session, er
 		_ = sess.Close()
 		return nil, fmt.Errorf("transport: mux closed")
 	}
-	m.peers[addr] = sess
-	m.sessions[sess] = struct{}{}
+	selected := m.publishSession(addr, sess)
 	// Yamux permits the accepting peer to open its own unidirectional data
 	// streams on this connection. Service those streams for the lifetime of
 	// the mux, independently of the caller that initiated the connection.
@@ -332,5 +333,5 @@ func (m *Mux) getOrCreateSession(ctx context.Context, addr string) (*Session, er
 		defer m.forgetSession(sess)
 		m.sessionAcceptLoop(m.ctx, sess)
 	}()
-	return sess, nil
+	return selected, nil
 }

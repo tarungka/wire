@@ -224,3 +224,17 @@ and asserts one live connection per mux; it passed 20 race iterations. Safe
 simultaneous-first-dial arbitration and membership endpoint aliases remain open.
 The full integration-tagged race suite and golangci-lint v2.5.0 pass with endpoint
 advertisement and session ownership tracking.
+
+### Crossed connection selection
+
+Mux indexes negotiated sessions by NodeID and deterministically selects the
+connection initiated by the lower NodeID. A shared initiator-endpoint tie break
+handles same-direction alias dials. Cache aliases follow the selected session.
+This changes only future stream placement; active connections are not closed.
+A forced test opens both TCP connections before handshaking, verifies that both
+workers select the same physical connection, sends on both original connections,
+and verifies a later reverse Dial uses the selected one. It passed 30 race runs.
+Safe retirement of the duplicate after active streams drain is still required;
+selection alone does not prove one live TCP connection per pair after a cross-dial.
+The full integration-tagged race suite and golangci-lint v2.5.0 pass with the
+selection change.

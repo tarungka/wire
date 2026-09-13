@@ -39,9 +39,53 @@ func (m *Mux) forgetSession(sess *Session) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.sessions, sess)
+	if m.nodes[sess.peerNodeID] == sess {
+		delete(m.nodes, sess.peerNodeID)
+	}
 	for addr, cached := range m.peers {
 		if cached == sess {
 			delete(m.peers, addr)
 		}
 	}
+}
+
+// publishSession chooses the same connection at both endpoints when first dials
+// cross. Call with m.mu held. Existing streams retain their session; selection
+// only controls where subsequent streams are opened.
+func (m *Mux) publishSession(addr string, candidate *Session) *Session {
+	m.sessions[candidate] = struct{}{}
+	node := candidate.peerNodeID
+	selected := m.nodes[node]
+	if selected == nil || selected.IsClosed() || m.sessionBefore(candidate, selected) {
+		previous := selected
+		selected = candidate
+		m.nodes[node] = selected
+		for alias, cached := range m.peers {
+			if cached == previous {
+				m.peers[alias] = selected
+			}
+		}
+	}
+	m.peers[addr] = selected
+	if endpoint := candidate.peerListenAddress(); endpoint != "" {
+		m.peers[endpoint] = selected
+	}
+	return selected
+}
+
+func (m *Mux) sessionBefore(a, b *Session) bool {
+	// Both peers prefer the connection initiated by the lower node ID.
+	preferred := func(s *Session) bool { return s.initiator == (m.cfg.NodeID < s.peerNodeID) }
+	if preferred(a) != preferred(b) {
+		return preferred(a)
+	}
+	// Alias dials can create two connections in the same direction. The TCP
+	// initiator's endpoint is shared evidence for a stable tie break.
+	endpoint := func(s *Session) string {
+		if s.initiator {
+			return s.conn.LocalAddr().String()
+		}
+		return s.conn.RemoteAddr().String()
+	}
+	return endpoint(a) < endpoint(b)
 }

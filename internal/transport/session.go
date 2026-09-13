@@ -23,6 +23,7 @@ type Session struct {
 	control        *yamux.Stream
 	peerNodeID     string
 	peerListenPort uint16
+	initiator      bool
 	mu             sync.Mutex
 	yamux          *yamux.Session
 	conn           net.Conn

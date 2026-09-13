@@ -125,3 +125,103 @@ func TestMuxReciprocalDialReusesAdvertisedEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestMuxCrossedConnectionsSelectSameSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cfg := DefaultConfig()
+	cfg.ListenAddr = "127.0.0.1:0"
+	cfg.NodeID = "a"
+	a := NewMux(cfg)
+	cfg.NodeID = "b"
+	b := NewMux(cfg)
+	defer a.Close()
+	defer b.Close()
+	for _, mux := range []*Mux{a, b} {
+		if err := mux.Listen(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Establish both TCP connections before either handshake. This forces the
+	// crossed-connection case even on a single CPU or a slow test runner.
+	ac, err := NewClientSessionContext(ctx, b.ListenAddr(), a.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ac.Close()
+	bc, err := NewClientSessionContext(ctx, a.ListenAddr(), b.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bc.Close()
+	for _, pair := range []struct {
+		mux     *Mux
+		session *Session
+		addr    string
+	}{{b, bc, a.ListenAddr()}, {a, ac, b.ListenAddr()}} {
+		if _, err := pair.session.NegotiateSession(ctx, pair.mux.sessionConfig(), true); err != nil {
+			t.Fatal(err)
+		}
+		pair.mux.mu.Lock()
+		pair.mux.publishSession(pair.addr, pair.session)
+		pair.mux.wg.Add(1)
+		pair.mux.mu.Unlock()
+		go func(mux *Mux, sess *Session) {
+			defer mux.wg.Done()
+			defer mux.forgetSession(sess)
+			mux.sessionAcceptLoop(mux.ctx, sess)
+		}(pair.mux, pair.session)
+	}
+	// Accepting-side publication follows its handshake write, so synchronize
+	// with it using a routed data stream on each forced connection.
+	for _, pair := range []struct {
+		session *Session
+		cfg     Config
+		target  *Mux
+	}{{ac, a.cfg, b}, {bc, b.cfg, a}} {
+		stream, err := pair.session.OpenDataStream(ctx, pair.cfg, protocol.StreamHeaderMsg{SourceTaskID: "s", TargetTaskID: "default"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+		input, err := pair.target.Accept(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer input.Close()
+		if err := stream.WriteMessage(&protocol.DataRecordMsg{Value: []byte("existing")}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := input.ReadMessage(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.mu.RLock()
+	as := a.nodes["b"]
+	a.mu.RUnlock()
+	b.mu.RLock()
+	bs := b.nodes["a"]
+	b.mu.RUnlock()
+	if as != ac || bs.initiator {
+		t.Fatal("workers selected different initiators")
+	}
+	if as.conn.LocalAddr().String() != bs.conn.RemoteAddr().String() {
+		t.Fatal("workers selected different connections")
+	}
+	reverse, err := b.Dial(ctx, a.ListenAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reverse.Close()
+	if reverse.session != bs {
+		t.Fatal("later dial did not use selected connection")
+	}
+	received, err := a.Accept(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer received.Close()
+	if received.session != as {
+		t.Fatal("later dial arrived on another connection")
+	}
+}
