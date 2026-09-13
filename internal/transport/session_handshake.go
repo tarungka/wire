@@ -52,7 +52,7 @@ func (s *Session) NegotiateSession(ctx context.Context, cfg Config, initiator bo
 		return NegotiatedParams{}, err
 	}
 	local := protocol.SessionHandshakeMsg{ProtocolVersion: cfg.LocalProtocolVersion, MinVersion: cfg.LocalMinVersion, Features: cfg.LocalFeatures, NodeID: cfg.NodeID}
-	send := func() error { return protocol.EncodeAndWriteFrame(stream, &local) }
+	send := func() error { return protocol.EncodeAndWriteFrameLimit(stream, &local, cfg.MaxFrameSize) }
 	receive := func() (*protocol.SessionHandshakeMsg, error) {
 		frame, err := protocol.ReadFrame(stream, cfg.MaxFrameSize)
 		if err != nil {

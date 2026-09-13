@@ -61,7 +61,7 @@ func (s *Session) OpenDataStream(ctx context.Context, cfg Config, header protoco
 	defer stop()
 	until, _ := deadline.Deadline()
 	_ = raw.SetWriteDeadline(until)
-	if err := protocol.EncodeAndWriteFrame(raw, &header); err != nil {
+	if err := protocol.EncodeAndWriteFrameLimit(raw, &header, cfg.MaxFrameSize); err != nil {
 		_ = raw.Close()
 		return nil, sessionHandshakeError(deadline, err)
 	}
@@ -113,7 +113,7 @@ func (s *Session) AcceptDataStream(cfg Config, targetExists func(protocol.Stream
 		return nil, fmt.Errorf("transport: source and target task IDs are required")
 	}
 	if targetExists == nil || !targetExists(*header) {
-		_ = protocol.EncodeAndWriteFrame(raw, &protocol.EndOfPartitionMsg{SourceID: header.TargetTaskID, Reason: protocol.EndReasonError})
+		_ = protocol.EncodeAndWriteFrameLimit(raw, &protocol.EndOfPartitionMsg{SourceID: header.TargetTaskID, Reason: protocol.EndReasonError}, cfg.MaxFrameSize)
 		return nil, fmt.Errorf("transport: unknown target task %q", header.TargetTaskID)
 	}
 	_ = raw.SetDeadline(time.Time{})

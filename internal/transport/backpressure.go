@@ -76,7 +76,7 @@ func (fs *FrameStream) ReportBufferUsage(used, capacity int) error {
 		timeout = DefaultConnectionWriteTimeout
 	}
 	_ = fs.session.control.SetWriteDeadline(time.Now().Add(timeout))
-	err := protocol.EncodeAndWriteFrame(fs.session.control, &protocol.BackpressureMsg{StreamID: fs.StreamID(), State: state, BufferUsage: usage})
+	err := protocol.EncodeAndWriteFrameLimit(fs.session.control, &protocol.BackpressureMsg{StreamID: fs.StreamID(), State: state, BufferUsage: usage}, fs.cfg.MaxFrameSize)
 	_ = fs.session.control.SetWriteDeadline(time.Time{})
 	fs.session.controlWriteMu.Unlock()
 	if err == nil {

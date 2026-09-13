@@ -177,3 +177,19 @@ race detection. Full integration-tagged race tests and v2.5.0 lint pass locally.
 [Security validation evidence](security-validation.md) addresses the applicable
 ECC bot request with actual scanner and focused test evidence. Final-head CI and
 remaining WIP requirements still gate merge readiness.
+
+### Outgoing frame limits
+
+All transport writes (session handshake, stream header, data, rejection and
+backpressure) now enforce Config.MaxFrameSize before writing any frame bytes.
+The length includes type and CRC and excludes the four-byte prefix, matching
+ReadFrame. Boundary tests cover all seven active message types and prove that
+an oversized frame produces no output and the exact-limit frame round-trips.
+Protocol/transport race tests and v2.5.0 lint pass. Encoding still allocates the
+payload before checking its size; bounded encoding and schema validation remain
+open resource/protocol work. The low-level raw frame writer remains available
+for protocol fixtures and checks uint32 representability.
+
+At head 76f5fda, lint, unit tests, integration tests, build and Docker CI passed.
+Go and Python CodeQL jobs failed after reaching upload, with no error annotation;
+the failed jobs were requested to rerun. This is not yet security-check clearance.

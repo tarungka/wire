@@ -214,6 +214,12 @@ func DecodePayload(f Frame) (any, error) {
 
 // EncodeAndWriteFrame determines the MsgType from the concrete message type and writes the frame.
 func EncodeAndWriteFrame(w io.Writer, msg any) error {
+	return EncodeAndWriteFrameLimit(w, msg, DefaultMaxFrameSize)
+}
+
+// EncodeAndWriteFrameLimit rejects oversized messages before writing any bytes.
+// maxFrameSize counts the type, CRC and payload, excluding the length prefix.
+func EncodeAndWriteFrameLimit(w io.Writer, msg any, maxFrameSize uint32) error {
 	var msgType uint8
 	switch msg.(type) {
 	case *StreamHeaderMsg, StreamHeaderMsg:
@@ -245,5 +251,12 @@ func EncodeAndWriteFrame(w io.Writer, msg any) error {
 	default:
 		return fmt.Errorf("%w: unsupported type %T", ErrEncodePayload, msg)
 	}
-	return WriteFrame(w, msgType, msg)
+	payload, err := EncodeMsgPack(msg)
+	if err != nil {
+		return err
+	}
+	if uint64(len(payload))+MinFrameLength > uint64(maxFrameSize) {
+		return ErrFrameTooLarge
+	}
+	return WriteFrameRaw(w, msgType, payload)
 }

@@ -136,7 +136,7 @@ func (fs *FrameStream) WriteMessageContext(ctx context.Context, msg any) error {
 		}
 		_ = fs.raw.SetWriteDeadline(time.Time{})
 	}()
-	if err := protocol.EncodeAndWriteFrame(fs.raw, msg); err != nil {
+	if err := protocol.EncodeAndWriteFrameLimit(fs.raw, msg, fs.cfg.MaxFrameSize); err != nil {
 		_ = fs.Close()
 		if ctx.Err() != nil {
 			return ctx.Err()
