@@ -42,6 +42,10 @@ func runInputReader(
 	defer cancelReader()
 	const queueCapacity = 4
 	msgCh := make(chan readResult, queueCapacity)
+	// A channel receive frees buffer capacity before the consumer decrements
+	// occupancy. Reserve explicit slots so a producer cannot reuse that capacity
+	// until the old message has also left the reported count.
+	slots := make(chan struct{}, queueCapacity+1)
 	var occupancy atomic.Int32
 	var reportMu sync.Mutex
 	report := func() error {
@@ -54,6 +58,11 @@ func runInputReader(
 	go func() {
 		defer close(readerDone)
 		for {
+			select {
+			case slots <- struct{}{}:
+			case <-readerCtx.Done():
+				return
+			}
 			msg, err := stream.ReadMessage()
 			occupancy.Add(1)
 			if reportErr := report(); err == nil {
@@ -77,6 +86,7 @@ func runInputReader(
 			return nil
 		case result = <-msgCh:
 			occupancy.Add(-1)
+			<-slots
 			if err := report(); err != nil && result.err == nil {
 				return err
 			}

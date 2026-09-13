@@ -30,10 +30,9 @@ func TestOutputRouterBroadcastsOrderedControlFrames(t *testing.T) {
 	}
 	messages <- OutputMsg{Type: OutputEnd, End: &protocol.EndOfPartitionMsg{SourceID: "source"}}
 	close(messages)
-	// TaskSlot cancels the group as the chain finishes. Already queued controls
-	// must still drain onto every unpaused partition.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	// TaskSlot preserves a separate output context when the source finishes,
+	// so closed producer queues drain even when input readers are stopping.
+	ctx := context.Background()
 	done := make(chan error, 1)
 	go func() { done <- runOutputRouter(ctx, []*transport.FrameStream{a, b}, messages, testLogger()) }()
 	for index, input := range []*transport.FrameStream{ar, br} {

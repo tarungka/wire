@@ -26,7 +26,7 @@ type NegotiatedParams struct {
 // error counting, and protocol validation on top of a Yamux stream.
 type FrameStream struct {
 	mu                      sync.Mutex
-	writeMu                 sync.Mutex
+	writeGate               chan struct{}
 	readMu                  sync.Mutex
 	readOffset              uint64
 	reportMu                sync.Mutex
@@ -52,10 +52,11 @@ type FrameStream struct {
 // NewFrameStream wraps a Yamux stream into a FrameStream.
 func NewFrameStream(raw *yamux.Stream, cfg Config) *FrameStream {
 	return &FrameStream{
-		raw:  raw,
-		done: make(chan struct{}),
-		cfg:  cfg,
-		log:  logger.GetLogger("stream").With().Uint32("stream_id", raw.StreamID()).Logger(),
+		raw:       raw,
+		done:      make(chan struct{}),
+		writeGate: make(chan struct{}, 1),
+		cfg:       cfg,
+		log:       logger.GetLogger("stream").With().Uint32("stream_id", raw.StreamID()).Logger(),
 	}
 }
 
@@ -76,11 +77,20 @@ func (fs *FrameStream) WriteMessage(msg any) error {
 	return fs.WriteMessageContext(context.Background(), msg)
 }
 
-// WriteMessageContext allows a canceled task to leave an application-level
-// pause. Unpaused writes still drain queued terminal messages during shutdown.
+// WriteMessageContext bounds both application pauses and transport-window
+// writes. TaskSlot supplies a separate drain context on successful completion.
 func (fs *FrameStream) WriteMessageContext(ctx context.Context, msg any) error {
-	fs.writeMu.Lock()
-	defer fs.writeMu.Unlock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-fs.done:
+		return fmt.Errorf("transport: stream closed")
+	case fs.writeGate <- struct{}{}:
+	}
+	defer func() { <-fs.writeGate }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	for {
 		fs.mu.Lock()
 		ended, resume := fs.ended, fs.resume
@@ -111,8 +121,26 @@ func (fs *FrameStream) WriteMessageContext(ctx context.Context, msg any) error {
 			return fmt.Errorf("transport: message is not permitted on a data stream")
 		}
 	}
+	// A Yamux stream-window wait does not use ConnectionWriteTimeout by
+	// itself; set a stream deadline and wake it on caller cancellation.
+	timeout := fs.cfg.ConnectionWriteTimeout
+	if timeout <= 0 {
+		timeout = DefaultConnectionWriteTimeout
+	}
+	_ = fs.raw.SetWriteDeadline(time.Now().Add(timeout))
+	callbackDone := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { _ = fs.raw.SetWriteDeadline(time.Now()); close(callbackDone) })
+	defer func() {
+		if !stop() {
+			<-callbackDone
+		}
+		_ = fs.raw.SetWriteDeadline(time.Time{})
+	}()
 	if err := protocol.EncodeAndWriteFrame(fs.raw, msg); err != nil {
 		_ = fs.Close()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return err
 	}
 	switch msg.(type) {

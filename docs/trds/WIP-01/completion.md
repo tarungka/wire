@@ -13,7 +13,7 @@ sent; implementing batching is explicitly deferred by this TRD.
 | Session negotiation (§2.2, §3.10) | Mux negotiates before publication and data opening. Compatible/rolling/incompatible versions, feature intersection, timeout, early data rejection, and session reuse pass. Same-peer dialing is coalesced with cancellable waiters; unrelated peers make progress independently. Reciprocal worker connection reuse remains. |
 | Stream routing (§2.2, §3.8) | Sender-only headers, first-frame deadline, RegisterTask/AcceptTask routing and unknown-target rejection pass. Worker descriptors now wire network inputs/outputs into TaskSlot, with explicit task IDs and partition indices. Workers listen on and advertise an actual data endpoint. Deployment ordering, distributed completion notifications, and broader multi-worker acceptance remain to audit. |
 | Inline ordering (§5 decision 3) | A single output dispatcher distributes records and broadcasts barriers/watermarks/EOP in order to every output. Exact two-partition sequence and terminal-drain tests pass. Final multi-input/runtime ordering audit remains. |
-| Control/backpressure (§3.7, §6.3) | One retained control stream dispatches pause/resume by Yamux ID. Writes pause at 80% and resume at 20%; engine input read-ahead reports occupancy. TCP and TLS tests demonstrate blocked writes and recovery. Still verify control progress under a fully exhausted data window and runtime buffer saturation end to end. |
+| Control/backpressure (§3.7, §6.3) | One retained control stream dispatches pause/resume by Yamux ID. Writes pause at 80% and resume at 20%; engine input read-ahead reports occupancy. TCP and TLS tests demonstrate blocked writes and recovery. A full-window regression now proves control progress while a 2 MiB data frame is blocked. Active/queued writes cancel and configured stream write deadlines close partial frames. Network execution stress covers buffer saturation. |
 | Errors and lifecycle (§6) | Partial-frame completion deadlines preserve idle streams; EOP closes output and rejects later writes; error counters reset independently; corrupt frames avoid payload-copy allocation. Corruption diagnostics now include stream-relative offsets, bounded 64-byte previews and both CRCs; invalid lengths log the remote address and reported length. Streams suppress barriers at or below authoritative global completion or a restored checkpoint. Input readers recheck after queueing; distributed completion notifications still need worker wiring. |
 | TLS (§7) | Existing TLS/mTLS positive and negative tests pass with session negotiation; TLS all-message test now exercises actual control-stream pause/resume. |
 | Resource bounds (§7.3, §8.2) | Verify bounded allocations and session reuse, closure during negotiation, malformed streams and fuzz inputs. |
@@ -156,3 +156,24 @@ This proves explicit-descriptor network execution, not automatic cross-worker
 JobGraph planning: the coordinator's existing planner still produces fused local
 chains and rejects shuffle edges. Remaining completion work must not treat this
 as evidence of a full distributed deployment/recovery acceptance run.
+
+### Goal continuation: exhausted windows and Linux CI accounting
+
+A real exhausted-window test reproduced a missing cancellation path: receiving
+only a frame header and leaving its 2 MiB body unread blocked the writer forever,
+even after cancellation. Pause/resume still traversed the control stream. Writes
+now use cancellable serialization, an explicit stream deadline, and a synchronized
+context callback to interrupt Yamux window waits without leaking a deadline into
+a later write. Successful source completion retains its dedicated output drain
+context; explicit cancellation no longer silently continues unpaused writes.
+
+Linux CI on `0a4cce4` found `transport: invalid buffer occupancy` in the network
+worker test. Channel receive frees a slot before the consumer's count decrement,
+so the producer could temporarily count six messages against five slots. Explicit
+slot reservation now prevents reuse until the occupancy decrement has occurred.
+The fix passed 120 network executions (30 each at CPU counts 1, 2, 4 and 8) under
+race detection. Full integration-tagged race tests and v2.5.0 lint pass locally.
+
+[Security validation evidence](security-validation.md) addresses the applicable
+ECC bot request with actual scanner and focused test evidence. Final-head CI and
+remaining WIP requirements still gate merge readiness.

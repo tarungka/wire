@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -451,5 +452,116 @@ func TestTaskUnregisterClosesPendingGeneration(t *testing.T) {
 	}
 	if err := previous.enqueue(ctx, input); err == nil {
 		t.Fatal("closed generation accepted late stream")
+	}
+}
+
+func TestControlProgressAndCancellationWithExhaustedDataWindow(t *testing.T) {
+	server, client, addr := newTestMuxPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out, err := client.Dial(ctx, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	in, err := server.Accept(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	done := make(chan error, 1)
+	go func() {
+		done <- out.WriteMessageContext(ctx, &protocol.DataRecordMsg{Value: make([]byte, 2*DefaultMaxStreamWindowSize)})
+	}()
+	// Receiving the header establishes that the write started. Do not read its
+	// body: it exceeds the receive window, so the writer cannot finish.
+	var header [protocol.HeaderSize]byte
+	if _, err := io.ReadFull(in.raw, header[:]); err != nil {
+		t.Fatal(err)
+	}
+	// A second writer must be able to abandon the serialization queue
+	// without interrupting the first caller's active frame.
+	queuedCtx, cancelQueued := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	queued := make(chan error, 1)
+	go func() { queued <- out.WriteMessageContext(queuedCtx, &protocol.DataRecordMsg{Value: []byte("queued")}) }()
+	select {
+	case err := <-queued:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("queued writer: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued writer ignored cancellation")
+	}
+	cancelQueued()
+	waitState := func(paused bool) {
+		t.Helper()
+		deadline := time.Now().Add(time.Second)
+		for {
+			out.mu.Lock()
+			got := out.resume != nil
+			out.mu.Unlock()
+			if got == paused {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("control state %v blocked behind data", paused)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if err := in.ReportBufferUsage(80, 100); err != nil {
+		t.Fatal(err)
+	}
+	waitState(true)
+	if err := in.ReportBufferUsage(20, 100); err != nil {
+		t.Fatal(err)
+	}
+	waitState(false)
+	select {
+	case err := <-done:
+		t.Fatalf("oversized data escaped the window: %v", err)
+	default:
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("blocked write cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("data-window write ignored cancellation")
+	}
+}
+
+func TestDataWindowWriteTimeout(t *testing.T) {
+	server, client, addr := newTestMuxPair(t)
+	out, err := client.Dial(context.Background(), addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	in, err := server.Accept(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	out.cfg.ConnectionWriteTimeout = 40 * time.Millisecond
+	done := make(chan error, 1)
+	go func() {
+		done <- out.WriteMessage(&protocol.DataRecordMsg{Value: make([]byte, 2*DefaultMaxStreamWindowSize)})
+	}()
+	select {
+	case err := <-done:
+		var timeout net.Error
+		if !errors.As(err, &timeout) || !timeout.Timeout() {
+			t.Fatalf("window timeout: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream ignored configured write timeout")
+	}
+	select {
+	case <-out.done:
+	default:
+		t.Fatal("partially written frame left stream usable")
 	}
 }

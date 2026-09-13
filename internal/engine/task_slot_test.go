@@ -694,8 +694,8 @@ func TestTaskSlot_SourceEnd_ClosesOutputChannelAfterProducers(t *testing.T) {
 	}
 }
 
-func TestOutputWriter_DrainsAfterContextCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+func TestOutputWriter_DrainsClosedQueue(t *testing.T) {
+	ctx := context.Background()
 
 	ow, or := newTestStreamPair(t)
 	outputCh := make(chan OutputMsg, 10)
@@ -704,8 +704,7 @@ func TestOutputWriter_DrainsAfterContextCancel(t *testing.T) {
 	outputCh <- OutputMsg{Type: OutputData, Event: Event{Value: []byte("data1")}}
 	outputCh <- OutputMsg{Type: OutputEnd, End: &protocol.EndOfPartitionMsg{Reason: protocol.EndReasonExhausted}}
 
-	// Cancel context, then close channel (mimicking producerWg completion).
-	cancel()
+	// Closing the producer queue drains it using the task's output context.
 	close(outputCh)
 
 	done := make(chan error, 1)

@@ -13,13 +13,8 @@ import (
 // Natural backpressure: when downstream Yamux window fills, WriteMessage blocks,
 // outputCh fills, and the operator chain blocks on send.
 //
-// This uses a simple `for range` loop instead of a select with ctx.Done() to
-// avoid non-determinism: when the context is cancelled while outputCh still has
-// pending messages (e.g., a final EndOfPartition), Go's select picks randomly
-// between ready channels, so ctx.Done() can win and the writer exits without
-// writing remaining messages. The outputCh lifecycle is managed by producerWg
-// in task_slot.go — all producers finish before outputCh is closed, so this
-// loop naturally terminates after draining all messages.
+// TaskSlot keeps this output context alive on successful chain completion so
+// terminal frames drain, and cancels it on external cancellation or failure.
 func runOutputWriter(ctx context.Context, stream *transport.FrameStream, outputCh <-chan OutputMsg, log zerolog.Logger) error {
 	for msg := range outputCh {
 		if err := writeOutputMsgContext(ctx, stream, msg); err != nil {
