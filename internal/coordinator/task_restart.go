@@ -37,7 +37,8 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 	}
 	checkpoint := c.activeCheckpoints[job.ID]
 	latest := job.LatestCheckpoint
-	restarts, updated := job.RestartCount, job.UpdatedAt
+	restarts, updated := job.RecoveryAttempts, job.UpdatedAt
+	rescale := job.RescaleRequested
 	c.mu.RUnlock()
 	if checkpoint.ID != 0 {
 		if err := c.AbortCheckpoint(job.ID, checkpoint.ID, checkpoint.EpochID); err != nil {
@@ -50,13 +51,13 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 	if len(cancelTasks) > 0 {
 		return false
 	}
-	if latest == 0 || restarts >= c.config.RestartMaxAttempts {
+	if latest == 0 || (!rescale && restarts >= c.config.RestartMaxAttempts) {
 		if err := c.transitionJob(job, JobFailed); err != nil {
 			c.log.Warn().Err(err).Str("job_id", job.ID).Msg("cannot finalize failed job")
 		}
 		return false
 	}
-	if restarts > 0 && time.Since(updated) < c.config.RestartBackoff*time.Duration(1<<min(restarts-1, 6)) {
+	if !rescale && restarts > 0 && time.Since(updated) < c.config.RestartBackoff*time.Duration(1<<min(restarts-1, 6)) {
 		return false
 	}
 	return true

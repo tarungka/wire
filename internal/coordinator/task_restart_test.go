@@ -69,7 +69,7 @@ func TestRestartDoesNotWaitForExpiredWorker(t *testing.T) {
 
 func TestRestartBudgetAndBackoff(t *testing.T) {
 	c, store := newTestCoordinator(t)
-	job := &JobMeta{ID: "job", Status: JobFailing, LatestCheckpoint: 7, RestartCount: 1, UpdatedAt: time.Now()}
+	job := &JobMeta{ID: "job", Status: JobFailing, LatestCheckpoint: 7, RecoveryAttempts: 1, UpdatedAt: time.Now()}
 	c.jobs[job.ID] = job
 	if err := store.Set(JobAssignmentsKey(job.ID), encode(t, TaskAssignmentMap{JobID: job.ID})); err != nil {
 		t.Fatal(err)
@@ -81,8 +81,83 @@ func TestRestartBudgetAndBackoff(t *testing.T) {
 	if !c.prepareTaskRestart(job) {
 		t.Fatal("elapsed backoff prevented recovery")
 	}
-	job.RestartCount = c.config.RestartMaxAttempts
+	job.RecoveryAttempts = c.config.RestartMaxAttempts
 	if c.prepareTaskRestart(job) || job.Status != JobFailed {
 		t.Fatal("exhausted restart budget not terminal")
+	}
+}
+
+func TestRescaleDoesNotConsumeOrBypassFailureBudget(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	job := &JobMeta{ID: "job", Status: JobFailing, LatestCheckpoint: 7, RescaleCheckpoint: 7, RescaleRequested: true, RestartCount: 99, RecoveryAttempts: c.config.RestartMaxAttempts, UpdatedAt: time.Now()}
+	c.jobs[job.ID] = job
+	if err := store.Set(JobAssignmentsKey(job.ID), encode(t, TaskAssignmentMap{JobID: job.ID})); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if !c.prepareTaskRestart(job) {
+			t.Fatal("rescale blocked by recovery limit/backoff")
+		}
+		if err := c.transitionJob(job, JobDeploying); err != nil {
+			t.Fatal(err)
+		}
+		if job.RescaleRequested || job.RestartCount != 99 || job.RecoveryAttempts != c.config.RestartMaxAttempts {
+			t.Fatalf("rescale consumed budget: %+v", job)
+		}
+		if err := c.transitionJob(job, JobRunning); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.transitionJob(job, JobFailing); err != nil {
+			t.Fatal(err)
+		}
+		job.RescaleRequested = true
+	}
+	job.RescaleRequested = false
+	if c.prepareTaskRestart(job) || job.Status != JobFailed {
+		t.Fatal("failed rescale deployment bypassed budget via retained savepoint")
+	}
+}
+
+func TestStableRunningResetsRecoveryBudgetAndPersists(t *testing.T) {
+	for _, stable := range []bool{false, true} {
+		c, store := newTestCoordinator(t)
+		job := &JobMeta{ID: "job", Status: JobRunning, RestartCount: 99, RecoveryAttempts: 3, RunningSince: time.Now()}
+		if stable {
+			job.RunningSince = time.Now().Add(-2 * c.config.RestartResetAfter)
+		}
+		c.jobs[job.ID] = job
+		if err := c.transitionJob(job, JobFailing); err != nil {
+			t.Fatal(err)
+		}
+		want := 3
+		if stable {
+			want = 0
+		}
+		if job.RecoveryAttempts != want || job.RestartCount != 99 {
+			t.Fatalf("budget=%d lifetime=%d", job.RecoveryAttempts, job.RestartCount)
+		}
+		data, err := store.Get(JobMetaKey(job.ID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var saved JobMeta
+		if err := protocol.DecodeMsgPack(data, &saved); err != nil {
+			t.Fatal(err)
+		}
+		if saved.RecoveryAttempts != want {
+			t.Fatal("budget reset not persisted")
+		}
+	}
+}
+
+func TestLegacyLifetimeRestartsDoNotExhaustNewBudget(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	job := &JobMeta{ID: "job", Status: JobFailing, LatestCheckpoint: 7, RestartCount: 100}
+	c.jobs[job.ID] = job
+	if err := store.Set(JobAssignmentsKey(job.ID), encode(t, TaskAssignmentMap{JobID: job.ID})); err != nil {
+		t.Fatal(err)
+	}
+	if !c.prepareTaskRestart(job) {
+		t.Fatal("legacy lifetime count consumed recovery budget")
 	}
 }

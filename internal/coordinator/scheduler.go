@@ -205,7 +205,11 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	// partially persisted deployment if writing assignments fails.
 	next := *job
 	if job.Status == JobFailing {
-		next.RestartCount++
+		if !job.RescaleRequested {
+			next.RestartCount++
+			next.RecoveryAttempts++
+		}
+		next.RescaleRequested = false
 	}
 	next.Status = JobDeploying
 	next.UpdatedAt = time.Now().UTC()

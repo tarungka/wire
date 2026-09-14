@@ -30,9 +30,13 @@ type CoordinatorConfig struct {
 	CheckpointTimeout      time.Duration
 	RestartMaxAttempts     int
 	RestartBackoff         time.Duration
+	RestartResetAfter      time.Duration
 }
 
 func (c *CoordinatorConfig) resolve() {
+	if c.RestartResetAfter <= 0 {
+		c.RestartResetAfter = time.Minute
+	}
 	if c.RestartMaxAttempts <= 0 {
 		c.RestartMaxAttempts = 3
 	}
