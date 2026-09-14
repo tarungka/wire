@@ -300,6 +300,8 @@ func eventPayloadBytes(event Event) int64 {
 	return size
 }
 
+// Retirement is a high-water mark: the coordinator permits only one in-flight
+// checkpoint per job, so retiring N also fences all earlier identities.
 func (ba *BarrierAligner) isRetiredLocked(id, epoch uint64) bool {
 	return epoch < ba.retiredEpoch || (epoch == ba.retiredEpoch && id <= ba.retiredID)
 }

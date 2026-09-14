@@ -35,7 +35,7 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 		c.mu.Unlock()
 		return nil, ErrJobNotRunning
 	}
-	if c.config.CheckpointMinPause > 0 && !job.LastCheckpointCompletion.IsZero() && time.Since(job.LastCheckpointCompletion) < c.config.CheckpointMinPause {
+	if savepointID == "" && c.config.CheckpointMinPause > 0 && !job.LastCheckpointCompletion.IsZero() && time.Since(job.LastCheckpointCompletion) < c.config.CheckpointMinPause {
 		c.mu.Unlock()
 		return nil, ErrCheckpointMinPause
 	}

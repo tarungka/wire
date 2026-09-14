@@ -27,7 +27,10 @@ func NoopCheckpointMetrics() CheckpointMetrics {
 
 type telemetryCheckpointMetrics struct{ alignment func(time.Duration) }
 
-func (m telemetryCheckpointMetrics) IncTimeoutTotal()                     { observability.RecordCheckpointTimeout("") }
+// Timeout decisions are counted by the distributed coordinator, once per job
+// checkpoint. Engine callbacks must not mix task events into that counter.
+// Custom CheckpointMetrics implementations can still observe local timeouts.
+func (m telemetryCheckpointMetrics) IncTimeoutTotal()                     {}
 func (m telemetryCheckpointMetrics) ObserveAlignmentTime(d time.Duration) { m.alignment(d) }
 func newTelemetryCheckpointMetrics(taskID string) CheckpointMetrics {
 	return telemetryCheckpointMetrics{alignment: observability.CheckpointAlignmentRecorder(taskID)}

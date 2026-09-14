@@ -529,13 +529,14 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		}
 		// Abort controls have priority, but pre-barrier queued records must
 		// still precede the post-barrier side buffer. Bound this drain so an
-		// unaligned input that keeps producing cannot starve abort handling.
+		// unaligned input cannot extend the drain indefinitely. Each processEvent
+		// can still block on downstream progress; this is not a time bound.
+	abortDrain:
 		for remaining := len(cc.inputCh); remaining > 0; remaining-- {
 			select {
 			case event, ok := <-cc.inputCh:
 				if !ok {
-					remaining = 0
-					break
+					break abortDrain
 				}
 				if err := processEvent(cc, event); err != nil {
 					return err

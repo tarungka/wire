@@ -128,7 +128,7 @@ sequenceDiagram
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `checkpoint.timeout` | `10m` | Max time for a checkpoint to complete |
-| `checkpoint.min_pause` | `0s` | Minimum delay after a completed checkpoint before another trigger |
+| `checkpoint.min_pause` | `0s` | Minimum delay after completion before another checkpoint trigger; savepoints exempt |
 | `checkpoint.max_consecutive_failures` | `0` | Consecutive checkpoint failures before job enters FAILING (0 = unlimited) |
 | `checkpoint.tolerable_failure_rate` | `0` | Failed / triggered attempts threshold; positive values enable the policy (0 = disabled, preserving existing behavior) |
 
