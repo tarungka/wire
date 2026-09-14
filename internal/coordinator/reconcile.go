@@ -70,8 +70,10 @@ func (c *Coordinator) RegisterWorker(req RegisterWorkerRequest) (*RegisterWorker
 		c.taskStatuses[taskID] = rpc.TaskStatusFailed
 		if job := c.jobs[result.taskJobs[taskID]]; job != nil && (job.Status == JobRunning || job.Status == JobDeploying) {
 			next := *job
+			now := time.Now().UTC()
+			c.resetStableRecoveryBudget(&next, now)
 			next.Status = JobFailing
-			next.UpdatedAt = time.Now().UTC()
+			next.UpdatedAt = now
 			data, err := protocol.EncodeMsgPack(&next)
 			if err != nil {
 				return nil, err

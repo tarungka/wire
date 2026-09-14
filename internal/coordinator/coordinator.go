@@ -28,9 +28,21 @@ type CoordinatorConfig struct {
 	HeartbeatFlushInterval time.Duration
 	WorkerTimeout          time.Duration
 	CheckpointTimeout      time.Duration
+	RestartMaxAttempts     int
+	RestartBackoff         time.Duration
+	RestartResetAfter      time.Duration
 }
 
 func (c *CoordinatorConfig) resolve() {
+	if c.RestartResetAfter <= 0 {
+		c.RestartResetAfter = time.Minute
+	}
+	if c.RestartMaxAttempts <= 0 {
+		c.RestartMaxAttempts = 3
+	}
+	if c.RestartBackoff <= 0 {
+		c.RestartBackoff = time.Second
+	}
 	if c.CheckpointTimeout <= 0 {
 		c.CheckpointTimeout = 10 * time.Minute
 	}

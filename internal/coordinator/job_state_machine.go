@@ -58,6 +58,12 @@ func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
 		return err
 	}
 
+	if to == JobFailing {
+		c.resetStableRecoveryBudget(job, now)
+	}
+	if to == JobRunning {
+		job.RunningSince = now
+	}
 	// Set StartedAt on first transition to RUNNING.
 	if to == JobRunning && job.StartedAt.IsZero() {
 		job.StartedAt = now
@@ -72,7 +78,11 @@ func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
 
 	// Increment RestartCount on FAILING → DEPLOYING (restart).
 	if job.Status == JobFailing && to == JobDeploying {
-		job.RestartCount++
+		if !job.RescaleRequested {
+			job.RestartCount++
+			job.RecoveryAttempts++
+		}
+		job.RescaleRequested = false
 	}
 
 	job.Status = to

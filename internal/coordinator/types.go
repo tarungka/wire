@@ -110,6 +110,9 @@ func (s CheckpointStatus) String() string {
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
 	// RescaleCheckpoint selects a completed savepoint for changed ownership.
+	RescaleRequested  bool      `codec:"rescale_requested,omitempty"`
+	RecoveryAttempts  int       `codec:"recovery_attempts,omitempty"`
+	RunningSince      time.Time `codec:"running_since,omitempty"`
 	RescaleCheckpoint uint64    `codec:"rescale_checkpoint,omitempty"`
 	ID                string    `codec:"id"`
 	Name              string    `codec:"name"`

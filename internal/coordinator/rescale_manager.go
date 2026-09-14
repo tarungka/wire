@@ -52,6 +52,8 @@ func (c *Coordinator) RescaleJob(jobID, savepointID string, parallelism int) (*J
 	candidate.Config = config
 	candidate.Parallelism = parallelism
 	candidate.RescaleCheckpoint = sp.CheckpointID
+	candidate.RescaleRequested = true
+	c.resetStableRecoveryBudget(&candidate, time.Now())
 	candidate.UpdatedAt = time.Now().UTC()
 	tasks, err := generateTaskDescriptors(&candidate)
 	if err != nil {
@@ -69,6 +71,8 @@ func (c *Coordinator) RescaleJob(jobID, savepointID string, parallelism int) (*J
 	job.Config = candidate.Config
 	job.Parallelism = candidate.Parallelism
 	job.RescaleCheckpoint = candidate.RescaleCheckpoint
+	job.RescaleRequested = candidate.RescaleRequested
+	job.RecoveryAttempts = candidate.RecoveryAttempts
 	job.UpdatedAt = candidate.UpdatedAt
 	job.Status = candidate.Status
 	c.jobs[jobID] = job
