@@ -111,6 +111,10 @@ func (s CheckpointStatus) String() string {
 type JobMeta struct {
 	// RescaleCheckpoint selects a completed savepoint for changed ownership.
 	RescaleRollback   *RescaleRollback `codec:"rescale_rollback,omitempty"`
+	RescaleFailure    string           `codec:"rescale_failure,omitempty"`
+	RescaleRequested  bool             `codec:"rescale_requested,omitempty"`
+	RecoveryAttempts  int              `codec:"recovery_attempts,omitempty"`
+	RunningSince      time.Time        `codec:"running_since,omitempty"`
 	RescaleCheckpoint uint64           `codec:"rescale_checkpoint,omitempty"`
 	ID                string           `codec:"id"`
 	Name              string           `codec:"name"`
@@ -233,8 +237,9 @@ type CoordinatorCommand struct {
 
 // RescaleRollback retains the last working topology until the new tasks all run.
 type RescaleRollback struct {
-	Config      []byte `codec:"config"`
-	Parallelism int    `codec:"parallelism"`
-	Checkpoint  uint64 `codec:"checkpoint"`
-	Attempted   bool   `codec:"attempted"`
+	PlacementFailures int    `codec:"placement_failures,omitempty"`
+	Config            []byte `codec:"config"`
+	Parallelism       int    `codec:"parallelism"`
+	Checkpoint        uint64 `codec:"checkpoint"`
+	Attempted         bool   `codec:"attempted"`
 }

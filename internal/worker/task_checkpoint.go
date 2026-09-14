@@ -3,22 +3,24 @@ package worker
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
-	"github.com/tarungka/wire/internal/transport"
 )
 
 type taskCheckpointRuntime struct {
-	rescale    []engine.OperatorRescaleState
-	restoredID uint64
-	restore    *engine.TaskCheckpoint
-	source     bool
-	triggers   chan engine.CheckpointTrigger
-	decisions  chan engine.ControlMsg
-	replicator engine.CheckpointReplicator
-	report     func(context.Context, uint64, uint64, error) error
+	triggerMu   sync.Mutex
+	lastTrigger uint64
+	rescale     []engine.OperatorRescaleState
+	restoredID  uint64
+	restore     *engine.TaskCheckpoint
+	source      bool
+	triggers    chan engine.CheckpointTrigger
+	decisions   chan engine.ControlMsg
+	replicator  engine.CheckpointReplicator
+	report      func(context.Context, uint64, uint64, error) error
 }
 
 func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor) (*taskCheckpointRuntime, func(), error) {
@@ -53,16 +55,12 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 	if desc.CheckpointReplicaAddress == "" {
 		return runtime, func() {}, nil
 	}
-	session, err := transport.NewClientSessionContext(ctx, desc.CheckpointReplicaAddress, transport.DefaultConfig())
-	if err != nil {
-		return nil, nil, err
-	}
 	maxFailures := 0
 	if w.executor.taskConfig != nil {
 		maxFailures = w.executor.taskConfig.Checkpoint.MaxConsecutiveFailures
 	}
 	consecutiveFailures := 0
-	runtime.replicator = &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: rpc.NewClient(session.YamuxSession(), rpc.DefaultConfig())}
+	runtime.replicator = &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: &reconnectingCheckpointClient{address: desc.CheckpointReplicaAddress}}
 	runtime.report = func(ctx context.Context, id, epoch uint64, uploadErr error) error {
 		request := &rpc.AcknowledgeCheckpointRequest{WorkerID: w.cfg.WorkerID, JobID: jobID, TaskID: taskID, CheckpointID: id, EpochID: epoch}
 		if uploadErr != nil {
@@ -71,11 +69,14 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 			request.State = &rpc.StateHandle{TaskID: taskID, Path: desc.CheckpointReplicaAddress}
 		}
 		response, err := w.client.AcknowledgeCheckpoint(ctx, request)
-		if err != nil {
-			return err
+		if err == nil && !response.Accepted {
+			err = fmt.Errorf("checkpoint report rejected: %s", response.Message)
 		}
-		if !response.Accepted {
-			return fmt.Errorf("checkpoint report rejected: %s", response.Message)
+		if err != nil {
+			w.log.Warn().Err(err).Uint64("checkpoint_id", id).Msg("checkpoint report failed")
+			if uploadErr == nil {
+				uploadErr = err
+			}
 		}
 		if uploadErr == nil {
 			consecutiveFailures = 0
@@ -87,7 +88,7 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 		}
 		return nil
 	}
-	return runtime, func() { _ = session.Close() }, nil
+	return runtime, func() {}, nil
 }
 
 func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) {
@@ -108,10 +109,27 @@ func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) {
 		if !checkpoint.source {
 			return
 		}
+		checkpoint.triggerMu.Lock()
+		defer checkpoint.triggerMu.Unlock()
+		if request.CheckpointID <= checkpoint.lastTrigger {
+			return
+		}
+		checkpoint.lastTrigger = request.CheckpointID
 		select {
 		case checkpoint.triggers <- engine.CheckpointTrigger{CheckpointID: request.CheckpointID, EpochID: request.EpochID}:
 			return
 		default:
+			// Coalesce queued source triggers. The coordinator permits only
+			// one active checkpoint; an older queued identity is obsolete.
+			select {
+			case <-checkpoint.triggers:
+			default:
+			}
+			select {
+			case checkpoint.triggers <- engine.CheckpointTrigger{CheckpointID: request.CheckpointID, EpochID: request.EpochID}:
+			default:
+			}
+			return
 		}
 	} else {
 		kind := engine.CtrlAbortCheckpoint

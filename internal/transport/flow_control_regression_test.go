@@ -171,3 +171,42 @@ func TestWindowBlockedSenderWakesOnDownstreamHalfClose(t *testing.T) {
 		})
 	}
 }
+
+func TestRestoringTaskInputsDoNotBlockOtherTasks(t *testing.T) {
+	server, client, addr := newTestMuxPair(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.RegisterTaskInputs("restoring", 128); err != nil {
+		t.Fatal(err)
+	}
+	defer server.UnregisterTask("restoring")
+	if err := server.RegisterTaskInputs("ready", 1); err != nil {
+		t.Fatal(err)
+	}
+	defer server.UnregisterTask("ready")
+	// Include an excess input: even overflow must not hold the peer accept loop.
+	for i := range 129 {
+		stream, err := client.Dial(ctx, addr, protocol.StreamHeaderMsg{SourceTaskID: fmt.Sprintf("source-%d", i), TargetTaskID: "restoring"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+	}
+	stream, err := client.Dial(ctx, addr, protocol.StreamHeaderMsg{SourceTaskID: "live", TargetTaskID: "ready"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	input, err := server.AcceptTask(ctx, "ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	for range 128 {
+		input, err := server.AcceptTask(ctx, "restoring")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = input.Close()
+	}
+}

@@ -11,7 +11,7 @@ import (
 func TestHTTPCheckpointTriggerAndStatus(t *testing.T) {
 	c, store := newReadyCoordinator(t)
 	c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
-	data, err := protocol.EncodeMsgPack(TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}})
+	data, err := protocol.EncodeMsgPack(TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": "peer:4004"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,5 +47,25 @@ func TestHTTPCheckpointTriggerAndStatus(t *testing.T) {
 		if response.StatusCode != tc.status {
 			t.Fatalf("%s: status %d", tc.id, response.StatusCode)
 		}
+	}
+}
+
+func TestSavepointWithoutReplicaReturnsUnavailable(t *testing.T) {
+	c, store := newReadyCoordinator(t)
+	c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
+	if err := store.Set(JobAssignmentsKey("job"), encode(t, TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}})); err != nil {
+		t.Fatal(err)
+	}
+	server := startTestHTTPServer(t, c)
+	response, err := http.Post(fmt.Sprintf("http://%s/api/v1/jobs/job/savepoints", server.Addr()), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d", response.StatusCode)
+	}
+	if c.activeCheckpoints["job"].ID != 0 {
+		t.Fatal("rejected savepoint reserved checkpoint")
 	}
 }

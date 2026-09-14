@@ -62,7 +62,7 @@ func connectTaskStreams(ctx context.Context, mux *transport.Mux, jobID, taskID s
 		expected[key] = index
 	}
 	if len(desc.Upstream) > 0 && ctx.Value(registeredTaskContextKey{}) != taskID {
-		if err = mux.RegisterTask(taskID); err != nil {
+		if err = mux.RegisterTaskInputs(taskID, len(desc.Upstream)); err != nil {
 			return
 		}
 		registered = true

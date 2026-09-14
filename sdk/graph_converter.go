@@ -24,7 +24,7 @@ func (g *StreamGraph) toJobGraph(defaultParallelism int) rpc.JobGraph {
 			p = defaultParallelism
 		}
 
-		if node.Type == NodeKeyBy {
+		if node.Type == NodeKeyBy && node.Parallelism <= 0 {
 			for _, edge := range g.edges {
 				if edge.TargetID == node.ID {
 					p = parallelism[edge.SourceID]
@@ -51,6 +51,11 @@ func (g *StreamGraph) toJobGraph(defaultParallelism int) rpc.JobGraph {
 		// graph must compute its key first, then shuffle the selected event.
 		if g.nodes[edge.TargetID].Type == NodeKeyBy {
 			shuffle = rpc.ShuffleStrategyForward
+			if parallelism[edge.SourceID] != parallelism[edge.TargetID] {
+				// Rebalance raw records before selecting their key; the outgoing
+				// KeyBy edge performs the actual keyed partitioning.
+				shuffle = rpc.ShuffleStrategyRebalance
+			}
 		}
 		if g.nodes[edge.SourceID].Type == NodeKeyBy {
 			shuffle = rpc.ShuffleStrategyHash

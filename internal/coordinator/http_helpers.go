@@ -18,12 +18,13 @@ type errorResponse struct {
 
 // jobResponse is the API representation of a job.
 type jobResponse struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	Parallelism int    `json:"parallelism"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	RescaleFailure string `json:"rescale_failure,omitempty"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Status         string `json:"status"`
+	Parallelism    int    `json:"parallelism"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 // jobDetailResponse includes full job details.
@@ -149,12 +150,13 @@ func formatTime(t time.Time) string {
 
 func jobResponseFromMeta(j *JobMeta) jobResponse {
 	return jobResponse{
-		ID:          j.ID,
-		Name:        j.Name,
-		Status:      j.Status.String(),
-		Parallelism: j.Parallelism,
-		CreatedAt:   formatTime(j.CreatedAt),
-		UpdatedAt:   formatTime(j.UpdatedAt),
+		RescaleFailure: j.RescaleFailure,
+		ID:             j.ID,
+		Name:           j.Name,
+		Status:         j.Status.String(),
+		Parallelism:    j.Parallelism,
+		CreatedAt:      formatTime(j.CreatedAt),
+		UpdatedAt:      formatTime(j.UpdatedAt),
 	}
 }
 

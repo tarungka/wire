@@ -218,6 +218,15 @@ func TestCheckpointRejectsUnassignedReplicaWithoutChangingDecision(t *testing.T)
 				t.Fatal(err)
 			}
 			cp, err := c.TriggerCheckpoint("job")
+			if replica == "" {
+				if err == nil || cp != nil || len(c.DrainCommands("worker")) != 0 {
+					t.Fatal("replicaless checkpoint admitted")
+				}
+				if c.activeCheckpoints["job"].ID != 0 {
+					t.Fatal("failed admission reserved checkpoint")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}

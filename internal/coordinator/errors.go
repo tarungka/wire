@@ -3,8 +3,9 @@ package coordinator
 import "errors"
 
 var (
-	ErrSavepointInUse       = errors.New("coordinator: savepoint is required for rescale recovery")
-	ErrCheckpointInProgress = errors.New("coordinator: checkpoint already in progress")
+	ErrCheckpointUnavailable = errors.New("coordinator: checkpoint replica unavailable")
+	ErrSavepointInUse        = errors.New("coordinator: savepoint is required for rescale recovery")
+	ErrCheckpointInProgress  = errors.New("coordinator: checkpoint already in progress")
 	// ErrStaleEpoch indicates the worker's epoch is newer than the coordinator's,
 	// meaning the coordinator is stale and should not be serving.
 	ErrStaleEpoch = errors.New("coordinator: stale epoch")

@@ -77,6 +77,7 @@ func (c *Coordinator) scheduleTick(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	c.detectLostTaskWorkers()
 
 	// Snapshot CREATED jobs under RLock.
 	c.mu.RLock()
@@ -122,6 +123,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 
 	assignments, err := c.assignTasks(tasks)
 	if err != nil {
+		c.recordRescalePlacementFailure(job)
 		c.log.Debug().Err(err).Str("job_id", job.ID).Msg("cannot schedule job, will retry")
 		return
 	}
@@ -209,7 +211,11 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		next.RescaleRollback = &rollback
 	}
 	if job.Status == JobFailing {
-		next.RestartCount++
+		if !job.RescaleRequested {
+			next.RestartCount++
+			next.RecoveryAttempts++
+		}
+		next.RescaleRequested = false
 	}
 	next.Status = JobDeploying
 	next.UpdatedAt = time.Now().UTC()

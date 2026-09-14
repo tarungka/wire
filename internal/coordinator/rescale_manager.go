@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tarungka/wire/internal/keygroup"
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
 )
@@ -57,12 +58,13 @@ func (c *Coordinator) rescaleJob(jobID, savepointID string, parallelism int, ope
 	if parallelism < 1 {
 		return nil, fmt.Errorf("%w: parallelism must be positive", ErrInvalidConfig)
 	}
+	pinned := forwardBoundaryParallelism(graph, job.Parallelism)
 	found := make(map[string]bool)
 	for i := range graph.Operators {
 		op := &graph.Operators[i]
 		if operators != nil {
 			if p, ok := operators[op.OperatorID]; ok {
-				if p < 1 || p > 65536 {
+				if p < 1 || p > keygroup.MaxKeyGroups {
 					return nil, fmt.Errorf("%w: invalid operator parallelism", ErrInvalidConfig)
 				}
 				op.Parallelism = int32(p)
@@ -70,10 +72,8 @@ func (c *Coordinator) rescaleJob(jobID, savepointID string, parallelism int, ope
 			}
 			continue
 		}
-		if op.Type == rpc.OperatorTypeSource || op.Type == rpc.OperatorTypeSink {
-			if op.Parallelism == 0 {
-				op.Parallelism = int32(job.Parallelism)
-			}
+		if p, ok := pinned[op.OperatorID]; ok {
+			op.Parallelism = p
 		} else {
 			op.Parallelism = int32(parallelism)
 		}
@@ -89,10 +89,13 @@ func (c *Coordinator) rescaleJob(jobID, savepointID string, parallelism int, ope
 		return nil, err
 	}
 	candidate := *job
+	candidate.RescaleFailure = ""
 	candidate.RescaleRollback = &RescaleRollback{Config: append([]byte(nil), job.Config...), Parallelism: job.Parallelism, Checkpoint: job.LatestCheckpoint}
 	candidate.Config = config
 	candidate.Parallelism = parallelism
 	candidate.RescaleCheckpoint = sp.CheckpointID
+	candidate.RescaleRequested = true
+	c.resetStableRecoveryBudget(&candidate, time.Now())
 	candidate.UpdatedAt = time.Now().UTC()
 	tasks, err := generateTaskDescriptors(&candidate)
 	if err != nil {
@@ -107,13 +110,51 @@ func (c *Coordinator) rescaleJob(jobID, savepointID string, parallelism int, ope
 	if err := c.persistJobLocked(&candidate); err != nil {
 		return nil, err
 	}
+	job.RescaleFailure = candidate.RescaleFailure
 	job.RescaleRollback = candidate.RescaleRollback
 	job.Config = candidate.Config
 	job.Parallelism = candidate.Parallelism
 	job.RescaleCheckpoint = candidate.RescaleCheckpoint
+	job.RescaleRequested = candidate.RescaleRequested
+	job.RecoveryAttempts = candidate.RecoveryAttempts
 	job.UpdatedAt = candidate.UpdatedAt
 	job.Status = candidate.Status
 	c.jobs[jobID] = job
 	result := candidate
 	return &result, nil
+}
+
+// Forward components must move together. A component touching a source or sink
+// keeps its current count; shuffle-separated processing components may scale.
+func forwardBoundaryParallelism(graph rpc.JobGraph, defaultParallelism int) map[string]int32 {
+	neighbors := make(map[string][]string)
+	for _, edge := range graph.Edges {
+		if edge.Shuffle == rpc.ShuffleStrategyForward {
+			neighbors[edge.SourceOperatorID] = append(neighbors[edge.SourceOperatorID], edge.TargetOperatorID)
+			neighbors[edge.TargetOperatorID] = append(neighbors[edge.TargetOperatorID], edge.SourceOperatorID)
+		}
+	}
+	pinned := make(map[string]int32)
+	var pending []string
+	for _, op := range graph.Operators {
+		if op.Type == rpc.OperatorTypeSource || op.Type == rpc.OperatorTypeSink {
+			p := op.Parallelism
+			if p == 0 {
+				p = int32(defaultParallelism)
+			}
+			pinned[op.OperatorID] = p
+			pending = append(pending, op.OperatorID)
+		}
+	}
+	for len(pending) > 0 {
+		id := pending[0]
+		pending = pending[1:]
+		for _, neighbor := range neighbors[id] {
+			if _, seen := pinned[neighbor]; !seen {
+				pinned[neighbor] = pinned[id]
+				pending = append(pending, neighbor)
+			}
+		}
+	}
+	return pinned
 }

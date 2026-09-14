@@ -28,8 +28,11 @@ infer how arbitrary opaque bytes should be partitioned, so nonempty opaque
 state fails restoration explicitly. It does not claim generic source-offset
 or transactional-sink redistribution. Stateless operators require no restore.
 
-The endpoint changes all operator parallelism values uniformly and preserves
-operator identities/configuration and the job's fixed key-group count.
+The endpoint preserves source/sink counts and their entire Forward-connected
+groups, and changes shuffle-separated processing groups. Explicit operator counts
+are available through the `operators` map. Operator identities/configuration and
+the fixed key-group count remain unchanged. See [rescale safety](../../rescale-safety.md)
+for rollback, capacity, and restore admission behaviour.
 Multiple downstream routing groups are not supported by the current physical
 planner; general DAG fan-out is not a goal listed in WIP-03. These limits are
 stated in the PR rather than counted as implemented capabilities.

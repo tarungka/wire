@@ -108,3 +108,31 @@ func TestKeyByInheritsSingleSourceParallelism(t *testing.T) {
 		t.Fatalf("routing: %+v", graph.Edges)
 	}
 }
+
+func TestKeyByExplicitAndMixedInputParallelism(t *testing.T) {
+	for _, explicit := range []int{0, 3} {
+		g := newStreamGraph()
+		a := g.addNode(&StreamNode{Name: "a", Type: NodeSource, Parallelism: 1})
+		b := g.addNode(&StreamNode{Name: "b", Type: NodeSource, Parallelism: 4})
+		k := g.addNode(&StreamNode{Name: "key", Type: NodeKeyBy, Parallelism: explicit})
+		g.addEdge(a, k, ShuffleHash)
+		g.addEdge(b, k, ShuffleHash)
+		graph := g.toJobGraph(4)
+		counts := map[string]int32{}
+		for _, op := range graph.Operators {
+			counts[op.OperatorID] = op.Parallelism
+		}
+		if explicit > 0 && counts["key"] != int32(explicit) {
+			t.Fatal("explicit KeyBy count ignored")
+		}
+		for _, edge := range graph.Edges {
+			want := rpc.ShuffleStrategyForward
+			if counts[edge.SourceOperatorID] != counts[edge.TargetOperatorID] {
+				want = rpc.ShuffleStrategyRebalance
+			}
+			if edge.Shuffle != want {
+				t.Fatalf("invalid pre-key routing: %+v", edge)
+			}
+		}
+	}
+}

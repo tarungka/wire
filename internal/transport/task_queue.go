@@ -9,11 +9,12 @@ import (
 // taskQueue belongs to one registration generation. Removing a task closes its
 // generation so late streams cannot enter a restarted task with the same ID.
 type taskQueue struct {
-	mu      sync.Mutex
-	streams chan *FrameStream
-	space   chan struct{}
-	done    chan struct{}
-	closed  bool
+	rejectOverflow bool
+	mu             sync.Mutex
+	streams        chan *FrameStream
+	space          chan struct{}
+	done           chan struct{}
+	closed         bool
 }
 
 func newTaskQueue() *taskQueue {
@@ -33,6 +34,9 @@ func (q *taskQueue) enqueue(ctx context.Context, stream *FrameStream) error {
 			return nil
 		default:
 			q.mu.Unlock()
+			if q.rejectOverflow {
+				return fmt.Errorf("transport: task input queue full")
+			}
 		}
 		select {
 		case <-ctx.Done():
