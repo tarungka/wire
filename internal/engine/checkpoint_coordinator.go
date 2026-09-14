@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/tarungka/wire/internal/checkpointpolicy"
 )
 
 // ackMsg carries an acknowledgement from a task slot to the coordinator.
@@ -45,6 +47,7 @@ type CheckpointCoordinator struct {
 	pendingACKs        map[int]bool
 
 	// Failure tracking.
+	outcomes            []bool
 	consecutiveFailures int
 	totalCheckpoints    int64
 	totalFailures       int64
@@ -354,6 +357,7 @@ func (cc *CheckpointCoordinator) abortCheckpointIdentity(ctx context.Context, ex
 	// Update failure counters.
 	cc.consecutiveFailures++
 	cc.totalFailures++
+	cc.outcomes = checkpointpolicy.Record(cc.outcomes, true)
 	if cause == nil {
 		cc.metrics.IncTimeoutTotal()
 	}
@@ -371,13 +375,8 @@ func (cc *CheckpointCoordinator) abortCheckpointIdentity(ctx context.Context, ex
 			ErrMaxConsecutiveCheckpointFailures, cc.consecutiveFailures)
 	}
 
-	// Check tolerable failure rate.
-	if failureErr == nil && cc.config.TolerableFailureRate > 0 && cc.totalCheckpoints > 0 {
-		rate := float64(cc.totalFailures) / float64(cc.totalCheckpoints)
-		if rate > cc.config.TolerableFailureRate {
-			failureErr = fmt.Errorf("%w: failure rate %.2f exceeds tolerance %.2f",
-				ErrCheckpointFailureRateExceeded, rate, cc.config.TolerableFailureRate)
-		}
+	if failureErr == nil && checkpointpolicy.Exceeded(cc.outcomes, cc.config.TolerableFailureRate) {
+		failureErr = fmt.Errorf("%w: last %d outcomes exceed tolerance %.2f", ErrCheckpointFailureRateExceeded, checkpointpolicy.WindowSize, cc.config.TolerableFailureRate)
 	}
 
 	// Snapshot transactional sink indices and reset their state while still
@@ -470,6 +469,7 @@ func (cc *CheckpointCoordinator) completeCheckpoint() {
 	cc.activeCheckpointID = 0
 	cc.activeEpochID = 0
 	cc.consecutiveFailures = 0
+	cc.outcomes = checkpointpolicy.Record(cc.outcomes, false)
 	cc.lastCompletionTime = time.Now()
 	cc.lastCompletedCheckpoint = max(cc.lastCompletedCheckpoint, checkpointID)
 }

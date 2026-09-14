@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/tarungka/wire/internal/checkpointpolicy"
 	"github.com/tarungka/wire/internal/keygroup"
 	"github.com/tarungka/wire/internal/observability"
 	"github.com/tarungka/wire/internal/protocol"
@@ -112,7 +113,9 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 		return nil, err
 	}
 	nextJob := *job
-	nextJob.CheckpointAttempts++
+	if savepointID == "" {
+		nextJob.CheckpointAttempts++
+	}
 	jobData, err := protocol.EncodeMsgPack(nextJob)
 	if err != nil {
 		c.mu.Unlock()
@@ -203,14 +206,15 @@ func (c *Coordinator) abortCheckpoint(jobID string, id, epoch uint64, failure st
 		batch = append(batch, *savepointWrite)
 	}
 	var failedJob *JobMeta
-	if !alreadyAborted && failure != "" {
+	if !alreadyAborted && checkpoint.SavepointID == "" && failure != "" {
 		if job := c.jobs[jobID]; job != nil {
 			next := *job
+			next.CheckpointOutcomes = checkpointpolicy.Record(next.CheckpointOutcomes, true)
 			next.CheckpointFailures++
 			next.ConsecutiveCheckpointFailures++
 			next.CheckpointFailure = failure
 			threshold := c.config.CheckpointMaxConsecutiveFailures > 0 && next.ConsecutiveCheckpointFailures >= c.config.CheckpointMaxConsecutiveFailures
-			rateExceeded := c.config.CheckpointTolerableFailureRate > 0 && next.CheckpointAttempts > 0 && float64(next.CheckpointFailures)/float64(next.CheckpointAttempts) > c.config.CheckpointTolerableFailureRate
+			rateExceeded := checkpointpolicy.Exceeded(next.CheckpointOutcomes, c.config.CheckpointTolerableFailureRate)
 			if (threshold || rateExceeded) && next.Status == JobRunning {
 				c.resetStableRecoveryBudget(&next, time.Now())
 				next.Status = JobFailing
@@ -234,6 +238,7 @@ func (c *Coordinator) abortCheckpoint(jobID string, id, epoch uint64, failure st
 	}
 	if failedJob != nil {
 		job := c.jobs[jobID]
+		job.CheckpointOutcomes = failedJob.CheckpointOutcomes
 		job.CheckpointFailures = failedJob.CheckpointFailures
 		job.ConsecutiveCheckpointFailures = failedJob.ConsecutiveCheckpointFailures
 		job.CheckpointFailure = failedJob.CheckpointFailure
@@ -328,8 +333,11 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 		next = *job
 		next.LatestCheckpoint = checkpoint.ID
 		next.LastCheckpointCompletion = time.Now().UTC()
-		next.ConsecutiveCheckpointFailures = 0
-		next.CheckpointFailure = ""
+		if checkpoint.SavepointID == "" {
+			next.CheckpointOutcomes = checkpointpolicy.Record(next.CheckpointOutcomes, false)
+			next.ConsecutiveCheckpointFailures = 0
+			next.CheckpointFailure = ""
+		}
 		jobData, err := protocol.EncodeMsgPack(next)
 		if err != nil {
 			return err
@@ -350,6 +358,7 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 		job := c.jobs[request.JobID]
 		job.LatestCheckpoint = next.LatestCheckpoint
 		job.LastCheckpointCompletion = next.LastCheckpointCompletion
+		job.CheckpointOutcomes = next.CheckpointOutcomes
 		job.ConsecutiveCheckpointFailures = next.ConsecutiveCheckpointFailures
 		job.CheckpointFailure = next.CheckpointFailure
 		delete(c.activeCheckpoints, request.JobID)

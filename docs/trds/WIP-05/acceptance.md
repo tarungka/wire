@@ -16,10 +16,10 @@ Validated on 2026-09-14. This completes the timeout and failure-handling scope o
 
 - `checkpoint.timeout` defaults to 10 minutes. The coordinator checks expiry on its existing two-second maintenance cadence; this is not a hard real-time deadline.
 - `checkpoint.min_pause` defaults to zero and measures time since durable checkpoint completion. Duplicate acknowledgements do not move that timestamp. User-triggered savepoints bypass minimum pause, but still obey the single in-flight checkpoint rule.
-- `checkpoint.max_consecutive_failures` defaults to zero (unlimited). A positive limit is reached when the failure count equals it. Completion resets the consecutive count.
-- `checkpoint.tolerable_failure_rate` defaults to zero (disabled), preserving the engine's existing behavior. A positive value compares failed attempts with all triggered attempts over the job lifetime. This lifetime ratio becomes less sensitive as successful history accumulates; use the consecutive-failure limit for recent failure bursts. A rolling outcome window is a follow-up policy change. The original proposal's “zero means no tolerance” was not implemented and is explicitly superseded here.
-- Timeouts and worker-reported checkpoint failures consume the budget once per checkpoint. Explicit administrative aborts do not. Threshold failures move the job to FAILING, after which the existing recovery policy decides restart versus terminal failure.
-- Failure counters and the latest `checkpoint_failure` survive coordinator metadata reloads. Success clears that reason.
+- `checkpoint.max_consecutive_failures` defaults to zero (unlimited). A positive limit is reached when the failure count equals it. Checkpoint completion resets the consecutive count. Each transition to RUNNING resets the consecutive count and rate window, giving the new execution a fresh budget; lifetime attempt/failure totals remain diagnostic counters.
+- `checkpoint.tolerable_failure_rate` defaults to zero (disabled), preserving the engine's existing behavior. A positive value evaluates the last 100 terminal checkpoint outcomes, only after all 100 samples exist. Old successes and failures age out as new outcomes arrive. The consecutive-failure limit remains available during this warm-up. The original proposal's “zero means no tolerance” was not implemented and is explicitly superseded here.
+- Timeouts and worker-reported checkpoint failures consume the budget once per checkpoint. Explicit administrative aborts and savepoints do not. Savepoint successes likewise do not reset or dilute checkpoint budgets. Threshold failures move the job to FAILING, after which the existing recovery policy decides restart versus terminal failure.
+- The bounded outcome window, failure counters and the latest `checkpoint_failure` survive coordinator metadata reloads. Success clears that reason.
 
 ## Delivery and cleanup limits
 
