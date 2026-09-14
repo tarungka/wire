@@ -71,7 +71,7 @@ func NewCheckpointCoordinator(
 	log zerolog.Logger,
 ) *CheckpointCoordinator {
 	if metrics == nil {
-		metrics = NoopCheckpointMetrics()
+		metrics = newTelemetryCheckpointMetrics("")
 	}
 	return &CheckpointCoordinator{
 		config:          cfg,

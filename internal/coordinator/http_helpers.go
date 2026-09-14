@@ -18,13 +18,14 @@ type errorResponse struct {
 
 // jobResponse is the API representation of a job.
 type jobResponse struct {
-	RescaleFailure string `json:"rescale_failure,omitempty"`
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Status         string `json:"status"`
-	Parallelism    int    `json:"parallelism"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
+	CheckpointFailure string `json:"checkpoint_failure,omitempty"`
+	RescaleFailure    string `json:"rescale_failure,omitempty"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Status            string `json:"status"`
+	Parallelism       int    `json:"parallelism"`
+	CreatedAt         string `json:"created_at"`
+	UpdatedAt         string `json:"updated_at"`
 }
 
 // jobDetailResponse includes full job details.
@@ -91,6 +92,8 @@ func writeJobError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrSavepointInUse):
 		writeError(w, http.StatusConflict, "SAVEPOINT_IN_USE", err.Error())
+	case errors.Is(err, ErrCheckpointMinPause):
+		writeError(w, http.StatusConflict, "CHECKPOINT_MIN_PAUSE", err.Error())
 	case errors.Is(err, ErrCheckpointInProgress):
 		writeError(w, http.StatusConflict, "CHECKPOINT_IN_PROGRESS", err.Error())
 	case errors.Is(err, ErrJobNotFound):
@@ -150,13 +153,14 @@ func formatTime(t time.Time) string {
 
 func jobResponseFromMeta(j *JobMeta) jobResponse {
 	return jobResponse{
-		RescaleFailure: j.RescaleFailure,
-		ID:             j.ID,
-		Name:           j.Name,
-		Status:         j.Status.String(),
-		Parallelism:    j.Parallelism,
-		CreatedAt:      formatTime(j.CreatedAt),
-		UpdatedAt:      formatTime(j.UpdatedAt),
+		CheckpointFailure: j.CheckpointFailure,
+		RescaleFailure:    j.RescaleFailure,
+		ID:                j.ID,
+		Name:              j.Name,
+		Status:            j.Status.String(),
+		Parallelism:       j.Parallelism,
+		CreatedAt:         formatTime(j.CreatedAt),
+		UpdatedAt:         formatTime(j.UpdatedAt),
 	}
 }
 

@@ -53,10 +53,10 @@ func TestTaskChannelMetricsLifecycle(t *testing.T) {
 			}
 		}
 	}
-	check(map[string]int64{"wire_task_input_channel_usage": 2, "wire_task_output_channel_usage": 1, "wire_task_alignment_buffer_bytes": 38})
+	check(map[string]int64{"wire_task_input_channel_usage": 2, "wire_task_output_channel_usage": 1, "wire_task_alignment_buffer_bytes": 38, "wire_checkpoint_alignment_buffered_bytes": 38})
 	<-input
 	<-output
-	check(map[string]int64{"wire_task_input_channel_usage": 1, "wire_task_output_channel_usage": 0, "wire_task_alignment_buffer_bytes": 19})
+	check(map[string]int64{"wire_task_input_channel_usage": 1, "wire_task_output_channel_usage": 0, "wire_task_alignment_buffer_bytes": 19, "wire_checkpoint_alignment_buffered_bytes": 19})
 	if err := unregister(); err != nil {
 		t.Fatal(err)
 	}

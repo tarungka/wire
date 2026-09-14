@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 )
 
@@ -10,6 +11,12 @@ import (
 // validation errors rather than failing on the first one.
 func (c *WireConfig) Validate() error {
 	var errs []error
+	if c.Checkpoint.MinPause.Duration < 0 {
+		errs = append(errs, errors.New("checkpoint.min_pause must be nonnegative"))
+	}
+	if rate := c.Checkpoint.TolerableFailureRate; math.IsNaN(rate) || math.IsInf(rate, 0) || rate < 0 || rate > 1 {
+		errs = append(errs, errors.New("checkpoint.tolerable_failure_rate must be between 0 and 1"))
+	}
 	if c.Checkpoint.MaxConsecutiveFailures < 0 {
 		errs = append(errs, fmt.Errorf("checkpoint.max_consecutive_failures must be nonnegative"))
 	}

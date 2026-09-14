@@ -41,6 +41,9 @@ func (s *sourceCheckpointInput) atBoundary(intake, processing context.Context) e
 			return nil
 		}
 		s.last = checkpointIdentity{request.CheckpointID, request.EpochID}
+		if s.aligner.IsRetired(request.CheckpointID, request.EpochID) {
+			return nil
+		}
 		var state []byte
 		var typed bool
 		if err := invokeOperator(func() error {

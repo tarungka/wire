@@ -356,7 +356,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// Resolve checkpoint metrics.
 	metrics := ts.Metrics
 	if metrics == nil {
-		metrics = NoopCheckpointMetrics()
+		metrics = newTelemetryCheckpointMetrics(ts.TaskID)
 	}
 
 	// Resolve error metrics.

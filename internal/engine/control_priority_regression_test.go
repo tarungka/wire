@@ -42,8 +42,14 @@ func TestOperatorChainCheckpointControlWithFullDataChannel(t *testing.T) {
 			close(output)
 			first := <-output
 			if abort {
+				for i := 0; i < cap(input); i++ {
+					if first.Type != OutputData || string(first.Event.Value) != "queued-data" {
+						t.Fatalf("abort reordered pre-barrier record %d: %+v", i, first)
+					}
+					first = <-output
+				}
 				if first.Type != OutputData || string(first.Event.Value) != "buffered" {
-					t.Fatalf("abort must release buffered data before queued input: %+v", first)
+					t.Fatalf("abort lost post-barrier record: %+v", first)
 				}
 			} else {
 				// Checkpoint control must drain queued pre-barrier records

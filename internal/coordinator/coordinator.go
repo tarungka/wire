@@ -22,15 +22,18 @@ const (
 
 // CoordinatorConfig configures the Coordinator.
 type CoordinatorConfig struct {
-	DataDir                string
-	NodeID                 string
-	ListenAddr             string
-	HeartbeatFlushInterval time.Duration
-	WorkerTimeout          time.Duration
-	CheckpointTimeout      time.Duration
-	RestartMaxAttempts     int
-	RestartBackoff         time.Duration
-	RestartResetAfter      time.Duration
+	DataDir                          string
+	NodeID                           string
+	ListenAddr                       string
+	HeartbeatFlushInterval           time.Duration
+	WorkerTimeout                    time.Duration
+	CheckpointTimeout                time.Duration
+	CheckpointMinPause               time.Duration
+	CheckpointMaxConsecutiveFailures int
+	CheckpointTolerableFailureRate   float64
+	RestartMaxAttempts               int
+	RestartBackoff                   time.Duration
+	RestartResetAfter                time.Duration
 }
 
 func (c *CoordinatorConfig) resolve() {
@@ -347,6 +350,10 @@ func (c *Coordinator) jobStateCounts() map[string]int64 {
 func (c *Coordinator) EnqueueCommand(workerID string, cmd rpc.WorkerCommand) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.enqueueCommandLocked(workerID, cmd)
+}
+
+func (c *Coordinator) enqueueCommandLocked(workerID string, cmd rpc.WorkerCommand) {
 	// Channel replacement and close use the same lock as this nonblocking send.
 	if ch, ok := c.cmdStreams[workerID]; ok {
 		select {

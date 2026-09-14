@@ -24,6 +24,7 @@ type chainContext struct {
 	preparedCheckpoint  uint64
 	transactionPrepared bool
 	lastCommitted       uint64
+	lastAborted         checkpointIdentity
 	deferredEOF         []ControlMsg
 	deferredEvents      []Event
 	ctx                 context.Context
@@ -390,7 +391,9 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			if ctrl.CheckpointID != cc.preparedCheckpoint {
 				return nil
 			}
-			return handleControl(cc, ControlMsg{Type: CtrlAbortTransaction, CheckpointID: ctrl.CheckpointID}, eofCount)
+			if err := handleControl(cc, ControlMsg{Type: CtrlAbortTransaction, CheckpointID: ctrl.CheckpointID, EpochID: ctrl.EpochID}, eofCount); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -497,6 +500,9 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		}
 
 	case CtrlAbortTransaction:
+		if ctrl.CheckpointID != 0 && (ctrl.EpochID < cc.lastAborted.epoch || (ctrl.EpochID == cc.lastAborted.epoch && ctrl.CheckpointID <= cc.lastAborted.id)) {
+			break
+		}
 		if cc.txnSink == nil {
 			break // Ignore for non-transactional sinks.
 		}
@@ -511,6 +517,7 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			return fmt.Errorf("%w: %v", ErrAbortFailed, err)
 		}
 		cc.transactionPrepared = false
+		cc.lastAborted = checkpointIdentity{ctrl.CheckpointID, ctrl.EpochID}
 		if err := cc.txnSink.BeginTransaction(cc.ctx); err != nil {
 			return fmt.Errorf("%w: %v", ErrBeginTransactionFailed, err)
 		}
@@ -520,8 +527,27 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		if cc.checkpoint != nil {
 			cc.checkpoint.abort(ctrl.CheckpointID, ctrl.EpochID)
 		}
-		// Drain side buffers and process them (events are still valid, just no checkpoint).
-		drained := cc.aligner.FinishAlignment(ctrl.CheckpointID)
+		// Abort controls have priority, but pre-barrier queued records must
+		// still precede the post-barrier side buffer. Bound this drain so an
+		// unaligned input that keeps producing cannot starve abort handling.
+		for remaining := len(cc.inputCh); remaining > 0; remaining-- {
+			select {
+			case event, ok := <-cc.inputCh:
+				if !ok {
+					remaining = 0
+					break
+				}
+				if err := processEvent(cc, event); err != nil {
+					return err
+				}
+			case <-cc.ctx.Done():
+				return cc.ctx.Err()
+			}
+		}
+		if start := cc.aligner.AlignmentStartTime(); !start.IsZero() && cc.aligner.ActiveCheckpointID() == ctrl.CheckpointID && cc.aligner.ActiveEpochID() == ctrl.EpochID {
+			cc.cpMetrics.ObserveAlignmentTime(time.Since(start))
+		}
+		drained := cc.aligner.AbortAlignment(ctrl.CheckpointID, ctrl.EpochID)
 		for _, event := range drained {
 			if err := processEvent(cc, event); err != nil {
 				return err
