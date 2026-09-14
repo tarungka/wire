@@ -62,3 +62,11 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 	}
 	return true
 }
+
+// resetStableRecoveryBudget is called before leaving RUNNING. Callers hold
+// c.mu and persist the updated job together with their state transition.
+func (c *Coordinator) resetStableRecoveryBudget(job *JobMeta, now time.Time) {
+	if job.Status == JobRunning && !job.RunningSince.IsZero() && now.Sub(job.RunningSince) >= c.config.RestartResetAfter {
+		job.RecoveryAttempts = 0
+	}
+}

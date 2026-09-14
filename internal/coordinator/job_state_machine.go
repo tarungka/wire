@@ -58,8 +58,8 @@ func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
 		return err
 	}
 
-	if job.Status == JobRunning && to == JobFailing && !job.RunningSince.IsZero() && now.Sub(job.RunningSince) >= c.config.RestartResetAfter {
-		job.RecoveryAttempts = 0
+	if to == JobFailing {
+		c.resetStableRecoveryBudget(job, now)
 	}
 	if to == JobRunning {
 		job.RunningSince = now

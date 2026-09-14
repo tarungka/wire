@@ -161,3 +161,56 @@ func TestLegacyLifetimeRestartsDoNotExhaustNewBudget(t *testing.T) {
 		t.Fatal("legacy lifetime count consumed recovery budget")
 	}
 }
+
+func TestWorkerReregistrationResetsOnlyStableRecoveryBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status JobStatus
+		age    time.Duration
+		reset  bool
+	}{
+		{"stable", JobRunning, 2 * time.Minute, true},
+		{"recent", JobRunning, time.Second, false},
+		{"deploying", JobDeploying, 2 * time.Minute, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, store := newTestCoordinator(t)
+			job := &JobMeta{ID: "job", Status: tc.status, LatestCheckpoint: 7, RecoveryAttempts: c.config.RestartMaxAttempts, RestartCount: 12, RunningSince: time.Now().Add(-tc.age)}
+			c.jobs[job.ID] = job
+			assignment := TaskAssignmentMap{JobID: job.ID, EpochID: c.epoch, AttemptID: "old", Assignments: map[string]string{"task": "worker"}}
+			if err := store.Set(JobAssignmentsKey(job.ID), encode(t, assignment)); err != nil {
+				t.Fatal(err)
+			}
+			c.workers["worker"] = &WorkerMeta{ID: "worker", LastHeartbeat: time.Now()}
+			c.taskStatuses["task"] = rpc.TaskStatusRunning
+			response, err := c.RegisterWorker(RegisterWorkerRequest{WorkerID: "worker", TaskSlotsTotal: 1, HighestSeenEpoch: c.epoch})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(response.MissingTasks) != 1 || job.Status != JobFailing {
+				t.Fatalf("missing task not reconciled: %+v", response)
+			}
+			want := c.config.RestartMaxAttempts
+			if tc.reset {
+				want = 0
+			}
+			if job.RecoveryAttempts != want || job.RestartCount != 12 {
+				t.Fatalf("attempts=%d want=%d lifetime=%d", job.RecoveryAttempts, want, job.RestartCount)
+			}
+			data, err := store.Get(JobMetaKey(job.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var persisted JobMeta
+			if err := protocol.DecodeMsgPack(data, &persisted); err != nil {
+				t.Fatal(err)
+			}
+			if persisted.RecoveryAttempts != want {
+				t.Fatal("reset not persisted")
+			}
+			if ready := c.prepareTaskRestart(job); ready != tc.reset {
+				t.Fatalf("restart ready=%v want=%v", ready, tc.reset)
+			}
+		})
+	}
+}
