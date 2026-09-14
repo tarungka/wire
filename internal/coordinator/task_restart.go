@@ -100,7 +100,7 @@ func (c *Coordinator) resetStableRecoveryBudget(job *JobMeta, now time.Time) {
 
 // Bound placement retries as well as deployed attempts: a larger layout can
 // lose capacity after admission but before the old tasks finish cancellation.
-func (c *Coordinator) recordRescalePlacementFailure(job *JobMeta) {
+func (c *Coordinator) recordRescalePlacementFailure(job *JobMeta, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.state != StateLeader || !c.recovered || job.Status != JobFailing || job.RescaleRollback == nil || job.RescaleRollback.Attempted {
@@ -108,8 +108,13 @@ func (c *Coordinator) recordRescalePlacementFailure(job *JobMeta) {
 	}
 	next := *job
 	rollback := *job.RescaleRollback
-	rollback.PlacementFailures++
-	rollback.Attempted = rollback.PlacementFailures >= 3
+	if rollback.PlacementFailedSince.IsZero() {
+		rollback.PlacementFailedSince = now.UTC()
+	}
+	// Cancellation acknowledgements precede slot updates. Allow two full
+	// worker heartbeat intervals after the first failed placement, regardless
+	// of scheduler tick frequency, before giving up on the larger topology.
+	rollback.Attempted = now.Sub(rollback.PlacementFailedSince) >= 2*rpc.DefaultHeartbeatInterval
 	next.RescaleRollback = &rollback
 	if err := c.persistJobLocked(&next); err != nil {
 		c.log.Warn().Err(err).Msg("cannot persist rescale placement failure")

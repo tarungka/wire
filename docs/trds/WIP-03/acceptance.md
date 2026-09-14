@@ -29,7 +29,8 @@ state fails restoration explicitly. It does not claim generic source-offset
 or transactional-sink redistribution. Stateless operators require no restore.
 
 The endpoint preserves source/sink counts and their entire Forward-connected
-groups, and changes shuffle-separated processing groups. Explicit operator counts
+groups, and changes shuffle-separated processing groups. Global requests that
+change no operator are rejected without restarting the job. Explicit operator counts
 are available through the `operators` map. Operator identities/configuration and
 the fixed key-group count remain unchanged. See [rescale safety](../../rescale-safety.md)
 for rollback, capacity, and restore admission behaviour.

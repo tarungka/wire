@@ -8,8 +8,11 @@ new tasks reach RUNNING, recovery cancels that attempt and restores the original
 topology using ordinary checkpoint restore. Reaching RUNNING accepts the new
 topology and clears rollback metadata. This permits recovery from unsupported
 opaque-state redistribution or an operator lacking KeyGroupStateRestorer; it does
-not add support for redistributing those state formats. Three failed placement
-attempts also arm rollback when the larger deployment cannot fit. Recovery then
+not add support for redistributing those state formats. Placement failures
+arm rollback only after at least two default worker heartbeat intervals (10s)
+from the first failed placement after old-task cancellation. This persisted grace
+period lets heartbeats report freed slots; scheduler tick count cannot exhaust it.
+Recovery then
 uses the normal retry budget from #214; an exhausted budget leaves the original
 configuration restored with the job FAILED. Job responses retain a
 `rescale_failure` explanation until the next accepted rescale request.
@@ -17,8 +20,10 @@ configuration restored with the job FAILED. Job responses retain a
 Global rescale requests preserve source and sink parallelism, resolving inherited
 values against the old job parallelism. Every operator Forward-connected to a
 source or sink keeps that boundary's count as well. An all-Forward pipeline
-therefore keeps its physical parallelism; only shuffle-separated processing
-groups change. Explicit per-operator requests must still satisfy Forward edge
+cannot change through global rescale; only shuffle-separated processing groups
+change. If no operator count would change, the request returns HTTP 400 with
+instructions to use the `operators` map. It leaves the job configuration,
+reported parallelism, and running tasks unchanged. Explicit per-operator requests must still satisfy Forward edge
 equality and are validated before changing the running job. To explicitly
 change selected operators, use the existing rescale endpoint with:
 

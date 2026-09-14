@@ -123,7 +123,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 
 	assignments, err := c.assignTasks(tasks)
 	if err != nil {
-		c.recordRescalePlacementFailure(job)
+		c.recordRescalePlacementFailure(job, time.Now())
 		c.log.Debug().Err(err).Str("job_id", job.ID).Msg("cannot schedule job, will retry")
 		return
 	}

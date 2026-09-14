@@ -60,8 +60,13 @@ func (c *Coordinator) rescaleJob(jobID, savepointID string, parallelism int, ope
 	}
 	pinned := forwardBoundaryParallelism(graph, job.Parallelism)
 	found := make(map[string]bool)
+	changed := false
 	for i := range graph.Operators {
 		op := &graph.Operators[i]
+		previous := op.Parallelism
+		if previous == 0 {
+			previous = int32(job.Parallelism)
+		}
 		if operators != nil {
 			if p, ok := operators[op.OperatorID]; ok {
 				if p < 1 || p > keygroup.MaxKeyGroups {
@@ -77,12 +82,16 @@ func (c *Coordinator) rescaleJob(jobID, savepointID string, parallelism int, ope
 		} else {
 			op.Parallelism = int32(parallelism)
 		}
+		changed = changed || op.Parallelism != previous
 	}
 	if len(found) != len(operators) {
 		return nil, fmt.Errorf("%w: unknown rescale operator", ErrInvalidConfig)
 	}
 	if _, err := validateGraphKeyGroups(graph, parallelism); err != nil {
 		return nil, err
+	}
+	if operators == nil && !changed {
+		return nil, fmt.Errorf("%w: global rescale changes no operator parallelism; use the operators map to explicitly scale Forward-connected groups", ErrInvalidConfig)
 	}
 	config, err := protocol.EncodeMsgPack(graph)
 	if err != nil {

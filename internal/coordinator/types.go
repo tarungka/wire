@@ -237,9 +237,9 @@ type CoordinatorCommand struct {
 
 // RescaleRollback retains the last working topology until the new tasks all run.
 type RescaleRollback struct {
-	PlacementFailures int    `codec:"placement_failures,omitempty"`
-	Config            []byte `codec:"config"`
-	Parallelism       int    `codec:"parallelism"`
-	Checkpoint        uint64 `codec:"checkpoint"`
-	Attempted         bool   `codec:"attempted"`
+	PlacementFailedSince time.Time `codec:"placement_failed_since,omitempty"`
+	Config               []byte    `codec:"config"`
+	Parallelism          int       `codec:"parallelism"`
+	Checkpoint           uint64    `codec:"checkpoint"`
+	Attempted            bool      `codec:"attempted"`
 }
