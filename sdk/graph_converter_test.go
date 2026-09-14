@@ -96,3 +96,15 @@ func TestNamedKeyBySelectsBeforeShuffle(t *testing.T) {
 		t.Fatalf("selector=%+v", graph.Operators[1])
 	}
 }
+
+func TestKeyByInheritsSingleSourceParallelism(t *testing.T) {
+	env := New().SetParallelism(4)
+	env.AddSourceNamed("source", "source", nil).SetParallelism(1).KeyByNamed("key", "selector", nil).AddSinkNamed("sink", "sink", nil)
+	graph := env.graph.toJobGraph(4)
+	if graph.Operators[0].Parallelism != 1 || graph.Operators[1].Parallelism != 1 || graph.Operators[2].Parallelism != 4 {
+		t.Fatalf("parallelism: %+v", graph.Operators)
+	}
+	if graph.Edges[0].Shuffle != rpc.ShuffleStrategyForward || graph.Edges[1].Shuffle != rpc.ShuffleStrategyHash {
+		t.Fatalf("routing: %+v", graph.Edges)
+	}
+}

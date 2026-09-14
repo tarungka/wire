@@ -58,6 +58,10 @@ func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
 		return err
 	}
 
+	if to == JobRunning {
+		job.RescaleRollback = nil
+	}
+
 	// Set StartedAt on first transition to RUNNING.
 	if to == JobRunning && job.StartedAt.IsZero() {
 		job.StartedAt = now

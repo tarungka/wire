@@ -8,6 +8,10 @@ import (
 // prepareTaskRestart waits for every old task to report a terminal state before
 // permitting deployment. Cancellation is fenced to the persisted old attempt.
 func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
+	if err := c.rollbackFailedRescale(job); err != nil {
+		c.log.Warn().Err(err).Msg("cannot restore pre-rescale configuration")
+		return false
+	}
 	c.mu.RLock()
 	if job.Status != JobFailing || c.state != StateLeader || !c.recovered {
 		c.mu.RUnlock()
@@ -50,4 +54,24 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 		return false
 	}
 	return true
+}
+
+func (c *Coordinator) rollbackFailedRescale(job *JobMeta) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state != StateLeader || !c.recovered || job.Status != JobFailing || job.RescaleRollback == nil || !job.RescaleRollback.Attempted {
+		return nil
+	}
+	old := job.RescaleRollback
+	next := *job
+	next.Config = append([]byte(nil), old.Config...)
+	next.Parallelism = old.Parallelism
+	next.LatestCheckpoint = old.Checkpoint
+	next.RescaleCheckpoint = 0
+	next.RescaleRollback = nil
+	if err := c.persistJobLocked(&next); err != nil {
+		return err
+	}
+	*job = next
+	return nil
 }

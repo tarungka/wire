@@ -9,6 +9,8 @@ import (
 	"github.com/tarungka/wire/internal/transport"
 )
 
+type registeredTaskContextKey struct{}
+
 func channelTaskID(jobID, taskID, operatorID string, subtask int32) string {
 	if taskID != "" {
 		return taskID
@@ -59,7 +61,7 @@ func connectTaskStreams(ctx context.Context, mux *transport.Mux, jobID, taskID s
 		}
 		expected[key] = index
 	}
-	if len(desc.Upstream) > 0 {
+	if len(desc.Upstream) > 0 && ctx.Value(registeredTaskContextKey{}) != taskID {
 		if err = mux.RegisterTask(taskID); err != nil {
 			return
 		}

@@ -203,6 +203,11 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	// One synchronous batch prevents both a second fsync under c.mu and a
 	// partially persisted deployment if writing assignments fails.
 	next := *job
+	if job.RescaleRollback != nil {
+		rollback := *job.RescaleRollback
+		rollback.Attempted = true
+		next.RescaleRollback = &rollback
+	}
 	if job.Status == JobFailing {
 		next.RestartCount++
 	}

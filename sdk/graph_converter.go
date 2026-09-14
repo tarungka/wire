@@ -7,6 +7,7 @@ import "github.com/tarungka/wire/internal/rpc"
 func (g *StreamGraph) toJobGraph(defaultParallelism int) rpc.JobGraph {
 	var ops []rpc.OperatorDescriptor
 	var edges []rpc.EdgeDescriptor
+	parallelism := make(map[int]int)
 
 	// Map node IDs to string operator IDs.
 	idStr := func(id int) string {
@@ -23,6 +24,15 @@ func (g *StreamGraph) toJobGraph(defaultParallelism int) rpc.JobGraph {
 			p = defaultParallelism
 		}
 
+		if node.Type == NodeKeyBy {
+			for _, edge := range g.edges {
+				if edge.TargetID == node.ID {
+					p = parallelism[edge.SourceID]
+					break
+				}
+			}
+		}
+		parallelism[node.ID] = p
 		ops = append(ops, rpc.OperatorDescriptor{
 			OperatorID:  idStr(node.ID),
 			ErrorPolicy: node.ErrorPolicy,

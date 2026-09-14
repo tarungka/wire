@@ -44,11 +44,11 @@ func TestRescaleJobStopsOldAttemptBeforeDeploying(t *testing.T) {
 	if job.Status != JobRunning || job.Parallelism != 4 || string(job.Config) != original {
 		t.Fatal("rejected request mutated job")
 	}
-	result, err := c.RescaleJob("job", "save", 3)
+	result, err := c.RescaleOperators("job", "save", map[string]int{"src": 3, "m": 3, "snk": 3})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != JobFailing || result.Parallelism != 3 || result.RescaleCheckpoint != 7 {
+	if result.Status != JobFailing || result.Parallelism != 4 || result.RescaleCheckpoint != 7 {
 		t.Fatalf("wrong rescale state: %+v", result)
 	}
 	c.scheduleTick(context.Background())
@@ -88,5 +88,57 @@ func TestRescaleJobStopsOldAttemptBeforeDeploying(t *testing.T) {
 		if command.Type != rpc.CommandTypeDeployTask || desc.AttemptID == "old" || desc.RestoreRescale == nil || desc.RestoreCheckpoint != nil || len(saved.RescaleParts[desc.TaskID]) == 0 {
 			t.Fatalf("missing restore or fetch grant: %+v", desc)
 		}
+	}
+}
+
+func TestGlobalRescalePreservesSourceAndSinkParallelism(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	graph := linearGraph()
+	graph.Operators[0].Parallelism = 1
+	graph.Operators[2].Parallelism = 1
+	for i := range graph.Edges {
+		graph.Edges[i].Shuffle = rpc.ShuffleStrategyHash
+	}
+	tasks, err := buildPhysicalTasks("job", graph, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := &JobMeta{ID: "job", Status: JobRunning, Parallelism: 4, Config: encode(t, graph), LatestCheckpoint: 7}
+	c.jobs[job.ID] = job
+	cp := CheckpointMeta{ID: 7, JobID: job.ID, EpochID: 2, Status: CheckpointCompleted, NumKeyGroups: 128, SavepointID: "save", TaskDescriptors: tasks, Tasks: map[string]string{}, Replicas: map[string]string{}, StatePaths: map[string]string{}}
+	for _, task := range tasks {
+		cp.Tasks[task.TaskID] = "worker"
+		cp.Replicas[task.TaskID] = "peer:1"
+		cp.StatePaths[task.TaskID] = "peer:1"
+	}
+	if err := store.Set(CheckpointKey(job.ID, 7), encode(t, cp)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(SavepointKey(job.ID, "save"), encode(t, SavepointMeta{ID: "save", JobID: job.ID, CheckpointID: 7, EpochID: 2, NumKeyGroups: 128, Status: SavepointCompleted})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RescaleJob(job.ID, "save", 8); err != nil {
+		t.Fatal(err)
+	}
+	var updated rpc.JobGraph
+	if err := protocol.DecodeMsgPack(job.Config, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Operators[0].Parallelism != 1 || updated.Operators[1].Parallelism != 8 || updated.Operators[2].Parallelism != 1 {
+		t.Fatalf("unexpected topology: %+v", updated.Operators)
+	}
+	if job.RescaleRollback == nil || string(job.RescaleRollback.Config) != string(encode(t, graph)) {
+		t.Fatal("old configuration not retained")
+	}
+	data, err := store.Get(JobMetaKey(job.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted JobMeta
+	if err := protocol.DecodeMsgPack(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.RescaleRollback == nil {
+		t.Fatal("rollback lost across coordinator restart")
 	}
 }
