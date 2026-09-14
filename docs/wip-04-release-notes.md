@@ -13,8 +13,12 @@ comparing throughput with earlier versions.
 
 The embedded router serializes data sends per destination, so a record blocked by
 one partition's capacity does not hold the send lock for other partitions.
-Watermark broadcasts remain serialized to preserve generation order, and pending
-records remain active during capacity waits.
+Watermark minima are published without waiting for channel capacity. Each
+partition has one independent delivery goroutine and one coalesced notification,
+so pending watermarks consume bounded memory and a slow partition cannot block
+watermark intake for other partitions. Each partition receives strictly increasing
+boundaries, and the final boundary is flushed before shutdown. Pending records
+remain active during capacity waits.
 
 Known follow-ups: configured source idle timeouts currently apply only to the
 immediate downstream task; later shuffles use the default idle timeout.

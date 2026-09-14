@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -142,6 +143,99 @@ func TestPartitionRouterSlowPartitionDoesNotBlockOtherRecords(t *testing.T) {
 			}
 		case <-ctx.Done():
 			t.Fatal("full partition blocked an unrelated record")
+		}
+	}
+}
+
+func TestPartitionRouterAdvancingWatermarksDoNotBlockOtherPartitions(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	inputs := []chan engine.OutputMsg{make(chan engine.OutputMsg), make(chan engine.OutputMsg)}
+	slow := make(chan engine.Event, 1)
+	fast := make(chan engine.Event)
+	slow <- engine.Event{Value: []byte("fill")}
+	router := &partitionRouter{upstreams: []<-chan engine.OutputMsg{inputs[0], inputs[1]}, downstreams: []chan<- engine.Event{slow, fast}, routeFn: forwardRouter(1), idleTimeout: time.Hour, watermarkInterval: time.Hour}
+	done := make(chan error, 1)
+	go func() { done <- router.run(ctx) }()
+	defer func() { cancel(); <-done }()
+	send := func(input int, msg engine.OutputMsg) {
+		t.Helper()
+		select {
+		case inputs[input] <- msg:
+		case <-ctx.Done():
+			t.Fatal("watermark blocked upstream intake")
+		}
+	}
+	watermark := func(input int, ts int64) {
+		t.Helper()
+		send(input, engine.OutputMsg{Type: engine.OutputWatermark, Watermark: &protocol.WatermarkMsg{Timestamp: ts}})
+	}
+	watermark(0, 10)
+	watermark(1, 10)
+	watermark(1, 20)
+	send(1, engine.OutputMsg{Type: engine.OutputData, Event: engine.Event{Value: []byte("first")}})
+	// The fast partition may receive its watermark before or after the later
+	// record. It must keep making progress while the slow partition stays full.
+	observed := make([][]engine.Event, 2)
+	receiveRecord := func(value string) {
+		t.Helper()
+		for {
+			select {
+			case event := <-fast:
+				observed[1] = append(observed[1], event)
+				if string(event.Value) == value {
+					return
+				}
+			case <-ctx.Done():
+				t.Fatal("full partition blocked watermark/data delivery elsewhere")
+			}
+		}
+	}
+	receiveRecord("first")
+	// Move the actual minimum repeatedly, not merely one input's watermark.
+	watermark(0, 30)
+	watermark(1, 40)
+	send(1, engine.OutputMsg{Type: engine.OutputData, Event: engine.Event{Value: []byte("second")}})
+	receiveRecord("second")
+	close(inputs[0])
+	close(inputs[1])
+	// Releasing slow capacity must flush its pending boundary before shutdown.
+	if event := <-slow; string(event.Value) != "fill" {
+		t.Fatalf("unexpected head: %+v", event)
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for partition, channel := range []chan engine.Event{slow, fast} {
+		go func() {
+			defer wg.Done()
+			for event := range channel {
+				observed[partition] = append(observed[partition], event)
+			}
+		}()
+	}
+	wg.Wait()
+	for partition, events := range observed {
+		last := int64(0)
+		for _, event := range events {
+			if len(event.Value) != 0 {
+				continue
+			}
+			found := false
+			for _, timestamp := range []int64{10, 20, 30} {
+				if reflect.DeepEqual(event, engine.WatermarkEvent(timestamp)) {
+					if timestamp <= last {
+						t.Fatalf("partition %d regressed or duplicated watermark: %d after %d", partition, timestamp, last)
+					}
+					last, found = timestamp, true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("unexpected boundary: %+v", event)
+			}
+		}
+		if last != 30 {
+			t.Fatalf("partition %d lost final coalesced watermark: %d", partition, last)
 		}
 	}
 }

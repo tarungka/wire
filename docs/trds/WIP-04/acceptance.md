@@ -68,3 +68,8 @@ and pending records stay active for idle detection. The regression test holds on
 partition full beyond its idle timeout while another input sends records and a
 watermark. See [compatibility notes](../../wip-04-release-notes.md) for the default
 strategy change, periodic watermark traffic, and remaining follow-ups.
+
+Watermark publication also avoids capacity waits: each partition drains coalesced
+notifications independently. The advancing-minimum regression fills partition 0,
+advances both upstream watermarks, and routes records to partition 1. It checks
+monotonic delivery and final-boundary flushing after releasing partition 0.

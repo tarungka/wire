@@ -70,23 +70,63 @@ func (r *partitionRouter) run(ctx context.Context) error {
 	if interval <= 0 {
 		interval = engine.DefaultWatermarkInterval
 	}
-	emitMinimum := func() error {
+	// Publishing a boundary never waits for downstream capacity. Each
+	// destination has one delivery goroutine and one coalesced notification.
+	watermarkWake := make([]chan struct{}, len(r.downstreams))
+	for target := range watermarkWake {
+		watermarkWake[target] = make(chan struct{}, 1)
+	}
+	publishMinimum := func() {
+		watermarkMu.Lock()
+		defer watermarkMu.Unlock()
 		minimum, idle := tracker.MinWatermark(idleTimeout)
 		if idle || minimum <= lastWatermark {
-			return nil
-		}
-		for target, channel := range r.downstreams {
-			downstreamMu[target].Lock()
-			select {
-			case channel <- engine.WatermarkEvent(minimum):
-				downstreamMu[target].Unlock()
-			case <-gctx.Done():
-				downstreamMu[target].Unlock()
-				return gctx.Err()
-			}
+			return
 		}
 		lastWatermark = minimum
-		return nil
+		for _, wake := range watermarkWake {
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
+		}
+	}
+	watermarksDone := make(chan struct{})
+	for target, channel := range r.downstreams {
+		g.Go(func() error {
+			lastSent := int64(math.MinInt64)
+			deliver := func() error {
+				watermarkMu.Lock()
+				minimum := lastWatermark
+				watermarkMu.Unlock()
+				if minimum <= lastSent {
+					return nil
+				}
+				downstreamMu[target].Lock()
+				defer downstreamMu[target].Unlock()
+				select {
+				case channel <- engine.WatermarkEvent(minimum):
+					lastSent = minimum
+					return nil
+				case <-gctx.Done():
+					return gctx.Err()
+				}
+			}
+			for {
+				select {
+				case <-gctx.Done():
+					return gctx.Err()
+				case <-watermarksDone:
+					// All publishers have stopped. Flush the newest boundary
+					// before run closes downstreams and emits end-of-partition.
+					return deliver()
+				case <-watermarkWake[target]:
+					if err := deliver(); err != nil {
+						return err
+					}
+				}
+			}
+		})
 	}
 	var producers sync.WaitGroup
 	producers.Add(len(r.upstreams))
@@ -136,16 +176,8 @@ func (r *partitionRouter) run(ctx context.Context) error {
 					if msg.Watermark == nil {
 						continue
 					}
-					// Serialize the minimum and its fan-out so concurrent producers cannot
-					// send different watermark generations in opposite orders.
-					if err := func() error {
-						watermarkMu.Lock()
-						defer watermarkMu.Unlock()
-						tracker.AdvanceWatermark(inputIndex, msg.Watermark.Timestamp)
-						return emitMinimum()
-					}(); err != nil {
-						return err
-					}
+					tracker.AdvanceWatermark(inputIndex, msg.Watermark.Timestamp)
+					publishMinimum()
 				case engine.OutputBarrier:
 					for _, ch := range r.controlChs {
 						select {
@@ -160,6 +192,7 @@ func (r *partitionRouter) run(ctx context.Context) error {
 	}
 	go func() { producers.Wait(); close(producersDone) }()
 	g.Go(func() error {
+		defer close(watermarksDone)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -169,12 +202,7 @@ func (r *partitionRouter) run(ctx context.Context) error {
 			case <-producersDone:
 				return nil
 			case <-ticker.C:
-				watermarkMu.Lock()
-				err := emitMinimum()
-				watermarkMu.Unlock()
-				if err != nil {
-					return err
-				}
+				publishMinimum()
 			}
 		}
 	})
