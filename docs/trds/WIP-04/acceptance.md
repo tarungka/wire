@@ -58,3 +58,13 @@ worker strategy/idle/late/recovery cases, and explicit-zero regression tests
 passed. `golangci-lint run ./...` reported zero issues. Changed Go files were
 formatted with goimports. The follow-up PR links the original WIP-04 PR #205;
 its remote CI must pass before this task is closed.
+
+
+## Embedded routing review
+
+The router uses per-destination send locks for records and watermark boundaries.
+A record waiting for capacity does not hold the global watermark broadcast lock,
+and pending records stay active for idle detection. The regression test holds one
+partition full beyond its idle timeout while another input sends records and a
+watermark. See [compatibility notes](../../wip-04-release-notes.md) for the default
+strategy change, periodic watermark traffic, and remaining follow-ups.

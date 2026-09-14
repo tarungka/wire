@@ -61,6 +61,13 @@ func (t *InputWatermarkTracker) RecordActivity(inputIndex int) {
 	t.lastActivityNs[inputIndex].Store(t.clock())
 }
 
+// RecordQueued marks a record as pending so capacity waits cannot make its
+// input appear idle. Every call must be paired with RecordProcessed.
+func (t *InputWatermarkTracker) RecordQueued(input int) { t.recordQueued(input) }
+
+// RecordProcessed releases a pending record and starts its input's idle timer.
+func (t *InputWatermarkTracker) RecordProcessed(input int) { t.recordProcessed(input) }
+
 func (t *InputWatermarkTracker) recordQueued(input int) {
 	t.pending[input].Add(1)
 	t.RecordActivity(input)

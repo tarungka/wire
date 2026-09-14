@@ -60,6 +60,7 @@ func (r *partitionRouter) run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
 	tracker := engine.NewInputWatermarkTracker(len(r.upstreams))
 	var watermarkMu sync.Mutex
+	downstreamMu := make([]sync.Mutex, len(r.downstreams))
 	lastWatermark := int64(math.MinInt64)
 	idleTimeout := r.idleTimeout
 	if idleTimeout == 0 {
@@ -74,10 +75,13 @@ func (r *partitionRouter) run(ctx context.Context) error {
 		if idle || minimum <= lastWatermark {
 			return nil
 		}
-		for _, channel := range r.downstreams {
+		for target, channel := range r.downstreams {
+			downstreamMu[target].Lock()
 			select {
 			case channel <- engine.WatermarkEvent(minimum):
+				downstreamMu[target].Unlock()
 			case <-gctx.Done():
+				downstreamMu[target].Unlock()
 				return gctx.Err()
 			}
 		}
@@ -105,11 +109,10 @@ func (r *partitionRouter) run(ctx context.Context) error {
 				case engine.OutputData:
 
 					if err := func() error {
-						// Keep idle exclusion and watermark fan-out behind any
-						// record currently blocked on downstream capacity.
-						watermarkMu.Lock()
-						defer watermarkMu.Unlock()
-						tracker.RecordActivity(inputIndex)
+						// Pending records prevent idle exclusion during backpressure.
+						// Only this destination is serialized with watermark sends.
+						tracker.RecordQueued(inputIndex)
+						defer tracker.RecordProcessed(inputIndex)
 						if r.keySelector != nil {
 							key, err := r.keySelector(msg.Event)
 							if err != nil {
@@ -118,9 +121,10 @@ func (r *partitionRouter) run(ctx context.Context) error {
 							msg.Event.Key = append([]byte(nil), key...)
 						}
 						target := r.routeFn(msg.Event, len(r.downstreams))
+						downstreamMu[target].Lock()
+						defer downstreamMu[target].Unlock()
 						select {
 						case r.downstreams[target] <- msg.Event:
-							tracker.RecordActivity(inputIndex)
 							return nil
 						case <-gctx.Done():
 							return gctx.Err()

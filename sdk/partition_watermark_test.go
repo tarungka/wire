@@ -84,3 +84,64 @@ func TestPartitionRouterIdleInputAdvancesWithoutNewWatermark(t *testing.T) {
 	}
 	<-producerDone
 }
+
+func TestPartitionRouterSlowPartitionDoesNotBlockOtherRecords(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	slowInput := make(chan engine.OutputMsg)
+	fastInput := make(chan engine.OutputMsg)
+	slow := make(chan engine.Event, 1)
+	fast := make(chan engine.Event, 1)
+	slow <- engine.Event{Value: []byte("occupy capacity")}
+	routedSlow := make(chan struct{})
+	router := &partitionRouter{
+		idleTimeout:       10 * time.Millisecond,
+		watermarkInterval: time.Millisecond,
+		upstreams:         []<-chan engine.OutputMsg{slowInput, fastInput},
+		downstreams:       []chan<- engine.Event{slow, fast},
+		routeFn: func(event engine.Event, _ int) int {
+			if string(event.Value) == "slow" {
+				close(routedSlow)
+				return 0
+			}
+			return 1
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- router.run(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("router exit: %v", err)
+		}
+	}()
+	slowInput <- engine.OutputMsg{Type: engine.OutputData, Event: engine.Event{Value: []byte("slow")}}
+	<-routedSlow // The slow producer has entered its send path against a full channel.
+	select {
+	case fastInput <- engine.OutputMsg{Type: engine.OutputWatermark, Watermark: &protocol.WatermarkMsg{Timestamp: 100}}:
+	case <-ctx.Done():
+		t.Fatal("fast watermark input blocked")
+	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for range 10 {
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal("router timed out")
+		}
+		select {
+		case fastInput <- engine.OutputMsg{Type: engine.OutputData, Event: engine.Event{Value: []byte("fast")}}:
+		case <-ctx.Done():
+			t.Fatal("fast input blocked")
+		}
+		select {
+		case event := <-fast:
+			if string(event.Value) != "fast" {
+				t.Fatalf("pending slow record was excluded as idle: %+v", event)
+			}
+		case <-ctx.Done():
+			t.Fatal("full partition blocked an unrelated record")
+		}
+	}
+}
