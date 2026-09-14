@@ -79,9 +79,13 @@ func (s *rescaleClusterSource) RestoreKeyGroupState(ctx context.Context, assigne
 }
 
 func TestClusterSavepointRescalesKeyGroups(t *testing.T) {
-	for _, sizes := range [][2]int{{4, 8}, {8, 4}, {4, 3}} {
+	for _, sizes := range [][2]int{{4, 8}, {8, 4}, {4, 3}, {2, 3}, {1, 2}} {
 		t.Run(fmt.Sprintf("%d-to-%d", sizes[0], sizes[1]), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			rollback := sizes[0] == 2
+			slowFetch := sizes[0] == 1
+			var delayedFetch atomic.Int32
+			var sourceRestores atomic.Int32
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			coord := coordinator.New(coordinator.CoordinatorConfig{NodeID: "coordinator"}, coordinator.NewMemoryStore(), nil, zerolog.Nop())
 			coordDone := make(chan error, 1)
@@ -103,6 +107,9 @@ func TestClusterSavepointRescalesKeyGroups(t *testing.T) {
 			var restored atomic.Int32
 			registry := worker.NewRegistry()
 			registry.RegisterSource("source", func(context.Context, []byte, worker.TaskContext) (engine.SourceOperator, error) {
+				if rollback {
+					return &opaqueRescaleSource{restores: &sourceRestores}, nil
+				}
 				return &rescaleStatelessSource{}, nil
 			})
 			registry.RegisterMap("state", func(_ context.Context, _ []byte, tc worker.TaskContext) (engine.MapOperator, error) {
@@ -116,6 +123,21 @@ func TestClusterSavepointRescalesKeyGroups(t *testing.T) {
 			var done []chan error
 			for i := 0; i < 2; i++ {
 				replica := &worker.CheckpointReplicaConfig{ListenAddr: "127.0.0.1:0", StoreRoot: t.TempDir(), ArtifactRoot: t.TempDir(), StagingRoot: t.TempDir(), Concurrency: 8}
+				if slowFetch {
+					replica.AuthorizeFetch = func(ctx context.Context, request rpc.FetchCheckpointRequest) error {
+						if strings.Contains(request.TaskID, "/state/") {
+							delayedFetch.Add(1)
+							timer := time.NewTimer(6 * time.Second)
+							defer timer.Stop()
+							select {
+							case <-timer.C:
+							case <-ctx.Done():
+								return ctx.Err()
+							}
+						}
+						return nil
+					}
+				}
 				w := worker.NewWithRegistry(worker.Config{WorkerID: fmt.Sprint("worker-", i), CoordinatorAddr: server.Addr(), TaskSlots: 8, CheckpointReplica: replica}, registry, zerolog.Nop())
 				workers = append(workers, w)
 				ch := make(chan error, 1)
@@ -169,10 +191,27 @@ func TestClusterSavepointRescalesKeyGroups(t *testing.T) {
 			if readErr != nil || response.StatusCode != http.StatusAccepted {
 				t.Fatalf("rescale HTTP status %d: %s (%v)", response.StatusCode, body, readErr)
 			}
-			waitFor(t, 10*time.Second, func() bool {
+			if rollback {
+				waitFor(t, 15*time.Second, func() bool {
+					current, err := coord.GetJob(job.ID)
+					return err == nil && current.Status == coordinator.JobRunning && current.Parallelism == sizes[0] && sourceRestores.Load() == int32(sizes[0])
+				})
+				current, _ := coord.GetJob(job.ID)
+				if string(current.Config) != string(graph) || current.RescaleCheckpoint != 0 || current.RescaleRollback != nil {
+					t.Fatalf("old topology not restored: %+v", current)
+				}
+				if err := coord.DeleteSavepoint(job.ID, sp.ID); err != nil {
+					t.Fatalf("failed rescale still pins savepoint: %v", err)
+				}
+				return
+			}
+			waitFor(t, 20*time.Second, func() bool {
 				current, err := coord.GetJob(job.ID)
 				return err == nil && current.Status == coordinator.JobRunning && restored.Load() == int32(sizes[1])
 			})
+			if slowFetch && delayedFetch.Load() == 0 {
+				t.Fatal("state download was not delayed")
+			}
 			// The new deployment must be able to checkpoint its redistributed state,
 			// releasing the old savepoint as a recovery dependency.
 			replacement, err := coord.TriggerCheckpoint(job.ID)
@@ -189,4 +228,20 @@ func TestClusterSavepointRescalesKeyGroups(t *testing.T) {
 
 		})
 	}
+}
+
+// Opaque source offsets cannot be redistributed, but ordinary rollback must
+// restore them using the old topology instead of retrying the rejected rescale.
+type opaqueRescaleSource struct {
+	rescaleStatelessSource
+	restores *atomic.Int32
+}
+
+func (*opaqueRescaleSource) Checkpoint(uint64) ([]byte, error) { return []byte("offset"), nil }
+func (s *opaqueRescaleSource) RestoreCheckpoint(data []byte) error {
+	if string(data) != "offset" {
+		return fmt.Errorf("incorrect restored offset")
+	}
+	s.restores.Add(1)
+	return nil
 }

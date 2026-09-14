@@ -128,6 +128,19 @@ func (m *Mux) Dial(ctx context.Context, addr string, routing ...protocol.StreamH
 // RegisterTask creates a bounded incoming-stream queue for a task. Register
 // before upstream connections are opened. Repeated registrations are rejected.
 func (m *Mux) RegisterTask(taskID string) error {
+	return m.registerTask(taskID, 64, false)
+}
+
+// RegisterTaskInputs reserves room for the deployment's expected inputs before
+// restore begins. Excess streams are rejected without blocking peer acceptance.
+func (m *Mux) RegisterTaskInputs(taskID string, inputs int) error {
+	if inputs < 1 {
+		return fmt.Errorf("transport: positive input count required")
+	}
+	return m.registerTask(taskID, inputs, true)
+}
+
+func (m *Mux) registerTask(taskID string, capacity int, rejectOverflow bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.ctx.Err() != nil {
@@ -139,7 +152,10 @@ func (m *Mux) RegisterTask(taskID string) error {
 	if _, exists := m.tasks[taskID]; exists {
 		return fmt.Errorf("transport: task already registered")
 	}
-	m.tasks[taskID] = newTaskQueue()
+	queue := newTaskQueue()
+	queue.streams = make(chan *FrameStream, capacity)
+	queue.rejectOverflow = rejectOverflow
+	m.tasks[taskID] = queue
 	close(m.taskChanged)
 	m.taskChanged = make(chan struct{})
 	return nil

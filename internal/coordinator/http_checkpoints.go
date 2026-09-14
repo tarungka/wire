@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -14,6 +15,10 @@ func checkpointResponse(checkpoint *CheckpointMeta) map[string]any {
 func (s *HTTPServer) handleTriggerCheckpoint(w http.ResponseWriter, r *http.Request) {
 	checkpoint, err := s.coord.TriggerCheckpoint(r.PathValue("job_id"))
 	if err != nil {
+		if errors.Is(err, ErrCheckpointUnavailable) {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		writeJobError(w, err)
 		return
 	}

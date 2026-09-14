@@ -77,6 +77,7 @@ func (c *Coordinator) scheduleTick(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	c.detectLostTaskWorkers()
 
 	// Snapshot CREATED jobs under RLock.
 	c.mu.RLock()
@@ -122,6 +123,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 
 	assignments, err := c.assignTasks(tasks)
 	if err != nil {
+		c.recordRescalePlacementFailure(job, time.Now())
 		c.log.Debug().Err(err).Str("job_id", job.ID).Msg("cannot schedule job, will retry")
 		return
 	}
@@ -203,8 +205,17 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	// One synchronous batch prevents both a second fsync under c.mu and a
 	// partially persisted deployment if writing assignments fails.
 	next := *job
+	if job.RescaleRollback != nil {
+		rollback := *job.RescaleRollback
+		rollback.Attempted = true
+		next.RescaleRollback = &rollback
+	}
 	if job.Status == JobFailing {
-		next.RestartCount++
+		if !job.RescaleRequested {
+			next.RestartCount++
+			next.RecoveryAttempts++
+		}
+		next.RescaleRequested = false
 	}
 	next.Status = JobDeploying
 	next.UpdatedAt = time.Now().UTC()

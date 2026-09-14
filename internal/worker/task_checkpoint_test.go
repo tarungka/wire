@@ -42,3 +42,25 @@ func TestCheckpointCommandFencingAndAbortOrder(t *testing.T) {
 		t.Fatal("valid abort cancelled task")
 	}
 }
+
+func TestFullCheckpointTriggerDoesNotCancelTask(t *testing.T) {
+	w := New(Config{}, zerolog.Nop())
+	w.epoch = 5
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := &taskCheckpointRuntime{source: true, triggers: make(chan engine.CheckpointTrigger, 1)}
+	w.tasks["task"] = &taskHandle{jobID: "job", epoch: 5, cancel: cancel, checkpoint: runtime}
+	for _, id := range []uint64{7, 8} {
+		data, err := protocol.EncodeMsgPack(rpc.TriggerCheckpointRequest{JobID: "job", CheckpointID: id, EpochID: 5})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.handleCheckpointCommand(rpc.WorkerCommand{Type: rpc.CommandTypeTakeSnapshot, JobID: "job", TaskID: "task", Data: data})
+	}
+	if ctx.Err() != nil {
+		t.Fatal("full trigger channel canceled task")
+	}
+	if trigger := <-runtime.triggers; trigger.CheckpointID != 8 {
+		t.Fatal("obsolete trigger retained")
+	}
+}
