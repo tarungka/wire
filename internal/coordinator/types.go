@@ -110,23 +110,25 @@ func (s CheckpointStatus) String() string {
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
 	// RescaleCheckpoint selects a completed savepoint for changed ownership.
-	RescaleRequested  bool      `codec:"rescale_requested,omitempty"`
-	RecoveryAttempts  int       `codec:"recovery_attempts,omitempty"`
-	RunningSince      time.Time `codec:"running_since,omitempty"`
-	RescaleCheckpoint uint64    `codec:"rescale_checkpoint,omitempty"`
-	ID                string    `codec:"id"`
-	Name              string    `codec:"name"`
-	Status            JobStatus `codec:"status"`
-	Parallelism       int       `codec:"parallelism"`
-	ConfigHash        string    `codec:"config_hash"`
-	CreatedAt         time.Time `codec:"created_at"`
-	UpdatedAt         time.Time `codec:"updated_at"`
-	StartedAt         time.Time `codec:"started_at,omitempty"`
-	FinishedAt        time.Time `codec:"finished_at,omitempty"`
-	RestartCount      int       `codec:"restart_count,omitempty"`
-	LatestCheckpoint  uint64    `codec:"latest_checkpoint,omitempty"`
-	Config            []byte    `codec:"config,omitempty"`
-	SavepointPath     string    `codec:"savepoint_path,omitempty"`
+	RescaleRollback   *RescaleRollback `codec:"rescale_rollback,omitempty"`
+	RescaleFailure    string           `codec:"rescale_failure,omitempty"`
+	RescaleRequested  bool             `codec:"rescale_requested,omitempty"`
+	RecoveryAttempts  int              `codec:"recovery_attempts,omitempty"`
+	RunningSince      time.Time        `codec:"running_since,omitempty"`
+	RescaleCheckpoint uint64           `codec:"rescale_checkpoint,omitempty"`
+	ID                string           `codec:"id"`
+	Name              string           `codec:"name"`
+	Status            JobStatus        `codec:"status"`
+	Parallelism       int              `codec:"parallelism"`
+	ConfigHash        string           `codec:"config_hash"`
+	CreatedAt         time.Time        `codec:"created_at"`
+	UpdatedAt         time.Time        `codec:"updated_at"`
+	StartedAt         time.Time        `codec:"started_at,omitempty"`
+	FinishedAt        time.Time        `codec:"finished_at,omitempty"`
+	RestartCount      int              `codec:"restart_count,omitempty"`
+	LatestCheckpoint  uint64           `codec:"latest_checkpoint,omitempty"`
+	Config            []byte           `codec:"config,omitempty"`
+	SavepointPath     string           `codec:"savepoint_path,omitempty"`
 }
 
 // TaskAssignmentMap maps task IDs to the worker IDs they are assigned to.
@@ -231,4 +233,13 @@ type CoordinatorCommand struct {
 	Epoch   uint64      `codec:"epoch"`
 	Type    CommandType `codec:"type"`
 	Payload []byte      `codec:"payload"`
+}
+
+// RescaleRollback retains the last working topology until the new tasks all run.
+type RescaleRollback struct {
+	PlacementFailedSince time.Time `codec:"placement_failed_since,omitempty"`
+	Config               []byte    `codec:"config"`
+	Parallelism          int       `codec:"parallelism"`
+	Checkpoint           uint64    `codec:"checkpoint"`
+	Attempted            bool      `codec:"attempted"`
 }

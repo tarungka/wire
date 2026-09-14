@@ -10,6 +10,10 @@ import (
 // prepareTaskRestart waits for every old task to report a terminal state before
 // permitting deployment. Cancellation is fenced to the persisted old attempt.
 func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
+	if err := c.rollbackFailedRescale(job); err != nil {
+		c.log.Warn().Err(err).Msg("cannot restore pre-rescale configuration")
+		return false
+	}
 	c.mu.RLock()
 	if job.Status != JobFailing || c.state != StateLeader || !c.recovered {
 		c.mu.RUnlock()
@@ -63,10 +67,59 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 	return true
 }
 
+func (c *Coordinator) rollbackFailedRescale(job *JobMeta) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state != StateLeader || !c.recovered || job.Status != JobFailing || job.RescaleRollback == nil || !job.RescaleRollback.Attempted {
+		return nil
+	}
+	old := job.RescaleRollback
+	next := *job
+	next.Config = append([]byte(nil), old.Config...)
+	next.Parallelism = old.Parallelism
+	next.LatestCheckpoint = old.Checkpoint
+	next.RescaleCheckpoint = 0
+	next.RescaleRequested = false
+	next.RescaleFailure = "rescale deployment failed; restoring previous configuration"
+	next.RescaleRollback = nil
+	if err := c.persistJobLocked(&next); err != nil {
+		return err
+	}
+	*job = next
+	c.jobs[job.ID] = job
+	return nil
+}
+
 // resetStableRecoveryBudget is called before leaving RUNNING. Callers hold
 // c.mu and persist the updated job together with their state transition.
 func (c *Coordinator) resetStableRecoveryBudget(job *JobMeta, now time.Time) {
 	if job.Status == JobRunning && !job.RunningSince.IsZero() && now.Sub(job.RunningSince) >= c.config.RestartResetAfter {
 		job.RecoveryAttempts = 0
 	}
+}
+
+// Bound placement retries as well as deployed attempts: a larger layout can
+// lose capacity after admission but before the old tasks finish cancellation.
+func (c *Coordinator) recordRescalePlacementFailure(job *JobMeta, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state != StateLeader || !c.recovered || job.Status != JobFailing || job.RescaleRollback == nil || job.RescaleRollback.Attempted {
+		return
+	}
+	next := *job
+	rollback := *job.RescaleRollback
+	if rollback.PlacementFailedSince.IsZero() {
+		rollback.PlacementFailedSince = now.UTC()
+	}
+	// Cancellation acknowledgements precede slot updates. Allow two full
+	// worker heartbeat intervals after the first failed placement, regardless
+	// of scheduler tick frequency, before giving up on the larger topology.
+	rollback.Attempted = now.Sub(rollback.PlacementFailedSince) >= 2*rpc.DefaultHeartbeatInterval
+	next.RescaleRollback = &rollback
+	if err := c.persistJobLocked(&next); err != nil {
+		c.log.Warn().Err(err).Msg("cannot persist rescale placement failure")
+		return
+	}
+	*job = next
+	c.jobs[job.ID] = job
 }

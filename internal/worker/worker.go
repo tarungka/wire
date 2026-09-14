@@ -485,6 +485,18 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 		w.mu.Unlock()
 	}()
 
+	if len(desc.Upstream) > 0 {
+		if w.executor.data == nil {
+			w.reportTaskFailed(jobID, taskID, fmt.Errorf("task inputs require data mux"))
+			return
+		}
+		if err := w.executor.data.RegisterTaskInputs(taskID, len(desc.Upstream)); err != nil {
+			w.reportTaskFailed(jobID, taskID, err)
+			return
+		}
+		defer w.executor.data.UnregisterTask(taskID)
+		ctx = context.WithValue(ctx, registeredTaskContextKey{}, taskID)
+	}
 	checkpoint, cleanup, err := w.prepareTaskCheckpoint(ctx, jobID, taskID, desc)
 	if err != nil {
 		w.reportTaskFailed(jobID, taskID, err)

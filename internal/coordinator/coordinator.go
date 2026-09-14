@@ -346,21 +346,16 @@ func (c *Coordinator) jobStateCounts() map[string]int64 {
 // full). Otherwise it appends to the heartbeat-tick queue.
 func (c *Coordinator) EnqueueCommand(workerID string, cmd rpc.WorkerCommand) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Channel replacement and close use the same lock as this nonblocking send.
 	if ch, ok := c.cmdStreams[workerID]; ok {
-		c.mu.Unlock()
 		select {
 		case ch <- cmd:
 			return
 		default:
-			// Push channel backed up — fall through to slice queue so the
-			// next heartbeat picks it up. This is a defensive fallback;
-			// in steady state the stream drains as fast as the worker
-			// reads.
 		}
-		c.mu.Lock()
 	}
 	c.pendingCmds[workerID] = append(c.pendingCmds[workerID], cmd)
-	c.mu.Unlock()
 }
 
 // DrainCommands returns and clears all pending commands for a worker.
@@ -396,7 +391,6 @@ func (c *Coordinator) RegisterCommandStream(workerID string) (<-chan rpc.WorkerC
 	c.cmdStreams[workerID] = ch
 	backlog := c.pendingCmds[workerID]
 	delete(c.pendingCmds, workerID)
-	c.mu.Unlock()
 
 	// Best-effort drain of the heartbeat backlog into the new stream.
 	for _, cmd := range backlog {
@@ -405,11 +399,11 @@ func (c *Coordinator) RegisterCommandStream(workerID string) (<-chan rpc.WorkerC
 		default:
 			// Buffer full already (would only happen with a huge backlog);
 			// re-queue the rest in pendingCmds.
-			c.mu.Lock()
 			c.pendingCmds[workerID] = append(c.pendingCmds[workerID], cmd)
-			c.mu.Unlock()
 		}
 	}
+
+	c.mu.Unlock()
 
 	cleanup := func() {
 		c.mu.Lock()

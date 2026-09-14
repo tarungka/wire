@@ -62,6 +62,7 @@ func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
 		c.resetStableRecoveryBudget(job, now)
 	}
 	if to == JobRunning {
+		job.RescaleRollback = nil
 		job.RunningSince = now
 	}
 	// Set StartedAt on first transition to RUNNING.
