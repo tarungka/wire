@@ -30,7 +30,7 @@ const (
 type WatermarkStrategyType uint8
 
 const (
-	// StrategyNone means no explicit strategy — use legacy source watermark.
+	// StrategyNone means no explicit strategy — use bounded OOO with DefaultMaxOOO.
 	StrategyNone WatermarkStrategyType = iota
 	// StrategyBoundedOOO allows events to arrive out of order up to MaxOOO.
 	StrategyBoundedOOO

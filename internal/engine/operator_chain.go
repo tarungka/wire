@@ -227,10 +227,25 @@ func isZeroEvent(e Event) bool {
 // When an operator has a non-zero ErrorHandlerConfig, errors are handled via
 // invokeWithRetry (retry/DLQ/drop); otherwise errors fail the job immediately.
 func processEvent(cc *chainContext, event Event) error {
+	if activity := event.inputActivity; activity != nil {
+		defer activity.tracker.recordProcessed(activity.input)
+		event.inputActivity = nil
+	}
+	if boundary := event.inputWatermark; boundary != nil {
+		boundary.tracker.AdvanceWatermark(boundary.input, boundary.timestamp)
+		return nil
+	}
+	if event.watermark != nil {
+		return processWatermark(cc, *event.watermark)
+	}
+	return processEventFrom(cc, event, cc.links)
+}
+
+func processEventFrom(cc *chainContext, event Event, links []ChainLink) error {
 	// Start with the input event. For FlatMap we may fan out to multiple events.
 	events := []Event{event}
 
-	for _, link := range cc.links {
+	for _, link := range links {
 		var next []Event
 		for _, e := range events {
 			switch o := link.Operator.(type) {
