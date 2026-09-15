@@ -92,7 +92,7 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 	return runtime, func() {}, nil
 }
 
-func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) {
+func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) (accepted bool) {
 	var request rpc.TriggerCheckpointRequest
 	if err := protocol.DecodeMsgPack(command.Data, &request); err != nil {
 		w.log.Warn().Err(err).Msg("invalid checkpoint command")
@@ -105,6 +105,7 @@ func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) {
 		return
 	}
 	checkpoint := handle.checkpoint
+	accepted = true
 	w.mu.RUnlock()
 	if command.Type == rpc.CommandTypeTakeSnapshot {
 		if !checkpoint.source {
@@ -154,4 +155,5 @@ func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) {
 	}
 	w.log.Error().Str("task_id", command.TaskID).Msg("checkpoint command mailbox exhausted")
 	handle.cancel()
+	return
 }

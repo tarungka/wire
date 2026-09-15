@@ -6,11 +6,11 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-09-12`
+> **Last Updated:** `2026-09-15`
 
 ### Revision History
 
@@ -20,13 +20,11 @@
 
 ---
 
-## Implementation Status — 2026-09-12
+## Implementation Status — 2026-09-15
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Implemented on top of master `0d5cf90`, following #202. Full race suite, build, vet and lint pass. See [the current runtime contract](runtime-contract.md) for all six method signatures, error/refusal behavior, timeouts, retries, reservation expiry, deployment idempotency, heartbeat behavior and TLS configuration. [The implementation audit](implementation-audit.md) tracks acceptance evidence.
 
-- **Implemented:** RPC framing, client/server dispatch, errors, worker registration, heartbeat, and task-status reporting are implemented. WIP-21 adds streaming command dispatch. The shared server now tracks concurrent sessions independently, closes all sessions on Stop, and makes acceptance/concurrency waits respond to cancellation.
-- **Remaining:** The full proposed checkpoint and resource-reservation workflows are not wired into the runtime. The coordinator currently registers RegisterWorker, Heartbeat, UpdateTaskStatus, and the streaming WatchCommands method; other method definitions do not establish runtime support.
-- **Evidence:** [client.go](../../../internal/rpc/client.go), [server.go](../../../internal/rpc/server.go), [transport.go](../../../internal/coordinator/transport.go).
+The dated proposal below remains design history. WIP-21 supersedes heartbeat-only dispatch; WIP-02/05/06 supply checkpoint replication, decisions and restore. Reservation-capable workers now negotiate capacity and receive acknowledged physical-task deployment on the existing worker-initiated session. Older workers retain the explicitly documented legacy command path. No unimplemented resource or security behavior should be inferred from the historical protobuf examples.
 
 ---
 

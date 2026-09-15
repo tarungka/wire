@@ -206,13 +206,16 @@ type SavepointMeta struct {
 
 // WorkerMeta holds persisted metadata for a registered worker.
 type WorkerMeta struct {
-	CheckpointAddress  string    `codec:"checkpoint_address,omitempty"`
-	ID                 string    `codec:"id"`
-	Address            string    `codec:"address"`
-	TaskSlotsTotal     int       `codec:"task_slots_total"`
-	TaskSlotsAvailable int       `codec:"task_slots_available"`
-	LastHeartbeat      time.Time `codec:"last_heartbeat"`
-	RunningTasks       []string  `codec:"running_tasks"`
+	RPCPeerEpoch         uint64      `codec:"-" json:"-"`
+	RPCClient            *rpc.Client `codec:"-" json:"-"`
+	SupportsReservations bool        `codec:"slot_reservations,omitempty"`
+	CheckpointAddress    string      `codec:"checkpoint_address,omitempty"`
+	ID                   string      `codec:"id"`
+	Address              string      `codec:"address"`
+	TaskSlotsTotal       int         `codec:"task_slots_total"`
+	TaskSlotsAvailable   int         `codec:"task_slots_available"`
+	LastHeartbeat        time.Time   `codec:"last_heartbeat"`
+	RunningTasks         []string    `codec:"running_tasks"`
 }
 
 // ClusterConfig holds cluster-wide configuration parameters.

@@ -13,7 +13,7 @@ import (
 
 // HandleRegisterWorker is an RPC handler that bridges the rpc.Server to
 // the Coordinator's RegisterWorker method.
-func (c *Coordinator) HandleRegisterWorker(_ context.Context, _ uint64, payload []byte) (any, *rpc.RPCError) {
+func (c *Coordinator) HandleRegisterWorker(ctx context.Context, _ uint64, payload []byte) (any, *rpc.RPCError) {
 	var rpcReq rpc.RegisterWorkerRequest
 	if err := rpc.DecodeRPCPayload(rpc.RPCFrame{Payload: payload}, &rpcReq); err != nil {
 		return nil, rpc.NewRPCError(rpc.ErrCodeSerializationError, fmt.Sprintf("decode RegisterWorkerRequest: %v", err))
@@ -21,12 +21,13 @@ func (c *Coordinator) HandleRegisterWorker(_ context.Context, _ uint64, payload 
 
 	// Map RPC request to coordinator domain request.
 	coordReq := RegisterWorkerRequest{
-		CheckpointAddress: rpcReq.CheckpointAddress,
-		WorkerID:          rpcReq.WorkerID,
-		Address:           rpcReq.Address,
-		TaskSlotsTotal:    rpcReq.TaskSlotsTotal,
-		HighestSeenEpoch:  rpcReq.HighestSeenEpoch,
-		RunningTasks:      rpcReq.RunningTasks,
+		SupportsReservations: rpcReq.SupportsReservations,
+		CheckpointAddress:    rpcReq.CheckpointAddress,
+		WorkerID:             rpcReq.WorkerID,
+		Address:              rpcReq.Address,
+		TaskSlotsTotal:       rpcReq.TaskSlotsTotal,
+		HighestSeenEpoch:     rpcReq.HighestSeenEpoch,
+		RunningTasks:         rpcReq.RunningTasks,
 	}
 
 	resp, err := c.RegisterWorker(coordReq)
@@ -34,6 +35,24 @@ func (c *Coordinator) HandleRegisterWorker(_ context.Context, _ uint64, payload 
 		return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, fmt.Sprintf("register worker: %v", err))
 	}
 
+	if rpcReq.SupportsReservations {
+		peer, done := rpc.SessionPeer(ctx)
+		if peer != nil {
+			c.mu.Lock()
+			worker := c.workers[rpcReq.WorkerID]
+			worker.RPCClient = peer
+			worker.RPCPeerEpoch = resp.Epoch
+			c.mu.Unlock()
+			go func() {
+				<-done
+				c.mu.Lock()
+				if current := c.workers[rpcReq.WorkerID]; current == worker {
+					current.RPCClient = nil
+				}
+				c.mu.Unlock()
+			}()
+		}
+	}
 	return &rpc.RegisterWorkerResponse{
 		Epoch:         resp.Epoch,
 		TasksToCancel: resp.TasksToCancel,
@@ -162,6 +181,9 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 		return nil, rpc.NewRPCError(rpc.ErrCodeSerializationError, fmt.Sprintf("decode UpdateTaskStatusRequest: %v", err))
 	}
 
+	if req.Status <= rpc.TaskStatusUnknown || req.Status > rpc.TaskStatusFinished {
+		return nil, rpc.NewRPCError(rpc.ErrCodeInvalidRequest, "unknown task status")
+	}
 	c.mu.Lock()
 	denied := &rpc.UpdateTaskStatusResponse{Accepted: false, Message: "task status does not match active assignment"}
 	if c.state != StateLeader || !c.recovered || req.EpochID != c.epoch || req.WorkerID == "" {
@@ -182,6 +204,20 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 	if err := protocol.DecodeMsgPack(assignmentData, &assignment); err != nil || assignment.JobID != req.JobID || assignment.Assignments[req.TaskID] != req.WorkerID || assignment.AttemptID != req.AttemptID {
 		c.mu.Unlock()
 		return denied, nil
+	}
+	// Retries may arrive after a later status on a separate stream. Never
+	// regress an attempt from terminal back to running/deploying.
+	previous, known := c.taskStatuses[req.TaskID]
+	if known {
+		terminal := previous == rpc.TaskStatusFinished || previous == rpc.TaskStatusFailed || previous == rpc.TaskStatusCanceled
+		if terminal && previous != req.Status {
+			c.mu.Unlock()
+			return &rpc.UpdateTaskStatusResponse{Accepted: true, Message: "terminal task status retained"}, nil
+		}
+		if previous == rpc.TaskStatusRunning && req.Status == rpc.TaskStatusDeploying {
+			c.mu.Unlock()
+			return &rpc.UpdateTaskStatusResponse{Accepted: true, Message: "newer task status retained"}, nil
+		}
 	}
 	if req.Status == rpc.TaskStatusFailed && req.Failure != nil && req.Failure.ErrorClass == "checkpoint_unavailable" {
 		if restore, ok := assignment.RestoreCheckpoints[req.TaskID]; ok {

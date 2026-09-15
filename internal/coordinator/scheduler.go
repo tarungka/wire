@@ -108,18 +108,22 @@ func (c *Coordinator) scheduleTick(ctx context.Context) {
 
 // scheduleJob attempts to schedule a single CREATED job.
 func (c *Coordinator) scheduleJob(job *JobMeta) {
-	tasks, err := generateTaskDescriptors(job)
+	c.mu.RLock()
+	snapshot := *job
+	c.mu.RUnlock()
+	jobID := snapshot.ID
+	tasks, err := generateTaskDescriptors(&snapshot)
 	if err != nil {
-		c.log.Error().Err(err).Str("job_id", job.ID).Msg("cannot generate task descriptors; failing job")
+		c.log.Error().Err(err).Str("job_id", jobID).Msg("cannot generate task descriptors; failing job")
 		// Permanent failure (e.g. malformed graph from a legacy submission).
 		// Walk Created -> Failing -> Failed so the job ends in a terminal
 		// state and never re-enters the scheduler queue.
 		if terr := c.transitionJob(job, JobFailing); terr != nil {
-			c.log.Warn().Err(terr).Str("job_id", job.ID).Msg("could not transition to FAILING")
+			c.log.Warn().Err(terr).Str("job_id", jobID).Msg("could not transition to FAILING")
 			return
 		}
 		if terr := c.transitionJob(job, JobFailed); terr != nil {
-			c.log.Warn().Err(terr).Str("job_id", job.ID).Msg("could not finalize FAILED transition")
+			c.log.Warn().Err(terr).Str("job_id", jobID).Msg("could not finalize FAILED transition")
 		}
 		return
 	}
@@ -127,7 +131,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	assignments, err := c.assignTasks(tasks)
 	if err != nil {
 		c.recordRescalePlacementFailure(job, time.Now())
-		c.log.Debug().Err(err).Str("job_id", job.ID).Msg("cannot schedule job, will retry")
+		c.log.Debug().Err(err).Str("job_id", jobID).Msg("cannot schedule job, will retry")
 		return
 	}
 
@@ -139,38 +143,53 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	// Build TaskAssignmentMap.
 	tam := TaskAssignmentMap{
 		AttemptID:   hex.EncodeToString(attempt[:]),
-		JobID:       job.ID,
+		JobID:       jobID,
 		Assignments: make(map[string]string, len(tasks)),
 	}
 	for workerID, wTasks := range assignments {
+
 		for _, t := range wTasks {
 			tam.Assignments[t.TaskID] = workerID
 		}
 	}
 
+	peers, release, err := c.reserveDeployment(jobID, tam.AttemptID, assignments)
+	if err != nil {
+		c.log.Debug().Err(err).Str("job_id", jobID).Msg("worker reservation refused; will retry")
+		return
+	}
+	defer release()
+
 	// Transition CREATED → DEPLOYING and persist assignments under Lock.
 	c.mu.Lock()
 	// Re-check status under lock (another tick may have grabbed it).
-	if (job.Status != JobCreated && job.Status != JobFailing) || !c.assignmentsLiveLocked(assignments, time.Now()) {
+	if c.state != StateLeader || !c.recovered || (job.Status != JobCreated && job.Status != JobFailing) || !c.assignmentsLiveLocked(assignments, time.Now(), peers) {
 		c.mu.Unlock()
 		return
 	}
 
+	for id, peer := range peers {
+		if c.workers[id].RPCClient != peer || c.workers[id].RPCPeerEpoch != c.epoch {
+			c.mu.Unlock()
+			return
+		}
+	}
+
 	if err := ValidateTransition(job.Status, JobDeploying); err != nil {
 		c.mu.Unlock()
-		c.log.Error().Err(err).Str("job_id", job.ID).Msg("invalid transition")
+		c.log.Error().Err(err).Str("job_id", jobID).Msg("invalid transition")
 		return
 	}
 
 	if err := c.attachTaskAddressesLocked(assignments); err != nil {
 		c.mu.Unlock()
-		c.log.Error().Err(err).Str("job_id", job.ID).Msg("cannot resolve task streams")
+		c.log.Error().Err(err).Str("job_id", jobID).Msg("cannot resolve task streams")
 		return
 	}
 
 	if err := c.attachCheckpointRestoreLocked(job, assignments); err != nil {
 		c.mu.Unlock()
-		c.log.Error().Err(err).Str("job_id", job.ID).Msg("cannot deploy checkpoint recovery")
+		c.log.Error().Err(err).Str("job_id", jobID).Msg("cannot deploy checkpoint recovery")
 		if errors.Is(err, errNoValidCheckpoint) || errors.Is(err, engine.ErrUnsupportedSchemaVersion) {
 			c.mu.RLock()
 			status := job.Status
@@ -243,21 +262,21 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	jobData, err := protocol.EncodeMsgPack(&next)
 	if err != nil {
 		c.mu.Unlock()
-		c.log.Error().Err(err).Str("job_id", job.ID).Msg("failed to encode job")
+		c.log.Error().Err(err).Str("job_id", jobID).Msg("failed to encode job")
 		return
 	}
 	tamData, err := protocol.EncodeMsgPack(&tam)
 	if err != nil {
 		c.mu.Unlock()
-		c.log.Error().Err(err).Str("job_id", job.ID).Msg("failed to encode assignments")
+		c.log.Error().Err(err).Str("job_id", jobID).Msg("failed to encode assignments")
 		return
 	}
 	if err := c.store.WriteBatch([]KVPair{
-		{Key: JobMetaKey(job.ID), Value: jobData},
-		{Key: JobAssignmentsKey(job.ID), Value: tamData},
+		{Key: JobMetaKey(jobID), Value: jobData},
+		{Key: JobAssignmentsKey(jobID), Value: tamData},
 	}); err != nil {
 		c.mu.Unlock()
-		c.log.Error().Err(err).Str("job_id", job.ID).Msg("failed to persist deployment")
+		c.log.Error().Err(err).Str("job_id", jobID).Msg("failed to persist deployment")
 		return
 	}
 	*job = next
@@ -279,13 +298,30 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		}
 		for _, t := range wTasks {
 			w.RunningTasks = append(w.RunningTasks, t.TaskID)
-			w.TaskSlotsAvailable--
+			w.TaskSlotsAvailable = max(0, w.TaskSlotsAvailable-1)
 		}
 	}
 	c.mu.Unlock()
 
 	// Enqueue DeployTask commands (outside lock).
 	for workerID, wTasks := range assignments {
+		if peer := peers[workerID]; peer != nil {
+			req := &rpc.SubmitJobRequest{JobID: jobID, AttemptID: tam.AttemptID, ReservationID: tam.AttemptID, EpochID: tam.EpochID, Tasks: wTasks}
+			var resp rpc.SubmitJobResponse
+			ctx, cancel := context.WithTimeout(context.Background(), rpc.DefaultSubmitJobTimeout)
+			err := peer.CallWithRetry(ctx, rpc.MethodSubmitJob, req, &resp, 1)
+			cancel()
+			if err != nil || !resp.Accepted {
+				c.log.Warn().Err(err).Str("job_id", jobID).Msg("reserved deployment failed; cancelling attempt")
+				if err := c.transitionJob(job, JobFailing); err != nil {
+					c.log.Warn().Err(err).Msg("cannot fail deployment")
+				}
+				for _, task := range wTasks {
+					c.EnqueueCommand(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeCancelTask, JobID: jobID, TaskID: task.TaskID, EpochID: tam.EpochID, AttemptID: tam.AttemptID})
+				}
+			}
+			continue
+		}
 		for _, t := range wTasks {
 			taskData, err := protocol.EncodeMsgPack(&t)
 			if err != nil {
@@ -294,7 +330,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 			}
 			c.EnqueueCommand(workerID, rpc.WorkerCommand{
 				Type:   rpc.CommandTypeDeployTask,
-				JobID:  job.ID,
+				JobID:  jobID,
 				TaskID: t.TaskID,
 				Data:   taskData,
 			})
@@ -302,7 +338,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	}
 
 	c.log.Info().
-		Str("job_id", job.ID).
+		Str("job_id", jobID).
 		Int("tasks", len(tasks)).
 		Int("workers", len(assignments)).
 		Msg("job scheduled")
@@ -445,10 +481,10 @@ func (c *Coordinator) assignTasks(tasks []rpc.TaskDescriptor) (map[string][]rpc.
 
 // assignmentsLiveLocked rechecks the planning snapshot before persisting a
 // deployment. The caller holds c.mu; heartbeat updates use the same lock.
-func (c *Coordinator) assignmentsLiveLocked(assignments map[string][]rpc.TaskDescriptor, now time.Time) bool {
+func (c *Coordinator) assignmentsLiveLocked(assignments map[string][]rpc.TaskDescriptor, now time.Time, reserved ...map[string]*rpc.Client) bool {
 	for id, tasks := range assignments {
 		worker := c.workers[id]
-		if worker == nil || worker.LastHeartbeat.IsZero() || now.Sub(worker.LastHeartbeat) >= c.config.WorkerTimeout || worker.TaskSlotsAvailable < len(tasks) {
+		if worker == nil || worker.LastHeartbeat.IsZero() || now.Sub(worker.LastHeartbeat) >= c.config.WorkerTimeout || (worker.TaskSlotsAvailable < len(tasks) && (len(reserved) == 0 || reserved[0][id] == nil)) {
 			return false
 		}
 	}
