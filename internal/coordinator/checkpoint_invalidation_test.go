@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/tarungka/wire/internal/protocol"
@@ -46,5 +47,45 @@ func TestCheckpointInvalidationUsesCurrentRecoveryGrant(t *testing.T) {
 				t.Fatalf("incorrect invalidation for %s: %s", mode, cp.InvalidReason)
 			}
 		})
+	}
+}
+
+func TestInvalidCheckpointRefundsOnlyItsDeployment(t *testing.T) {
+	c, store := checkpointPolicyCoordinator(t)
+	job := c.jobs["job"]
+	// More unavailable candidates than the default three execution attempts.
+	for id := uint64(7); id > 2; id-- {
+		job.Status = JobDeploying
+		job.RecoveryAttempts = 2 // One prior execution failure plus this deployment.
+		cp := CheckpointMeta{ID: id, EpochID: 2, JobID: "job", Status: CheckpointCompleted}
+		assignment := TaskAssignmentMap{JobID: "job", AttemptID: fmt.Sprint(id), EpochID: 5,
+			RecoveryAttemptCharged: true, Assignments: map[string]string{"task": "worker"},
+			RestoreCheckpoints: map[string]rpc.CheckpointRestoreDescriptor{"task": {CheckpointID: id, EpochID: 2}}}
+		if err := store.Set(CheckpointKey("job", id), encode(t, cp)); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Set(JobAssignmentsKey("job"), encode(t, assignment)); err != nil {
+			t.Fatal(err)
+		}
+		req := rpc.UpdateTaskStatusRequest{JobID: "job", TaskID: "task", WorkerID: "worker", AttemptID: fmt.Sprint(id), EpochID: 5, Status: rpc.TaskStatusFailed, Failure: &rpc.TaskFailureInfo{ErrorClass: "checkpoint_unavailable", ErrorMessage: "missing archive"}}
+		for repeat := 0; repeat < 2; repeat++ {
+			if _, err := c.HandleUpdateTaskStatus(context.Background(), 1, encode(t, req)); err != nil {
+				t.Fatal(err)
+			}
+			if job.RecoveryAttempts != 1 {
+				t.Fatalf("attempt budget=%d", job.RecoveryAttempts)
+			}
+		}
+		raw, err := store.Get(JobMetaKey("job"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var persisted JobMeta
+		if err := protocol.DecodeMsgPack(raw, &persisted); err != nil {
+			t.Fatal(err)
+		}
+		if persisted.RecoveryAttempts != 1 {
+			t.Fatal("refund not persisted")
+		}
 	}
 }

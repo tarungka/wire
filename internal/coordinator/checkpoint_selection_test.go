@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -85,5 +86,40 @@ func TestRecoveryDoesNotReplacePinnedSavepoint(t *testing.T) {
 	c.mu.Unlock()
 	if err == nil || job.LatestCheckpoint != 2 {
 		t.Fatal("missing pinned savepoint silently replaced")
+	}
+}
+
+func TestRecoveryNeverSkipsPossibleCommittedSink(t *testing.T) {
+	for _, reason := range []string{"missing archive", "corrupt manifest"} {
+		t.Run(reason, func(t *testing.T) {
+			c, store := checkpointPolicyCoordinator(t)
+			old := CheckpointMeta{ID: 1, JobID: "job", Status: CheckpointCompleted}
+			latest := CheckpointMeta{ID: 2, JobID: "job", Status: CheckpointCompleted, InvalidReason: reason,
+				TaskManifests: map[string][]byte{}}
+			// Use the production serializer so the transaction flag matches TaskMeta.
+			raw, err := json.Marshal(engine.TaskMeta{TaskID: "sink", SinkPrepared: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			latest.TaskManifests["sink"] = raw
+			if reason == "corrupt manifest" {
+				latest.InvalidReason = ""
+				latest.ManifestVersion = engine.CurrentSchemaVersion
+				if err := store.Set(CheckpointManifestKey("job", 2), []byte("bad json")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, cp := range []CheckpointMeta{old, latest} {
+				if err := store.Set(CheckpointKey("job", cp.ID), encode(t, cp)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			job := c.jobs["job"]
+			job.LatestCheckpoint = 2
+			_, _, err = c.selectRecoveryCheckpointLocked(job)
+			if !errors.Is(err, errNoValidCheckpoint) || job.LatestCheckpoint != 2 {
+				t.Fatalf("unsafe fallback: checkpoint=%d error=%v", job.LatestCheckpoint, err)
+			}
+		})
 	}
 }

@@ -139,14 +139,15 @@ type JobMeta struct {
 
 // TaskAssignmentMap maps task IDs to the worker IDs they are assigned to.
 type TaskAssignmentMap struct {
-	RestoreCheckpoints map[string]rpc.CheckpointRestoreDescriptor `codec:"restore_checkpoints,omitempty"`
-	RescaleParts       map[string][]RescaleStatePart              `codec:"rescale_parts,omitempty"`
-	TaskDescriptors    []rpc.TaskDescriptor                       `codec:"task_descriptors,omitempty"`
-	EpochID            uint64                                     `codec:"eid,omitempty"`
-	AttemptID          string                                     `codec:"attempt_id,omitempty"`
-	Replicas           map[string]string                          `codec:"replicas,omitempty"`
-	JobID              string                                     `codec:"job_id"`
-	Assignments        map[string]string                          `codec:"assignments"` // task_id → worker_id
+	RecoveryAttemptCharged bool                                       `codec:"recovery_attempt_charged,omitempty"`
+	RestoreCheckpoints     map[string]rpc.CheckpointRestoreDescriptor `codec:"restore_checkpoints,omitempty"`
+	RescaleParts           map[string][]RescaleStatePart              `codec:"rescale_parts,omitempty"`
+	TaskDescriptors        []rpc.TaskDescriptor                       `codec:"task_descriptors,omitempty"`
+	EpochID                uint64                                     `codec:"eid,omitempty"`
+	AttemptID              string                                     `codec:"attempt_id,omitempty"`
+	Replicas               map[string]string                          `codec:"replicas,omitempty"`
+	JobID                  string                                     `codec:"job_id"`
+	Assignments            map[string]string                          `codec:"assignments"` // task_id → worker_id
 }
 
 // CheckpointMeta holds persisted metadata for a single checkpoint.

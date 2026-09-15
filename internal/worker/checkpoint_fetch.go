@@ -35,7 +35,7 @@ func checkpointArchiveLoader(store *engine.FileCheckpointStore, stagingRoot stri
 		}
 		snapshot, err := store.Get(ctx, fetch.JobID, fetch.TaskID, fetch.CheckpointID, fetch.EpochID)
 		if err != nil {
-			return metadata, nil, rpc.NewRPCError(rpc.ErrCodeUnknownCheckpoint, err.Error())
+			return metadata, nil, checkpointFetchError(err)
 		}
 		original, archiveErr := store.OpenArchive(ctx, fetch.JobID, fetch.TaskID, fetch.CheckpointID, fetch.EpochID)
 		if archiveErr == nil {
@@ -53,7 +53,7 @@ func checkpointArchiveLoader(store *engine.FileCheckpointStore, stagingRoot stri
 			return metadata, original, nil
 		}
 		if fetch.RequireArchive {
-			return metadata, nil, rpc.NewRPCError(rpc.ErrCodeUnknownCheckpoint, archiveErr.Error())
+			return metadata, nil, checkpointFetchError(archiveErr)
 		}
 		if !errors.Is(archiveErr, os.ErrNotExist) {
 			return metadata, nil, archiveErr
@@ -151,4 +151,12 @@ func (w *Worker) fetchTaskCheckpoint(ctx context.Context, jobID, taskID string, 
 		return nil, err
 	}
 	return &snapshot, nil
+}
+
+// Only durable evidence of missing or corrupt state may invalidate a checkpoint.
+func checkpointFetchError(err error) error {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, engine.ErrCheckpointFileCorrupt) {
+		return rpc.NewRPCError(rpc.ErrCodeUnknownCheckpoint, err.Error())
+	}
+	return err
 }

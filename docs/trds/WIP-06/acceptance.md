@@ -14,9 +14,11 @@ Source offsets are referenced by archive member and snapshot field, preserving o
 
 ## Recovery and compatibility
 
-Ordinary recovery selects one completed checkpoint for the entire job. Missing or corrupt manifests and explicitly invalidated state are skipped in descending checkpoint order. Unsupported schema versions stop recovery with an upgrade error. Metadata-store I/O errors are retried rather than interpreted as corrupt checkpoint contents. Exhausting all valid checkpoints fails the job instead of silently cold-starting or retrying forever.
+Ordinary recovery selects one completed checkpoint for the entire job. Fallback is refused if a skipped completed checkpoint has a prepared transactional sink: completion authorizes commit, which may already have reached the external system even though no commit receipt is stored. Such jobs fail rather than replay across that boundary and duplicate output. `LatestCheckpoint` tracks the selected recovery boundary and can move backwards for nontransactional fallback; it is not a high-water mark. Missing or corrupt manifests and explicitly invalidated state are skipped in descending checkpoint order. Unsupported schema versions stop recovery with an upgrade error. Metadata-store I/O errors are retried rather than interpreted as corrupt checkpoint contents. Exhausting all valid checkpoints fails the job instead of silently cold-starting or retrying forever.
 
-Missing-state and digest-mismatch reports are bound to the current worker, task, epoch, and attempt. Persisted recovery grants identify which checkpoint the failed deployment was restoring; stale task failures cannot invalidate another deployment's state. Other tasks are cancelled before a replacement deployment begins. Rescale savepoints are pinned; an invalid requested savepoint is not silently replaced by an unrelated checkpoint, and existing rescale rollback restores the prior job configuration.
+Missing-state and digest-mismatch reports are bound to the current worker, task, epoch, and attempt. Persisted recovery grants identify which checkpoint the failed deployment was restoring; stale task failures cannot invalidate another deployment's state. A confirmed unusable archive refunds its deployment's recovery-attempt charge exactly once, persisted atomically with invalidation; searching older candidates does not exhaust the execution-failure budget. Transient I/O, permission and cancellation errors retain the same checkpoint for retry and use the normal recovery policy. Invalidation remains permanent; restoring replica files alone does not clear it. Other tasks are cancelled before a replacement deployment begins. Rescale savepoints are pinned; an invalid requested savepoint is not silently replaced by an unrelated checkpoint, and existing rescale rollback restores the prior job configuration.
+
+Rolling upgrades must upgrade **all workers before the coordinator**. Old coordinators tolerate the additional manifest fields from upgraded workers. The new coordinator requires manifests from every checkpoint acknowledgement; upgrading it first prevents checkpoints from completing while any old worker participates. Pause automatic upgrades that would violate this order; do not weaken manifest validation for mixed workers.
 
 Records written before WIP-06 have no manifest version and keep the existing recovery path. New records require the versioned manifest and archived bytes. Version 1 JSON readers accept unknown optional fields; unsupported schema versions are rejected. This does not promise an older binary can execute newly introduced task-state formats during a rolling downgrade.
 
@@ -43,3 +45,9 @@ Filesystem manifest validation uses contained `os.Root` opens, rejects non-regul
 - `golangci-lint run ./...` reported zero issues; `git diff --check` passed.
 
 No public HTTP endpoint was added for the manifest. The current HTTP server has no authentication middleware; inspecting stored JSON uses the existing metadata-store interface. This WIP defines the manifest and its runtime use, not a new public inspection service.
+
+## Review regression coverage
+
+- `TestRecoveryNeverSkipsPossibleCommittedSink` and `TestClusterCheckpointRefusesTransactionalFallback`: fail closed across a possibly committed transaction.
+- `TestInvalidCheckpointRefundsOnlyItsDeployment` and `TestClusterCheckpointSkipsFourMissingArchives`: durable, idempotent budget refunds and recovery past more bad candidates than the default attempt limit.
+- `TestCheckpointFetchErrorPreservesTransientFailures` and `TestCancelledArchiveLoadDoesNotInvalidateCheckpoint`: only missing/corrupt state is classified as permanently unavailable.

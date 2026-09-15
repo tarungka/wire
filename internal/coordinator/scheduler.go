@@ -234,6 +234,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		if !job.RescaleRequested {
 			next.RestartCount++
 			next.RecoveryAttempts++
+			tam.RecoveryAttemptCharged = true
 		}
 		next.RescaleRequested = false
 	}

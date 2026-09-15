@@ -26,7 +26,9 @@ Implemented on top of [#153](https://github.com/tarungka/wire/pull/153) and [#20
 
 Workers report an archive inventory after successful replication. The coordinator builds a complete versioned JSON manifest from that inventory and the captured physical topology, and commits it atomically with the completed checkpoint decision. Replica workers retain the original archive bytes so relocation cannot change the manifest's size or SHA-256 digest. Ordinary recovery and rescale verify the selected archives before importing state.
 
-Manifest validation covers complete subtask coverage, chain membership, key-group gaps/overlaps, portable paths, and file digests. Missing or corrupt manifests and state cause whole-job fallback to an earlier valid checkpoint; unsupported versions stop recovery. Explicit rescale savepoints remain pinned, and legacy checkpoint records keep their prior restore path.
+Manifest validation covers complete subtask coverage, chain membership, key-group gaps/overlaps, portable paths, and file digests. Missing or corrupt manifests and state allow whole-job fallback to an earlier valid checkpoint only when doing so cannot cross a possibly committed sink transaction; otherwise recovery fails closed. Invalid checkpoint candidates do not consume execution-recovery attempts. Transient replica errors retry the same checkpoint; unsupported versions stop recovery. Explicit rescale savepoints remain pinned, and legacy checkpoint records keep their prior restore path.
+
+Rolling upgrades must update all workers before the coordinator, which requires manifests on new checkpoint acknowledgements.
 
 See [acceptance evidence and storage mapping](acceptance.md). The design below uses logical checkpoint paths; the runtime stores JSON in the coordinator metadata store and resolves task archive paths through authenticated replica RPCs. Source offsets are archive references, and prepared sink transactions are included without inventing external transaction IDs.
 

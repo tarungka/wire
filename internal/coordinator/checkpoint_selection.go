@@ -111,6 +111,14 @@ func (c *Coordinator) selectRecoveryCheckpointLocked(job *JobMeta) (CheckpointMe
 			return CheckpointMeta{}, nil, err
 		}
 		if err != nil {
+			// Completion authorizes CommitCheckpoint; delivery is not acknowledged.
+			// A prepared sink may therefore already have committed this boundary.
+			for _, raw := range cp.TaskManifests {
+				var task engine.TaskMeta
+				if decodeErr := json.Unmarshal(raw, &task); decodeErr != nil || task.SinkPrepared {
+					return CheckpointMeta{}, nil, fmt.Errorf("%w: cannot skip checkpoint %d with a possible committed sink transaction", errNoValidCheckpoint, cp.ID)
+				}
+			}
 			if pinned {
 				return CheckpointMeta{}, nil, err
 			}
@@ -119,6 +127,7 @@ func (c *Coordinator) selectRecoveryCheckpointLocked(job *JobMeta) (CheckpointMe
 		}
 		if cp.ID != job.LatestCheckpoint {
 			next := *job
+			// LatestCheckpoint is the selected recovery boundary, not a high-water mark.
 			next.LatestCheckpoint = cp.ID
 			if err := c.persistJobLocked(&next); err != nil {
 				return CheckpointMeta{}, nil, err

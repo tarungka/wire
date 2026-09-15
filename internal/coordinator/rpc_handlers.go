@@ -186,7 +186,29 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 				cp.InvalidReason = req.Failure.ErrorMessage
 				raw, err = protocol.EncodeMsgPack(cp)
 				if err == nil {
-					err = c.store.Set(CheckpointKey(req.JobID, cp.ID), raw)
+					// Refund candidate validation once per deployment, atomically with
+					// invalidation. Duplicate reports and coordinator restarts cannot
+					// refund unrelated execution failures.
+					next := *job
+					if assignment.RecoveryAttemptCharged && next.RecoveryAttempts > 0 {
+						next.RecoveryAttempts--
+					}
+					assignment.RecoveryAttemptCharged = false
+					var jobRaw, assignmentRaw []byte
+					jobRaw, err = protocol.EncodeMsgPack(&next)
+					if err == nil {
+						assignmentRaw, err = protocol.EncodeMsgPack(&assignment)
+					}
+					if err == nil {
+						err = c.store.WriteBatch([]KVPair{
+							{Key: CheckpointKey(req.JobID, cp.ID), Value: raw},
+							{Key: JobMetaKey(job.ID), Value: jobRaw},
+							{Key: JobAssignmentsKey(job.ID), Value: assignmentRaw},
+						})
+					}
+					if err == nil {
+						job.RecoveryAttempts = next.RecoveryAttempts
+					}
 				}
 			}
 			if err != nil {

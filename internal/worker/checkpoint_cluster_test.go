@@ -47,6 +47,14 @@ func TestClusterCheckpointFallsBackFromCorruptArchive(t *testing.T) {
 	testClusterCheckpoint(t, false, false, true, false, true, true)
 }
 
+func TestClusterCheckpointSkipsFourMissingArchives(t *testing.T) {
+	testClusterCheckpoint(t, false, false, true, false, true, false, true)
+}
+
+func TestClusterCheckpointRefusesTransactionalFallback(t *testing.T) {
+	testClusterCheckpoint(t, false, true, true, false, true)
+}
+
 func TestClusterCheckpointReplicatesAndCompletes(t *testing.T) {
 	testClusterCheckpoint(t, false)
 }
@@ -76,7 +84,7 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 	fallback := len(transactional) > 3 && transactional[3]
 	timeout := 15 * time.Second
 	if fallback {
-		timeout = 30 * time.Second
+		timeout = 60 * time.Second
 	}
 	if failover {
 		timeout = 60 * time.Second
@@ -290,50 +298,72 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 	if restart {
 		expectedRestarts := 1
 		if fallback {
-			latest, err := coord.TriggerCheckpoint(job.ID)
-			if err != nil {
-				t.Fatal(err)
+			badCount := 1
+			if len(transactional) > 5 && transactional[5] {
+				badCount = 4
 			}
+			for bad := 0; bad < badCount; bad++ {
+				latest, err := coord.TriggerCheckpoint(job.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				waitFor(t, 4*time.Second, func() bool {
+					current, err := coord.GetJob(job.ID)
+					return err == nil && current.LatestCheckpoint == latest.ID
+				})
+				for taskID, owner := range latest.Tasks {
+					index := 1
+					if owner == "worker-1" {
+						index = 0
+					}
+					store, err := engine.NewFileCheckpointStore(stores[index])
+					if err != nil {
+						t.Fatal(err)
+					}
+					archive, err := store.OpenArchive(ctx, job.ID, taskID, latest.ID, latest.EpochID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					name := archive.Name()
+					_ = archive.Close()
+					if len(transactional) > 4 && transactional[4] {
+						file, err := os.OpenFile(name, os.O_WRONLY, 0600)
+						if err != nil {
+							t.Fatal(err)
+						}
+						_, err = file.WriteAt([]byte("X"), 0)
+						closeErr := file.Close()
+						if err != nil {
+							t.Fatal(err)
+						}
+						if closeErr != nil {
+							t.Fatal(closeErr)
+						}
+					} else if err := os.Remove(name); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			expectedRestarts = 1 + badCount
+		}
+		if fallback && transactional[0] {
 			waitFor(t, 4*time.Second, func() bool {
-				current, err := coord.GetJob(job.ID)
-				return err == nil && current.LatestCheckpoint == latest.ID
+				current, _ := coord.GetJob(job.ID)
+				return current != nil && committed.Load() == current.LatestCheckpoint
 			})
-			for taskID, owner := range latest.Tasks {
-				index := 1
-				if owner == "worker-1" {
-					index = 0
-				}
-				store, err := engine.NewFileCheckpointStore(stores[index])
-				if err != nil {
-					t.Fatal(err)
-				}
-				archive, err := store.OpenArchive(ctx, job.ID, taskID, latest.ID, latest.EpochID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				name := archive.Name()
-				_ = archive.Close()
-				if len(transactional) > 4 && transactional[4] {
-					file, err := os.OpenFile(name, os.O_WRONLY, 0600)
-					if err != nil {
-						t.Fatal(err)
-					}
-					_, err = file.WriteAt([]byte("X"), 0)
-					closeErr := file.Close()
-					if err != nil {
-						t.Fatal(err)
-					}
-					if closeErr != nil {
-						t.Fatal(closeErr)
-					}
-				} else if err := os.Remove(name); err != nil {
-					t.Fatal(err)
-				}
-			}
-			expectedRestarts = 2
 		}
 		failSource.Store(true)
-		waitFor(t, 20*time.Second, func() bool {
+		if fallback && transactional[0] {
+			waitFor(t, 20*time.Second, func() bool {
+				current, _ := coord.GetJob(job.ID)
+				return current != nil && current.Status == coordinator.JobFailed
+			})
+			if restoredRead.Load() {
+				t.Fatal("replayed past committed transaction")
+			}
+			return
+		}
+		waitFor(t, 45*time.Second, func() bool {
 			current, err := coord.GetJob(job.ID)
 			return err == nil && current.Status == coordinator.JobRunning && current.RestartCount == expectedRestarts && current.LatestCheckpoint == checkpoint.ID && restoredRead.Load()
 		})
