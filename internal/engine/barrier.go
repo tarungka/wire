@@ -12,6 +12,8 @@ import (
 // data events from that input are side-buffered until barriers arrive on all
 // inputs. Once aligned, buffered events are drained in input order.
 type BarrierAligner struct {
+	retiredID      uint64
+	retiredEpoch   uint64
 	mu             sync.Mutex
 	changed        chan struct{}
 	draining       bool
@@ -43,7 +45,7 @@ func (ba *BarrierAligner) OnBarrier(inputIndex int, checkpointID, epochID uint64
 	ba.mu.Lock()
 	defer ba.mu.Unlock()
 
-	if ba.draining || inputIndex < 0 || inputIndex >= ba.numInputs || checkpointID == 0 {
+	if ba.isRetiredLocked(checkpointID, epochID) || ba.draining || inputIndex < 0 || inputIndex >= ba.numInputs || checkpointID == 0 {
 		return false
 	}
 	if ba.activeID != 0 && (ba.activeID != checkpointID || ba.activeEpoch != epochID) {
@@ -221,6 +223,7 @@ func (ba *BarrierAligner) FinishAlignment(checkpointID uint64) []Event {
 	if ba.activeID != checkpointID {
 		return nil
 	}
+	ba.retireLocked(ba.activeID, ba.activeEpoch)
 	var events []Event
 	for i := 0; i < ba.numInputs; i++ {
 		events = append(events, ba.sideBuffers[i]...)
@@ -295,4 +298,46 @@ func eventPayloadBytes(event Event) int64 {
 		size += int64(len(key)) + int64(len(value))
 	}
 	return size
+}
+
+// Retirement is a high-water mark: the coordinator permits only one in-flight
+// checkpoint per job, so retiring N also fences all earlier identities.
+func (ba *BarrierAligner) isRetiredLocked(id, epoch uint64) bool {
+	return epoch < ba.retiredEpoch || (epoch == ba.retiredEpoch && id <= ba.retiredID)
+}
+
+func (ba *BarrierAligner) retireLocked(id, epoch uint64) {
+	if id != 0 && !ba.isRetiredLocked(id, epoch) {
+		ba.retiredID, ba.retiredEpoch = id, epoch
+	}
+}
+
+// AbortAlignment fences delayed barriers even if the abort arrives before the
+// first barrier. Only the matching active identity releases buffered records.
+func (ba *BarrierAligner) AbortAlignment(id, epoch uint64) []Event {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	ba.retireLocked(id, epoch)
+	if ba.activeID != id || ba.activeEpoch != epoch {
+		return nil
+	}
+	var events []Event
+	for i := 0; i < ba.numInputs; i++ {
+		events = append(events, ba.sideBuffers[i]...)
+		clear(ba.sideBuffers[i])
+		ba.sideBuffers[i] = ba.sideBuffers[i][:0]
+	}
+	ba.activeID, ba.activeEpoch = 0, 0
+	ba.alignStartTime = time.Time{}
+	ba.arrived = make(map[int]bool)
+	ba.bufferedBytes = 0
+	ba.signalChangeLocked()
+	return events
+}
+
+// IsRetired reports whether a checkpoint has already completed or been aborted.
+func (ba *BarrierAligner) IsRetired(id, epoch uint64) bool {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	return ba.isRetiredLocked(id, epoch)
 }

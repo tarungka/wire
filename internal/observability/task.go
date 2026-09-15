@@ -82,19 +82,26 @@ func observeTaskChannels(m metric.Meter, taskID string, read func() (int, int), 
 	attrs := metric.WithAttributes(attribute.String("task_id", taskID))
 	instruments := []metric.Observable{input, output}
 	var alignment metric.Int64ObservableGauge
+	var checkpointAlignment metric.Int64ObservableGauge
 	if len(alignmentBytes) > 0 {
 		alignment, err = m.Int64ObservableGauge("wire_task_alignment_buffer_bytes", metric.WithDescription("Logical event payload bytes owned by alignment buffers"))
 		if err != nil {
 			return nil, err
 		}
-		instruments = append(instruments, alignment)
+		checkpointAlignment, err = m.Int64ObservableGauge("wire_checkpoint_alignment_buffered_bytes", metric.WithDescription("Logical payload bytes retained during checkpoint alignment"))
+		if err != nil {
+			return nil, err
+		}
+		instruments = append(instruments, alignment, checkpointAlignment)
 	}
 	registration, err := m.RegisterCallback(func(_ context.Context, observer metric.Observer) error {
 		in, out := read()
 		observer.ObserveInt64(input, int64(in), attrs)
 		observer.ObserveInt64(output, int64(out), attrs)
 		if alignment != nil {
-			observer.ObserveInt64(alignment, alignmentBytes[0](), attrs)
+			bytes := alignmentBytes[0]()
+			observer.ObserveInt64(alignment, bytes, attrs)
+			observer.ObserveInt64(checkpointAlignment, bytes, attrs)
 		}
 		return nil
 	}, instruments...)

@@ -17,6 +17,8 @@ type WireConfig struct {
 }
 
 type CheckpointConfig struct {
+	MinPause               Duration `yaml:"min_pause" json:"min_pause" koanf:"min_pause"`
+	TolerableFailureRate   float64  `yaml:"tolerable_failure_rate" json:"tolerable_failure_rate" koanf:"tolerable_failure_rate"`
 	MaxConsecutiveFailures int      `yaml:"max_consecutive_failures" json:"max_consecutive_failures" koanf:"max_consecutive_failures"`
 	Timeout                Duration `yaml:"timeout" json:"timeout" koanf:"timeout"`
 }

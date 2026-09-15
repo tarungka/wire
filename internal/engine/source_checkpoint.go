@@ -42,6 +42,9 @@ func (s *sourceCheckpointInput) atBoundary(intake, processing context.Context) e
 			return nil
 		}
 		s.last = checkpointIdentity{request.CheckpointID, request.EpochID}
+		if s.aligner.IsRetired(request.CheckpointID, request.EpochID) {
+			return nil
+		}
 		if s.watermarks != nil {
 			// Freeze periodic boundaries with source offsets until the chain
 			// snapshots its operators and forwards the checkpoint barrier.

@@ -489,7 +489,7 @@ func TestOperatorChain_AbortCheckpoint_DrainsSideBufferNoBarrier(t *testing.T) {
 	}
 
 	// Send abort for this checkpoint.
-	controlCh <- ControlMsg{Type: CtrlAbortCheckpoint, CheckpointID: 1}
+	controlCh <- ControlMsg{Type: CtrlAbortCheckpoint, CheckpointID: 1, EpochID: 1}
 	close(inputCh)
 
 	ops := []Operator{&noopMap{}}

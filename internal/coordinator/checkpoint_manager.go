@@ -7,7 +7,9 @@ import (
 	"math"
 	"time"
 
+	"github.com/tarungka/wire/internal/checkpointpolicy"
 	"github.com/tarungka/wire/internal/keygroup"
+	"github.com/tarungka/wire/internal/observability"
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
 )
@@ -33,6 +35,10 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 	if job.Status != JobRunning {
 		c.mu.Unlock()
 		return nil, ErrJobNotRunning
+	}
+	if savepointID == "" && c.config.CheckpointMinPause > 0 && !job.LastCheckpointCompletion.IsZero() && time.Since(job.LastCheckpointCompletion) < c.config.CheckpointMinPause {
+		c.mu.Unlock()
+		return nil, ErrCheckpointMinPause
 	}
 	data, err := c.store.Get(JobAssignmentsKey(jobID))
 	if err != nil {
@@ -106,7 +112,16 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 		c.mu.Unlock()
 		return nil, err
 	}
-	batch := []KVPair{{Key: CheckpointKey(jobID, checkpoint.ID), Value: encoded}}
+	nextJob := *job
+	if savepointID == "" {
+		nextJob.CheckpointAttempts++
+	}
+	jobData, err := protocol.EncodeMsgPack(nextJob)
+	if err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
+	batch := []KVPair{{Key: JobMetaKey(jobID), Value: jobData}, {Key: CheckpointKey(jobID, checkpoint.ID), Value: encoded}}
 	if savepointID != "" {
 		savepoint := SavepointMeta{NumKeyGroups: count, ID: savepointID, JobID: jobID, CheckpointID: checkpoint.ID, EpochID: checkpoint.EpochID, Status: SavepointInProgress, TriggerTime: checkpoint.Timestamp}
 		raw, err := protocol.EncodeMsgPack(savepoint)
@@ -120,6 +135,7 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 		c.mu.Unlock()
 		return nil, err
 	}
+	job.CheckpointAttempts = nextJob.CheckpointAttempts
 	if c.activeCheckpoints == nil {
 		c.activeCheckpoints = make(map[string]CheckpointMeta)
 	}
@@ -134,6 +150,10 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 // AbortCheckpoint fences stale failures and persists the terminal decision
 // before notifying the exact task assignments captured at the boundary.
 func (c *Coordinator) AbortCheckpoint(jobID string, id, epoch uint64) error {
+	return c.abortCheckpoint(jobID, id, epoch, "", false)
+}
+
+func (c *Coordinator) abortCheckpoint(jobID string, id, epoch uint64, failure string, timedOut bool) error {
 	c.mu.Lock()
 	if c.state != StateLeader || !c.recovered {
 		c.mu.Unlock()
@@ -185,6 +205,30 @@ func (c *Coordinator) AbortCheckpoint(jobID string, id, epoch uint64) error {
 	if savepointWrite != nil {
 		batch = append(batch, *savepointWrite)
 	}
+	var failedJob *JobMeta
+	if !alreadyAborted && checkpoint.SavepointID == "" && failure != "" {
+		if job := c.jobs[jobID]; job != nil {
+			next := *job
+			next.CheckpointOutcomes = checkpointpolicy.Record(next.CheckpointOutcomes, true)
+			next.CheckpointFailures++
+			next.ConsecutiveCheckpointFailures++
+			next.CheckpointFailure = failure
+			threshold := c.config.CheckpointMaxConsecutiveFailures > 0 && next.ConsecutiveCheckpointFailures >= c.config.CheckpointMaxConsecutiveFailures
+			rateExceeded := checkpointpolicy.Exceeded(next.CheckpointOutcomes, c.config.CheckpointTolerableFailureRate)
+			if (threshold || rateExceeded) && next.Status == JobRunning {
+				c.resetStableRecoveryBudget(&next, time.Now())
+				next.Status = JobFailing
+				next.UpdatedAt = time.Now().UTC()
+			}
+			jobData, err := protocol.EncodeMsgPack(next)
+			if err != nil {
+				c.mu.Unlock()
+				return err
+			}
+			batch = append(batch, KVPair{Key: JobMetaKey(jobID), Value: jobData})
+			failedJob = &next
+		}
+	}
 	if err := c.store.WriteBatch(batch); err != nil {
 		c.mu.Unlock()
 		return err
@@ -192,11 +236,25 @@ func (c *Coordinator) AbortCheckpoint(jobID string, id, epoch uint64) error {
 	if active, ok := c.activeCheckpoints[jobID]; ok && active.ID == id && active.EpochID == epoch {
 		delete(c.activeCheckpoints, jobID)
 	}
-	c.mu.Unlock()
-	// Retries resend the same idempotent decision after a lost command delivery.
-	for taskID, workerID := range checkpoint.Tasks {
-		c.EnqueueCommand(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeAbortCheckpoint, JobID: jobID, TaskID: taskID, Data: command})
+	if failedJob != nil {
+		job := c.jobs[jobID]
+		job.CheckpointOutcomes = failedJob.CheckpointOutcomes
+		job.CheckpointFailures = failedJob.CheckpointFailures
+		job.ConsecutiveCheckpointFailures = failedJob.ConsecutiveCheckpointFailures
+		job.CheckpointFailure = failedJob.CheckpointFailure
+		job.Status = failedJob.Status
+		job.UpdatedAt = failedJob.UpdatedAt
+		job.RecoveryAttempts = failedJob.RecoveryAttempts
 	}
+	if timedOut && !alreadyAborted {
+		observability.RecordCheckpointTimeout(jobID)
+	}
+	// Publish abort commands before the scheduler can cancel a failed job.
+	// Retried decisions are idempotent and never charge failure policy twice.
+	for taskID, workerID := range checkpoint.Tasks {
+		c.enqueueCommandLocked(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeAbortCheckpoint, JobID: jobID, TaskID: taskID, Data: command})
+	}
+	c.mu.Unlock()
 	return nil
 }
 
@@ -274,6 +332,12 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 		}
 		next = *job
 		next.LatestCheckpoint = checkpoint.ID
+		next.LastCheckpointCompletion = time.Now().UTC()
+		if checkpoint.SavepointID == "" {
+			next.CheckpointOutcomes = checkpointpolicy.Record(next.CheckpointOutcomes, false)
+			next.ConsecutiveCheckpointFailures = 0
+			next.CheckpointFailure = ""
+		}
 		jobData, err := protocol.EncodeMsgPack(next)
 		if err != nil {
 			return err
@@ -291,7 +355,12 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 		return err
 	}
 	if complete {
-		c.jobs[request.JobID].LatestCheckpoint = next.LatestCheckpoint
+		job := c.jobs[request.JobID]
+		job.LatestCheckpoint = next.LatestCheckpoint
+		job.LastCheckpointCompletion = next.LastCheckpointCompletion
+		job.CheckpointOutcomes = next.CheckpointOutcomes
+		job.ConsecutiveCheckpointFailures = next.ConsecutiveCheckpointFailures
+		job.CheckpointFailure = next.CheckpointFailure
 		delete(c.activeCheckpoints, request.JobID)
 		notify = checkpoint.Tasks
 	}
@@ -326,7 +395,7 @@ func (c *Coordinator) ReportCheckpointFailure(request rpc.AcknowledgeCheckpointR
 	if !ok || worker == "" || worker != request.WorkerID {
 		return errors.New("checkpoint failure does not match task assignment")
 	}
-	return c.AbortCheckpoint(request.JobID, request.CheckpointID, request.EpochID)
+	return c.abortCheckpoint(request.JobID, request.CheckpointID, request.EpochID, request.Failure, false)
 }
 
 // expireCheckpoints shares the coordinator maintenance loop instead of adding
@@ -346,7 +415,7 @@ func (c *Coordinator) expireCheckpoints(now time.Time) {
 	}
 	c.mu.Unlock()
 	for _, checkpoint := range expired {
-		if err := c.AbortCheckpoint(checkpoint.JobID, checkpoint.ID, checkpoint.EpochID); err != nil {
+		if err := c.abortCheckpoint(checkpoint.JobID, checkpoint.ID, checkpoint.EpochID, "checkpoint timed out", true); err != nil {
 			c.log.Warn().Err(err).Str("job_id", checkpoint.JobID).Uint64("checkpoint", checkpoint.ID).Msg("checkpoint timeout abort failed")
 		}
 	}

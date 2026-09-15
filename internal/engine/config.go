@@ -18,7 +18,7 @@ const (
 	DefaultCheckpointTimeout                = 10 * time.Minute
 	DefaultCheckpointMinPause               = 0
 	DefaultMaxConsecutiveCheckpointFailures = 0   // 0 = unlimited
-	DefaultTolerableCheckpointFailureRate   = 0.0 // 0 = no tolerance
+	DefaultTolerableCheckpointFailureRate   = 0.0 // 0 = disabled
 )
 
 // Default error handling configuration values per WIP-11.
@@ -45,7 +45,7 @@ type CheckpointConfig struct {
 	Timeout                time.Duration // Max time to wait for barrier alignment. 0 → DefaultCheckpointTimeout.
 	MinPause               time.Duration // Minimum pause between checkpoints. 0 → no pause.
 	MaxConsecutiveFailures int           // Max consecutive failures before fatal error. 0 → unlimited.
-	TolerableFailureRate   float64       // Max tolerable failure rate (0.0–1.0). 0 → no tolerance.
+	TolerableFailureRate   float64       // Max tolerable failure rate (0.0–1.0). 0 → disabled.
 }
 
 // WatermarkConfig holds watermark-specific configuration.

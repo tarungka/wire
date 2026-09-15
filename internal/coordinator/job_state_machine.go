@@ -64,6 +64,8 @@ func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
 	if to == JobRunning {
 		job.RescaleRollback = nil
 		job.RunningSince = now
+		job.ConsecutiveCheckpointFailures = 0
+		job.CheckpointOutcomes = nil
 	}
 	// Set StartedAt on first transition to RUNNING.
 	if to == JobRunning && job.StartedAt.IsZero() {

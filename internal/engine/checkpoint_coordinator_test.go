@@ -334,56 +334,19 @@ func TestCheckpointCoordinator_AbortAfterCompletion(t *testing.T) {
 }
 
 func TestCheckpointCoordinator_TolerableFailureRate(t *testing.T) {
-	cfg := CheckpointConfig{
-		Timeout:              100 * time.Millisecond,
-		TolerableFailureRate: 0.5,
-	}
-	cc, _ := newTestCoordinator(cfg, 1)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() { done <- cc.Run(ctx) }()
-
-	// Checkpoint 1: success.
-	if err := cc.TriggerCheckpoint(ctx, 1, 1); err != nil {
-		t.Fatalf("TriggerCheckpoint(1): %v", err)
-	}
-	cc.AckCheckpoint(0, 1)
-	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
-
-	// Checkpoint 2: success.
-	if err := cc.TriggerCheckpoint(ctx, 2, 2); err != nil {
-		t.Fatalf("TriggerCheckpoint(2): %v", err)
-	}
-	cc.AckCheckpoint(0, 2)
-	waitForNoActiveCheckpoint(t, cc, 2*time.Second)
-
-	// Checkpoint 3: failure (timeout).
-	if err := cc.TriggerCheckpoint(ctx, 3, 3); err != nil {
-		t.Fatalf("TriggerCheckpoint(3): %v", err)
-	}
-	waitForCheckpointAborted(t, cc, 2*time.Second) // Rate: 1/3 = 0.33, OK.
-
-	// Checkpoint 4: failure (timeout).
-	if err := cc.TriggerCheckpoint(ctx, 4, 4); err != nil {
-		t.Fatalf("TriggerCheckpoint(4): %v", err)
-	}
-	waitForCheckpointAborted(t, cc, 2*time.Second) // Rate: 2/4 = 0.50, OK (not exceeded).
-
-	// Checkpoint 5: failure — rate becomes 3/5 = 0.60 > 0.50.
-	if err := cc.TriggerCheckpoint(ctx, 5, 5); err != nil {
-		t.Fatalf("TriggerCheckpoint(5): %v", err)
-	}
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, ErrCheckpointFailureRateExceeded) {
-			t.Fatalf("expected ErrCheckpointFailureRateExceeded, got: %v", err)
+	cc, channels := newTestCoordinator(CheckpointConfig{Timeout: time.Hour, TolerableFailureRate: 0.5}, 1)
+	for i := uint64(1); i <= 100; i++ {
+		if err := cc.TriggerCheckpoint(context.Background(), i, 1); err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("coordinator did not return error for exceeded failure rate")
+		err := cc.abortCheckpoint(context.Background())
+		<-channels[0]
+		if i < 100 && err != nil {
+			t.Fatalf("premature rate failure at %d: %v", i, err)
+		}
+		if i == 100 && !errors.Is(err, ErrCheckpointFailureRateExceeded) {
+			t.Fatalf("full window: %v", err)
+		}
 	}
 }
 
@@ -710,6 +673,11 @@ func TestCheckpointCoordinator_ThresholdStillAbortsTasks(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cc, channels := newTestCoordinator(tc.config, 2)
+			if tc.name == "rate" {
+				for i := 0; i < 99; i++ {
+					cc.outcomes = append(cc.outcomes, true)
+				}
+			}
 			cc.RegisterTransactionalSink(1, "sink")
 			cc.sinkTxnStates[1].State = TxnPreCommitted
 			cc.sinkTxnStates[1].CurrentCheckpoint = 7

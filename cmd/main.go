@@ -170,10 +170,13 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 
 	// Create coordinator.
 	coordCfg := coordinator.CoordinatorConfig{
-		CheckpointTimeout: wireCfg.Checkpoint.Timeout.Duration,
-		DataDir:           wireCfg.Node.DataDir,
-		NodeID:            nodeID,
-		ListenAddr:        wireCfg.HTTP.Addr,
+		CheckpointTimeout:                wireCfg.Checkpoint.Timeout.Duration,
+		CheckpointMinPause:               wireCfg.Checkpoint.MinPause.Duration,
+		CheckpointMaxConsecutiveFailures: wireCfg.Checkpoint.MaxConsecutiveFailures,
+		CheckpointTolerableFailureRate:   wireCfg.Checkpoint.TolerableFailureRate,
+		DataDir:                          wireCfg.Node.DataDir,
+		NodeID:                           nodeID,
+		ListenAddr:                       wireCfg.HTTP.Addr,
 	}
 	coord := coordinator.New(coordCfg, store, election, log.Logger)
 
@@ -217,6 +220,8 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger) error {
 	taskConfig := engine.DefaultTaskSlotConfig()
 	taskConfig.Checkpoint.Timeout = wireCfg.Checkpoint.Timeout.Duration
+	taskConfig.Checkpoint.MinPause = wireCfg.Checkpoint.MinPause.Duration
+	taskConfig.Checkpoint.TolerableFailureRate = wireCfg.Checkpoint.TolerableFailureRate
 	taskConfig.Checkpoint.MaxConsecutiveFailures = wireCfg.Checkpoint.MaxConsecutiveFailures
 	taskConfig.InputBufferSize = wireCfg.TaskSlot.InputBufferSize
 	taskConfig.OutputBufferSize = wireCfg.TaskSlot.OutputBufferSize

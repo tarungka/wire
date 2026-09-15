@@ -69,7 +69,7 @@ All 25 proposals, initially audited against `master` at `0e78195` on 2026-09-12 
 | [WIP-02](WIP-02/README.md) | Goroutine & Concurrency Model | Implemented |
 | [WIP-03](WIP-03/README.md) | Key Group Assignment & State Sharding | Implemented |
 | [WIP-04](WIP-04/README.md) | Watermark Generation Algorithm | Implemented |
-| [WIP-05](WIP-05/README.md) | Barrier Alignment Timeout & Failure Handling | Partially Implemented |
+| [WIP-05](WIP-05/README.md) | Barrier Alignment Timeout & Failure Handling | Implemented |
 | [WIP-06](WIP-06/README.md) | Checkpoint Metadata Schema | Partially Implemented |
 | [WIP-18](WIP-18/README.md) | Multiple State Backends | Partially Implemented |
 
