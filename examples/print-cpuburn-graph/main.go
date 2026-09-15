@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 
 	"github.com/tarungka/wire/internal/protocol"
@@ -38,8 +39,8 @@ func main() {
 	payload := flag.Int("payload-bytes", 64, "size of each event's payload in bytes")
 	flag.Parse()
 
-	if *rounds == 0 {
-		fmt.Fprintln(os.Stderr, "rounds must be > 0")
+	if *rounds == 0 || uint64(*rounds) > math.MaxUint32 {
+		fmt.Fprintln(os.Stderr, "rounds must be between 1 and 4294967295")
 		os.Exit(2)
 	}
 	if *events <= 0 {
@@ -64,7 +65,7 @@ func main() {
 
 	srcCfg, err := protocol.EncodeMsgPack(memory.SourceConfig{Events: srcEvents})
 	check(err)
-	burnCfg, err := protocol.EncodeMsgPack(CPUBurnConfig{Rounds: uint32(*rounds)}) // #nosec G115 -- flag validated > 0
+	burnCfg, err := protocol.EncodeMsgPack(CPUBurnConfig{Rounds: uint32(*rounds)}) // #nosec G115 -- validated within uint32 range
 	check(err)
 	sinkCfg, err := protocol.EncodeMsgPack(memory.SinkConfig{SinkID: "loadtest-cpu"})
 	check(err)

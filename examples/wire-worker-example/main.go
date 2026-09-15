@@ -123,9 +123,18 @@ type cpuBurnMap struct {
 func (*cpuBurnMap) Open(_ context.Context) error        { return nil }
 func (*cpuBurnMap) Close() error                        { return nil }
 func (*cpuBurnMap) Checkpoint(_ uint64) ([]byte, error) { return nil, nil }
-func (m *cpuBurnMap) Map(_ context.Context, e engine.Event) (engine.Event, error) {
+func (m *cpuBurnMap) Map(ctx context.Context, e engine.Event) (engine.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return engine.Event{}, err
+	}
 	h := sha256.Sum256(e.Value)
 	for i := uint32(0); i < m.rounds; i++ {
+		// Bound cancellation latency without checking on every hash.
+		if i%1024 == 0 {
+			if err := ctx.Err(); err != nil {
+				return engine.Event{}, err
+			}
+		}
 		h = sha256.Sum256(h[:])
 	}
 	e.Value = h[:]
