@@ -13,7 +13,7 @@ func checkpointPolicyCoordinator(t *testing.T) (*Coordinator, *MemoryStore) {
 	t.Helper()
 	c, store := newTestCoordinator(t)
 	c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
-	assignment := TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": "replica"}}
+	assignment := TaskAssignmentMap{TaskDescriptors: manifestTaskDescriptors("task"), JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": "replica"}}
 	if err := store.Set(JobAssignmentsKey("job"), encode(t, assignment)); err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestCheckpointSuccessResetsConsecutiveFailuresAndEnforcesMinPause(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	ack := rpc.AcknowledgeCheckpointRequest{WorkerID: "worker", JobID: "job", TaskID: "task", CheckpointID: cp.ID, EpochID: cp.EpochID, State: &rpc.StateHandle{TaskID: "task", Path: "replica"}}
+	ack := rpc.AcknowledgeCheckpointRequest{WorkerID: "worker", JobID: "job", TaskID: "task", CheckpointID: cp.ID, EpochID: cp.EpochID, State: manifestState(t, "task", "replica")}
 	if err := c.AcknowledgeCheckpoint(ack); err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestCheckpointRateUsesBoundedCompletedOutcomes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req := rpc.AcknowledgeCheckpointRequest{WorkerID: "worker", JobID: "job", TaskID: "task", CheckpointID: cp.ID, EpochID: cp.EpochID, State: &rpc.StateHandle{TaskID: "task", Path: "replica"}}
+		req := rpc.AcknowledgeCheckpointRequest{WorkerID: "worker", JobID: "job", TaskID: "task", CheckpointID: cp.ID, EpochID: cp.EpochID, State: manifestState(t, "task", "replica")}
 		if i >= 198 {
 			req.Failure = "upload failed"
 			err = c.ReportCheckpointFailure(req)
@@ -257,7 +257,7 @@ func TestSavepointOutcomesDoNotChangeCheckpointBudget(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req := rpc.AcknowledgeCheckpointRequest{WorkerID: "worker", JobID: "job", TaskID: "task", CheckpointID: sp.CheckpointID, EpochID: sp.EpochID, State: &rpc.StateHandle{TaskID: "task", Path: "replica"}}
+		req := rpc.AcknowledgeCheckpointRequest{WorkerID: "worker", JobID: "job", TaskID: "task", CheckpointID: sp.CheckpointID, EpochID: sp.EpochID, State: manifestState(t, "task", "replica")}
 		if failed {
 			req.Failure = "upload failed"
 			err = c.ReportCheckpointFailure(req)

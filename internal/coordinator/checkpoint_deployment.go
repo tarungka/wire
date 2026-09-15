@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/tarungka/wire/internal/keygroup"
-	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
 )
 
@@ -17,16 +16,9 @@ func (c *Coordinator) attachCheckpointRestoreLocked(job *JobMeta, assignments ma
 	if job.LatestCheckpoint == 0 {
 		return nil
 	}
-	data, err := c.store.Get(CheckpointKey(job.ID, job.LatestCheckpoint))
+	checkpoint, inventory, err := c.selectRecoveryCheckpointLocked(job)
 	if err != nil {
 		return err
-	}
-	var checkpoint CheckpointMeta
-	if err := protocol.DecodeMsgPack(data, &checkpoint); err != nil {
-		return err
-	}
-	if checkpoint.JobID != job.ID || checkpoint.ID != job.LatestCheckpoint || checkpoint.Status != CheckpointCompleted {
-		return fmt.Errorf("recovery checkpoint is not completed for this job")
 	}
 	if job.RescaleCheckpoint != 0 && job.RescaleCheckpoint == checkpoint.ID {
 		if checkpoint.SavepointID == "" {
@@ -46,6 +38,14 @@ func (c *Coordinator) attachCheckpointRestoreLocked(job *JobMeta, assignments ma
 		parts, err := planRescaleState(checkpoint, checkpoint.TaskDescriptors, targets)
 		if err != nil {
 			return err
+		}
+		for target, slices := range parts {
+			for i := range slices {
+				state := inventory[slices[i].SourceTaskID]
+				slices[i].ArchiveSize = state.StateSizeBytes
+				slices[i].ArchiveSHA256 = state.StateSHA256["checkpoint.archive"]
+			}
+			parts[target] = slices
 		}
 		for _, tasks := range assignments {
 			for i := range tasks {
@@ -80,7 +80,7 @@ func (c *Coordinator) attachCheckpointRestoreLocked(job *JobMeta, assignments ma
 	}
 	for _, tasks := range assignments {
 		for i := range tasks {
-			tasks[i].RestoreCheckpoint = &rpc.CheckpointRestoreDescriptor{CheckpointID: checkpoint.ID, EpochID: checkpoint.EpochID, ReplicaAddress: checkpoint.StatePaths[tasks[i].TaskID]}
+			tasks[i].RestoreCheckpoint = &rpc.CheckpointRestoreDescriptor{CheckpointID: checkpoint.ID, EpochID: checkpoint.EpochID, ReplicaAddress: checkpoint.StatePaths[tasks[i].TaskID], ArchiveSize: inventory[tasks[i].TaskID].StateSizeBytes, ArchiveSHA256: inventory[tasks[i].TaskID].StateSHA256["checkpoint.archive"]}
 		}
 	}
 	return nil

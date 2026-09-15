@@ -175,6 +175,26 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 		c.mu.Unlock()
 		return denied, nil
 	}
+	if req.Status == rpc.TaskStatusFailed && req.Failure != nil && req.Failure.ErrorClass == "checkpoint_unavailable" {
+		if restore, ok := assignment.RestoreCheckpoints[req.TaskID]; ok {
+			raw, err := c.store.Get(CheckpointKey(req.JobID, restore.CheckpointID))
+			var cp CheckpointMeta
+			if err == nil {
+				err = protocol.DecodeMsgPack(raw, &cp)
+			}
+			if err == nil && cp.JobID == req.JobID && cp.EpochID == restore.EpochID {
+				cp.InvalidReason = req.Failure.ErrorMessage
+				raw, err = protocol.EncodeMsgPack(cp)
+				if err == nil {
+					err = c.store.Set(CheckpointKey(req.JobID, cp.ID), raw)
+				}
+			}
+			if err != nil {
+				c.mu.Unlock()
+				return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, err.Error())
+			}
+		}
+	}
 	c.taskStatuses[req.TaskID] = req.Status
 	c.mu.Unlock()
 

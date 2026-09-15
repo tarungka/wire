@@ -477,7 +477,7 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		}
 
 		if cc.checkpoint != nil {
-			if err := cc.checkpoint.submit(cc.ctx, ctrl.CheckpointID, ctrl.EpochID, snapshots, stateHandleIndexes, ctrl.sourceBoundary); err != nil {
+			if err := cc.checkpoint.submit(cc.ctx, ctrl.CheckpointID, ctrl.EpochID, snapshots, stateHandleIndexes, cc.transactionPrepared, cc.lastCommitted, ctrl.sourceBoundary); err != nil {
 				return err
 			}
 		}

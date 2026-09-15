@@ -249,7 +249,7 @@ func TestScheduleRecoveryCarriesCompletedCheckpoint(t *testing.T) {
 			c.scheduleJob(job)
 			commands := c.DrainCommands("worker")
 			if !valid {
-				if len(commands) != 0 || job.Status != JobCreated {
+				if len(commands) != 0 || job.Status != JobFailed {
 					t.Fatal("invalid recovery deployed")
 				}
 				return

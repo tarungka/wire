@@ -6,11 +6,11 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-09-12`
+> **Last Updated:** `2026-09-15`
 
 ### Revision History
 
@@ -20,13 +20,15 @@
 
 ---
 
-## Implementation Status — 2026-09-12
+## Implementation Status — 2026-09-15
 
-Assessed against `master` at `bb58acd`, with the manifest validation changes in this PR. This section records current implementation; the proposal below retains its original design context and targets.
+Implemented on top of [#153](https://github.com/tarungka/wire/pull/153) and [#203](https://github.com/tarungka/wire/pull/203).
 
-- **Implemented:** Metadata types, JSON serialization, validation, paths, and savepoint compatibility checks are implemented and tested. The JSON decoder now rejects out-of-range or duplicate operator subtask indices, negative state sizes, duplicate state filenames, and non-portable or escaping state paths. Direct validation also rejects nil metadata and unsupported schema versions.
-- **Remaining:** Use the metadata in a complete cluster checkpoint/restore path, including state-file recovery and fallback from invalid checkpoints. Structural validation does not verify file existence, contents, or symlinks; the eventual state reader must enforce filesystem containment when opening files. It does not yet prove complete task coverage or non-overlapping key-group ownership.
-- **Evidence:** [checkpoint_metadata.go](../../../internal/engine/checkpoint_metadata.go), [checkpoint_metadata_validation.go](../../../internal/engine/checkpoint_metadata_validation.go), [recovery.go](../../../internal/coordinator/recovery.go).
+Workers report an archive inventory after successful replication. The coordinator builds a complete versioned JSON manifest from that inventory and the captured physical topology, and commits it atomically with the completed checkpoint decision. Replica workers retain the original archive bytes so relocation cannot change the manifest's size or SHA-256 digest. Ordinary recovery and rescale verify the selected archives before importing state.
+
+Manifest validation covers complete subtask coverage, chain membership, key-group gaps/overlaps, portable paths, and file digests. Missing or corrupt manifests and state cause whole-job fallback to an earlier valid checkpoint; unsupported versions stop recovery. Explicit rescale savepoints remain pinned, and legacy checkpoint records keep their prior restore path.
+
+See [acceptance evidence and storage mapping](acceptance.md). The design below uses logical checkpoint paths; the runtime stores JSON in the coordinator metadata store and resolves task archive paths through authenticated replica RPCs. Source offsets are archive references, and prepared sink transactions are included without inventing external transaction IDs.
 
 ---
 
@@ -44,7 +46,7 @@ Define the `metadata.json` schema for checkpoints and savepoints. The file conta
 
 ## 2. Architecture & System Design
 
-### 2.1 Checkpoint Storage Layout
+### 2.1 Logical Checkpoint Storage Layout
 
 ```
 <data-dir>/jobs/<job-id>/
@@ -145,6 +147,8 @@ flowchart TD
 ## 3. API Design
 
 ### 3.1 metadata.json Schema
+
+The example below illustrates individual records and is abbreviated: a complete manifest must contain every physical subtask and cover every key group for each chain primary. Runtime archive inventories use `checkpoint.archive`, `state_sha256`, and source-offset references; see the acceptance record.
 
 **Checkpoint Metadata Class Diagram:**
 
@@ -326,7 +330,8 @@ classDiagram
 | `state_path` | string | Yes | Portable slash-separated relative directory; optional trailing slash. No absolute paths, traversal, backslashes, or volume names. |
 | `state_size_bytes` | int64 | Yes | Total size of state files |
 | `state_files` | []string | Yes | Unique filenames within `state_path`, without directory separators or traversal. |
-| `source_offsets` | object | No | Only for source operators. Connector-specific offset data. |
+| `source_offsets` | object | No | Source offset data or a portable archive/member/field reference to opaque source state. |
+| `state_sha256` | object | No | Filename-to-SHA-256 mapping. Required for runtime checkpoint archives. |
 
 #### Sink Transaction Fields
 

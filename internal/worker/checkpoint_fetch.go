@@ -3,6 +3,8 @@ package worker
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +13,8 @@ import (
 	"github.com/tarungka/wire/internal/rpc"
 	"github.com/tarungka/wire/internal/transport"
 )
+
+var errCheckpointUnavailable = errors.New("checkpoint state unavailable")
 
 type temporaryCheckpointArchive struct{ *os.File }
 
@@ -31,7 +35,28 @@ func checkpointArchiveLoader(store *engine.FileCheckpointStore, stagingRoot stri
 		}
 		snapshot, err := store.Get(ctx, fetch.JobID, fetch.TaskID, fetch.CheckpointID, fetch.EpochID)
 		if err != nil {
-			return metadata, nil, err
+			return metadata, nil, rpc.NewRPCError(rpc.ErrCodeUnknownCheckpoint, err.Error())
+		}
+		original, archiveErr := store.OpenArchive(ctx, fetch.JobID, fetch.TaskID, fetch.CheckpointID, fetch.EpochID)
+		if archiveErr == nil {
+			hash := sha256.New()
+			size, err := io.Copy(hash, original)
+			if err == nil {
+				_, err = original.Seek(0, io.SeekStart)
+			}
+			if err != nil {
+				_ = original.Close()
+				return metadata, nil, err
+			}
+			metadata = rpc.ReplicateCheckpointRequest{Format: rpc.CheckpointFormatArchive, JobID: fetch.JobID, TaskID: fetch.TaskID, CheckpointID: fetch.CheckpointID, EpochID: fetch.EpochID, Size: uint64(size)}
+			copy(metadata.SHA256[:], hash.Sum(nil))
+			return metadata, original, nil
+		}
+		if fetch.RequireArchive {
+			return metadata, nil, rpc.NewRPCError(rpc.ErrCodeUnknownCheckpoint, archiveErr.Error())
+		}
+		if !errors.Is(archiveErr, os.ErrNotExist) {
+			return metadata, nil, archiveErr
 		}
 		file, err := os.CreateTemp(stagingRoot, ".checkpoint-recovery-")
 		if err != nil {
@@ -77,7 +102,7 @@ func (w *Worker) fetchTaskCheckpoint(ctx context.Context, jobID, taskID string, 
 	if restore.SourceTaskID != "" {
 		sourceTaskID, targetTaskID = restore.SourceTaskID, taskID
 	}
-	request := rpc.FetchCheckpointRequest{AttemptID: desc.AttemptID, WorkerID: w.cfg.WorkerID, DeploymentEpoch: desc.EpochID, JobID: jobID, TaskID: sourceTaskID, TargetTaskID: targetTaskID, CheckpointID: restore.CheckpointID, EpochID: restore.EpochID}
+	request := rpc.FetchCheckpointRequest{RequireArchive: restore.ArchiveSHA256 != "", AttemptID: desc.AttemptID, WorkerID: w.cfg.WorkerID, DeploymentEpoch: desc.EpochID, JobID: jobID, TaskID: sourceTaskID, TargetTaskID: targetTaskID, CheckpointID: restore.CheckpointID, EpochID: restore.EpochID}
 	if err := request.Validate(); err != nil {
 		return nil, err
 	}
@@ -92,7 +117,24 @@ func (w *Worker) fetchTaskCheckpoint(ctx context.Context, jobID, taskID string, 
 	}
 	defer func() { _ = file.Close(); _ = os.Remove(file.Name()) }()
 	if err := rpc.NewClient(session.YamuxSession(), rpc.DefaultConfig()).FetchCheckpoint(ctx, request, file); err != nil {
+		var remote *rpc.RPCError
+		if errors.As(err, &remote) && remote.Code == rpc.ErrCodeUnknownCheckpoint {
+			return nil, fmt.Errorf("%w: %v", errCheckpointUnavailable, err)
+		}
 		return nil, err
+	}
+	if restore.ArchiveSHA256 != "" {
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		digest := sha256.New()
+		size, err := io.Copy(digest, file)
+		if err != nil {
+			return nil, err
+		}
+		if size != restore.ArchiveSize || hex.EncodeToString(digest.Sum(nil)) != restore.ArchiveSHA256 {
+			return nil, fmt.Errorf("%w: archive does not match completed manifest", errCheckpointUnavailable)
+		}
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return nil, err
