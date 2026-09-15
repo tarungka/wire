@@ -164,3 +164,38 @@ func TestHeartbeatKicksSchedulerOnlyWhenCapacityGrows(t *testing.T) {
 		t.Fatal("reduced capacity woke the scheduler")
 	}
 }
+
+func TestLateTerminalReleaseDoesNotDoubleCountHeartbeatCapacity(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	c.workers["worker"] = &WorkerMeta{ID: "worker", Address: "worker:1", TaskSlotsTotal: 2, TaskSlotsAvailable: 2, LastHeartbeat: time.Now()}
+	stale, second, third := slotReleaseJob(t, "stale"), slotReleaseJob(t, "second"), slotReleaseJob(t, "third")
+	c.jobs[stale.ID], c.jobs[second.ID], c.jobs[third.ID] = stale, second, third
+	c.scheduleJob(stale)
+	staleTask, staleAttempt := assignedTask(t, store, stale.ID)
+
+	// The worker's terminal RPC timed out locally, so it dropped the task and
+	// its next heartbeat already advertises the freed slot.
+	payload := encode(t, rpc.HeartbeatRequest{WorkerID: "worker", EpochID: c.epoch, Load: &rpc.WorkerLoad{ActiveSlots: 0, TotalSlots: 2}})
+	if result, rpcErr := c.HandleHeartbeat(context.Background(), 1, payload); rpcErr != nil || !result.(*rpc.HeartbeatResponse).Accepted {
+		t.Fatalf("heartbeat: %v %v", result, rpcErr)
+	}
+	c.scheduleJob(second)
+	c.scheduleJob(third)
+	worker := c.workers["worker"]
+	if second.Status != JobDeploying || third.Status != JobDeploying || worker.TaskSlotsAvailable != 0 {
+		t.Fatalf("setup: second=%v third=%v available=%d", second.Status, third.Status, worker.TaskSlotsAvailable)
+	}
+
+	// The delayed report for the dropped task finally arrives.
+	if !sendTaskStatus(t, c, stale.ID, staleTask, staleAttempt, rpc.TaskStatusFinished) {
+		t.Fatal("delayed terminal report rejected")
+	}
+	if slices.Contains(worker.RunningTasks, staleTask) {
+		t.Fatalf("stale task still listed: %v", worker.RunningTasks)
+	}
+	// Both slots are held by the second and third jobs; the heartbeat already
+	// returned the stale task's slot, so it must not be credited again.
+	if worker.TaskSlotsAvailable != 0 {
+		t.Fatalf("available slots = %d, want 0: slot credited by both heartbeat and terminal report", worker.TaskSlotsAvailable)
+	}
+}
