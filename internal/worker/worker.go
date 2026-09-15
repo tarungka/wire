@@ -553,11 +553,16 @@ func (w *Worker) reportTaskStatus(jobID, taskID string, status rpc.TaskStatus, f
 func (w *Worker) reportTaskFailed(jobID, taskID string, err error) {
 	var panicErr *engine.OperatorPanicError
 	var stack string
+	class := ""
+	if errors.Is(err, errCheckpointUnavailable) {
+		class = "checkpoint_unavailable"
+	}
 	if errors.As(err, &panicErr) {
 		stack = panicErr.Stack
 	}
 	w.reportTaskStatus(jobID, taskID, rpc.TaskStatusFailed, &rpc.TaskFailureInfo{
 		ErrorMessage: err.Error(),
+		ErrorClass:   class,
 		StackTrace:   stack,
 		Timestamp:    time.Now().UnixMilli(),
 	})

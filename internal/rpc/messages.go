@@ -292,6 +292,8 @@ type EdgeDescriptor struct {
 // is the full source→ops→sink chain. In later phases, it's the slice of
 // operators between two shuffle boundaries.
 type CheckpointRestoreDescriptor struct {
+	ArchiveSHA256 string `codec:"archive_sha256,omitempty"`
+	ArchiveSize   int64  `codec:"archive_size,omitempty"`
 	// SourceTaskID is set for rescaling; empty restores the receiving task itself.
 	SourceTaskID   string `codec:"source_task_id,omitempty"`
 	CheckpointID   uint64 `codec:"cid"`
@@ -301,6 +303,8 @@ type CheckpointRestoreDescriptor struct {
 
 // RescaleStatePart identifies the stored snapshot and inclusive range to import.
 type RescaleStatePart struct {
+	ArchiveSHA256  string        `codec:"archive_sha256,omitempty"`
+	ArchiveSize    int64         `codec:"archive_size,omitempty"`
 	SourceTaskID   string        `codec:"source_task_id"`
 	ReplicaAddress string        `codec:"replica_address"`
 	Groups         KeyGroupRange `codec:"groups"`
@@ -366,6 +370,7 @@ type CheckpointRestoreInfo struct {
 
 // StateHandle references a serialized state artifact.
 type StateHandle struct {
+	Manifest  []byte `codec:"manifest,omitempty"`
 	TaskID    string `codec:"tid"`
 	Path      string `codec:"p"`
 	SizeBytes int64  `codec:"sz"`

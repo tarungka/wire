@@ -15,7 +15,7 @@ import (
 // ownership and verifies the transfer digest before invoking this method.
 // Failed imports may leave verified, unreferenced content-addressed artifacts;
 // they must not be treated as checkpoint records or deleted while still shared.
-func (s *FileCheckpointStore) ImportArchive(ctx context.Context, jobID, taskID string, id, epoch uint64, source io.Reader, artifactRoot string, maxBytes int64) error {
+func (s *FileCheckpointStore) importArchive(ctx context.Context, jobID, taskID string, id, epoch uint64, source io.Reader, artifactRoot string, maxBytes int64) error {
 	if _, err := s.path(jobID, taskID, id, epoch); err != nil {
 		return err
 	}

@@ -165,7 +165,7 @@ func recoverJobCheckpoints(store MetadataStore, jobID string, state *recoveredSt
 	err := store.PrefixScan(prefix, func(key, value []byte) bool {
 		k := string(key)
 		// Skip the "latest" pointer key.
-		if strings.HasSuffix(k, "/latest") {
+		if strings.HasSuffix(k, "/latest") || strings.HasSuffix(k, "/metadata.json") {
 			return true
 		}
 

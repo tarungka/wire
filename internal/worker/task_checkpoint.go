@@ -60,13 +60,14 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 		maxFailures = w.executor.taskConfig.Checkpoint.MaxConsecutiveFailures
 	}
 	consecutiveFailures := 0
-	runtime.replicator = &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: &reconnectingCheckpointClient{address: desc.CheckpointReplicaAddress}}
+	replicator := &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: &reconnectingCheckpointClient{address: desc.CheckpointReplicaAddress}}
+	runtime.replicator = replicator
 	runtime.report = func(ctx context.Context, id, epoch uint64, uploadErr error) error {
 		request := &rpc.AcknowledgeCheckpointRequest{WorkerID: w.cfg.WorkerID, JobID: jobID, TaskID: taskID, CheckpointID: id, EpochID: epoch}
 		if uploadErr != nil {
 			request.Failure = uploadErr.Error()
 		} else {
-			request.State = &rpc.StateHandle{TaskID: taskID, Path: desc.CheckpointReplicaAddress}
+			request.State = &rpc.StateHandle{TaskID: taskID, Path: desc.CheckpointReplicaAddress, Manifest: replicator.manifest(id)}
 		}
 		response, err := w.client.AcknowledgeCheckpoint(ctx, request)
 		if err == nil && !response.Accepted {

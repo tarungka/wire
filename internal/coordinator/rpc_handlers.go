@@ -175,6 +175,48 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 		c.mu.Unlock()
 		return denied, nil
 	}
+	if req.Status == rpc.TaskStatusFailed && req.Failure != nil && req.Failure.ErrorClass == "checkpoint_unavailable" {
+		if restore, ok := assignment.RestoreCheckpoints[req.TaskID]; ok {
+			raw, err := c.store.Get(CheckpointKey(req.JobID, restore.CheckpointID))
+			var cp CheckpointMeta
+			if err == nil {
+				err = protocol.DecodeMsgPack(raw, &cp)
+			}
+			if err == nil && cp.JobID == req.JobID && cp.EpochID == restore.EpochID {
+				cp.InvalidReason = req.Failure.ErrorMessage
+				raw, err = protocol.EncodeMsgPack(cp)
+				if err == nil {
+					// Refund candidate validation once per deployment, atomically with
+					// invalidation. Duplicate reports and coordinator restarts cannot
+					// refund unrelated execution failures.
+					next := *job
+					if assignment.RecoveryAttemptCharged && next.RecoveryAttempts > 0 {
+						next.RecoveryAttempts--
+					}
+					assignment.RecoveryAttemptCharged = false
+					var jobRaw, assignmentRaw []byte
+					jobRaw, err = protocol.EncodeMsgPack(&next)
+					if err == nil {
+						assignmentRaw, err = protocol.EncodeMsgPack(&assignment)
+					}
+					if err == nil {
+						err = c.store.WriteBatch([]KVPair{
+							{Key: CheckpointKey(req.JobID, cp.ID), Value: raw},
+							{Key: JobMetaKey(job.ID), Value: jobRaw},
+							{Key: JobAssignmentsKey(job.ID), Value: assignmentRaw},
+						})
+					}
+					if err == nil {
+						job.RecoveryAttempts = next.RecoveryAttempts
+					}
+				}
+			}
+			if err != nil {
+				c.mu.Unlock()
+				return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, err.Error())
+			}
+		}
+	}
 	c.taskStatuses[req.TaskID] = req.Status
 	c.mu.Unlock()
 

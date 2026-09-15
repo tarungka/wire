@@ -2,10 +2,13 @@ package coordinator
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/tarungka/wire/internal/engine"
 
 	"github.com/tarungka/wire/internal/checkpointpolicy"
 	"github.com/tarungka/wire/internal/keygroup"
@@ -63,7 +66,7 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 	var highest uint64
 	var scanErr error
 	err = c.store.PrefixScan([]byte(fmt.Sprintf("jobs/%s/checkpoints/", jobID)), func(key, value []byte) bool {
-		if bytes.Equal(key, LatestCheckpointKey(jobID)) {
+		if bytes.Equal(key, LatestCheckpointKey(jobID)) || bytes.HasSuffix(key, []byte("/metadata.json")) {
 			return true
 		}
 		var previous CheckpointMeta
@@ -97,7 +100,7 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 			return nil, err
 		}
 	}
-	checkpoint := &CheckpointMeta{TaskDescriptors: assignment.TaskDescriptors, NumKeyGroups: count, SavepointID: savepointID, ID: highest + 1, EpochID: c.epoch, JobID: jobID, Status: CheckpointInProgress, Timestamp: time.Now().UTC(), Tasks: assignment.Assignments, Replicas: assignment.Replicas}
+	checkpoint := &CheckpointMeta{ManifestVersion: 1, TaskDescriptors: assignment.TaskDescriptors, NumKeyGroups: count, SavepointID: savepointID, ID: highest + 1, EpochID: c.epoch, JobID: jobID, Status: CheckpointInProgress, Timestamp: time.Now().UTC(), Tasks: assignment.Assignments, Replicas: assignment.Replicas}
 	encoded, err := protocol.EncodeMsgPack(checkpoint)
 	if err != nil {
 		c.mu.Unlock()
@@ -304,6 +307,25 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 	if checkpoint.Status != CheckpointInProgress && checkpoint.Status != CheckpointCompleted {
 		return errors.New("checkpoint no longer accepts acknowledgements")
 	}
+	if checkpoint.ManifestVersion != 0 {
+		if len(request.State.Manifest) == 0 {
+			return errors.New("checkpoint acknowledgement requires task manifest")
+		}
+		var task engine.TaskMeta
+		if err := json.Unmarshal(request.State.Manifest, &task); err != nil {
+			return err
+		}
+		if task.TaskID != request.TaskID {
+			return errors.New("task manifest identity mismatch")
+		}
+		if checkpoint.TaskManifests == nil {
+			checkpoint.TaskManifests = make(map[string][]byte)
+		}
+		if prior, ok := checkpoint.TaskManifests[request.TaskID]; ok && !bytes.Equal(prior, request.State.Manifest) {
+			return errors.New("conflicting task manifest")
+		}
+		checkpoint.TaskManifests[request.TaskID] = append([]byte(nil), request.State.Manifest...)
+	}
 	if checkpoint.StatePaths == nil {
 		checkpoint.StatePaths = make(map[string]string)
 	}
@@ -324,6 +346,25 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 		return err
 	}
 	batch := []KVPair{{Key: CheckpointKey(request.JobID, request.CheckpointID), Value: encoded}}
+	if complete && checkpoint.ManifestVersion != 0 {
+		inventory := make(map[string]engine.TaskMeta)
+		for id, raw := range checkpoint.TaskManifests {
+			var task engine.TaskMeta
+			if err := json.Unmarshal(raw, &task); err != nil {
+				return err
+			}
+			inventory[id] = task
+		}
+		manifest, err := checkpointManifest(c.jobs[request.JobID], checkpoint, inventory, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		raw, err := engine.MarshalCheckpointMetadata(manifest)
+		if err != nil {
+			return err
+		}
+		batch = append(batch, KVPair{Key: CheckpointManifestKey(request.JobID, request.CheckpointID), Value: raw})
+	}
 	var next JobMeta
 	if complete {
 		job := c.jobs[request.JobID]

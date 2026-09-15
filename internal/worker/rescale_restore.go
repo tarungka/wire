@@ -56,7 +56,7 @@ func assembleRescaleState(ctx context.Context, jobID, taskID string, desc rpc.Ta
 	typedIndexes := make(map[int]bool)
 	for partIndex, part := range parts {
 		fetchDesc := desc
-		fetchDesc.RestoreCheckpoint = &rpc.CheckpointRestoreDescriptor{SourceTaskID: part.SourceTaskID, ReplicaAddress: part.ReplicaAddress, CheckpointID: restore.CheckpointID, EpochID: restore.EpochID}
+		fetchDesc.RestoreCheckpoint = &rpc.CheckpointRestoreDescriptor{ArchiveSHA256: part.ArchiveSHA256, ArchiveSize: part.ArchiveSize, SourceTaskID: part.SourceTaskID, ReplicaAddress: part.ReplicaAddress, CheckpointID: restore.CheckpointID, EpochID: restore.EpochID}
 		snapshot, err := fetch(ctx, jobID, taskID, fetchDesc)
 		if err != nil {
 			return nil, err

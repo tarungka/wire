@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/tarungka/wire/internal/engine"
 
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
@@ -168,13 +171,30 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	if err := c.attachCheckpointRestoreLocked(job, assignments); err != nil {
 		c.mu.Unlock()
 		c.log.Error().Err(err).Str("job_id", job.ID).Msg("cannot deploy checkpoint recovery")
+		if errors.Is(err, errNoValidCheckpoint) || errors.Is(err, engine.ErrUnsupportedSchemaVersion) {
+			c.mu.RLock()
+			status := job.Status
+			c.mu.RUnlock()
+			if status != JobFailing {
+				if err := c.transitionJob(job, JobFailing); err != nil {
+					return
+				}
+			}
+			if err := c.transitionJob(job, JobFailed); err != nil {
+				c.log.Warn().Err(err).Msg("cannot finalize unrecoverable job")
+			}
+		}
 		return
 	}
 
 	// Persist fetch grants atomically with task ownership before deployment.
+	tam.RestoreCheckpoints = make(map[string]rpc.CheckpointRestoreDescriptor)
 	tam.RescaleParts = make(map[string][]RescaleStatePart)
 	for _, workerTasks := range assignments {
 		for _, task := range workerTasks {
+			if task.RestoreCheckpoint != nil {
+				tam.RestoreCheckpoints[task.TaskID] = *task.RestoreCheckpoint
+			}
 			if task.RestoreRescale != nil {
 				tam.RescaleParts[task.TaskID] = task.RestoreRescale.Parts
 			}
@@ -214,6 +234,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		if !job.RescaleRequested {
 			next.RestartCount++
 			next.RecoveryAttempts++
+			tam.RecoveryAttemptCharged = true
 		}
 		next.RescaleRequested = false
 	}

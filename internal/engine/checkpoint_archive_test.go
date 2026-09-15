@@ -48,6 +48,18 @@ func TestTaskCheckpointArchiveIncludesPortableArtifact(t *testing.T) {
 			t.Fatalf("durable archive import/retry: %v", err)
 		}
 	}
+	original, err := store.OpenArchive(ctx, "job", "task", 7, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := io.ReadAll(original)
+	_ = original.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(retained, encoded.Bytes()) {
+		t.Fatal("relocation changed retained archive bytes")
+	}
 	if err := store.ImportArchive(ctx, "job", "task", 7, 3, bytes.NewReader(encoded.Bytes()), artifactRoot, int64(encoded.Len())); err == nil {
 		t.Fatal("wrong execution epoch accepted")
 	}
