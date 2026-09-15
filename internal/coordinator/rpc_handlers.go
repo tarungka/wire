@@ -61,10 +61,18 @@ func (c *Coordinator) HandleHeartbeat(_ context.Context, _ uint64, payload []byt
 		return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, fmt.Sprintf("unknown worker: %s", req.WorkerID))
 	}
 	w.LastHeartbeat = time.Now().UTC()
+	freed := false
 	if req.Load != nil {
-		w.TaskSlotsAvailable = max(0, min(w.TaskSlotsTotal, w.TaskSlotsTotal-int(req.Load.ActiveSlots)))
+		available := max(0, min(w.TaskSlotsTotal, w.TaskSlotsTotal-int(req.Load.ActiveSlots)))
+		freed = available > w.TaskSlotsAvailable
+		w.TaskSlotsAvailable = available
 	}
 	c.mu.Unlock()
+	if freed {
+		// Covers releases a rejected terminal status could not report, such as
+		// a task ending after its job became terminal.
+		c.kickScheduler()
+	}
 
 	// Drain pending commands for this worker.
 	cmds := c.DrainCommands(req.WorkerID)
@@ -176,7 +184,17 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 		return denied, nil
 	}
 	c.taskStatuses[req.TaskID] = req.Status
+	released := false
+	switch req.Status {
+	case rpc.TaskStatusFinished, rpc.TaskStatusFailed, rpc.TaskStatusCanceled:
+		released = c.releaseTaskSlotLocked(req.WorkerID, req.TaskID)
+	}
 	c.mu.Unlock()
+	if released {
+		// Wake the scheduler after the job-level transition below, so a queued
+		// or restarting job can use the slot without waiting for a heartbeat.
+		defer c.kickScheduler()
+	}
 
 	c.log.Info().
 		Str("task_id", req.TaskID).
