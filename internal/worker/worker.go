@@ -411,13 +411,11 @@ func (w *Worker) buildHeartbeatRequest() *rpc.HeartbeatRequest {
 // registry, and drives execution in a background goroutine. Task status
 // transitions are reported back to the coordinator via UpdateTaskStatus.
 func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
-	// Idempotent: ignore if task already exists.
 	w.mu.RLock()
-	_, exists := w.tasks[cmd.TaskID]
 	stopping := w.stopping
 	w.mu.RUnlock()
-	if exists || stopping {
-		w.log.Debug().Str("task_id", cmd.TaskID).Msg("ignoring duplicate DeployTask")
+	if stopping {
+		w.log.Debug().Str("task_id", cmd.TaskID).Msg("ignoring DeployTask during shutdown")
 		return
 	}
 
@@ -431,11 +429,24 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 
 	taskCtx, cancel := context.WithCancel(context.Background())
 	w.mu.Lock()
-	// Heartbeat and push delivery may both deploy the same task. Admission
+	// Heartbeat and push delivery may both deploy the same attempt. Admission
 	// must be atomic with duplicate detection and worker shutdown.
-	if _, exists := w.tasks[cmd.TaskID]; exists || w.stopping {
+	if existing, exists := w.tasks[cmd.TaskID]; exists || w.stopping {
+		stopping := w.stopping
 		w.mu.Unlock()
 		cancel()
+		if exists && !stopping && existing.attemptID != desc.AttemptID && existing.done != nil {
+			// The coordinator may redeploy a task ID as soon as it accepts the
+			// previous attempt's terminal status, before runTask removes that
+			// attempt's handle. Admit the newer attempt once teardown completes.
+			w.log.Debug().Str("task_id", cmd.TaskID).Str("attempt_id", desc.AttemptID).Msg("waiting for previous attempt teardown")
+			go func() {
+				<-existing.done
+				w.handleDeployTask(cmd)
+			}()
+			return
+		}
+		w.log.Debug().Str("task_id", cmd.TaskID).Msg("ignoring duplicate DeployTask")
 		return
 	}
 	if desc.EpochID != 0 && desc.EpochID != w.epoch {
