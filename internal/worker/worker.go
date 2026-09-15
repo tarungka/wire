@@ -44,6 +44,7 @@ type taskHandle struct {
 // via taskExecutor.
 type Worker struct {
 	cancelledAttempts  map[string]bool
+	cancelAcks         map[cancelAckKey]bool
 	reservations       map[string]*slotReservation
 	deploymentReceipts map[string][32]byte
 	cfg                Config
@@ -624,10 +625,7 @@ func (w *Worker) handleCommands(cmds []rpc.WorkerCommand) {
 			}
 			w.mu.Unlock()
 			if absent && client != nil {
-				_, err := client.UpdateTaskStatus(context.Background(), &rpc.UpdateTaskStatusRequest{WorkerID: w.workerID(), JobID: cmd.JobID, TaskID: cmd.TaskID, EpochID: cmd.EpochID, AttemptID: cmd.AttemptID, Status: rpc.TaskStatusCanceled})
-				if err != nil {
-					w.log.Warn().Err(err).Msg("cannot acknowledge absent task cancellation")
-				}
+				w.acknowledgeAbsentCancellation(client, cmd)
 			}
 		case rpc.CommandTypeTakeSnapshot, rpc.CommandTypeCommitCheckpoint, rpc.CommandTypeAbortCheckpoint:
 			w.handleCheckpointCommand(cmd)
@@ -684,4 +682,35 @@ func (w *Worker) installTaskLocked(jobID, taskID string, desc rpc.TaskDescriptor
 		}
 	}
 	w.tasks[taskID] = handle
+}
+
+// Bound outstanding acknowledgements and coalesce repeated scheduler cancels.
+// If saturated, the coordinator's next cancellation retries admission.
+type cancelAckKey struct {
+	client                   *rpc.Client
+	jobID, taskID, attemptID string
+	epoch                    uint64
+}
+
+func (w *Worker) acknowledgeAbsentCancellation(client *rpc.Client, cmd rpc.WorkerCommand) {
+	key := cancelAckKey{client, cmd.JobID, cmd.TaskID, cmd.AttemptID, cmd.EpochID}
+	w.mu.Lock()
+	if w.cancelAcks[key] || len(w.cancelAcks) >= 32 {
+		w.mu.Unlock()
+		return
+	}
+	if w.cancelAcks == nil {
+		w.cancelAcks = make(map[cancelAckKey]bool)
+	}
+	w.cancelAcks[key] = true
+	w.mu.Unlock()
+	go func() {
+		defer func() { w.mu.Lock(); delete(w.cancelAcks, key); w.mu.Unlock() }()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := client.UpdateTaskStatus(ctx, &rpc.UpdateTaskStatusRequest{WorkerID: w.workerID(), JobID: cmd.JobID, TaskID: cmd.TaskID, EpochID: cmd.EpochID, AttemptID: cmd.AttemptID, Status: rpc.TaskStatusCanceled})
+		if err != nil {
+			w.log.Warn().Err(err).Msg("cannot acknowledge absent task cancellation")
+		}
+	}()
 }

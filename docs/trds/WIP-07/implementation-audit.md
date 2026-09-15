@@ -29,3 +29,12 @@ Implemented on master baseline `0d5cf90` (2026-09-15), following merged #202. Th
 The six-method workflow is implemented, not just defined. Reservation IDs deliberately make retries idempotent rather than reserving again as the original non-idempotent sketch proposed. Allocation does not promise memory quotas: positive memory requests explicitly return INSUFFICIENT_RESOURCES and slot resource counts are reported. Deployment admission is acknowledged before potentially slow restore; RUNNING is emitted only after initialization, preserving WIP-02/03's asynchronous lifecycle.
 
 WIP-21 remains the command push mechanism for cancellation and checkpoint decisions. WIP-08 owns broader health policy/configuration and presentation; this change documents current runtime timing rather than claiming the proposal's obsolete 15-second timeout. WIP-17 retains HTTP/RBAC, data-plane and checkpoint-replica security: this change secures the coordinator-worker RPC surface when configured, not the entire cluster. Development without TLS remains explicitly unauthenticated. Optional compression, batching, generated protobuf structs and alternative leader discovery remain the original open design questions, not implemented promises.
+
+## PR #220 review fixes
+
+- Reserved redeployments wait for the previous handle's teardown and revalidate admission without consuming the lease early. `TestReservedDeploymentWaitsForPreviousTeardown` covers successful handoff, context cancellation, lease expiry, cancellation fencing and completed-attempt replay.
+- Scheduling runs bounded independent per-job operations. `TestSchedulerHungReservationDoesNotBlockOtherJobs` covers a newly submitted job progressing while another worker's reservation handler hangs, duplicate scheduling suppression and shutdown cancellation/join.
+- Absent-task cancellation acknowledgements run asynchronously with bounded concurrency and duplicate coalescing. `TestAbsentCancellationDoesNotBlockCommands` holds the status handler open and verifies later cancellation still executes.
+- Successful submissions no longer make redundant release calls. Receipt/tombstone retention remains session-long to preserve replay safety; the runtime contract records the memory-growth limitation and prerequisite for safe compaction.
+
+Review validation: all three new regressions fail when their respective old behaviours are restored, and pass five repetitions with the fixes under `-race`. The full `go test -race ./...`, build, vet and lint pass.

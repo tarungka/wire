@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/tarungka/wire/internal/engine"
@@ -32,6 +33,26 @@ func (c *Coordinator) runScheduler(ctx context.Context) {
 
 	c.log.Info().Msg("scheduler started")
 
+	// Keep a slow worker's RPC off the scheduling loop. The bounded set also
+	// prevents a later tick from deploying the same job concurrently.
+	var deployments sync.WaitGroup
+	var activeMu sync.Mutex
+	active := make(map[*JobMeta]bool)
+	defer deployments.Wait()
+	dispatch := func(job *JobMeta) {
+		activeMu.Lock()
+		defer activeMu.Unlock()
+		if active[job] || len(active) >= 32 || ctx.Err() != nil {
+			return
+		}
+		active[job] = true
+		deployments.Add(1)
+		go func() {
+			defer deployments.Done()
+			defer func() { activeMu.Lock(); delete(active, job); activeMu.Unlock() }()
+			c.schedulePendingJob(ctx, job)
+		}()
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -39,7 +60,7 @@ func (c *Coordinator) runScheduler(ctx context.Context) {
 			return
 		case <-ticker.C:
 			c.expireCheckpoints(time.Now())
-			c.scheduleTick(ctx)
+			c.schedulePending(ctx, dispatch)
 		case <-c.schedulerKick:
 			// Coalesce a short burst of submissions into one tick. The
 			// pause is small enough that interactive job latency is
@@ -60,7 +81,7 @@ func (c *Coordinator) runScheduler(ctx context.Context) {
 					drained = true
 				}
 			}
-			c.scheduleTick(ctx)
+			c.schedulePending(ctx, dispatch)
 		}
 	}
 }
@@ -77,6 +98,10 @@ func (c *Coordinator) kickScheduler() {
 
 // scheduleTick runs a single scheduler iteration.
 func (c *Coordinator) scheduleTick(ctx context.Context) {
+	c.schedulePending(ctx, func(job *JobMeta) { c.schedulePendingJob(ctx, job) })
+}
+
+func (c *Coordinator) schedulePending(ctx context.Context, dispatch func(*JobMeta)) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -96,18 +121,28 @@ func (c *Coordinator) scheduleTick(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		c.mu.RLock()
-		failing := job.Status == JobFailing
-		c.mu.RUnlock()
-		if failing && !c.prepareTaskRestart(job) {
-			continue
-		}
-		c.scheduleJob(job)
+		dispatch(job)
+	}
+}
+
+func (c *Coordinator) schedulePendingJob(ctx context.Context, job *JobMeta) {
+	c.mu.RLock()
+	failing := job.Status == JobFailing
+	c.mu.RUnlock()
+	if failing && !c.prepareTaskRestart(job) {
+		return
+	}
+	if ctx.Err() == nil {
+		c.scheduleJobContext(ctx, job)
 	}
 }
 
 // scheduleJob attempts to schedule a single CREATED job.
 func (c *Coordinator) scheduleJob(job *JobMeta) {
+	c.scheduleJobContext(context.Background(), job)
+}
+
+func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 	c.mu.RLock()
 	snapshot := *job
 	c.mu.RUnlock()
@@ -153,7 +188,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		}
 	}
 
-	peers, release, err := c.reserveDeployment(jobID, tam.AttemptID, assignments)
+	peers, release, err := c.reserveDeployment(ctx, jobID, tam.AttemptID, assignments)
 	if err != nil {
 		c.log.Debug().Err(err).Str("job_id", jobID).Msg("worker reservation refused; will retry")
 		return
@@ -163,7 +198,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 	// Transition CREATED → DEPLOYING and persist assignments under Lock.
 	c.mu.Lock()
 	// Re-check status under lock (another tick may have grabbed it).
-	if c.state != StateLeader || !c.recovered || (job.Status != JobCreated && job.Status != JobFailing) || !c.assignmentsLiveLocked(assignments, time.Now(), peers) {
+	if ctx.Err() != nil || c.state != StateLeader || !c.recovered || (job.Status != JobCreated && job.Status != JobFailing) || !c.assignmentsLiveLocked(assignments, time.Now(), peers) {
 		c.mu.Unlock()
 		return
 	}
@@ -308,7 +343,7 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 		if peer := peers[workerID]; peer != nil {
 			req := &rpc.SubmitJobRequest{JobID: jobID, AttemptID: tam.AttemptID, ReservationID: tam.AttemptID, EpochID: tam.EpochID, Tasks: wTasks}
 			var resp rpc.SubmitJobResponse
-			ctx, cancel := context.WithTimeout(context.Background(), rpc.DefaultSubmitJobTimeout)
+			ctx, cancel := context.WithTimeout(ctx, rpc.DefaultSubmitJobTimeout)
 			err := peer.CallWithRetry(ctx, rpc.MethodSubmitJob, req, &resp, 1)
 			cancel()
 			if err != nil || !resp.Accepted {
@@ -319,6 +354,9 @@ func (c *Coordinator) scheduleJob(job *JobMeta) {
 				for _, task := range wTasks {
 					c.EnqueueCommand(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeCancelTask, JobID: jobID, TaskID: task.TaskID, EpochID: tam.EpochID, AttemptID: tam.AttemptID})
 				}
+			} else {
+				// The worker consumed this lease; release only unused leases.
+				delete(peers, workerID)
 			}
 			continue
 		}

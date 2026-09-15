@@ -10,7 +10,7 @@ import (
 
 // Reservations are obtained before publishing the deployment. Legacy workers
 // retain push deployment; capability-bearing workers must have a live RPC peer.
-func (c *Coordinator) reserveDeployment(jobID, attempt string, assignments map[string][]rpc.TaskDescriptor) (map[string]*rpc.Client, func(), error) {
+func (c *Coordinator) reserveDeployment(parent context.Context, jobID, attempt string, assignments map[string][]rpc.TaskDescriptor) (map[string]*rpc.Client, func(), error) {
 	peers := make(map[string]*rpc.Client)
 	c.mu.RLock()
 	epoch := c.epoch
@@ -39,7 +39,7 @@ func (c *Coordinator) reserveDeployment(jobID, attempt string, assignments map[s
 	// One shared deadline ensures a large placement cannot outlive the lease
 	// while reserving workers sequentially. Failed partial reservations expire
 	// even if a release reply is lost.
-	ctx, cancel := context.WithTimeout(context.Background(), rpc.DefaultRequestTaskSlotsTimeout)
+	ctx, cancel := context.WithTimeout(parent, rpc.DefaultRequestTaskSlotsTimeout)
 	defer cancel()
 	for id, peer := range peers {
 		resp, err := peer.RequestTaskSlots(ctx, &rpc.RequestTaskSlotsRequest{JobID: jobID, EpochID: epoch, ReservationID: attempt, RequiredSlots: int32(len(assignments[id]))})

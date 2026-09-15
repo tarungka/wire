@@ -107,52 +107,75 @@ func (w *Worker) handleSubmitJob(ctx context.Context, _ uint64, payload []byte) 
 	digest := sha256.Sum256(payload)
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if ctx.Err() != nil {
-		return nil, rpc.NewRPCError(rpc.ErrCodeTimeout, ctx.Err().Error())
-	}
-	if w.stopping {
-		return nil, rpc.NewRPCError(rpc.ErrCodeWorkerShuttingDown, "worker stopping")
-	}
-	if req.EpochID != w.epoch {
-		return nil, rpc.NewRPCError(rpc.ErrCodeStaleEpoch, "deployment epoch mismatch")
-	}
-	if w.cancelledAttempts[req.AttemptID] {
-		return nil, rpc.NewRPCError(rpc.ErrCodeInvalidTransition, "deployment attempt cancelled")
-	}
-	if prior, ok := w.deploymentReceipts[req.AttemptID]; ok {
-		if prior != digest {
-			return nil, rpc.NewRPCError(rpc.ErrCodeDuplicateTask, "attempt reused with different deployment")
+	for {
+		if ctx.Err() != nil {
+			return nil, rpc.NewRPCError(rpc.ErrCodeTimeout, ctx.Err().Error())
 		}
-		return &rpc.SubmitJobResponse{Accepted: true}, nil
-	}
-	w.availableSlotsLocked(time.Now())
-	r := w.reservations[req.ReservationID]
-	if r == nil || r.jobID != req.JobID || r.epoch != req.EpochID || r.slots != len(req.Tasks) {
-		return nil, rpc.NewRPCError(rpc.ErrCodeInsufficientSlots, "reservation absent, expired or mismatched")
-	}
-	seen := make(map[string]bool)
-	for _, desc := range req.Tasks {
-		if desc.TaskID == "" || seen[desc.TaskID] || desc.EpochID != req.EpochID || desc.AttemptID != req.AttemptID || len(desc.OperatorChain) == 0 {
-			return nil, rpc.NewRPCError(rpc.ErrCodeInvalidRequest, "invalid task identity or chain")
+		if w.stopping {
+			return nil, rpc.NewRPCError(rpc.ErrCodeWorkerShuttingDown, "worker stopping")
 		}
-		if w.tasks[desc.TaskID] != nil {
-			return nil, rpc.NewRPCError(rpc.ErrCodeDuplicateTask, "previous task has not finished teardown")
+		if req.EpochID != w.epoch {
+			return nil, rpc.NewRPCError(rpc.ErrCodeStaleEpoch, "deployment epoch mismatch")
 		}
-		seen[desc.TaskID] = true
+		if w.cancelledAttempts[req.AttemptID] {
+			return nil, rpc.NewRPCError(rpc.ErrCodeInvalidTransition, "deployment attempt cancelled")
+		}
+		if prior, ok := w.deploymentReceipts[req.AttemptID]; ok {
+			if prior != digest {
+				return nil, rpc.NewRPCError(rpc.ErrCodeDuplicateTask, "attempt reused with different deployment")
+			}
+			return &rpc.SubmitJobResponse{Accepted: true}, nil
+		}
+		w.availableSlotsLocked(time.Now())
+		r := w.reservations[req.ReservationID]
+		if r == nil || r.jobID != req.JobID || r.epoch != req.EpochID || r.slots != len(req.Tasks) {
+			return nil, rpc.NewRPCError(rpc.ErrCodeInsufficientSlots, "reservation absent, expired or mismatched")
+		}
+		seen := make(map[string]bool)
+		var previous *taskHandle
+		for _, desc := range req.Tasks {
+			if desc.TaskID == "" || seen[desc.TaskID] || desc.EpochID != req.EpochID || desc.AttemptID != req.AttemptID || len(desc.OperatorChain) == 0 {
+				return nil, rpc.NewRPCError(rpc.ErrCodeInvalidRequest, "invalid task identity or chain")
+			}
+			if h := w.tasks[desc.TaskID]; h != nil {
+				if h.jobID != req.JobID || h.attemptID == req.AttemptID || h.done == nil {
+					return nil, rpc.NewRPCError(rpc.ErrCodeDuplicateTask, "conflicting task identity")
+				}
+				previous = h
+			}
+			seen[desc.TaskID] = true
+		}
+		if previous != nil {
+			// Terminal status can reach the coordinator before its reply lets the
+			// old execution finish teardown. Keep the lease unconsumed while we
+			// wait, without holding the lock needed by teardown and cancellation.
+			timer := time.NewTimer(time.Until(r.expires))
+			w.mu.Unlock()
+			select {
+			case <-previous.done:
+			case <-ctx.Done():
+			case <-timer.C:
+			}
+			timer.Stop()
+			w.mu.Lock()
+			// Recheck the entire admission, including epoch, cancellation, receipt
+			// and lease expiry. Concurrent retries must not execute twice.
+			continue
+		}
+		if w.deploymentReceipts == nil {
+			w.deploymentReceipts = make(map[string][32]byte)
+		}
+		w.deploymentReceipts[req.AttemptID] = digest
+		delete(w.reservations, req.ReservationID)
+		result := &rpc.SubmitJobResponse{Accepted: true}
+		for _, desc := range req.Tasks {
+			taskCtx, cancel := context.WithCancel(context.Background())
+			w.installTaskLocked(req.JobID, desc.TaskID, desc, cancel)
+			result.TaskStatuses = append(result.TaskStatuses, rpc.TaskDeploymentStatus{TaskID: desc.TaskID, Status: rpc.TaskStatusDeploying})
+			go w.runTask(taskCtx, req.JobID, desc.TaskID, desc, w.log.With().Str("task_id", desc.TaskID).Logger())
+		}
+		return result, nil
 	}
-	if w.deploymentReceipts == nil {
-		w.deploymentReceipts = make(map[string][32]byte)
-	}
-	w.deploymentReceipts[req.AttemptID] = digest
-	delete(w.reservations, req.ReservationID)
-	result := &rpc.SubmitJobResponse{Accepted: true}
-	for _, desc := range req.Tasks {
-		taskCtx, cancel := context.WithCancel(context.Background())
-		w.installTaskLocked(req.JobID, desc.TaskID, desc, cancel)
-		result.TaskStatuses = append(result.TaskStatuses, rpc.TaskDeploymentStatus{TaskID: desc.TaskID, Status: rpc.TaskStatusDeploying})
-		go w.runTask(taskCtx, req.JobID, desc.TaskID, desc, w.log.With().Str("task_id", desc.TaskID).Logger())
-	}
-	return result, nil
 }
 
 func (w *Worker) handleTriggerCheckpoint(ctx context.Context, _ uint64, payload []byte) (any, *rpc.RPCError) {
