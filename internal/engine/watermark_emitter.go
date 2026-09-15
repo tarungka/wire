@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -24,7 +25,7 @@ func runWatermarkEmitter(
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	var lastEmitted int64
+	lastEmitted := int64(math.MinInt64)
 
 	for {
 		select {

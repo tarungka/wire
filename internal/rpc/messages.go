@@ -1,5 +1,7 @@
 package rpc
 
+import "time"
+
 // ---------- Enums ----------
 
 // TaskStatus represents the lifecycle state of a task.
@@ -264,6 +266,7 @@ type JobGraph struct {
 
 // OperatorDescriptor describes a single operator in the job graph.
 type OperatorDescriptor struct {
+	Watermark   *WatermarkConfig   `codec:"watermark,omitempty"`
 	DLQSink     *DLQSinkDescriptor `codec:"dlq,omitempty"`
 	ErrorPolicy *ErrorPolicy       `codec:"error_policy,omitempty"`
 	OperatorID  string             `codec:"oid"`
@@ -338,11 +341,12 @@ type KeyGroupRange struct {
 
 // UpstreamChannelInfo describes a task's upstream data source.
 type UpstreamChannelInfo struct {
-	TaskID         string `codec:"tid,omitempty"`
-	PartitionIndex uint16 `codec:"pi,omitempty"`
-	OperatorID     string `codec:"oid"`
-	SubtaskIndex   int32  `codec:"si"`
-	Address        string `codec:"addr"`
+	IdleTimeout    time.Duration `codec:"idle_timeout,omitempty"`
+	TaskID         string        `codec:"tid,omitempty"`
+	PartitionIndex uint16        `codec:"pi,omitempty"`
+	OperatorID     string        `codec:"oid"`
+	SubtaskIndex   int32         `codec:"si"`
+	Address        string        `codec:"addr"`
 }
 
 // DownstreamChannelInfo describes a task's downstream data sink.

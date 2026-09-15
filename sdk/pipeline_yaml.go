@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/tarungka/wire/internal/rpc"
 )
 
 // PipelineConnectors supplies available connector types. Factories configure
@@ -19,10 +21,11 @@ type PipelineConnectors struct {
 }
 
 type pipelineOperator struct {
-	Name   string         `yaml:"name"`
-	Type   string         `yaml:"type"`
-	Input  string         `yaml:"input"`
-	Config map[string]any `yaml:"config"`
+	Name      string               `yaml:"name"`
+	Type      string               `yaml:"type"`
+	Input     string               `yaml:"input"`
+	Config    map[string]any       `yaml:"config"`
+	Watermark *rpc.WatermarkConfig `yaml:"watermark"`
 }
 type pipelineDocument struct {
 	APIVersion string `yaml:"apiVersion"`
@@ -206,6 +209,18 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 	// Compile all transform/configuration errors before invoking any connector.
 	for _, op := range ordered {
 		node := &StreamNode{Name: op.Name, Type: kinds[op.Name], Parallelism: doc.Spec.Parallelism}
+		if op.Watermark != nil {
+			if node.Type != NodeSource {
+				return nil, fmt.Errorf("%w: watermark requires a source: %q", ErrInvalidConfig, op.Name)
+			}
+			if op.Watermark.Strategy == "" {
+				op.Watermark.Strategy = "bounded-ooo"
+			}
+			if err := op.Watermark.Validate(); err != nil {
+				return nil, fmt.Errorf("%w: watermark for %q: %v", ErrInvalidConfig, op.Name, err)
+			}
+			node.Watermark = op.Watermark
+		}
 		if node.Type != NodeSource && node.Type != NodeSink {
 			if err := compilePipelineTransform(node, op, expressionEnv); err != nil {
 				return nil, fmt.Errorf("%w: transform %q: %v", ErrInvalidConfig, op.Name, err)

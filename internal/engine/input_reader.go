@@ -110,6 +110,9 @@ func runInputReaderWithContexts(
 				return
 			}
 			occupancy.Add(1)
+			if _, ok := msg.(*protocol.DataRecordMsg); ok && err == nil && tracker.ordered {
+				tracker.recordQueued(inputIndex)
+			}
 			if reportErr := report(); reportErr != nil {
 				log.Warn().Err(reportErr).Int("input", inputIndex).Msg("input flow-control report failed")
 			}
@@ -155,7 +158,11 @@ func runInputReaderWithContexts(
 		switch m := result.msg.(type) {
 		case *protocol.DataRecordMsg:
 			event := EventFromProto(m)
-			tracker.RecordActivity(inputIndex)
+			if tracker.ordered {
+				event.inputActivity = &inputActivity{tracker: tracker, input: inputIndex}
+			} else {
+				tracker.RecordActivity(inputIndex)
+			}
 			buffered, err := aligner.BufferAlignedEvent(ctx, inputIndex, event)
 			if err != nil {
 				return err
@@ -189,7 +196,22 @@ func runInputReaderWithContexts(
 			}
 
 		case *protocol.WatermarkMsg:
-			tracker.AdvanceWatermark(inputIndex, m.Timestamp)
+			if !tracker.ordered {
+				tracker.AdvanceWatermark(inputIndex, m.Timestamp)
+				continue
+			}
+			event := Event{inputWatermark: &inputWatermarkBoundary{tracker: tracker, input: inputIndex, timestamp: m.Timestamp}}
+			buffered, err := aligner.BufferAlignedEvent(ctx, inputIndex, event)
+			if err != nil {
+				return err
+			}
+			if !buffered {
+				select {
+				case eventCh <- event:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
 
 		case *protocol.EndOfPartitionMsg:
 			ctrl := ControlMsg{

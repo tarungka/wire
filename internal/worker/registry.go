@@ -39,6 +39,7 @@ type (
 // looks up factories by the ClassName in each OperatorDescriptor at task
 // deploy time.
 type Registry struct {
+	windows      map[string]WindowFactory
 	keySelectors map[string]KeySelectorFactory
 	mu           sync.RWMutex
 	sources      map[string]SourceFactory
@@ -111,6 +112,19 @@ func (r *Registry) Build(ctx context.Context, desc rpc.OperatorDescriptor, tc Ta
 	defer r.mu.RUnlock()
 
 	switch desc.Type {
+	case rpc.OperatorTypeWindow:
+		factory := r.windows[desc.ClassName]
+		if factory == nil {
+			return nil, fmt.Errorf("worker: unknown window %q", desc.ClassName)
+		}
+		operator, err := factory(ctx, desc.Config, tc)
+		if err != nil {
+			return nil, fmt.Errorf("worker: window %q factory: %w", desc.ClassName, err)
+		}
+		if operator == nil {
+			return nil, fmt.Errorf("worker: window %q returned nil", desc.ClassName)
+		}
+		return operator, nil
 	case rpc.OperatorTypeKeyBy:
 		factory := r.keySelectors[desc.ClassName]
 		if factory == nil {

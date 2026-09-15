@@ -52,6 +52,9 @@ func TestSourceReadAndWatermarkOverlapInTaskLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	slot := NewTaskSlot(config, nil, nil, []Operator{sink}, source)
+	// Inject the instrumented strategy: the default no longer invokes the
+	// source's legacy callback. This test checks lifecycle concurrency.
+	slot.Strategy = newLegacySourceStrategy(source)
 	if err := slot.Run(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -45,8 +45,8 @@ type SourceOperator interface {
 	Operator
 	// ReadBatch returns the next batch of events. Returns nil slice at end of input.
 	ReadBatch(ctx context.Context) ([]Event, error)
-	// GenerateWatermark returns the current watermark timestamp.
-	// Must be thread-safe (called from the watermark emitter goroutine).
+	// GenerateWatermark is retained for source compatibility. Runtime strategy
+	// selection defaults to bounded out-of-orderness instead of this callback.
 	GenerateWatermark() int64
 }
 

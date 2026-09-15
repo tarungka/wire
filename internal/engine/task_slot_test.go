@@ -1138,7 +1138,7 @@ func TestTaskSlot_LegacySourceBackwardCompat(t *testing.T) {
 
 	cfg := DefaultTaskSlotConfig()
 	cfg.WatermarkInterval = 50 * time.Millisecond
-	// No Watermark.Strategy set — should use legacy.
+	// No Watermark.Strategy set — source records still run with bounded watermarks.
 
 	ts := NewTaskSlot(cfg, nil, nil, []Operator{&noopMap{}, sink}, source)
 
@@ -1162,9 +1162,9 @@ func TestTaskSlot_ResolveStrategy(t *testing.T) {
 		wantType string
 	}{
 		{
-			name:     "default/legacy",
+			name:     "default/bounded-ooo",
 			config:   WatermarkConfig{},
-			wantType: "*engine.legacySourceStrategy",
+			wantType: "*engine.BoundedOutOfOrdernessStrategy",
 		},
 		{
 			name:     "bounded-ooo",

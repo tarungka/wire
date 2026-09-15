@@ -39,6 +39,10 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		return fmt.Errorf("worker: task %q has empty OperatorChain", taskID)
 	}
 
+	watermark, err := taskWatermarkConfig(desc.OperatorChain)
+	if err != nil {
+		return err
+	}
 	groups := desc.NumKeyGroups
 	if groups == 0 {
 		groups = keygroup.DefaultNumKeyGroups
@@ -133,8 +137,14 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		config = *te.taskConfig
 	}
 	config.ErrorConfigs = errorConfigs
+	if watermark != nil {
+		config.Watermark = *watermark
+	}
 	slot := engine.NewTaskSlot(config, inputs, outputs, operators, sourceOp)
 	slot.TaskID = taskID
+	for _, upstream := range desc.Upstream {
+		slot.InputIdleTimeouts = append(slot.InputIdleTimeouts, upstream.IdleTimeout)
+	}
 	slot.OutputKeyGroups = desc.OutputKeyGroups
 	slot.TaskIndex = int(desc.SubtaskIndex)
 	slot.OnRunning = onRunning
