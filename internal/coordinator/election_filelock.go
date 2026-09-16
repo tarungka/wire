@@ -3,6 +3,9 @@ package coordinator
 import (
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -59,6 +62,9 @@ func (f *FileLockElection) Campaign(ctx context.Context, nodeID string) (*Leader
 		err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err != nil {
 			_ = lockFile.Close()
+			if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+				return nil, fmt.Errorf("acquire election lock: %w", err)
+			}
 			// Lock held by another process, wait and retry.
 			select {
 			case <-ctx.Done():
@@ -82,7 +88,7 @@ func (f *FileLockElection) Campaign(ctx context.Context, nodeID string) (*Leader
 			return nil, err
 		}
 
-		lctx, cancel := context.WithCancel(context.Background())
+		lctx, cancel := context.WithCancel(ctx)
 		f.mu.Lock()
 		f.lockFile = lockFile
 		f.lctx = &LeaderContext{
@@ -133,15 +139,54 @@ func (f *FileLockElection) incrementEpoch() (uint64, error) {
 	var epoch uint64
 
 	data, err := os.ReadFile(epochPath)
-	if err == nil && len(data) == 8 {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return 0, fmt.Errorf("read election epoch: %w", err)
+	}
+	if err == nil {
+		if len(data) != 8 {
+			return 0, fmt.Errorf("%w: election epoch must contain exactly 8 bytes", ErrStoreCorrupted)
+		}
 		epoch = binary.BigEndian.Uint64(data)
+	}
+	if epoch == math.MaxUint64 {
+		return 0, fmt.Errorf("%w: election epoch exhausted", ErrRecoveryFailed)
 	}
 	epoch++
 
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, epoch)
-	if err := os.WriteFile(epochPath, buf, 0o644); err != nil {
+	if err := writeDurableElectionFile(epochPath, buf); err != nil {
 		return 0, err
 	}
 	return epoch, nil
+}
+
+// Replace and sync the companion record while holding the election lock. Never
+// truncate the only fencing token in place: a crash could otherwise reuse it.
+func writeDurableElectionFile(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".wire-election-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
