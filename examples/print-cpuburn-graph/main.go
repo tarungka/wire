@@ -36,7 +36,7 @@ type CPUBurnConfig struct {
 func main() {
 	rounds := flag.Uint("rounds", 50000, "SHA-256 iterations per event (CPU work knob)")
 	events := flag.Int("events", 100, "events the source emits per job (latency knob)")
-	payload := flag.Int("payload-bytes", 64, "size of each event's payload in bytes")
+	payload := flag.Int("payload-bytes", 64, "bytes per source event; event size only, since each event is hashed once before the round loop")
 	flag.Parse()
 
 	if *rounds == 0 || uint64(*rounds) > math.MaxUint32 {

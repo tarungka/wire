@@ -194,6 +194,14 @@ services:
   # Tune the workload:
   #   BURN_ROUNDS=100000 BURN_EVENTS=200 \
   #     docker compose --profile k6-cpu run --rm k6-cpu
+  #
+  # CPU work per job is BURN_ROUNDS * BURN_EVENTS. BURN_PAYLOAD only sets
+  # the event size: each event is hashed once before the round loop, so it
+  # is not a CPU knob.
+  #
+  # This profile writes its graph to graph_bytes_cpu.txt, separate from the
+  # k6 profile's graph_bytes.txt, so both profiles can be enabled together
+  # without one overwriting the other's request body.
 
   k6-cpu-graph-init:
     image: wire:local
@@ -205,7 +213,7 @@ services:
       BURN_EVENTS: "${BURN_EVENTS:-100}"
       BURN_PAYLOAD: "${BURN_PAYLOAD:-64}"
     command:
-      - 'print-cpuburn-graph --rounds "$$BURN_ROUNDS" --events "$$BURN_EVENTS" --payload-bytes "$$BURN_PAYLOAD" > /shared/graph_bytes.txt && echo "wrote cpuburn graph (rounds=$$BURN_ROUNDS events=$$BURN_EVENTS payload=$$BURN_PAYLOAD)"'
+      - 'print-cpuburn-graph --rounds "$$BURN_ROUNDS" --events "$$BURN_EVENTS" --payload-bytes "$$BURN_PAYLOAD" > /shared/graph_bytes_cpu.txt && echo "wrote cpuburn graph (rounds=$$BURN_ROUNDS events=$$BURN_EVENTS payload=$$BURN_PAYLOAD)"'
     volumes:
       - k6-shared:/shared
     depends_on:
@@ -228,15 +236,20 @@ services:
       - k6-shared:/shared:ro
     environment:
       WIRE_API: "http://coordinator:4001"
-      # Default RPS is much lower than the upper-pipeline test because
-      # each job now takes ~rounds * events * 500ns of CPU. At
-      # rounds=50000 / events=100 / 4 task slots, the worker drains
-      # ~1.6 jobs/s; submitting faster just queues CREATED.
+      # Default RPS is much lower than the uppercase test because each job
+      # now does real CPU work. src -> burn -> sink are forward edges at
+      # parallelism 1, so the three operators fuse into one chain and a job
+      # occupies ONE task slot, not three. At rounds=50000 / events=100 a
+      # job takes ~440 ms, so the worker's 4 slots drain roughly 9 jobs/s
+      # given 4 free cores. RPS stays well under that on purpose: a
+      # near-empty queue keeps wire_coordinator_job_duration_seconds
+      # reporting processing time instead of queue wait. Raise it to
+      # approach saturation.
       RPS: "${RPS:-2}"
       DURATION: "${DURATION:-2m}"
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - 'k6 run --env GRAPH_BYTES=$$(cat /shared/graph_bytes.txt) /scripts/submit_jobs.js'
+      - 'k6 run --env GRAPH_BYTES=$$(cat /shared/graph_bytes_cpu.txt) /scripts/submit_jobs.js'
 
 volumes:
   coordinator-data:
