@@ -78,7 +78,7 @@ Communication between Coordinator and Workers happens via internal RPC (over the
 *   `AcknowledgeCheckpoint`
 
 ### 4.2 Heartbeating
-*   Workers send periodic heartbeats to the Coordinator.
+*   Workers send heartbeats every `heartbeat.interval` (default 5s). A local receipt-time deadline of `heartbeat.timeout` (default 30s) marks workers LOST and triggers task/job recovery. Worker contact expiry stops admission and processing, closes transports and exits nonzero. See [WIP-08 runtime contract](trds/WIP-08/runtime-contract.md).
 *   Timeout triggers a **Job Failure** event -> Recovery Workflow.
 
 ### 4.3 Task Lifecycle

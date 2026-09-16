@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -157,12 +158,12 @@ func TestInputWatermarkTracker_StartupIdleTimeout(t *testing.T) {
 	tracker := newInputWatermarkTracker(2, func() int64 { return now })
 	tracker.AdvanceWatermark(0, 100)
 	tracker.RecordActivity(0)
-	if wm, idle := tracker.MinWatermark(time.Minute); wm != 0 || idle {
+	if wm, idle := tracker.MinWatermark(time.Minute); wm != math.MinInt64 || idle {
 		t.Fatalf("new input excluded immediately: watermark=%d allIdle=%v", wm, idle)
 	}
 	now = int64(time.Minute - time.Nanosecond)
 	tracker.RecordActivity(0)
-	if wm, idle := tracker.MinWatermark(time.Minute); wm != 0 || idle {
+	if wm, idle := tracker.MinWatermark(time.Minute); wm != math.MinInt64 || idle {
 		t.Fatalf("new input excluded before timeout: watermark=%d allIdle=%v", wm, idle)
 	}
 	now = int64(time.Minute)
@@ -254,5 +255,25 @@ func TestInputWatermarkTracker_ConcurrentStress(t *testing.T) {
 		if wm := tracker.watermarks[i].Load(); wm != expected {
 			t.Errorf("input %d watermark: got %d, want %d", i, wm, expected)
 		}
+	}
+}
+
+func TestInputWatermarkTrackerPerInputIdleTimeout(t *testing.T) {
+	var now int64
+	tracker := newInputWatermarkTracker(2, func() int64 { return now })
+	tracker.idleTimeouts = []time.Duration{time.Second, 3 * time.Second}
+	tracker.AdvanceWatermark(0, 50)
+	tracker.AdvanceWatermark(1, 100)
+	now = int64(time.Second)
+	if minimum, idle := tracker.MinWatermark(time.Minute); idle || minimum != 100 {
+		t.Fatalf("short timeout not applied: %d %v", minimum, idle)
+	}
+	tracker.RecordActivity(0)
+	if minimum, idle := tracker.MinWatermark(time.Minute); idle || minimum != 50 {
+		t.Fatalf("reactivation did not restore minimum: %d %v", minimum, idle)
+	}
+	now = int64(3 * time.Second)
+	if _, idle := tracker.MinWatermark(time.Minute); !idle {
+		t.Fatal("all inputs should be idle")
 	}
 }

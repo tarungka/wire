@@ -49,6 +49,9 @@ This produces the `wire` binary in the project root.
 
 ### TLS Flags
 
+Node TLS flags configure coordinator-worker RPC connections (TLS 1.3 minimum). For mTLS, configure the coordinator certificate/key and CA with `--node-verify-client`, and give each worker a client certificate whose Common Name matches its worker ID. Workers verify the coordinator hostname or `--node-verify-server-name` override. These flags do not secure HTTP, data streams or checkpoint replica transfers; see [WIP-07's runtime contract](trds/WIP-07/runtime-contract.md#tls-and-identity).
+
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--node-cert` | | TLS certificate file path |

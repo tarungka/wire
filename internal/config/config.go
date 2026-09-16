@@ -3,6 +3,7 @@ package config
 // WireConfig is the top-level configuration for a Wire node.
 // It maps directly to the wire.yaml schema.
 type WireConfig struct {
+	Heartbeat  HeartbeatConfig  `yaml:"heartbeat" json:"heartbeat" koanf:"heartbeat"`
 	Checkpoint CheckpointConfig `yaml:"checkpoint" json:"checkpoint" koanf:"checkpoint"`
 	TaskSlot   TaskSlotConfig   `yaml:"task_slot" json:"task_slot" koanf:"task_slot"`
 	Mode       string           `yaml:"mode"        json:"mode"        koanf:"mode"`
@@ -17,6 +18,8 @@ type WireConfig struct {
 }
 
 type CheckpointConfig struct {
+	MinPause               Duration `yaml:"min_pause" json:"min_pause" koanf:"min_pause"`
+	TolerableFailureRate   float64  `yaml:"tolerable_failure_rate" json:"tolerable_failure_rate" koanf:"tolerable_failure_rate"`
 	MaxConsecutiveFailures int      `yaml:"max_consecutive_failures" json:"max_consecutive_failures" koanf:"max_consecutive_failures"`
 	Timeout                Duration `yaml:"timeout" json:"timeout" koanf:"timeout"`
 }
@@ -92,4 +95,11 @@ type TaskSlotConfig struct {
 	AlignmentBufferSize         int      `yaml:"alignment_buffer_size" json:"alignment_buffer_size" koanf:"alignment_buffer_size"`
 	CheckpointUploadConcurrency int      `yaml:"checkpoint_upload_concurrency" json:"checkpoint_upload_concurrency" koanf:"checkpoint_upload_concurrency"`
 	DrainTimeout                Duration `yaml:"drain_timeout" json:"drain_timeout" koanf:"drain_timeout"`
+}
+
+// HeartbeatConfig controls worker liveness, independently of RPC call timeouts.
+type HeartbeatConfig struct {
+	Interval    Duration `yaml:"interval" json:"interval" koanf:"interval"`
+	Timeout     Duration `yaml:"timeout" json:"timeout" koanf:"timeout"`
+	MaxFailures int      `yaml:"max_failures" json:"max_failures" koanf:"max_failures"`
 }

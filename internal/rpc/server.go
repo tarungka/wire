@@ -114,6 +114,7 @@ func (s *Server) getStreamHandler(method MethodID) StreamHandler {
 // It blocks until the context is canceled or the session is closed.
 func (s *Server) ServeSession(ctx context.Context, session *yamux.Session) {
 	ctx, cancel := context.WithCancel(ctx)
+	ctx = context.WithValue(ctx, sessionPeerKey{}, &sessionPeer{client: NewClient(session, s.cfg), done: ctx.Done()})
 	s.mu.Lock()
 	if s.stopping {
 		s.mu.Unlock()
@@ -173,15 +174,19 @@ func (s *Server) ServeSession(ctx context.Context, session *yamux.Session) {
 // serveStream handles a single RPC stream lifecycle.
 func (s *Server) serveStream(ctx context.Context, stream *yamux.Stream) {
 	defer func() { _ = stream.Close() }()
+	var requestID uint64
 
 	defer func() {
 		if r := recover(); r != nil {
 			s.log.Error().Interface("panic", r).Msg("handler panic recovered")
 			rpcErr := NewRPCError(ErrCodeInternalError, fmt.Sprintf("handler panic: %v", r))
-			s.writeErrorResponse(stream, 0, rpcErr)
+			s.writeErrorResponse(stream, requestID, rpcErr)
 		}
 	}()
 
+	// A peer that opens a stream but never sends a frame cannot occupy a
+	// dispatch slot forever. Streaming handlers clear this setup deadline.
+	_ = stream.SetDeadline(time.Now().Add(DefaultSubmitJobTimeout))
 	// 1. Read the request frame.
 	frame, err := ReadRPCFrame(stream, s.cfg.MaxPayloadSize)
 	if err != nil {
@@ -189,6 +194,7 @@ func (s *Server) serveStream(ctx context.Context, stream *yamux.Stream) {
 		return
 	}
 
+	requestID = frame.RequestID
 	s.log.Debug().
 		Str("method", MethodName(frame.MethodID)).
 		Uint64("request_id", frame.RequestID).
@@ -210,6 +216,7 @@ func (s *Server) serveStream(ctx context.Context, stream *yamux.Stream) {
 	// stream and writes its own response frames.)
 	if sh := s.getStreamHandler(frame.MethodID); sh != nil {
 		kind = "streaming"
+		_ = stream.SetDeadline(time.Time{})
 		if err := sh(ctx, frame.RequestID, frame.Payload, stream); err != nil {
 			s.log.Debug().Err(err).Str("method", method).Msg("stream handler ended with error")
 			dispatchErr = err
@@ -227,8 +234,31 @@ func (s *Server) serveStream(ctx context.Context, stream *yamux.Stream) {
 		return
 	}
 
+	// Unary requests contain exactly one frame. Peer close cancels handler
+	// work; a local method budget also bounds handlers if the peer remains.
+	handlerCtx, cancel := context.WithTimeout(ctx, s.cfg.methodTimeout(frame.MethodID))
+	defer cancel()
+	_ = stream.SetDeadline(time.Time{})
+	_ = stream.SetWriteDeadline(time.Now().Add(s.cfg.methodTimeout(frame.MethodID)))
+	// Let the context timer establish DeadlineExceeded before waking the
+	// reverse-read watcher; an independent read timer could win and mask it
+	// as caller cancellation.
+	stopDeadline := context.AfterFunc(handlerCtx, func() { _ = stream.SetDeadline(time.Now()) })
+	defer stopDeadline()
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		var extra [1]byte
+		_, _ = stream.Read(extra[:])
+		cancel()
+	}()
+	defer func() {
+		cancel()
+		_ = stream.SetReadDeadline(time.Now())
+		<-readDone
+	}()
 	// 4. Call handler.
-	result, rpcErr := handler(ctx, frame.RequestID, frame.Payload)
+	result, rpcErr := handler(handlerCtx, frame.RequestID, frame.Payload)
 
 	// 5. Write response.
 	if rpcErr != nil {
@@ -293,4 +323,20 @@ func (s *Server) Stop() {
 		_ = session.Close()
 	}
 	s.wg.Wait()
+}
+
+// SessionPeer returns the reverse-direction client and session lifetime for a
+// handler. This is distinct from the shorter per-request handler context.
+type sessionPeerKey struct{}
+type sessionPeer struct {
+	client *Client
+	done   <-chan struct{}
+}
+
+func SessionPeer(ctx context.Context) (*Client, <-chan struct{}) {
+	peer, _ := ctx.Value(sessionPeerKey{}).(*sessionPeer)
+	if peer == nil {
+		return nil, nil
+	}
+	return peer.client, peer.done
 }

@@ -109,6 +109,12 @@ func (s CheckpointStatus) String() string {
 
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
+	CheckpointOutcomes            []bool    `codec:"checkpoint_outcomes,omitempty"`
+	CheckpointAttempts            uint64    `codec:"checkpoint_attempts,omitempty"`
+	CheckpointFailures            uint64    `codec:"checkpoint_failures,omitempty"`
+	ConsecutiveCheckpointFailures int       `codec:"consecutive_checkpoint_failures,omitempty"`
+	LastCheckpointCompletion      time.Time `codec:"last_checkpoint_completion,omitempty"`
+	CheckpointFailure             string    `codec:"checkpoint_failure,omitempty"`
 	// RescaleCheckpoint selects a completed savepoint for changed ownership.
 	RescaleRollback   *RescaleRollback `codec:"rescale_rollback,omitempty"`
 	RescaleFailure    string           `codec:"rescale_failure,omitempty"`
@@ -133,17 +139,22 @@ type JobMeta struct {
 
 // TaskAssignmentMap maps task IDs to the worker IDs they are assigned to.
 type TaskAssignmentMap struct {
-	RescaleParts    map[string][]RescaleStatePart `codec:"rescale_parts,omitempty"`
-	TaskDescriptors []rpc.TaskDescriptor          `codec:"task_descriptors,omitempty"`
-	EpochID         uint64                        `codec:"eid,omitempty"`
-	AttemptID       string                        `codec:"attempt_id,omitempty"`
-	Replicas        map[string]string             `codec:"replicas,omitempty"`
-	JobID           string                        `codec:"job_id"`
-	Assignments     map[string]string             `codec:"assignments"` // task_id → worker_id
+	RecoveryAttemptCharged bool                                       `codec:"recovery_attempt_charged,omitempty"`
+	RestoreCheckpoints     map[string]rpc.CheckpointRestoreDescriptor `codec:"restore_checkpoints,omitempty"`
+	RescaleParts           map[string][]RescaleStatePart              `codec:"rescale_parts,omitempty"`
+	TaskDescriptors        []rpc.TaskDescriptor                       `codec:"task_descriptors,omitempty"`
+	EpochID                uint64                                     `codec:"eid,omitempty"`
+	AttemptID              string                                     `codec:"attempt_id,omitempty"`
+	Replicas               map[string]string                          `codec:"replicas,omitempty"`
+	JobID                  string                                     `codec:"job_id"`
+	Assignments            map[string]string                          `codec:"assignments"` // task_id → worker_id
 }
 
 // CheckpointMeta holds persisted metadata for a single checkpoint.
 type CheckpointMeta struct {
+	InvalidReason   string               `codec:"invalid_reason,omitempty"`
+	ManifestVersion int                  `codec:"manifest_version,omitempty"`
+	TaskManifests   map[string][]byte    `codec:"task_manifests,omitempty"`
 	TaskDescriptors []rpc.TaskDescriptor `codec:"task_descriptors,omitempty"`
 	NumKeyGroups    int                  `codec:"key_groups,omitempty"`
 	SavepointID     string               `codec:"savepoint_id,omitempty"`
@@ -195,13 +206,19 @@ type SavepointMeta struct {
 
 // WorkerMeta holds persisted metadata for a registered worker.
 type WorkerMeta struct {
-	CheckpointAddress  string    `codec:"checkpoint_address,omitempty"`
-	ID                 string    `codec:"id"`
-	Address            string    `codec:"address"`
-	TaskSlotsTotal     int       `codec:"task_slots_total"`
-	TaskSlotsAvailable int       `codec:"task_slots_available"`
-	LastHeartbeat      time.Time `codec:"last_heartbeat"`
-	RunningTasks       []string  `codec:"running_tasks"`
+	Lost                 bool                     `codec:"-" json:"-"`
+	Resources            *rpc.ResourceReport      `codec:"-" json:"-"`
+	TaskReports          []rpc.RunningTaskSummary `codec:"-" json:"-"`
+	RPCPeerEpoch         uint64                   `codec:"-" json:"-"`
+	RPCClient            *rpc.Client              `codec:"-" json:"-"`
+	SupportsReservations bool                     `codec:"slot_reservations,omitempty"`
+	CheckpointAddress    string                   `codec:"checkpoint_address,omitempty"`
+	ID                   string                   `codec:"id"`
+	Address              string                   `codec:"address"`
+	TaskSlotsTotal       int                      `codec:"task_slots_total"`
+	TaskSlotsAvailable   int                      `codec:"task_slots_available"`
+	LastHeartbeat        time.Time                `codec:"-"`
+	RunningTasks         []string                 `codec:"running_tasks"`
 }
 
 // ClusterConfig holds cluster-wide configuration parameters.

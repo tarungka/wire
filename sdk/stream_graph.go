@@ -33,6 +33,7 @@ const (
 
 // StreamNode represents a single operator in the logical DAG.
 type StreamNode struct {
+	Watermark   *rpc.WatermarkConfig
 	NamedDLQ    *rpc.DLQSinkDescriptor
 	ErrorPolicy *rpc.ErrorPolicy
 	DLQSink     Sink
@@ -146,6 +147,14 @@ func (g *StreamGraph) validate() error {
 	hasSources := false
 	hasSinks := false
 	for _, node := range g.nodes {
+		if node.Watermark != nil {
+			if node.Type != NodeSource {
+				return fmt.Errorf("watermark strategy requires a source: %s", node.Name)
+			}
+			if err := node.Watermark.Validate(); err != nil {
+				return err
+			}
+		}
 		if node.Type == NodeSource {
 			hasSources = true
 		}

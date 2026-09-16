@@ -174,3 +174,12 @@ func (s *Session) YamuxSession() *yamux.Session {
 func (s *Session) Addr() string {
 	return s.addr
 }
+
+// TLSConnectionState exposes the completed handshake for RPC identity checks.
+func (s *Session) TLSConnectionState() (tls.ConnectionState, bool) {
+	conn, ok := s.conn.(*tls.Conn)
+	if !ok {
+		return tls.ConnectionState{}, false
+	}
+	return conn.ConnectionState(), true
+}

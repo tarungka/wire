@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,8 +35,28 @@ func (*checkpointTestSource) ReadBatch(ctx context.Context) ([]engine.Event, err
 	}
 }
 
+func TestClusterCheckpointRestartsAfterWorkerLoss(t *testing.T) {
+	testClusterCheckpoint(t, false, false, false, false, false, false, false, true)
+}
+
 func TestClusterCheckpointRestartsFromReplica(t *testing.T) {
 	testClusterCheckpoint(t, false, false, true)
+}
+
+func TestClusterCheckpointFallsBackFromMissingArchive(t *testing.T) {
+	testClusterCheckpoint(t, false, false, true, false, true)
+}
+
+func TestClusterCheckpointFallsBackFromCorruptArchive(t *testing.T) {
+	testClusterCheckpoint(t, false, false, true, false, true, true)
+}
+
+func TestClusterCheckpointSkipsFourMissingArchives(t *testing.T) {
+	testClusterCheckpoint(t, false, false, true, false, true, false, true)
+}
+
+func TestClusterCheckpointRefusesTransactionalFallback(t *testing.T) {
+	testClusterCheckpoint(t, false, true, true, false, true)
 }
 
 func TestClusterCheckpointReplicatesAndCompletes(t *testing.T) {
@@ -64,7 +85,12 @@ func TestClusterCheckpointCoordinatorFailover(t *testing.T) {
 func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 	t.Helper()
 	failover := len(transactional) > 2 && transactional[2]
+	workerLoss := len(transactional) > 6 && transactional[6]
+	fallback := len(transactional) > 3 && transactional[3]
 	timeout := 15 * time.Second
+	if fallback {
+		timeout = 60 * time.Second
+	}
 	if failover {
 		timeout = 60 * time.Second
 	}
@@ -73,7 +99,12 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 	coordCtx, stopCoordinator := context.WithCancel(ctx)
 	defer func() { stopCoordinator() }()
 	metadata := coordinator.NewMemoryStore()
-	coord := coordinator.New(coordinator.CoordinatorConfig{NodeID: "coordinator"}, metadata, nil, zerolog.Nop())
+	coordinatorConfig := coordinator.CoordinatorConfig{NodeID: "coordinator"}
+	if workerLoss {
+		coordinatorConfig.WorkerTimeout = 500 * time.Millisecond
+		coordinatorConfig.HeartbeatInterval = 50 * time.Millisecond
+	}
+	coord := coordinator.New(coordinatorConfig, metadata, nil, zerolog.Nop())
 	coordDone := make(chan error, 1)
 	go func() { coordDone <- coord.Run(coordCtx) }()
 	waitFor(t, 2*time.Second, coord.IsReady)
@@ -96,7 +127,7 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 	var restoredRead atomic.Bool
 	registry := worker.NewRegistry()
 	registry.RegisterSource("checkpoint-source", func(context.Context, []byte, worker.TaskContext) (engine.SourceOperator, error) {
-		if restart || failover {
+		if restart || failover || workerLoss {
 			return &restartCheckpointSource{fail: &failSource, needsRestore: instances.Add(1) > 1, readAfterRestore: &restoredRead}, nil
 		}
 		return &checkpointTestSource{}, nil
@@ -132,7 +163,12 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 			replica.Authorize = func(context.Context, rpc.ReplicateCheckpointRequest) error { return errors.New("replica refused") }
 			taskConfig.Checkpoint.MaxConsecutiveFailures = 2
 		}
-		w := worker.NewWithRegistry(worker.Config{WorkerID: fmt.Sprintf("worker-%d", i), CoordinatorAddr: server.Addr(), TaskSlots: 1, TaskSlot: &taskConfig, CheckpointReplica: replica}, registry, zerolog.Nop())
+		workerConfig := worker.Config{WorkerID: fmt.Sprintf("worker-%d", i), CoordinatorAddr: server.Addr(), TaskSlots: 1, TaskSlot: &taskConfig, CheckpointReplica: replica}
+		if workerLoss {
+			workerConfig.HeartbeatInterval = 50 * time.Millisecond
+			workerConfig.HeartbeatTimeout = 500 * time.Millisecond
+		}
+		w := worker.NewWithRegistry(workerConfig, registry, zerolog.Nop())
 		workers = append(workers, w)
 		ch := make(chan error, 1)
 		done = append(done, ch)
@@ -205,7 +241,29 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 		current, err := coord.GetJob(job.ID)
 		return err == nil && current.LatestCheckpoint == checkpoint.ID
 	})
+	rawManifest, err := metadata.Get(coordinator.CheckpointManifestKey(job.ID, checkpoint.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := engine.UnmarshalCheckpointMetadata(rawManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manifest.ValidateComplete(); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Tasks) != len(checkpoint.Tasks) {
+		t.Fatal("completed manifest lost task inventory")
+	}
+	for _, task := range manifest.Tasks {
+		if task.StateSHA256["checkpoint.archive"] == "" || task.StateSizeBytes <= 0 || len(task.SourceOffsets) == 0 {
+			t.Fatal("manifest lost durable archive inventory")
+		}
+	}
 	if len(transactional) > 0 && transactional[0] {
+		if len(manifest.SinkTxns) != 1 || manifest.SinkTxns[0].TransactionState != "PRE_COMMITTED" {
+			t.Fatal("manifest missing prepared transaction")
+		}
 		waitFor(t, 3*time.Second, func() bool { return committed.Load() == checkpoint.ID })
 		if earlyCommit.Load() {
 			t.Fatal("sink committed before global completion")
@@ -225,6 +283,37 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 			t.Fatalf("remote snapshot: %+v, %v", snapshot, err)
 		}
 	}
+	if workerLoss {
+		var owner string
+		for _, id := range checkpoint.Tasks {
+			owner = id
+			break
+		}
+		victim := 0
+		if owner == "worker-1" {
+			victim = 1
+		}
+		lostAt := time.Now()
+		if err := workers[victim].Shutdown(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, time.Second+coordinatorConfig.WorkerTimeout, func() bool {
+			for _, w := range coord.ListWorkers() {
+				if w.ID == owner {
+					return w.Lost
+				}
+			}
+			return false
+		})
+		if time.Since(lostAt) > coordinatorConfig.WorkerTimeout+time.Second {
+			t.Fatal("worker loss detection exceeded budget")
+		}
+		waitFor(t, 5*time.Second, func() bool {
+			current, err := coord.GetJob(job.ID)
+			return err == nil && current.Status == coordinator.JobRunning && current.RestartCount == 1 && restoredRead.Load()
+		})
+	}
+
 	if failover {
 		oldEpoch := coord.CurrentEpoch()
 		address := server.Addr()
@@ -253,10 +342,76 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 		})
 	}
 	if restart {
+		expectedRestarts := 1
+		if fallback {
+			badCount := 1
+			if len(transactional) > 5 && transactional[5] {
+				badCount = 4
+			}
+			for bad := 0; bad < badCount; bad++ {
+				latest, err := coord.TriggerCheckpoint(job.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				waitFor(t, 4*time.Second, func() bool {
+					current, err := coord.GetJob(job.ID)
+					return err == nil && current.LatestCheckpoint == latest.ID
+				})
+				for taskID, owner := range latest.Tasks {
+					index := 1
+					if owner == "worker-1" {
+						index = 0
+					}
+					store, err := engine.NewFileCheckpointStore(stores[index])
+					if err != nil {
+						t.Fatal(err)
+					}
+					archive, err := store.OpenArchive(ctx, job.ID, taskID, latest.ID, latest.EpochID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					name := archive.Name()
+					_ = archive.Close()
+					if len(transactional) > 4 && transactional[4] {
+						file, err := os.OpenFile(name, os.O_WRONLY, 0600)
+						if err != nil {
+							t.Fatal(err)
+						}
+						_, err = file.WriteAt([]byte("X"), 0)
+						closeErr := file.Close()
+						if err != nil {
+							t.Fatal(err)
+						}
+						if closeErr != nil {
+							t.Fatal(closeErr)
+						}
+					} else if err := os.Remove(name); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			expectedRestarts = 1 + badCount
+		}
+		if fallback && transactional[0] {
+			waitFor(t, 4*time.Second, func() bool {
+				current, _ := coord.GetJob(job.ID)
+				return current != nil && committed.Load() == current.LatestCheckpoint
+			})
+		}
 		failSource.Store(true)
-		waitFor(t, 8*time.Second, func() bool {
+		if fallback && transactional[0] {
+			waitFor(t, 20*time.Second, func() bool {
+				current, _ := coord.GetJob(job.ID)
+				return current != nil && current.Status == coordinator.JobFailed
+			})
+			if restoredRead.Load() {
+				t.Fatal("replayed past committed transaction")
+			}
+			return
+		}
+		waitFor(t, 45*time.Second, func() bool {
 			current, err := coord.GetJob(job.ID)
-			return err == nil && current.Status == coordinator.JobRunning && current.RestartCount == 1 && restoredRead.Load()
+			return err == nil && current.Status == coordinator.JobRunning && current.RestartCount == expectedRestarts && current.LatestCheckpoint == checkpoint.ID && restoredRead.Load()
 		})
 	}
 }

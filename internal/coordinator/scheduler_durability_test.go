@@ -30,6 +30,7 @@ func TestScheduleJob_AtomicDeployment(t *testing.T) {
 	store := &deploymentBatchStore{MetadataStore: base, fail: true}
 	c := New(CoordinatorConfig{NodeID: "n1"}, store, nil, zerolog.Nop())
 	c.state = StateLeader
+	c.recovered = true
 	job := &JobMeta{ID: "j1", Name: "job", Status: JobCreated, Parallelism: 1, Config: encode(t, linearGraph())}
 	if err := c.persistJob(job); err != nil {
 		t.Fatal(err)

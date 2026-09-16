@@ -6,27 +6,29 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-09-12`
+> **Last Updated:** `2026-09-16`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
+| 1.0 | 2026-09-16 | Tarun Ashok | Complete runtime health policy, recovery, payloads, metrics and acceptance audit |
 
 ---
 
-## Implementation Status — 2026-09-12
+## Implementation Status — 2026-09-16
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Implemented on `codex/wip-08-complete`, based on merged WIP-07. The implementation includes configurable elapsed-time health policy, worker self-termination, independent coordinator loss detection, task/resource payloads, ephemeral liveness and production metrics. Local race, build, vet and lint validation passed; the acceptance audit records the exact coverage and remaining operational constraints.
 
-- **Implemented:** Heartbeat loops, liveness tracking, timeout handling, and component tests exist. The scheduler now excludes workers with missing/expired heartbeats and rechecks liveness, existence, and slot capacity under the deployment lock before persisting an assignment. Expired or recovered workers cannot receive new work until their heartbeat is fresh.
-- **Remaining:** Complete the worker-loss recovery/rescheduling workflow; heartbeat detection alone does not restore running jobs.
-- **Evidence:** [heartbeat.go](../../../internal/rpc/heartbeat.go), [worker.go](../../../internal/worker/worker.go), [reconcile.go](../../../internal/coordinator/reconcile.go).
+- [Current runtime contract](runtime-contract.md)
+- [Requirement-to-test acceptance audit](implementation-audit.md)
+
+The proposal below retains the original design context. The runtime contract clarifies local-clock timing, existing recovery-budget behavior and compatibility with WIP-07.
 
 ---
 

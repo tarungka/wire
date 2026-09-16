@@ -1,5 +1,7 @@
 package rpc
 
+import "time"
+
 // ---------- Enums ----------
 
 // TaskStatus represents the lifecycle state of a task.
@@ -239,12 +241,15 @@ func (d DirectiveType) String() string {
 
 // SubmitJobRequest is sent from the Coordinator to deploy a job to a Worker.
 type SubmitJobRequest struct {
-	JobID       string                 `codec:"jid"`
-	JobName     string                 `codec:"jn"`
-	Graph       JobGraph               `codec:"g"`
-	Config      JobConfig              `codec:"cfg"`
-	EpochID     uint64                 `codec:"eid"`
-	RestoreInfo *CheckpointRestoreInfo `codec:"ri,omitempty"`
+	ReservationID string                 `codec:"reservation_id,omitempty"`
+	AttemptID     string                 `codec:"attempt_id,omitempty"`
+	Tasks         []TaskDescriptor       `codec:"tasks,omitempty"`
+	JobID         string                 `codec:"jid"`
+	JobName       string                 `codec:"jn"`
+	Graph         JobGraph               `codec:"g"`
+	Config        JobConfig              `codec:"cfg"`
+	EpochID       uint64                 `codec:"eid"`
+	RestoreInfo   *CheckpointRestoreInfo `codec:"ri,omitempty"`
 }
 
 // SubmitJobResponse is the Worker's reply to SubmitJob.
@@ -264,6 +269,7 @@ type JobGraph struct {
 
 // OperatorDescriptor describes a single operator in the job graph.
 type OperatorDescriptor struct {
+	Watermark   *WatermarkConfig   `codec:"watermark,omitempty"`
 	DLQSink     *DLQSinkDescriptor `codec:"dlq,omitempty"`
 	ErrorPolicy *ErrorPolicy       `codec:"error_policy,omitempty"`
 	OperatorID  string             `codec:"oid"`
@@ -289,6 +295,8 @@ type EdgeDescriptor struct {
 // is the full source→ops→sink chain. In later phases, it's the slice of
 // operators between two shuffle boundaries.
 type CheckpointRestoreDescriptor struct {
+	ArchiveSHA256 string `codec:"archive_sha256,omitempty"`
+	ArchiveSize   int64  `codec:"archive_size,omitempty"`
 	// SourceTaskID is set for rescaling; empty restores the receiving task itself.
 	SourceTaskID   string `codec:"source_task_id,omitempty"`
 	CheckpointID   uint64 `codec:"cid"`
@@ -298,6 +306,8 @@ type CheckpointRestoreDescriptor struct {
 
 // RescaleStatePart identifies the stored snapshot and inclusive range to import.
 type RescaleStatePart struct {
+	ArchiveSHA256  string        `codec:"archive_sha256,omitempty"`
+	ArchiveSize    int64         `codec:"archive_size,omitempty"`
 	SourceTaskID   string        `codec:"source_task_id"`
 	ReplicaAddress string        `codec:"replica_address"`
 	Groups         KeyGroupRange `codec:"groups"`
@@ -338,11 +348,12 @@ type KeyGroupRange struct {
 
 // UpstreamChannelInfo describes a task's upstream data source.
 type UpstreamChannelInfo struct {
-	TaskID         string `codec:"tid,omitempty"`
-	PartitionIndex uint16 `codec:"pi,omitempty"`
-	OperatorID     string `codec:"oid"`
-	SubtaskIndex   int32  `codec:"si"`
-	Address        string `codec:"addr"`
+	IdleTimeout    time.Duration `codec:"idle_timeout,omitempty"`
+	TaskID         string        `codec:"tid,omitempty"`
+	PartitionIndex uint16        `codec:"pi,omitempty"`
+	OperatorID     string        `codec:"oid"`
+	SubtaskIndex   int32         `codec:"si"`
+	Address        string        `codec:"addr"`
 }
 
 // DownstreamChannelInfo describes a task's downstream data sink.
@@ -362,6 +373,7 @@ type CheckpointRestoreInfo struct {
 
 // StateHandle references a serialized state artifact.
 type StateHandle struct {
+	Manifest  []byte `codec:"manifest,omitempty"`
 	TaskID    string `codec:"tid"`
 	Path      string `codec:"p"`
 	SizeBytes int64  `codec:"sz"`
@@ -413,12 +425,13 @@ type UpdateTaskStatusResponse struct {
 
 // TaskMetrics carries runtime metrics for a task.
 type TaskMetrics struct {
-	RecordsIn   int64   `codec:"ri"`
-	RecordsOut  int64   `codec:"ro"`
-	BytesIn     int64   `codec:"bi"`
-	BytesOut    int64   `codec:"bo"`
-	Latency99   float64 `codec:"l99,omitempty"`
-	BacklogSize int64   `codec:"bl,omitempty"`
+	BackpressureMs int64   `codec:"bp_ms,omitempty"`
+	RecordsIn      int64   `codec:"ri"`
+	RecordsOut     int64   `codec:"ro"`
+	BytesIn        int64   `codec:"bi"`
+	BytesOut       int64   `codec:"bo"`
+	Latency99      float64 `codec:"l99,omitempty"`
+	BacklogSize    int64   `codec:"bl,omitempty"`
 }
 
 // TaskFailureInfo describes a task failure.
@@ -501,13 +514,19 @@ type AckCheckpointMetrics struct {
 
 // RequestTaskSlotsRequest is sent from Coordinator to Worker to query available slots.
 type RequestTaskSlotsRequest struct {
-	JobID         string `codec:"jid"`
-	RequiredSlots int32  `codec:"rs"`
-	MemoryMB      int32  `codec:"mem,omitempty"`
+	EpochID              uint64 `codec:"epoch,omitempty"`
+	ReservationID        string `codec:"reservation_id,omitempty"`
+	ReservationTimeoutMs int64  `codec:"reservation_timeout_ms,omitempty"`
+	Release              bool   `codec:"release,omitempty"`
+	JobID                string `codec:"jid"`
+	RequiredSlots        int32  `codec:"rs"`
+	MemoryMB             int32  `codec:"mem,omitempty"`
 }
 
 // RequestTaskSlotsResponse is the Worker's reply.
 type RequestTaskSlotsResponse struct {
+	ReservationID  string              `codec:"reservation_id,omitempty"`
+	ExpiresAtMs    int64               `codec:"expires_at_ms,omitempty"`
 	Granted        int32               `codec:"g"`
 	AvailableSlots int32               `codec:"as"`
 	Resource       *WorkerResourceInfo `codec:"res,omitempty"`
@@ -527,12 +546,14 @@ type WorkerResourceInfo struct {
 
 // ResourceReport carries worker-level resource utilization.
 type ResourceReport struct {
-	CPUUsagePercent  float64 `codec:"cpu"`
-	MemoryUsedBytes  int64   `codec:"mub"`
-	MemoryTotalBytes int64   `codec:"mtb"`
-	DiskUsedBytes    int64   `codec:"dub"`
-	DiskTotalBytes   int64   `codec:"dtb"`
-	GoroutineCount   int     `codec:"gc"`
+	SampledAt        int64    `codec:"sampled_at,omitempty"`
+	Unavailable      []string `codec:"unavailable,omitempty"`
+	CPUUsagePercent  float64  `codec:"cpu"`
+	MemoryUsedBytes  int64    `codec:"mub"`
+	MemoryTotalBytes int64    `codec:"mtb"`
+	DiskUsedBytes    int64    `codec:"dub"`
+	DiskTotalBytes   int64    `codec:"dtb"`
+	GoroutineCount   int      `codec:"gc"`
 }
 
 // HeartbeatRequest is sent from Worker to Coordinator as a liveness signal.
@@ -562,23 +583,26 @@ type WorkerLoad struct {
 
 // RunningTaskSummary is a brief status of a running task.
 type RunningTaskSummary struct {
-	TaskID   string       `codec:"tid"`
-	JobID    string       `codec:"jid"`
-	Status   TaskStatus   `codec:"st"`
-	UptimeMs int64        `codec:"up"`
-	Metrics  *TaskMetrics `codec:"met,omitempty"`
+	AttemptID string       `codec:"aid,omitempty"`
+	EpochID   uint64       `codec:"eid,omitempty"`
+	TaskID    string       `codec:"tid"`
+	JobID     string       `codec:"jid"`
+	Status    TaskStatus   `codec:"st"`
+	UptimeMs  int64        `codec:"up"`
+	Metrics   *TaskMetrics `codec:"met,omitempty"`
 }
 
 // ---------- RegisterWorker RPC ----------
 
 // RegisterWorkerRequest is sent from Worker to Coordinator to register or re-register.
 type RegisterWorkerRequest struct {
-	CheckpointAddress string   `codec:"checkpoint_addr,omitempty"`
-	WorkerID          string   `codec:"wid"`
-	Address           string   `codec:"addr"`
-	TaskSlotsTotal    int      `codec:"tst"`
-	HighestSeenEpoch  uint64   `codec:"hse"`
-	RunningTasks      []string `codec:"rt,omitempty"`
+	SupportsReservations bool     `codec:"slot_reservations,omitempty"`
+	CheckpointAddress    string   `codec:"checkpoint_addr,omitempty"`
+	WorkerID             string   `codec:"wid"`
+	Address              string   `codec:"addr"`
+	TaskSlotsTotal       int      `codec:"tst"`
+	HighestSeenEpoch     uint64   `codec:"hse"`
+	RunningTasks         []string `codec:"rt,omitempty"`
 }
 
 // RegisterWorkerResponse is the Coordinator's reply to RegisterWorker.

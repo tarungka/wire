@@ -10,7 +10,7 @@ func TestSavepointFollowsDurableCheckpointDecision(t *testing.T) {
 	for _, abort := range []bool{false, true} {
 		c, store := newTestCoordinator(t)
 		c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
-		if err := store.Set(JobAssignmentsKey("job"), encode(t, TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"a": "w1", "b": "w2"}, Replicas: map[string]string{"a": "replica/a", "b": "replica/b"}})); err != nil {
+		if err := store.Set(JobAssignmentsKey("job"), encode(t, TaskAssignmentMap{TaskDescriptors: manifestTaskDescriptors("a", "b"), JobID: "job", Assignments: map[string]string{"a": "w1", "b": "w2"}, Replicas: map[string]string{"a": "replica/a", "b": "replica/b"}})); err != nil {
 			t.Fatal(err)
 		}
 		sp, err := c.TriggerSavepoint("job")
@@ -20,7 +20,7 @@ func TestSavepointFollowsDurableCheckpointDecision(t *testing.T) {
 		if sp.CheckpointID == 0 || sp.EpochID != 5 || sp.Status != SavepointInProgress {
 			t.Fatalf("boundary=%+v", sp)
 		}
-		request := rpc.AcknowledgeCheckpointRequest{JobID: "job", TaskID: "a", WorkerID: "w1", CheckpointID: sp.CheckpointID, EpochID: sp.EpochID, State: &rpc.StateHandle{TaskID: "a", Path: "replica/a"}}
+		request := rpc.AcknowledgeCheckpointRequest{JobID: "job", TaskID: "a", WorkerID: "w1", CheckpointID: sp.CheckpointID, EpochID: sp.EpochID, State: manifestState(t, "a", "replica/a")}
 		if err := c.AcknowledgeCheckpoint(request); err != nil {
 			t.Fatal(err)
 		}
@@ -33,7 +33,7 @@ func TestSavepointFollowsDurableCheckpointDecision(t *testing.T) {
 			want = SavepointFailed
 			err = c.AbortCheckpoint("job", sp.CheckpointID, sp.EpochID)
 		} else {
-			request.TaskID, request.WorkerID, request.State = "b", "w2", &rpc.StateHandle{TaskID: "b", Path: "replica/b"}
+			request.TaskID, request.WorkerID, request.State = "b", "w2", manifestState(t, "b", "replica/b")
 			err = c.AcknowledgeCheckpoint(request)
 		}
 		if err != nil {

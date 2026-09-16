@@ -60,13 +60,14 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 		maxFailures = w.executor.taskConfig.Checkpoint.MaxConsecutiveFailures
 	}
 	consecutiveFailures := 0
-	runtime.replicator = &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: &reconnectingCheckpointClient{address: desc.CheckpointReplicaAddress}}
+	replicator := &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: &reconnectingCheckpointClient{address: desc.CheckpointReplicaAddress}}
+	runtime.replicator = replicator
 	runtime.report = func(ctx context.Context, id, epoch uint64, uploadErr error) error {
 		request := &rpc.AcknowledgeCheckpointRequest{WorkerID: w.cfg.WorkerID, JobID: jobID, TaskID: taskID, CheckpointID: id, EpochID: epoch}
 		if uploadErr != nil {
 			request.Failure = uploadErr.Error()
 		} else {
-			request.State = &rpc.StateHandle{TaskID: taskID, Path: desc.CheckpointReplicaAddress}
+			request.State = &rpc.StateHandle{TaskID: taskID, Path: desc.CheckpointReplicaAddress, Manifest: replicator.manifest(id)}
 		}
 		response, err := w.client.AcknowledgeCheckpoint(ctx, request)
 		if err == nil && !response.Accepted {
@@ -91,7 +92,7 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 	return runtime, func() {}, nil
 }
 
-func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) {
+func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) (accepted bool) {
 	var request rpc.TriggerCheckpointRequest
 	if err := protocol.DecodeMsgPack(command.Data, &request); err != nil {
 		w.log.Warn().Err(err).Msg("invalid checkpoint command")
@@ -104,6 +105,7 @@ func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) {
 		return
 	}
 	checkpoint := handle.checkpoint
+	accepted = true
 	w.mu.RUnlock()
 	if command.Type == rpc.CommandTypeTakeSnapshot {
 		if !checkpoint.source {
@@ -153,4 +155,5 @@ func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) {
 	}
 	w.log.Error().Str("task_id", command.TaskID).Msg("checkpoint command mailbox exhausted")
 	handle.cancel()
+	return
 }

@@ -11,7 +11,9 @@ type Source interface {
 	// Close releases resources held by the source.
 	Close() error
 	// GenerateWatermark returns the current watermark timestamp (millis).
-	// Must be safe for concurrent use.
+	// Deprecated: runtime watermarks use SetWatermarkStrategy, defaulting to
+	// bounded out-of-orderness with a five-second tolerance. This method remains
+	// in the interface for source compatibility and is not called by execution.
 	GenerateWatermark() int64
 }
 

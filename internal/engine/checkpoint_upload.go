@@ -13,13 +13,15 @@ import (
 // TaskCheckpoint owns immutable operator snapshot bytes for one aligned epoch.
 // Operator positions correspond to the task's ordered operator chain.
 type TaskCheckpoint struct {
-	StateHandleIndexes []int // -1 denotes Source; other indexes address Operators.
-	HasSource          bool
-	Source             []byte
-	TaskID             string
-	CheckpointID       uint64
-	EpochID            uint64
-	Operators          [][]byte
+	SinkPrepared            bool   `json:"sink_prepared,omitempty"`
+	SinkCommittedCheckpoint uint64 `json:"sink_committed_checkpoint,omitempty"`
+	StateHandleIndexes      []int  // -1 denotes Source; other indexes address Operators.
+	HasSource               bool
+	Source                  []byte
+	TaskID                  string
+	CheckpointID            uint64
+	EpochID                 uint64
+	Operators               [][]byte
 }
 
 // CheckpointReplicator durably replicates an immutable checkpoint. Returning nil

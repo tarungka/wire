@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/tarungka/wire/internal/keygroup"
 	"github.com/tarungka/wire/internal/rpc"
@@ -75,9 +76,18 @@ func buildPhysicalTasks(jobID string, graph rpc.JobGraph, parallelism int) ([]rp
 				}
 				partition := uint16(len(tasks[dst].Upstream))
 				tasks[src].Downstream = append(tasks[src].Downstream, rpc.DownstreamChannelInfo{TaskID: tasks[dst].TaskID, OperatorID: tasks[dst].OperatorID, SubtaskIndex: int32(ti), PartitionIndex: partition})
-				tasks[dst].Upstream = append(tasks[dst].Upstream, rpc.UpstreamChannelInfo{TaskID: tasks[src].TaskID, OperatorID: tasks[src].OperatorID, SubtaskIndex: int32(si), PartitionIndex: partition})
+				tasks[dst].Upstream = append(tasks[dst].Upstream, rpc.UpstreamChannelInfo{IdleTimeout: sourceIdleTimeout(tasks[src]), TaskID: tasks[src].TaskID, OperatorID: tasks[src].OperatorID, SubtaskIndex: int32(si), PartitionIndex: partition})
 			}
 		}
 	}
 	return tasks, nil
+}
+
+func sourceIdleTimeout(task rpc.TaskDescriptor) time.Duration {
+	for _, operator := range task.OperatorChain {
+		if operator.Type == rpc.OperatorTypeSource && operator.Watermark != nil {
+			return operator.Watermark.IdleTimeout
+		}
+	}
+	return 0
 }

@@ -59,3 +59,5 @@ var (
 	// ErrJobExists indicates a job with the same name already exists and is active.
 	ErrJobExists = errors.New("coordinator: job already exists")
 )
+
+var ErrCheckpointMinPause = errors.New("checkpoint minimum pause has not elapsed")

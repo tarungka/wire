@@ -19,6 +19,7 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
+	InputIdleTimeouts []time.Duration
 	RestoreCheckpoint *TaskCheckpoint
 	RescaleState      []OperatorRescaleState
 	// CheckpointReport delivers checkpoint ID, epoch, and upload error to an
@@ -270,7 +271,8 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// For source tasks, resolve strategy and launch source reader.
 	if ts.Source != nil {
 		strategy := ts.resolveStrategy()
-		sourceCheckpoints := &sourceCheckpointInput{requests: ts.CheckpointTriggers, source: ts.Source, aligner: aligner, control: controlCh}
+		watermarkQueue := &sourceWatermarkQueue{}
+		sourceCheckpoints := &sourceCheckpointInput{watermarks: watermarkQueue, requests: ts.CheckpointTriggers, source: ts.Source, aligner: aligner, control: controlCh}
 
 		inputWg.Add(1)
 		g.Go(func() error {
@@ -288,13 +290,14 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 			defer taskGoroutineStarted(runCtx)()
 			defer producerWg.Done()
 			return normalizeIntake(invokeOperator(func() error {
-				return runWatermarkEmitter(intakeCtx, strategy, outputCh, emitInterval,
-					ts.log.With().Str("component", "watermark_emitter").Logger())
+				return watermarkQueue.run(intakeCtx, strategy, eventCh, emitInterval)
 			}))
 		})
 	} else if numInputs > 0 {
 		// Create per-input watermark tracker (only for non-source tasks).
 		tracker := NewInputWatermarkTracker(numInputs)
+		tracker.ordered = true
+		tracker.idleTimeouts = append([]time.Duration(nil), ts.InputIdleTimeouts...)
 
 		// Launch input readers (one per upstream stream).
 		for i, stream := range ts.Inputs {
@@ -325,8 +328,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		g.Go(func() error {
 			defer taskGoroutineStarted(runCtx)()
 			defer producerWg.Done()
-			return normalizeIntake(runWatermarkPropagator(intakeCtx, tracker, outputCh, emitInterval, idleTimeout,
-				ts.log.With().Str("component", "watermark_propagator").Logger()))
+			return normalizeIntake(runOrderedWatermarkPropagator(intakeCtx, tracker, eventCh, emitInterval, idleTimeout))
 		})
 	}
 
@@ -356,7 +358,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// Resolve checkpoint metrics.
 	metrics := ts.Metrics
 	if metrics == nil {
-		metrics = NoopCheckpointMetrics()
+		metrics = newTelemetryCheckpointMetrics(ts.TaskID)
 	}
 
 	// Resolve error metrics.
@@ -486,7 +488,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 }
 
 // resolveStrategy creates the appropriate WatermarkStrategy based on config.
-// Falls back to legacySourceStrategy wrapping Source.GenerateWatermark().
+// Unconfigured sources use bounded out-of-orderness with the default tolerance.
 func (ts *TaskSlot) resolveStrategy() WatermarkStrategy {
 	if ts.Strategy != nil {
 		return ts.Strategy
@@ -504,8 +506,7 @@ func (ts *TaskSlot) resolveStrategy() WatermarkStrategy {
 	case StrategyIngestionTime:
 		return NewIngestionTimeStrategy()
 	default:
-		// Legacy: wrap the source's GenerateWatermark() method.
-		return newLegacySourceStrategy(ts.Source)
+		return NewBoundedOutOfOrdernessStrategy(DefaultMaxOOO)
 	}
 }
 
@@ -563,15 +564,12 @@ func runSourceReaderWithContexts(intakeCtx, ctx context.Context, source SourceOp
 			return nil
 		}
 
-		for _, event := range batch {
-			if strategy != nil {
-				strategy.ObserveEventTime(event.EventTime)
-			}
-			select {
-			case eventCh <- event:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+		var queue *sourceWatermarkQueue
+		if len(checkpoints) > 0 {
+			queue = checkpoints[0].watermarks
+		}
+		if err := dispatchSourceBatch(ctx, batch, strategy, eventCh, queue); err != nil {
+			return err
 		}
 	}
 }

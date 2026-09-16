@@ -24,6 +24,7 @@ type chainContext struct {
 	preparedCheckpoint  uint64
 	transactionPrepared bool
 	lastCommitted       uint64
+	lastAborted         checkpointIdentity
 	deferredEOF         []ControlMsg
 	deferredEvents      []Event
 	ctx                 context.Context
@@ -226,10 +227,26 @@ func isZeroEvent(e Event) bool {
 // When an operator has a non-zero ErrorHandlerConfig, errors are handled via
 // invokeWithRetry (retry/DLQ/drop); otherwise errors fail the job immediately.
 func processEvent(cc *chainContext, event Event) error {
+	if activity := event.inputActivity; activity != nil {
+		defer activity.tracker.recordProcessed(activity.input)
+		event.inputActivity = nil
+	}
+	if boundary := event.inputWatermark; boundary != nil {
+		boundary.tracker.AdvanceWatermark(boundary.input, boundary.timestamp)
+		return nil
+	}
+	if event.watermark != nil {
+		return processWatermark(cc, *event.watermark)
+	}
+	recordTaskInput(cc.ctx, event)
+	return processEventFrom(cc, event, cc.links)
+}
+
+func processEventFrom(cc *chainContext, event Event, links []ChainLink) error {
 	// Start with the input event. For FlatMap we may fan out to multiple events.
 	events := []Event{event}
 
-	for _, link := range cc.links {
+	for _, link := range links {
 		var next []Event
 		for _, e := range events {
 			switch o := link.Operator.(type) {
@@ -335,11 +352,16 @@ func invokeSinkWithRetry(cc *chainContext, link ChainLink, e Event, op SinkOpera
 		if err := op.Write(cc.ctx, e); err != nil {
 			return fmt.Errorf("sink operator: %w", err)
 		}
+		recordTaskOutput(cc.ctx, e)
 		return nil
 	}
 
 	return invokeWithRetry(cc, link, e, func() error {
-		return op.Write(cc.ctx, e)
+		err := op.Write(cc.ctx, e)
+		if err == nil {
+			recordTaskOutput(cc.ctx, e)
+		}
+		return err
 	})
 }
 
@@ -390,7 +412,9 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			if ctrl.CheckpointID != cc.preparedCheckpoint {
 				return nil
 			}
-			return handleControl(cc, ControlMsg{Type: CtrlAbortTransaction, CheckpointID: ctrl.CheckpointID}, eofCount)
+			if err := handleControl(cc, ControlMsg{Type: CtrlAbortTransaction, CheckpointID: ctrl.CheckpointID, EpochID: ctrl.EpochID}, eofCount); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -459,7 +483,7 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		}
 
 		if cc.checkpoint != nil {
-			if err := cc.checkpoint.submit(cc.ctx, ctrl.CheckpointID, ctrl.EpochID, snapshots, stateHandleIndexes, ctrl.sourceBoundary); err != nil {
+			if err := cc.checkpoint.submit(cc.ctx, ctrl.CheckpointID, ctrl.EpochID, snapshots, stateHandleIndexes, cc.transactionPrepared, cc.lastCommitted, ctrl.sourceBoundary); err != nil {
 				return err
 			}
 		}
@@ -497,6 +521,9 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		}
 
 	case CtrlAbortTransaction:
+		if ctrl.CheckpointID != 0 && (ctrl.EpochID < cc.lastAborted.epoch || (ctrl.EpochID == cc.lastAborted.epoch && ctrl.CheckpointID <= cc.lastAborted.id)) {
+			break
+		}
 		if cc.txnSink == nil {
 			break // Ignore for non-transactional sinks.
 		}
@@ -511,6 +538,7 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			return fmt.Errorf("%w: %v", ErrAbortFailed, err)
 		}
 		cc.transactionPrepared = false
+		cc.lastAborted = checkpointIdentity{ctrl.CheckpointID, ctrl.EpochID}
 		if err := cc.txnSink.BeginTransaction(cc.ctx); err != nil {
 			return fmt.Errorf("%w: %v", ErrBeginTransactionFailed, err)
 		}
@@ -520,8 +548,28 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		if cc.checkpoint != nil {
 			cc.checkpoint.abort(ctrl.CheckpointID, ctrl.EpochID)
 		}
-		// Drain side buffers and process them (events are still valid, just no checkpoint).
-		drained := cc.aligner.FinishAlignment(ctrl.CheckpointID)
+		// Abort controls have priority, but pre-barrier queued records must
+		// still precede the post-barrier side buffer. Bound this drain so an
+		// unaligned input cannot extend the drain indefinitely. Each processEvent
+		// can still block on downstream progress; this is not a time bound.
+	abortDrain:
+		for remaining := len(cc.inputCh); remaining > 0; remaining-- {
+			select {
+			case event, ok := <-cc.inputCh:
+				if !ok {
+					break abortDrain
+				}
+				if err := processEvent(cc, event); err != nil {
+					return err
+				}
+			case <-cc.ctx.Done():
+				return cc.ctx.Err()
+			}
+		}
+		if start := cc.aligner.AlignmentStartTime(); !start.IsZero() && cc.aligner.ActiveCheckpointID() == ctrl.CheckpointID && cc.aligner.ActiveEpochID() == ctrl.EpochID {
+			cc.cpMetrics.ObserveAlignmentTime(time.Since(start))
+		}
+		drained := cc.aligner.AbortAlignment(ctrl.CheckpointID, ctrl.EpochID)
 		for _, event := range drained {
 			if err := processEvent(cc, event); err != nil {
 				return err

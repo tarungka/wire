@@ -68,17 +68,17 @@ All 25 proposals, initially audited against `master` at `0e78195` on 2026-09-12 
 | [WIP-01](WIP-01/README.md) | Wire Protocol & Serialization Format | Implemented (CRC latency check explicitly waived; see WIP) |
 | [WIP-02](WIP-02/README.md) | Goroutine & Concurrency Model | Implemented |
 | [WIP-03](WIP-03/README.md) | Key Group Assignment & State Sharding | Implemented |
-| [WIP-04](WIP-04/README.md) | Watermark Generation Algorithm | Partially Implemented |
-| [WIP-05](WIP-05/README.md) | Barrier Alignment Timeout & Failure Handling | Partially Implemented |
-| [WIP-06](WIP-06/README.md) | Checkpoint Metadata Schema | Partially Implemented |
+| [WIP-04](WIP-04/README.md) | Watermark Generation Algorithm | Implemented |
+| [WIP-05](WIP-05/README.md) | Barrier Alignment Timeout & Failure Handling | Implemented |
+| [WIP-06](WIP-06/README.md) | Checkpoint Metadata Schema | Implemented |
 | [WIP-18](WIP-18/README.md) | Multiple State Backends | Partially Implemented |
 
 ### Runtime Infrastructure
 
 | WIP | Title | Status |
 |-----|-------|--------|
-| [WIP-07](WIP-07/README.md) | RPC Interface Specification | Partially Implemented |
-| [WIP-08](WIP-08/README.md) | Heartbeat & Health Monitoring | Partially Implemented |
+| [WIP-07](WIP-07/README.md) | RPC Interface Specification | Implemented |
+| [WIP-08](WIP-08/README.md) | Heartbeat & Health Monitoring | Implemented |
 | [WIP-09](WIP-09/README.md) | Coordinator High Availability | Partially Implemented |
 | [WIP-10](WIP-10/README.md) | Two-Phase Commit for Transactional Sinks | Partially Implemented |
 | [WIP-11](WIP-11/README.md) | Error Handling & Dead Letter Queues | Partially Implemented |

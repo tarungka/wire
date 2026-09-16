@@ -10,12 +10,13 @@ import (
 
 // RegisterWorkerRequest is the request payload for worker registration.
 type RegisterWorkerRequest struct {
-	CheckpointAddress string   `codec:"checkpoint_address,omitempty"`
-	WorkerID          string   `codec:"worker_id"`
-	Address           string   `codec:"address"`
-	TaskSlotsTotal    int      `codec:"task_slots_total"`
-	HighestSeenEpoch  uint64   `codec:"highest_seen_epoch"`
-	RunningTasks      []string `codec:"running_tasks"`
+	SupportsReservations bool     `codec:"slot_reservations,omitempty"`
+	CheckpointAddress    string   `codec:"checkpoint_address,omitempty"`
+	WorkerID             string   `codec:"worker_id"`
+	Address              string   `codec:"address"`
+	TaskSlotsTotal       int      `codec:"task_slots_total"`
+	HighestSeenEpoch     uint64   `codec:"highest_seen_epoch"`
+	RunningTasks         []string `codec:"running_tasks"`
 }
 
 // RegisterWorkerResponse is returned to a worker after registration.
@@ -28,6 +29,10 @@ type RegisterWorkerResponse struct {
 // RegisterWorker handles a worker (re-)registration request.
 // It validates epoch fencing, persists the worker, and reconciles tasks.
 func (c *Coordinator) RegisterWorker(req RegisterWorkerRequest) (*RegisterWorkerResponse, error) {
+	return c.registerWorker(req, nil, nil)
+}
+
+func (c *Coordinator) registerWorker(req RegisterWorkerRequest, peer *rpc.Client, done <-chan struct{}) (*RegisterWorkerResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.state != StateLeader {
@@ -42,13 +47,15 @@ func (c *Coordinator) RegisterWorker(req RegisterWorkerRequest) (*RegisterWorker
 	}
 
 	worker := &WorkerMeta{
-		CheckpointAddress:  req.CheckpointAddress,
-		ID:                 req.WorkerID,
-		Address:            req.Address,
-		TaskSlotsTotal:     req.TaskSlotsTotal,
-		TaskSlotsAvailable: req.TaskSlotsTotal,
-		LastHeartbeat:      time.Now().UTC(),
-		RunningTasks:       req.RunningTasks,
+		RPCClient: peer, RPCPeerEpoch: currentEpoch,
+		SupportsReservations: req.SupportsReservations,
+		CheckpointAddress:    req.CheckpointAddress,
+		ID:                   req.WorkerID,
+		Address:              req.Address,
+		TaskSlotsTotal:       req.TaskSlotsTotal,
+		TaskSlotsAvailable:   req.TaskSlotsTotal,
+		LastHeartbeat:        time.Now(),
+		RunningTasks:         req.RunningTasks,
 	}
 
 	workerData, err := protocol.EncodeMsgPack(worker)
@@ -60,6 +67,18 @@ func (c *Coordinator) RegisterWorker(req RegisterWorkerRequest) (*RegisterWorker
 	}
 
 	c.workers[worker.ID] = worker
+	// Bind the session in the same critical section as registration; an older
+	// concurrent registration must never attach its peer to a newer worker.
+	if peer != nil && done != nil {
+		go func() {
+			<-done
+			c.mu.Lock()
+			if current := c.workers[worker.ID]; current == worker {
+				current.RPCClient = nil
+			}
+			c.mu.Unlock()
+		}()
+	}
 	result, err := c.reconcileTasks(req.WorkerID, req.RunningTasks)
 	if err != nil {
 		return nil, fmt.Errorf("reconciling tasks: %w", err)

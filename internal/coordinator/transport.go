@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 // TransportServer listens for worker RPC connections over TCP/Yamux.
 type TransportServer struct {
+	tlsConfig  *tls.Config
 	coord      *Coordinator
 	listenAddr string
 	rpcServer  *rpc.Server
@@ -32,19 +34,29 @@ type TransportServer struct {
 
 // NewTransportServer creates a TransportServer that bridges worker RPC
 // connections to the coordinator.
-func NewTransportServer(coord *Coordinator, listenAddr string, log zerolog.Logger) *TransportServer {
+func NewTransportServer(coord *Coordinator, listenAddr string, log zerolog.Logger, tlsConfigs ...*tls.Config) *TransportServer {
 	rpcCfg := rpc.DefaultConfig()
 	srv := rpc.NewServer(rpcCfg)
 
-	srv.Register(rpc.MethodRegisterWorker, coord.HandleRegisterWorker)
-	srv.Register(rpc.MethodHeartbeat, coord.HandleHeartbeat)
-	srv.Register(rpc.MethodUpdateTaskStatus, coord.HandleUpdateTaskStatus)
-	srv.Register(rpc.MethodAcknowledgeCheckpoint, coord.HandleAcknowledgeCheckpoint)
-	srv.Register(rpc.MethodAuthorizeCheckpointReplica, coord.HandleAuthorizeCheckpointReplica)
-	srv.Register(rpc.MethodAuthorizeCheckpointFetch, coord.HandleAuthorizeCheckpointFetch)
-	srv.RegisterStream(rpc.MethodWatchCommands, coord.HandleWatchCommands)
+	srv.Register(rpc.MethodRegisterWorker, guardWorkerRPC(rpc.MethodRegisterWorker, coord.HandleRegisterWorker))
+	srv.Register(rpc.MethodHeartbeat, guardWorkerRPC(rpc.MethodHeartbeat, coord.HandleHeartbeat))
+	srv.Register(rpc.MethodUpdateTaskStatus, guardWorkerRPC(rpc.MethodUpdateTaskStatus, coord.HandleUpdateTaskStatus))
+	srv.Register(rpc.MethodAcknowledgeCheckpoint, guardWorkerRPC(rpc.MethodAcknowledgeCheckpoint, coord.HandleAcknowledgeCheckpoint))
+	srv.Register(rpc.MethodAuthorizeCheckpointReplica, guardWorkerRPC(rpc.MethodAuthorizeCheckpointReplica, coord.HandleAuthorizeCheckpointReplica))
+	srv.Register(rpc.MethodAuthorizeCheckpointFetch, guardWorkerRPC(rpc.MethodAuthorizeCheckpointFetch, coord.HandleAuthorizeCheckpointFetch))
+	srv.RegisterStream(rpc.MethodWatchCommands, func(ctx context.Context, id uint64, payload []byte, stream *yamux.Stream) error {
+		if err := checkWorkerIdentity(ctx, rpc.MethodWatchCommands, payload); err != nil {
+			return err
+		}
+		return coord.HandleWatchCommands(ctx, id, payload, stream)
+	})
 
+	var tlsConfig *tls.Config
+	if len(tlsConfigs) > 0 {
+		tlsConfig = tlsConfigs[0]
+	}
 	return &TransportServer{
+		tlsConfig:  tlsConfig,
 		coord:      coord,
 		listenAddr: listenAddr,
 		rpcServer:  srv,
@@ -120,6 +132,7 @@ func (ts *TransportServer) ListenAndServe(ctx context.Context) error {
 // serves RPCs on it.
 func (ts *TransportServer) handleConn(ctx context.Context, conn net.Conn) {
 	tcfg := transport.DefaultConfig()
+	tcfg.TLSConfig = ts.tlsConfig
 	session, err := transport.NewServerSession(conn, tcfg)
 	if err != nil {
 		ts.log.Warn().Err(err).Str("remote", conn.RemoteAddr().String()).Msg("session setup failed")
@@ -127,6 +140,13 @@ func (ts *TransportServer) handleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	if state, ok := session.TLSConnectionState(); ok && len(state.VerifiedChains) > 0 {
+		name := ""
+		if len(state.PeerCertificates) > 0 {
+			name = state.PeerCertificates[0].Subject.CommonName
+		}
+		ctx = context.WithValue(ctx, workerCertificateKey{}, name)
+	}
 	ymx := session.YamuxSession()
 	ts.sessionsMu.Lock()
 	ts.sessions[ymx] = struct{}{}

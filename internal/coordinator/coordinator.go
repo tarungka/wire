@@ -22,18 +22,26 @@ const (
 
 // CoordinatorConfig configures the Coordinator.
 type CoordinatorConfig struct {
-	DataDir                string
-	NodeID                 string
-	ListenAddr             string
-	HeartbeatFlushInterval time.Duration
-	WorkerTimeout          time.Duration
-	CheckpointTimeout      time.Duration
-	RestartMaxAttempts     int
-	RestartBackoff         time.Duration
-	RestartResetAfter      time.Duration
+	DataDir    string
+	NodeID     string
+	ListenAddr string
+	// Deprecated: heartbeat receipt times are now ephemeral; no periodic flush runs.
+	HeartbeatFlushInterval           time.Duration
+	WorkerTimeout                    time.Duration
+	HeartbeatInterval                time.Duration
+	CheckpointTimeout                time.Duration
+	CheckpointMinPause               time.Duration
+	CheckpointMaxConsecutiveFailures int
+	CheckpointTolerableFailureRate   float64
+	RestartMaxAttempts               int
+	RestartBackoff                   time.Duration
+	RestartResetAfter                time.Duration
 }
 
 func (c *CoordinatorConfig) resolve() {
+	if c.HeartbeatInterval <= 0 {
+		c.HeartbeatInterval = rpc.DefaultHeartbeatInterval
+	}
 	if c.RestartResetAfter <= 0 {
 		c.RestartResetAfter = time.Minute
 	}
@@ -310,17 +318,20 @@ func (c *Coordinator) serve(ctx context.Context) error {
 		defer func() { _ = reg.Unregister() }()
 	}
 
-	ticker := time.NewTicker(c.config.HeartbeatFlushInterval)
+	if reg, err := observability.RegisterWorkersAliveGauge(c.aliveWorkerCount); err == nil && reg != nil {
+		defer func() { _ = reg.Unregister() }()
+	}
+	// Health detection must not wait for a placement RPC or a two-second
+	// scheduling tick. Receipt times use the coordinator's monotonic clock.
+	ticker := time.NewTicker(max(time.Millisecond, min(250*time.Millisecond, c.config.WorkerTimeout/10)))
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
-			c.log.Info().Msg("serve loop stopping")
 			return nil
 		case <-ticker.C:
-			if err := c.flushHeartbeats(ctx); err != nil {
-				c.log.Warn().Err(err).Msg("heartbeat flush failed")
+			if c.expireTaskWorkers() {
+				c.kickScheduler()
 			}
 		}
 	}
@@ -347,6 +358,10 @@ func (c *Coordinator) jobStateCounts() map[string]int64 {
 func (c *Coordinator) EnqueueCommand(workerID string, cmd rpc.WorkerCommand) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.enqueueCommandLocked(workerID, cmd)
+}
+
+func (c *Coordinator) enqueueCommandLocked(workerID string, cmd rpc.WorkerCommand) {
 	// Channel replacement and close use the same lock as this nonblocking send.
 	if ch, ok := c.cmdStreams[workerID]; ok {
 		select {
@@ -440,7 +455,8 @@ func (c *Coordinator) allTasksInStatus(jobID string, status rpc.TaskStatus) bool
 	return true
 }
 
-// flushHeartbeats persists worker heartbeat summaries to the metadata store.
+// flushHeartbeats retains the legacy advisory-key writer for compatibility tests.
+// Production liveness is ephemeral and never invokes this writer.
 // These timestamps are advisory: recovery always marks workers stale. Separate
 // keys ensure a delayed flush cannot overwrite durable worker registration.
 func (c *Coordinator) flushHeartbeats(ctx context.Context) error {
@@ -682,4 +698,16 @@ func (c *Coordinator) Shutdown(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (c *Coordinator) aliveWorkerCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	n := 0
+	for _, w := range c.workers {
+		if !w.Lost && !w.LastHeartbeat.IsZero() && time.Since(w.LastHeartbeat) < c.config.WorkerTimeout {
+			n++
+		}
+	}
+	return n
 }

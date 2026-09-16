@@ -170,10 +170,15 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 
 	// Create coordinator.
 	coordCfg := coordinator.CoordinatorConfig{
-		CheckpointTimeout: wireCfg.Checkpoint.Timeout.Duration,
-		DataDir:           wireCfg.Node.DataDir,
-		NodeID:            nodeID,
-		ListenAddr:        wireCfg.HTTP.Addr,
+		WorkerTimeout:                    wireCfg.Heartbeat.Timeout.Duration,
+		HeartbeatInterval:                wireCfg.Heartbeat.Interval.Duration,
+		CheckpointTimeout:                wireCfg.Checkpoint.Timeout.Duration,
+		CheckpointMinPause:               wireCfg.Checkpoint.MinPause.Duration,
+		CheckpointMaxConsecutiveFailures: wireCfg.Checkpoint.MaxConsecutiveFailures,
+		CheckpointTolerableFailureRate:   wireCfg.Checkpoint.TolerableFailureRate,
+		DataDir:                          wireCfg.Node.DataDir,
+		NodeID:                           nodeID,
+		ListenAddr:                       wireCfg.HTTP.Addr,
 	}
 	coord := coordinator.New(coordCfg, store, election, log.Logger)
 
@@ -181,7 +186,11 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger)
 
 	// Create transport server for worker RPC connections.
-	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger)
+	rpcTLS, err := coordinatorRPCTLS(wireCfg.NodeTLS)
+	if err != nil {
+		return err
+	}
+	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger, rpcTLS)
 
 	// Start everything in an errgroup.
 	g, gCtx := errgroup.WithContext(ctx)
@@ -217,6 +226,8 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger) error {
 	taskConfig := engine.DefaultTaskSlotConfig()
 	taskConfig.Checkpoint.Timeout = wireCfg.Checkpoint.Timeout.Duration
+	taskConfig.Checkpoint.MinPause = wireCfg.Checkpoint.MinPause.Duration
+	taskConfig.Checkpoint.TolerableFailureRate = wireCfg.Checkpoint.TolerableFailureRate
 	taskConfig.Checkpoint.MaxConsecutiveFailures = wireCfg.Checkpoint.MaxConsecutiveFailures
 	taskConfig.InputBufferSize = wireCfg.TaskSlot.InputBufferSize
 	taskConfig.OutputBufferSize = wireCfg.TaskSlot.OutputBufferSize
@@ -227,13 +238,21 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 	if cfg := wireCfg.Worker.CheckpointReplica; cfg.ListenAddr != "" {
 		replicaConfig = &worker.CheckpointReplicaConfig{ListenAddr: cfg.ListenAddr, AdvertiseAddr: cfg.AdvertiseAddr, StoreRoot: cfg.StoreRoot, ArtifactRoot: cfg.ArtifactRoot, StagingRoot: cfg.StagingRoot, Concurrency: cfg.Concurrency}
 	}
+	rpcTLS, err := workerRPCTLS(wireCfg.NodeTLS)
+	if err != nil {
+		return err
+	}
 	w := worker.New(worker.Config{
-		CheckpointReplica: replicaConfig,
-		TaskSlot:          &taskConfig,
-		WorkerID:          wireCfg.Worker.WorkerID,
-		CoordinatorAddr:   wireCfg.Worker.CoordinatorAddr,
-		ListenAddr:        wireCfg.Worker.ListenAddr,
-		TaskSlots:         wireCfg.Worker.TaskSlots,
+		HeartbeatInterval:    wireCfg.Heartbeat.Interval.Duration,
+		HeartbeatTimeout:     wireCfg.Heartbeat.Timeout.Duration,
+		HeartbeatMaxFailures: wireCfg.Heartbeat.MaxFailures,
+		RPCTLSConfig:         rpcTLS,
+		CheckpointReplica:    replicaConfig,
+		TaskSlot:             &taskConfig,
+		WorkerID:             wireCfg.Worker.WorkerID,
+		CoordinatorAddr:      wireCfg.Worker.CoordinatorAddr,
+		ListenAddr:           wireCfg.Worker.ListenAddr,
+		TaskSlots:            wireCfg.Worker.TaskSlots,
 	}, log.Logger)
 
 	g, gCtx := errgroup.WithContext(ctx)

@@ -11,7 +11,7 @@ import (
 func TestTriggerCheckpointPersistsBoundaryAndRejectsOverlap(t *testing.T) {
 	c, store := newTestCoordinator(t)
 	c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
-	data, err := protocol.EncodeMsgPack(TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": "replica"}})
+	data, err := protocol.EncodeMsgPack(TaskAssignmentMap{TaskDescriptors: manifestTaskDescriptors("task"), JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": "replica"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestTriggerCheckpointPersistsBoundaryAndRejectsOverlap(t *testing.T) {
 func TestCheckpointCompletesOnlyAfterEveryAssignedTask(t *testing.T) {
 	c, store := newTestCoordinator(t)
 	c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
-	data, err := protocol.EncodeMsgPack(TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"a": "w1", "b": "w2"}, Replicas: map[string]string{"a": "replica/a", "b": "replica/b"}})
+	data, err := protocol.EncodeMsgPack(TaskAssignmentMap{TaskDescriptors: manifestTaskDescriptors("a", "b"), JobID: "job", Assignments: map[string]string{"a": "w1", "b": "w2"}, Replicas: map[string]string{"a": "replica/a", "b": "replica/b"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestCheckpointCompletesOnlyAfterEveryAssignedTask(t *testing.T) {
 	}
 	c.DrainCommands("w1")
 	c.DrainCommands("w2")
-	req := rpc.AcknowledgeCheckpointRequest{JobID: "job", TaskID: "a", WorkerID: "wrong", CheckpointID: cp.ID, EpochID: 5, State: &rpc.StateHandle{TaskID: "a", Path: "replica/a"}}
+	req := rpc.AcknowledgeCheckpointRequest{JobID: "job", TaskID: "a", WorkerID: "wrong", CheckpointID: cp.ID, EpochID: 5, State: manifestState(t, "a", "replica/a")}
 	if err := c.AcknowledgeCheckpoint(req); err == nil {
 		t.Fatal("wrong worker accepted")
 	}
@@ -88,7 +88,7 @@ func TestCheckpointCompletesOnlyAfterEveryAssignedTask(t *testing.T) {
 	if len(c.DrainCommands("w1")) != 0 || len(c.DrainCommands("w2")) != 0 {
 		t.Fatal("commit notification preceded all acknowledgements")
 	}
-	req.TaskID, req.WorkerID, req.State = "b", "w2", &rpc.StateHandle{TaskID: "b", Path: "replica/b"}
+	req.TaskID, req.WorkerID, req.State = "b", "w2", manifestState(t, "b", "replica/b")
 	if err := c.AcknowledgeCheckpoint(req); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestCheckpointTimeoutAbortsOnlyExpiredBoundary(t *testing.T) {
 	c, store := newTestCoordinator(t)
 	c.config.CheckpointTimeout = time.Second
 	c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
-	data, err := protocol.EncodeMsgPack(TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": "replica"}})
+	data, err := protocol.EncodeMsgPack(TaskAssignmentMap{TaskDescriptors: manifestTaskDescriptors("task"), JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": "replica"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestCheckpointCompletionRacingTimeoutKeepsOneDecision(t *testing.T) {
 	for range 20 {
 		c, store := newTestCoordinator(t)
 		c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
-		assignment, err := protocol.EncodeMsgPack(TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": "replica"}})
+		assignment, err := protocol.EncodeMsgPack(TaskAssignmentMap{TaskDescriptors: manifestTaskDescriptors("task"), JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": "replica"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,7 +172,7 @@ func TestCheckpointCompletionRacingTimeoutKeepsOneDecision(t *testing.T) {
 		done := make(chan struct{}, 2)
 		go func() {
 			<-start
-			_ = c.AcknowledgeCheckpoint(rpc.AcknowledgeCheckpointRequest{JobID: "job", TaskID: "task", WorkerID: "worker", CheckpointID: cp.ID, EpochID: cp.EpochID, State: &rpc.StateHandle{TaskID: "task", Path: "replica"}})
+			_ = c.AcknowledgeCheckpoint(rpc.AcknowledgeCheckpointRequest{JobID: "job", TaskID: "task", WorkerID: "worker", CheckpointID: cp.ID, EpochID: cp.EpochID, State: manifestState(t, "task", "replica")})
 			done <- struct{}{}
 		}()
 		go func() { <-start; c.expireCheckpoints(cp.Timestamp.Add(c.config.CheckpointTimeout)); done <- struct{}{} }()
@@ -210,7 +210,7 @@ func TestCheckpointRejectsUnassignedReplicaWithoutChangingDecision(t *testing.T)
 		t.Run(replica, func(t *testing.T) {
 			c, store := newTestCoordinator(t)
 			c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
-			assignment, err := protocol.EncodeMsgPack(TaskAssignmentMap{JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": replica}})
+			assignment, err := protocol.EncodeMsgPack(TaskAssignmentMap{TaskDescriptors: manifestTaskDescriptors("task"), JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": replica}})
 			if err != nil {
 				t.Fatal(err)
 			}
