@@ -24,8 +24,9 @@ func DefaultConfig() WireConfig {
 			Timeout:   Duration{50 * time.Millisecond},
 		},
 		Election: ElectionConfig{
-			Backend:  "noop",
-			LockPath: "data/coordinator/leader.lock",
+			Kubernetes: KubernetesElectionConfig{LeaseName: "wire-coordinator", LeaseDuration: Duration{10 * time.Second}, RenewDeadline: Duration{6 * time.Second}, RetryPeriod: Duration{time.Second}},
+			Backend:    "noop",
+			LockPath:   "data/coordinator/leader.lock",
 		},
 		Worker: WorkerConfig{
 			EpochPath:         "data/worker/epoch",

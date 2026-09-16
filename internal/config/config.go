@@ -87,8 +87,9 @@ type WriteQueueConfig struct {
 
 // ElectionConfig holds leader election settings.
 type ElectionConfig struct {
-	Backend  string `yaml:"backend"   json:"backend"   koanf:"backend"`
-	LockPath string `yaml:"lock_path" json:"lock_path" koanf:"lock_path"`
+	Kubernetes KubernetesElectionConfig `yaml:"kubernetes" json:"kubernetes" koanf:"kubernetes"`
+	Backend    string                   `yaml:"backend"   json:"backend"   koanf:"backend"`
+	LockPath   string                   `yaml:"lock_path" json:"lock_path" koanf:"lock_path"`
 }
 
 // TaskSlotConfig controls bounded task channels and checkpoint uploads.
@@ -105,4 +106,16 @@ type HeartbeatConfig struct {
 	Interval    Duration `yaml:"interval" json:"interval" koanf:"interval"`
 	Timeout     Duration `yaml:"timeout" json:"timeout" koanf:"timeout"`
 	MaxFailures int      `yaml:"max_failures" json:"max_failures" koanf:"max_failures"`
+}
+
+// KubernetesElectionConfig configures a coordination.k8s.io/v1 Lease.
+type KubernetesElectionConfig struct {
+	APIServer     string   `yaml:"api_server" json:"api_server" koanf:"api_server"`
+	Namespace     string   `yaml:"namespace" json:"namespace" koanf:"namespace"`
+	LeaseName     string   `yaml:"lease_name" json:"lease_name" koanf:"lease_name"`
+	TokenFile     string   `yaml:"token_file" json:"token_file" koanf:"token_file"`
+	CAFile        string   `yaml:"ca_file" json:"ca_file" koanf:"ca_file"`
+	LeaseDuration Duration `yaml:"lease_duration" json:"lease_duration" koanf:"lease_duration"`
+	RenewDeadline Duration `yaml:"renew_deadline" json:"renew_deadline" koanf:"renew_deadline"`
+	RetryPeriod   Duration `yaml:"retry_period" json:"retry_period" koanf:"retry_period"`
 }

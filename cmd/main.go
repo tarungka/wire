@@ -159,6 +159,13 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 			httpAddr = wireCfg.HTTP.Addr
 		}
 		election = coordinator.NewFileLockElection(wireCfg.Election.LockPath, httpAddr)
+	case "kubernetes":
+		cfg := wireCfg.Election.Kubernetes
+		backend, err := coordinator.NewKubernetesLeaseElection(coordinator.KubernetesLeaseConfig{APIServer: cfg.APIServer, Namespace: cfg.Namespace, LeaseName: cfg.LeaseName, TokenFile: cfg.TokenFile, CAFile: cfg.CAFile, LeaseDuration: cfg.LeaseDuration.Duration, RenewDeadline: cfg.RenewDeadline.Duration, RetryPeriod: cfg.RetryPeriod.Duration})
+		if err != nil {
+			return err
+		}
+		election = backend
 	case "noop", "":
 		// Single-node mode: no election needed.
 	default:

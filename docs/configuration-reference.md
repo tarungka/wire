@@ -53,6 +53,14 @@ into the current runtime; setting them does not enable those features.
 | `write_queue.batch_size` | int | `128` | — |
 | `write_queue.timeout` | duration string | `50ms` | — |
 | `write_queue.transactional` | bool | `false` | — |
+| `election.kubernetes.api_server` | string | `""` | — |
+| `election.kubernetes.namespace` | string | `""` | — |
+| `election.kubernetes.lease_name` | string | `wire-coordinator` | — |
+| `election.kubernetes.token_file` | string | `""` | — |
+| `election.kubernetes.ca_file` | string | `""` | — |
+| `election.kubernetes.lease_duration` | duration string | `10s` | — |
+| `election.kubernetes.renew_deadline` | duration string | `6s` | — |
+| `election.kubernetes.retry_period` | duration string | `1s` | — |
 | `election.backend` | string | `noop` | `--election-backend` |
 | `election.lock_path` | string | `data/coordinator/leader.lock` | `--election-lock-path` |
 | `worker.coordinator_seeds` | slice | `[]` | — |
