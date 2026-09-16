@@ -22,9 +22,10 @@ const (
 
 // CoordinatorConfig configures the Coordinator.
 type CoordinatorConfig struct {
-	DataDir    string
-	NodeID     string
-	ListenAddr string
+	DataDir          string
+	NodeID           string
+	ListenAddr       string
+	RPCAdvertiseAddr string
 	// Deprecated: heartbeat receipt times are now ephemeral; no periodic flush runs.
 	HeartbeatFlushInterval           time.Duration
 	WorkerTimeout                    time.Duration
@@ -244,7 +245,10 @@ func (c *Coordinator) runMultiNode(ctx context.Context) error {
 
 // recover loads state from the metadata store.
 func (c *Coordinator) recover() error {
-	state, err := recoverFromStore(c.store)
+	c.mu.RLock()
+	electionEpoch := c.epoch
+	c.mu.RUnlock()
+	state, err := recoverFromStore(c.store, electionEpoch)
 	if err != nil {
 		return err
 	}
@@ -645,7 +649,7 @@ func (c *Coordinator) IsLeader() bool {
 func (c *Coordinator) IsReady() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.state == StateLeader && c.recovered
+	return c.readyLocked()
 }
 
 // GetLeaderInfo returns information about the current leader.
@@ -662,6 +666,13 @@ func (c *Coordinator) GetLeaderInfo() (*LeaderInfo, bool, error) {
 		return info, isSelf, nil
 	}
 
+	if discovery, ok := c.election.(LeaderDiscovery); ok {
+		info, err := discovery.ReadLeader(context.Background())
+		if err != nil {
+			return nil, false, err
+		}
+		return info, info.NodeID == c.nodeID, nil
+	}
 	nodeID, addr, err := c.election.GetLeader(context.Background())
 	if err != nil {
 		return nil, false, err
@@ -710,4 +721,10 @@ func (c *Coordinator) aliveWorkerCount() int {
 		}
 	}
 	return n
+}
+
+// readyLocked also checks authority before lifecycle cleanup obtains mu. A
+// revoked lease must immediately stop accepting heartbeats and mutations.
+func (c *Coordinator) readyLocked() bool {
+	return c.state == StateLeader && c.recovered && (c.leaderCtx == nil || c.leaderCtx.Err() == nil)
 }

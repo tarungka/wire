@@ -22,3 +22,11 @@ Work in progress, based on master `1ebb36e` (WIP-08). This is a requirements che
 - Full race suite, integration suite, build/vet/lint, configuration/reference consistency, and green follow-up PR CI.
 
 The original claim that missing metadata in a stale snapshot can be repaired solely from worker reports is not a safe recovery guarantee. Workers do not reconstruct committed sink decisions. Only the authoritative current store is eligible for automatic takeover.
+
+## Progress: storage ownership and lifecycle
+
+- Added an irrevocable `LeadershipStore` handle per term; guarded operations stop on context revocation, and close joins admitted I/O.
+- File-lock tokens now reject malformed/exhausted values and use fsynced atomic replacement. File-lock standbys can read the active leader's published endpoint record; unlocked stale records are ignored.
+- CLI file-lock mode now uses `HAService`: election precedes opening Pebble, discovery remains available in standby, and each grant gets a new coordinator/cache/storage instance. RPC sessions bind once to that instance; delayed old requests cannot access a replacement term. The effective epoch is durably persisted, including when the election counter is ahead of stored metadata.
+- Verified `TestHAServiceSharedMetadataTakeover`, `TestHALossDuringRecoveryNeverPublishesReady`, `TestFileLockStandbyDiscoversPublishedLeader`, leadership-store regressions and full coordinator/CLI race suites. This is same-host durable takeover evidence; it does not yet prove multi-host election or worker checkpoint restoration across addresses.
+- Still pending: Kubernetes Lease implementation/configuration, routable advertise settings, worker multi-address discovery and durable epoch state, process/crash and full running-job takeover tests, benchmarks, final docs and CI.

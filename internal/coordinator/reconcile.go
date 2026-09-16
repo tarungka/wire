@@ -35,7 +35,7 @@ func (c *Coordinator) RegisterWorker(req RegisterWorkerRequest) (*RegisterWorker
 func (c *Coordinator) registerWorker(req RegisterWorkerRequest, peer *rpc.Client, done <-chan struct{}) (*RegisterWorkerResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state != StateLeader {
+	if !c.readyLocked() {
 		return nil, ErrNotLeader
 	}
 	currentEpoch := c.epoch

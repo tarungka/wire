@@ -53,7 +53,7 @@ func (c *Coordinator) HandleHeartbeat(ctx context.Context, _ uint64, payload []b
 
 	c.mu.Lock()
 	epoch := c.epoch
-	if c.state != StateLeader || !c.recovered || req.EpochID != epoch {
+	if !c.readyLocked() || req.EpochID != epoch {
 		c.mu.Unlock()
 		return &rpc.HeartbeatResponse{Accepted: false, EpochID: epoch}, nil
 	}
@@ -181,7 +181,7 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 	}
 	c.mu.Lock()
 	denied := &rpc.UpdateTaskStatusResponse{Accepted: false, Message: "task status does not match active assignment"}
-	if c.state != StateLeader || !c.recovered || req.EpochID != c.epoch || req.WorkerID == "" {
+	if !c.readyLocked() || req.EpochID != c.epoch || req.WorkerID == "" {
 		c.mu.Unlock()
 		return denied, nil
 	}

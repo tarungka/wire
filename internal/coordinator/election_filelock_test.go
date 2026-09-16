@@ -3,6 +3,7 @@ package coordinator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -160,5 +161,30 @@ func TestFileLockElectionParentCancellationRevokesAuthority(t *testing.T) {
 	cancel()
 	if grant.Ctx.Err() == nil {
 		t.Fatal("election grant outlived its owner")
+	}
+}
+
+func TestFileLockStandbyDiscoversPublishedLeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "leader.lock")
+	leader := NewFileLockElection(path, "leader:4001")
+	standby := NewFileLockElection(path, "standby:4001")
+	defer leader.Close()
+	defer standby.Close()
+	if _, err := leader.Campaign(context.Background(), "leader"); err != nil {
+		t.Fatal(err)
+	}
+	want := LeaderInfo{NodeID: "leader", Address: "leader:4001", RPCAddress: "leader:4002", Epoch: 100}
+	if err := leader.PublishLeader(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := standby.ReadLeader(context.Background())
+	if err != nil || *got != want {
+		t.Fatalf("standby discovery: %+v %v", got, err)
+	}
+	if err := leader.Resign(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := standby.ReadLeader(context.Background()); !errors.Is(err, ErrNoLeader) {
+		t.Fatalf("advertised stale leader record after resign: %v", err)
 	}
 }

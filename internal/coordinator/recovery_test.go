@@ -578,3 +578,22 @@ func TestRecoveryRejectsMismatchedJobIdentity(t *testing.T) {
 		t.Fatal("failed recovery advanced epoch")
 	}
 }
+
+func TestRecoveryPersistsEffectiveElectionEpoch(t *testing.T) {
+	store := NewMemoryStore()
+	defer store.Close()
+	state, err := recoverFromStore(store, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := store.Get(ClusterEpochKey())
+	if err != nil || state.epoch != 100 || binary.BigEndian.Uint64(data) != 100 {
+		t.Fatalf("effective epoch not durable: %d %x %v", state.epoch, data, err)
+	}
+	// A replacement with a lagging election counter must advance past the
+	// previous leader's advertised epoch, not just its old metadata counter.
+	next, err := recoverFromStore(store, 2)
+	if err != nil || next.epoch != 101 {
+		t.Fatalf("reused epoch after restart: %+v %v", next, err)
+	}
+}
