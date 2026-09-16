@@ -16,18 +16,8 @@ func (c *Coordinator) detectLostTaskWorkers() bool {
 	if c.state != StateLeader || !c.recovered {
 		return false
 	}
-	changed := false
 	now := time.Now()
-	for _, worker := range c.workers {
-		if !worker.Lost && (worker.LastHeartbeat.IsZero() || now.Sub(worker.LastHeartbeat) >= c.config.WorkerTimeout) {
-			worker.Lost = true
-			changed = true
-			worker.TaskSlotsAvailable = 0
-			if !worker.LastHeartbeat.IsZero() {
-				(observability.HeartbeatMetrics{}).IncWorkersLostTotal()
-			}
-		}
-	}
+	changed := c.expireWorkersLocked(now)
 	failed := make(map[*JobMeta]bool)
 	for _, job := range c.jobs {
 		if job.Status != JobRunning && job.Status != JobDeploying && job.Status != JobFailing {
@@ -69,4 +59,31 @@ func (c *Coordinator) detectLostTaskWorkers() bool {
 		c.jobs[job.ID] = job
 	}
 	return changed || len(failed) > 0
+}
+
+// expireTaskWorkers is the health timer and heartbeat rejection fast path. It
+// only fences in-memory authority; the scheduler handles assignment reads and
+// durable job transitions under the ownership lock.
+func (c *Coordinator) expireTaskWorkers() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state != StateLeader || !c.recovered {
+		return false
+	}
+	return c.expireWorkersLocked(time.Now())
+}
+
+func (c *Coordinator) expireWorkersLocked(now time.Time) bool {
+	changed := false
+	for _, worker := range c.workers {
+		if !worker.Lost && (worker.LastHeartbeat.IsZero() || now.Sub(worker.LastHeartbeat) >= c.config.WorkerTimeout) {
+			worker.Lost = true
+			changed = true
+			worker.TaskSlotsAvailable = 0
+			if !worker.LastHeartbeat.IsZero() {
+				(observability.HeartbeatMetrics{}).IncWorkersLostTotal()
+			}
+		}
+	}
+	return changed
 }

@@ -58,6 +58,7 @@ func TestLostWorkerCannotReviveWithoutRegistration(t *testing.T) {
 			t.Fatalf("expired worker revived: %v %v", value, err)
 		}
 	}
+	c.detectLostTaskWorkers() // Scheduler publishes the deferred recovery transition.
 	if !c.workers["worker"].Lost || c.taskStatuses[task] != rpc.TaskStatusFailed || job.Status != JobFailing || c.aliveWorkerCount() != 0 {
 		t.Fatal("incomplete worker-loss cascade")
 	}

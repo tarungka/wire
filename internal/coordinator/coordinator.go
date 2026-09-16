@@ -330,7 +330,7 @@ func (c *Coordinator) serve(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if c.detectLostTaskWorkers() {
+			if c.expireTaskWorkers() {
 				c.kickScheduler()
 			}
 		}
