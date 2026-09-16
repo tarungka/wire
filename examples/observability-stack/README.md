@@ -15,6 +15,7 @@ health and latency distributions from the OTel instrumentation.
 | `grafana` | `3000` | Pre-provisioned `Wire / coordinator overview` dashboard (anonymous viewer enabled) |
 | `load` | — | Optional short-runner that submits sample jobs (profile `load`) |
 | `k6` | — | Optional k6 load generator that drives `POST /api/v1/jobs` at a configurable arrival rate (profile `k6`) |
+| `k6-cpu` | — | Same, but each job does real CPU work (`Source → Map(cpu-burn) → Sink`), so job duration reflects processing rather than queue wait (profile `k6-cpu`) |
 
 ## Prerequisites
 
@@ -144,6 +145,42 @@ distribution.
 
 The script asserts `p95 < 500 ms` and `p99 < 1 s` on the submit endpoint;
 exceeding those flags the run as failed in k6's exit code.
+
+## CPU-heavy load testing with k6-cpu
+
+The `k6` profile submits the uppercase pipeline, which finishes in
+microseconds — so `wire_coordinator_job_duration_seconds` mostly records
+queue wait. The `k6-cpu` profile submits a `Source -> Map(cpu-burn) -> Sink`
+pipeline instead, hashing each event `BURN_ROUNDS` times, so jobs take
+hundreds of milliseconds and the histogram reflects real processing time.
+
+```sh
+# 2 min at 2 jobs/s (defaults)
+docker compose --profile k6-cpu run --rm k6-cpu
+
+# heavier jobs, higher arrival rate
+BURN_ROUNDS=100000 RPS=4 DURATION=3m docker compose --profile k6-cpu run --rm k6-cpu
+```
+
+**Tuning knobs (env vars):**
+
+| Var | Default | Notes |
+|---|---|---|
+| `BURN_ROUNDS` | `50000` | SHA-256 iterations per event — the CPU knob (~440 ms per job at the defaults) |
+| `BURN_EVENTS` | `100` | Events per job; CPU work per job is `BURN_ROUNDS × BURN_EVENTS` |
+| `BURN_PAYLOAD` | `64` | Bytes per event. Event size only — each event is hashed once before the round loop, so this is **not** a CPU knob |
+| `RPS` | `2` | Arrival rate. Note the different default from the `k6` profile (`20`) |
+| `DURATION` | `2m` | k6 duration string (the `k6` profile defaults to `30s`) |
+
+`src -> burn -> sink` are forward edges at `parallelism=1`, so the three
+operators fuse into a single chain and each job occupies **one** task slot,
+not three. With the worker's 4 slots and 4 free cores that drains roughly
+9 jobs/s at the default `BURN_ROUNDS`; the default `RPS` sits well below
+that so the queue stays near-empty.
+
+The two profiles write their graphs to different files on the shared
+volume — `graph_bytes.txt` for `k6`, `graph_bytes_cpu.txt` for `k6-cpu` —
+so enabling both at once is safe.
 
 ## Iterating on wire
 

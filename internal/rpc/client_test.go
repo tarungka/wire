@@ -54,17 +54,22 @@ func TestClientCallTimeout(t *testing.T) {
 		log:      testLogger(),
 	}
 
-	// Register a handler that sleeps beyond the timeout.
-	srv.Register(MethodHeartbeat, func(ctx context.Context, reqID uint64, payload []byte) (any, *RPCError) {
-		select {
-		case <-time.After(5 * time.Second):
-		case <-ctx.Done():
-		}
+	// Keep the response blocked until the client call has returned. Returning
+	// success on the handler's deadline races the client's equal timeout and
+	// can let a response win on a busy runner. Server cancellation is tested
+	// separately in TestUnaryServerEnforcesMethodDeadline.
+	release := make(chan struct{})
+	srv.Register(MethodHeartbeat, func(context.Context, uint64, []byte) (any, *RPCError) {
+		<-release
 		return &HeartbeatResponse{Accepted: true}, nil
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer func() {
+		close(release)
+		cancel()
+		srv.Stop()
+	}()
 
 	go srv.ServeSession(ctx, server)
 
