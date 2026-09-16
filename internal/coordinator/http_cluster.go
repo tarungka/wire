@@ -13,6 +13,8 @@ func (s *HTTPServer) handleClusterStatus(w http.ResponseWriter, _ *http.Request)
 	}
 
 	leader := &leaderResponse{
+		Ready:          isSelf && s.coord.IsReady(),
+		LeaderRPCAddr:  info.RPCAddress,
 		LeaderID:       info.NodeID,
 		LeaderHTTPAddr: info.Address,
 		LeaderEpoch:    info.Epoch,
