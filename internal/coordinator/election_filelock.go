@@ -101,14 +101,15 @@ func (f *FileLockElection) Campaign(ctx context.Context, nodeID string) (*Leader
 		lctx, cancel := context.WithCancel(ctx)
 		f.mu.Lock()
 		f.lockFile = lockFile
-		f.lctx = &LeaderContext{
+		grant := &LeaderContext{
 			Epoch:  epoch,
 			Ctx:    lctx,
 			Cancel: cancel,
 		}
+		f.lctx = grant
 		f.mu.Unlock()
 
-		return f.lctx, nil
+		return grant, nil
 	}
 }
 

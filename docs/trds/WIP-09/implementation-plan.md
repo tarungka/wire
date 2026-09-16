@@ -58,3 +58,12 @@ Kubernetes implementation reference: [Lease v1 API](https://kubernetes.io/docs/r
 - Full repository `go test -race ./...` passed before the final Kubernetes job-test addition and shutdown-error propagation adjustment. Full lint also passed at that point. Final integration/build/vet/lint/CI, documentation reconciliation and the completion audit remain pending.
 
 Final code-audit item: the legacy `Coordinator.runMultiNode` path still accepts an already-open store and reuses coordinator caches. Production election now uses HAService, but the older embedded entry point needs an explicit safe contract/removal or equivalent fencing before declaring completion; do not infer that switching the CLI alone makes every entry point safe.
+
+## Final audit progress
+
+- Added the specified `X-Wire-Leader-Epoch` redirect header with a regression assertion. File-lock election returns its captured grant rather than rereading mutable state after unlocking.
+- Full race suite, build, vet and lint pass with these changes. The integration-tagged suite also passed; PR CI has not started.
+- Personal GitHub identity verified as `tarungka`; master remains `1ebb36e`. Follow-up links should reference merged WIP-09 PR #200.
+- Retiring the unsafe legacy elected `Coordinator.Run` entry point was rejected by automatic approval review as a compatibility change. The explicit approval question remains pending; that retirement has not been applied.
+
+- The numbered atomic-batch interruption scenario still needs direct coverage: the current hard-kill test verifies acknowledged batches, not an interrupted commit. This remains an explicit acceptance gap.
