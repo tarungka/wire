@@ -20,6 +20,9 @@ import (
 
 // Config holds worker configuration.
 type Config struct {
+	CoordinatorSeeds []string
+	// EpochPath enables durable fencing across process restarts; required for HA discovery.
+	EpochPath            string
 	HeartbeatInterval    time.Duration
 	HeartbeatTimeout     time.Duration
 	HeartbeatMaxFailures int
@@ -51,6 +54,7 @@ type taskHandle struct {
 // Deployed tasks are resolved against the Worker's Registry and executed
 // via taskExecutor.
 type Worker struct {
+	epochStore             *epochStore
 	resources              *rpc.ResourceReport
 	lastCoordinatorContact time.Time
 	cancelledAttempts      map[string]bool
@@ -101,6 +105,9 @@ func NewWithRegistry(cfg Config, reg *Registry, log zerolog.Logger) *Worker {
 // Run connects to the coordinator, registers, and starts the heartbeat loop.
 // It blocks until ctx is canceled or an unrecoverable error occurs.
 func (w *Worker) Run(ctx context.Context) (retErr error) {
+	if len(w.cfg.CoordinatorSeeds) > 0 && w.cfg.EpochPath == "" {
+		return fmt.Errorf("HA discovery requires a durable worker epoch path")
+	}
 	parent := ctx
 	ctx, cancelContact := context.WithCancelCause(ctx)
 	defer cancelContact(nil)
@@ -109,6 +116,17 @@ func (w *Worker) Run(ctx context.Context) (retErr error) {
 			retErr = ErrCoordinatorContactLost
 		}
 	}()
+	if w.cfg.EpochPath != "" {
+		store, err := openEpochStore(w.cfg.EpochPath)
+		if err != nil {
+			return fmt.Errorf("%w: %w", errEpochPersistence, err)
+		}
+		defer func() { _ = store.close() }()
+		w.mu.Lock()
+		w.epochStore = store
+		w.epoch = store.epoch
+		w.mu.Unlock()
+	}
 	w.confirmCoordinatorContact()
 	go w.watchCoordinatorContact(ctx, cancelContact)
 	// Resolve worker ID.
@@ -177,7 +195,7 @@ func (w *Worker) Run(ctx context.Context) (retErr error) {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if errors.Is(err, errReconnectTaskJoin) || errors.Is(err, ErrCoordinatorContactLost) {
+		if errors.Is(err, errEpochPersistence) || errors.Is(err, errReconnectTaskJoin) || errors.Is(err, ErrCoordinatorContactLost) {
 			return err
 		}
 		w.log.Warn().Err(err).Msg("coordinator session ended; reconnecting")
@@ -204,10 +222,14 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 		Int("task_slots", w.cfg.TaskSlots).
 		Msg("connecting to coordinator")
 
+	coordinatorAddr, err := w.discoverCoordinator(ctx)
+	if err != nil {
+		return fmt.Errorf("worker: leader discovery: %w", err)
+	}
 	// 1. Establish transport session.
 	tcfg := transport.DefaultConfig()
 	tcfg.TLSConfig = w.cfg.RPCTLSConfig
-	session, err := transport.NewClientSessionContext(ctx, w.cfg.CoordinatorAddr, tcfg)
+	session, err := transport.NewClientSessionContext(ctx, coordinatorAddr, tcfg)
 	if err != nil {
 		return fmt.Errorf("worker: connect to coordinator: %w", err)
 	}
@@ -286,6 +308,13 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 
 	if regResp.Epoch < highestEpoch {
 		return fmt.Errorf("coordinator registration returned stale epoch %d", regResp.Epoch)
+	}
+	// Fsync outside the worker lock so the independent authority watchdog
+	// can still fence transports if storage stalls.
+	if w.epochStore != nil {
+		if err := w.epochStore.save(regResp.Epoch); err != nil {
+			return fmt.Errorf("%w: %w", errEpochPersistence, err)
+		}
 	}
 	w.mu.Lock()
 	if w.stopping || (!w.lastCoordinatorContact.IsZero() && time.Since(w.lastCoordinatorContact) >= w.contactTimeout()) {

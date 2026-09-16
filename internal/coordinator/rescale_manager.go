@@ -28,7 +28,7 @@ func (c *Coordinator) RescaleOperators(jobID, savepointID string, operators map[
 func (c *Coordinator) rescaleJob(jobID, savepointID string, parallelism int, operators map[string]int) (*JobMeta, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state != StateLeader || !c.recovered {
+	if !c.readyLocked() {
 		return nil, ErrNotLeader
 	}
 	job, ok := c.jobs[jobID]

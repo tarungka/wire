@@ -15,7 +15,7 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 		return false
 	}
 	c.mu.RLock()
-	if job.Status != JobFailing || c.state != StateLeader || !c.recovered {
+	if job.Status != JobFailing || !c.readyLocked() {
 		c.mu.RUnlock()
 		return false
 	}
@@ -29,6 +29,13 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 	var workers []string
 	for taskID, workerID := range assignment.Assignments {
 		worker := c.workers[workerID]
+		if assignment.EpochID < c.epoch && time.Now().Before(c.recoveryFenceUntil) && (worker == nil || worker.LastHeartbeat.IsZero()) {
+			// A re-registering worker has joined its prior attempt before
+			// asking for a new grant. Otherwise wait out the old contact
+			// deadline, even if loss detection already marked tasks FAILED.
+			c.mu.RUnlock()
+			return false
+		}
 		if worker == nil || worker.LastHeartbeat.IsZero() || time.Since(worker.LastHeartbeat) >= c.config.WorkerTimeout {
 			continue
 		}
@@ -70,7 +77,7 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 func (c *Coordinator) rollbackFailedRescale(job *JobMeta) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state != StateLeader || !c.recovered || job.Status != JobFailing || job.RescaleRollback == nil || !job.RescaleRollback.Attempted {
+	if !c.readyLocked() || job.Status != JobFailing || job.RescaleRollback == nil || !job.RescaleRollback.Attempted {
 		return nil
 	}
 	old := job.RescaleRollback
@@ -103,7 +110,7 @@ func (c *Coordinator) resetStableRecoveryBudget(job *JobMeta, now time.Time) {
 func (c *Coordinator) recordRescalePlacementFailure(job *JobMeta, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state != StateLeader || !c.recovered || job.Status != JobFailing || job.RescaleRollback == nil || job.RescaleRollback.Attempted {
+	if !c.readyLocked() || job.Status != JobFailing || job.RescaleRollback == nil || job.RescaleRollback.Attempted {
 		return
 	}
 	next := *job

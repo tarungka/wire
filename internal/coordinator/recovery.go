@@ -25,7 +25,7 @@ type recoveredState struct {
 // recoverFromStore reconstructs coordinator state from the metadata store.
 // All workers are marked stale (heartbeat zeroed). The epoch is incremented
 // and persisted to fence stale coordinators.
-func recoverFromStore(store MetadataStore) (*recoveredState, error) {
+func recoverFromStore(store MetadataStore, electionEpoch ...uint64) (*recoveredState, error) {
 	state := &recoveredState{
 		jobs:              make(map[string]*JobMeta),
 		workers:           make(map[string]*WorkerMeta),
@@ -146,6 +146,11 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 	}
 	// 6. Increment epoch and persist (fence stale coordinators).
 	state.epoch++
+	// Election backends may have advanced farther than the metadata token.
+	// Persist the actual advertised epoch, otherwise a restart could reuse it.
+	for _, minimum := range electionEpoch {
+		state.epoch = max(state.epoch, minimum)
+	}
 	epochBuf := make([]byte, 8)
 	binary.BigEndian.PutUint64(epochBuf, state.epoch)
 	if err := store.Set(ClusterEpochKey(), epochBuf); err != nil {

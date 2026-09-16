@@ -1,0 +1,213 @@
+package coordinator
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"sync/atomic"
+	"time"
+
+	"github.com/rs/zerolog"
+)
+
+// HAService keeps discovery available while campaigning and gives each grant
+// its own coordinator, caches, sessions, and irrevocable metadata handle. A
+// delayed old request can never see a subsequent term's store or mutable state.
+type HAService struct {
+	cfg          CoordinatorConfig
+	election     LeaderElection
+	openStore    func() (MetadataStore, error)
+	log          zerolog.Logger
+	active       atomic.Pointer[haTerm]
+	standby      *HTTPServer
+	http         *http.Server
+	httpListener net.Listener
+	transport    *TransportServer
+}
+
+type haTerm struct {
+	coord   *Coordinator
+	ctx     context.Context
+	handler http.Handler
+}
+
+func NewHAService(cfg CoordinatorConfig, rpcAddr string, election LeaderElection, openStore func() (MetadataStore, error), tlsConfig *tls.Config, log zerolog.Logger) *HAService {
+	cfg.resolve()
+	h := &HAService{cfg: cfg, election: election, openStore: openStore, log: log}
+	standby := New(cfg, nil, election, log)
+	h.standby = NewHTTPServer(standby, cfg.ListenAddr, log)
+	h.http = &http.Server{Addr: cfg.ListenAddr, ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(h.serveHTTP)}
+	h.transport = NewTermTransportServer(func() (*Coordinator, context.Context) {
+		term := h.active.Load()
+		if term == nil {
+			return nil, context.Background()
+		}
+		return term.coord, term.ctx
+	}, rpcAddr, log, tlsConfig)
+	return h
+}
+
+// Listen binds both endpoints before Run. It supports ephemeral ports in
+// embedded deployments and tests without reserving then releasing port numbers.
+func (h *HAService) Listen() error {
+	if h.httpListener != nil {
+		return fmt.Errorf("HA service already listening")
+	}
+	listener, err := net.Listen("tcp", h.cfg.ListenAddr)
+	if err != nil {
+		return err
+	}
+	if err := h.transport.Listen(); err != nil {
+		_ = listener.Close()
+		return err
+	}
+	h.httpListener = listener
+	if h.cfg.HTTPAdvertiseAddr == h.cfg.ListenAddr {
+		if _, port, _ := net.SplitHostPort(h.cfg.ListenAddr); port == "0" {
+			h.cfg.HTTPAdvertiseAddr = listener.Addr().String()
+		}
+	}
+	if h.cfg.RPCAdvertiseAddr == "" || h.cfg.RPCAdvertiseAddr == h.transport.listenAddr {
+		h.cfg.RPCAdvertiseAddr = h.transport.Addr()
+	}
+	h.standby.coord.config.HTTPAdvertiseAddr = h.cfg.HTTPAdvertiseAddr
+	return nil
+}
+
+func (h *HAService) HTTPAddr() string {
+	if h.httpListener != nil {
+		return h.httpListener.Addr().String()
+	}
+	return h.cfg.ListenAddr
+}
+func (h *HAService) RPCAddr() string { return h.transport.Addr() }
+
+// CurrentCoordinator returns a snapshot of the ready term. A retained old
+// pointer remains fenced after takeover; callers should reacquire per operation.
+func (h *HAService) CurrentCoordinator() (*Coordinator, bool) {
+	term := h.active.Load()
+	if term == nil || !term.coord.IsReady() {
+		return nil, false
+	}
+	return term.coord, true
+}
+
+func (h *HAService) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if term := h.active.Load(); term != nil && term.coord.IsReady() {
+		term.handler.ServeHTTP(w, r)
+		return
+	}
+	// Standbys have no metadata store: only discovery and health are served.
+	switch r.URL.Path {
+	case "/healthz", "/readyz", "/api/v1/cluster/leader":
+		h.standby.server.Handler.ServeHTTP(w, r)
+	default:
+		info, _, _ := h.standby.coord.GetLeaderInfo()
+		h.standby.writeStandbyRedirect(w, r, info)
+	}
+}
+
+// Run serves the node and campaigns until shutdown. Metadata is never opened
+// while waiting for election. The database is closed before voluntary resign.
+func (h *HAService) Run(ctx context.Context) error {
+	if h.election == nil || h.openStore == nil {
+		return fmt.Errorf("HA requires election and authoritative storage")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer h.election.Close()
+	if h.httpListener == nil {
+		if err := h.Listen(); err != nil {
+			return err
+		}
+	}
+	defer h.transport.Shutdown(context.Background())
+	httpDone := make(chan error, 1)
+	rpcDone := make(chan error, 1)
+	go func() { err := h.http.Serve(h.httpListener); httpDone <- err; cancel() }()
+	go func() { err := h.transport.Serve(ctx); rpcDone <- err; cancel() }()
+	err := h.campaign(ctx)
+	cancel()
+	shutdownCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	shutdownErr := h.http.Shutdown(shutdownCtx)
+	if shutdownErr != nil {
+		_ = h.http.Close()
+	}
+	httpErr, rpcErr := <-httpDone, <-rpcDone
+	if errors.Is(httpErr, http.ErrServerClosed) {
+		httpErr = nil
+	}
+	if errors.Is(err, context.Canceled) {
+		err = nil
+	}
+	return errors.Join(err, httpErr, rpcErr, shutdownErr)
+}
+
+func (h *HAService) campaign(ctx context.Context) error {
+	for ctx.Err() == nil {
+		grant, err := h.election.Campaign(ctx, h.cfg.NodeID)
+		if err != nil {
+			return err
+		}
+		err = h.runTerm(ctx, grant)
+		// runTerm drains metadata ownership before this releases election.
+		resignErr := h.election.Resign(context.Background())
+		if resignErr != nil {
+			// Local authority and storage ownership are already gone. A
+			// failed API release leaves the remote lease to expire; keep
+			// this process available as a standby while the API recovers.
+			h.log.Warn().Err(resignErr).Msg("election release failed; waiting to campaign again")
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil && !errors.Is(err, context.Canceled) {
+			// Invalid or inaccessible metadata is not a reason to advertise readiness
+			// or restore an older snapshot. Leave authority and retry with backoff.
+			h.log.Error().Err(err).Msg("HA term ended without serving or lost authority")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return ctx.Err()
+}
+
+func (h *HAService) runTerm(parent context.Context, grant *LeaderContext) (retErr error) {
+	ctx, cancel := context.WithCancel(grant.Ctx)
+	stop := context.AfterFunc(parent, cancel)
+	defer stop()
+	defer cancel()
+	store, err := OpenLeadershipStore(ctx, h.openStore)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, store.Close()) }()
+	coord := New(h.cfg, store, h.election, h.log)
+	coord.state = StateLeader
+	coord.epoch = grant.Epoch
+	coord.leaderCtx, coord.leaderCancel = ctx, cancel
+	if err := coord.recover(); err != nil {
+		return err
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if discovery, ok := h.election.(LeaderDiscovery); ok {
+		if err := discovery.PublishLeader(ctx, LeaderInfo{NodeID: h.cfg.NodeID, Address: h.cfg.HTTPAdvertiseAddr, RPCAddress: h.cfg.RPCAdvertiseAddr, Epoch: coord.CurrentEpoch()}); err != nil {
+			return err
+		}
+	}
+	term := &haTerm{coord: coord, ctx: ctx, handler: NewHTTPServer(coord, h.cfg.ListenAddr, h.log).server.Handler}
+	h.active.Store(term)
+	defer h.active.CompareAndSwap(term, nil)
+	err = coord.serve(ctx)
+	cancel()
+	return err
+}

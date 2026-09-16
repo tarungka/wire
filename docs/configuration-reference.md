@@ -30,6 +30,7 @@ into the current runtime; setting them does not enable those features.
 | `task_slot.drain_timeout` | duration string | `5s` | — |
 | `mode` | string | `coordinator` | `--mode` |
 | `listen` | string | `:4002` | `--listen` |
+| `node.rpc_advertise_addr` | string | `""` | — |
 | `node.id` | string | `""` | `--node-id` |
 | `node.data_dir` | string | `data/coordinator` | `--coordinator-data-dir` |
 | `node.store_db` | string | `pebble` | — |
@@ -52,8 +53,18 @@ into the current runtime; setting them does not enable those features.
 | `write_queue.batch_size` | int | `128` | — |
 | `write_queue.timeout` | duration string | `50ms` | — |
 | `write_queue.transactional` | bool | `false` | — |
+| `election.kubernetes.api_server` | string | `""` | — |
+| `election.kubernetes.namespace` | string | `""` | — |
+| `election.kubernetes.lease_name` | string | `wire-coordinator` | — |
+| `election.kubernetes.token_file` | string | `""` | — |
+| `election.kubernetes.ca_file` | string | `""` | — |
+| `election.kubernetes.lease_duration` | duration string | `10s` | — |
+| `election.kubernetes.renew_deadline` | duration string | `6s` | — |
+| `election.kubernetes.retry_period` | duration string | `1s` | — |
 | `election.backend` | string | `noop` | `--election-backend` |
 | `election.lock_path` | string | `data/coordinator/leader.lock` | `--election-lock-path` |
+| `worker.coordinator_seeds` | slice | `[]` | — |
+| `worker.epoch_path` | string | `data/worker/epoch` | — |
 | `worker.checkpoint_replica.listen_addr` | string | `""` | — |
 | `worker.checkpoint_replica.advertise_addr` | string | `""` | — |
 | `worker.checkpoint_replica.store_root` | string | `""` | — |

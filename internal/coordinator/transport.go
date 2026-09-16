@@ -16,13 +16,14 @@ import (
 
 // TransportServer listens for worker RPC connections over TCP/Yamux.
 type TransportServer struct {
-	tlsConfig  *tls.Config
-	coord      *Coordinator
-	listenAddr string
-	rpcServer  *rpc.Server
-	listener   net.Listener
-	log        zerolog.Logger
-	wg         sync.WaitGroup
+	termProvider func() (*Coordinator, context.Context)
+	tlsConfig    *tls.Config
+	coord        *Coordinator
+	listenAddr   string
+	rpcServer    *rpc.Server
+	listener     net.Listener
+	log          zerolog.Logger
+	wg           sync.WaitGroup
 
 	// sessionsMu guards the active session set used at shutdown to drop
 	// blocked rpc.ServeSession callers. A worker's Yamux AcceptStream call
@@ -35,6 +36,34 @@ type TransportServer struct {
 // NewTransportServer creates a TransportServer that bridges worker RPC
 // connections to the coordinator.
 func NewTransportServer(coord *Coordinator, listenAddr string, log zerolog.Logger, tlsConfigs ...*tls.Config) *TransportServer {
+	srv := coordinatorRPCServer(coord)
+
+	var tlsConfig *tls.Config
+	if len(tlsConfigs) > 0 {
+		tlsConfig = tlsConfigs[0]
+	}
+	return &TransportServer{
+		tlsConfig:  tlsConfig,
+		coord:      coord,
+		listenAddr: listenAddr,
+		rpcServer:  srv,
+		log:        log.With().Str("component", "transport-server").Logger(),
+		sessions:   make(map[*yamux.Session]struct{}),
+	}
+}
+
+// NewTermTransportServer selects a coordinator once per connection. Existing
+// sessions remain bound to their original term and close when that term ends.
+func NewTermTransportServer(provider func() (*Coordinator, context.Context), listenAddr string, log zerolog.Logger, tlsConfig *tls.Config) *TransportServer {
+	ts := NewTransportServer(nil, listenAddr, log, tlsConfig)
+	ts.termProvider = provider
+	return ts
+}
+
+func coordinatorRPCServer(coord *Coordinator) *rpc.Server {
+	if coord == nil {
+		return rpc.NewServer(rpc.DefaultConfig())
+	}
 	rpcCfg := rpc.DefaultConfig()
 	srv := rpc.NewServer(rpcCfg)
 
@@ -51,18 +80,7 @@ func NewTransportServer(coord *Coordinator, listenAddr string, log zerolog.Logge
 		return coord.HandleWatchCommands(ctx, id, payload, stream)
 	})
 
-	var tlsConfig *tls.Config
-	if len(tlsConfigs) > 0 {
-		tlsConfig = tlsConfigs[0]
-	}
-	return &TransportServer{
-		tlsConfig:  tlsConfig,
-		coord:      coord,
-		listenAddr: listenAddr,
-		rpcServer:  srv,
-		log:        log.With().Str("component", "transport-server").Logger(),
-		sessions:   make(map[*yamux.Session]struct{}),
-	}
+	return srv
 }
 
 // Listen binds the server to its configured address without serving. Call
@@ -131,6 +149,16 @@ func (ts *TransportServer) ListenAndServe(ctx context.Context) error {
 // handleConn wraps a raw TCP connection in a Yamux server session and
 // serves RPCs on it.
 func (ts *TransportServer) handleConn(ctx context.Context, conn net.Conn) {
+	rpcServer := ts.rpcServer
+	if ts.termProvider != nil {
+		coord, termCtx := ts.termProvider()
+		if coord == nil || termCtx.Err() != nil || !coord.IsReady() {
+			_ = conn.Close()
+			return
+		}
+		ctx = termCtx
+		rpcServer = coordinatorRPCServer(coord)
+	}
 	tcfg := transport.DefaultConfig()
 	tcfg.TLSConfig = ts.tlsConfig
 	session, err := transport.NewServerSession(conn, tcfg)
@@ -158,7 +186,7 @@ func (ts *TransportServer) handleConn(ctx context.Context, conn net.Conn) {
 	}()
 
 	ts.log.Info().Str("remote", session.Addr()).Msg("worker connected")
-	ts.rpcServer.ServeSession(ctx, ymx)
+	rpcServer.ServeSession(ctx, ymx)
 	ts.log.Info().Str("remote", session.Addr()).Msg("worker disconnected")
 }
 

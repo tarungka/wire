@@ -13,7 +13,7 @@ import (
 func (c *Coordinator) detectLostTaskWorkers() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state != StateLeader || !c.recovered {
+	if !c.readyLocked() {
 		return false
 	}
 	now := time.Now()
@@ -67,7 +67,7 @@ func (c *Coordinator) detectLostTaskWorkers() bool {
 func (c *Coordinator) expireTaskWorkers() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state != StateLeader || !c.recovered {
+	if !c.readyLocked() {
 		return false
 	}
 	return c.expireWorkersLocked(time.Now())
