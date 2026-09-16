@@ -29,6 +29,13 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 	var workers []string
 	for taskID, workerID := range assignment.Assignments {
 		worker := c.workers[workerID]
+		if assignment.EpochID < c.epoch && time.Now().Before(c.recoveryFenceUntil) && (worker == nil || worker.LastHeartbeat.IsZero()) {
+			// A re-registering worker has joined its prior attempt before
+			// asking for a new grant. Otherwise wait out the old contact
+			// deadline, even if loss detection already marked tasks FAILED.
+			c.mu.RUnlock()
+			return false
+		}
 		if worker == nil || worker.LastHeartbeat.IsZero() || time.Since(worker.LastHeartbeat) >= c.config.WorkerTimeout {
 			continue
 		}

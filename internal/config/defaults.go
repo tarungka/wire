@@ -28,6 +28,7 @@ func DefaultConfig() WireConfig {
 			LockPath: "data/coordinator/leader.lock",
 		},
 		Worker: WorkerConfig{
+			EpochPath:         "data/worker/epoch",
 			CheckpointReplica: CheckpointReplicaConfig{Concurrency: 1},
 			ListenAddr:        ":4003",
 			TaskSlots:         4,

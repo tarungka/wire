@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/tarungka/wire/internal/rpc"
 )
 
 func waitHATerm(t *testing.T, h *HAService) *haTerm {
@@ -113,5 +115,33 @@ func TestHALossDuringRecoveryNeverPublishesReady(t *testing.T) {
 	case <-backend.closed:
 	default:
 		t.Fatal("revoked recovery retained database ownership")
+	}
+}
+
+func TestRecoveryWaitsForPreviousWorkerAuthority(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	job := slotReleaseJob(t, "recovering")
+	job.Status = JobFailing
+	job.LatestCheckpoint = 1
+	c.jobs[job.ID] = job
+	assignment := TaskAssignmentMap{JobID: job.ID, EpochID: c.epoch - 1, Assignments: map[string]string{"task": "old-worker"}}
+	if err := store.Set(JobAssignmentsKey(job.ID), encode(t, assignment)); err != nil {
+		t.Fatal(err)
+	}
+	c.workers["old-worker"] = &WorkerMeta{ID: "old-worker", Lost: true}
+	c.recoveryFenceUntil = time.Now().Add(time.Hour)
+	if c.prepareTaskRestart(job) {
+		t.Fatal("restarted before old worker authority expired")
+	}
+	// Its old tasks have stopped before the current worker re-registers.
+	c.workers["old-worker"].LastHeartbeat = time.Now()
+	c.taskStatuses["task"] = rpc.TaskStatusFailed
+	if !c.prepareTaskRestart(job) {
+		t.Fatal("current registration did not release recovery wait")
+	}
+	c.workers["old-worker"].LastHeartbeat = time.Time{}
+	c.recoveryFenceUntil = time.Now().Add(-time.Second)
+	if !c.prepareTaskRestart(job) {
+		t.Fatal("expired authority still blocked recovery")
 	}
 }

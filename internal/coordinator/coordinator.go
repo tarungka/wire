@@ -22,10 +22,11 @@ const (
 
 // CoordinatorConfig configures the Coordinator.
 type CoordinatorConfig struct {
-	DataDir          string
-	NodeID           string
-	ListenAddr       string
-	RPCAdvertiseAddr string
+	DataDir           string
+	NodeID            string
+	ListenAddr        string
+	RPCAdvertiseAddr  string
+	HTTPAdvertiseAddr string
 	// Deprecated: heartbeat receipt times are now ephemeral; no periodic flush runs.
 	HeartbeatFlushInterval           time.Duration
 	WorkerTimeout                    time.Duration
@@ -40,6 +41,9 @@ type CoordinatorConfig struct {
 }
 
 func (c *CoordinatorConfig) resolve() {
+	if c.HTTPAdvertiseAddr == "" {
+		c.HTTPAdvertiseAddr = c.ListenAddr
+	}
 	if c.HeartbeatInterval <= 0 {
 		c.HeartbeatInterval = rpc.DefaultHeartbeatInterval
 	}
@@ -111,6 +115,10 @@ type Coordinator struct {
 	// Leadership context — canceled when leadership is lost.
 	leaderCtx    context.Context
 	leaderCancel context.CancelFunc
+
+	// recoveryFenceUntil bounds authority held by workers from the previous
+	// coordinator term. Zeroed heartbeat history is not proof of task exit.
+	recoveryFenceUntil time.Time
 
 	// recovered tracks whether recovery has completed.
 	recovered bool
@@ -282,6 +290,7 @@ func (c *Coordinator) recover() error {
 
 	c.jobs = state.jobs
 	c.workers = state.workers
+	c.recoveryFenceUntil = time.Now().Add(c.config.WorkerTimeout)
 	// Rebuild the active-name index from the recovered jobs. Only
 	// non-terminal jobs reserve names, matching the SubmitJob check.
 	c.activeJobNames = make(map[string]string, len(state.jobs))
@@ -658,7 +667,7 @@ func (c *Coordinator) GetLeaderInfo() (*LeaderInfo, bool, error) {
 		c.mu.RLock()
 		info := &LeaderInfo{
 			NodeID:  c.nodeID,
-			Address: c.config.ListenAddr,
+			Address: c.config.HTTPAdvertiseAddr,
 			Epoch:   c.epoch,
 		}
 		isSelf := c.state == StateLeader
