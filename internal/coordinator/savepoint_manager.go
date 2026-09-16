@@ -70,7 +70,7 @@ func (c *Coordinator) ListSavepoints(jobID string) ([]*SavepointMeta, error) {
 func (c *Coordinator) DeleteSavepoint(jobID, spID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state != StateLeader || !c.recovered {
+	if !c.readyLocked() {
 		return ErrNotLeader
 	}
 

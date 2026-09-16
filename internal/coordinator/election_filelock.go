@@ -3,6 +3,7 @@ package coordinator
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -88,6 +89,15 @@ func (f *FileLockElection) Campaign(ctx context.Context, nodeID string) (*Leader
 			return nil, err
 		}
 
+		record, err := json.Marshal(LeaderInfo{NodeID: nodeID, Address: f.addr, Epoch: epoch})
+		if err == nil {
+			err = writeDurableElectionFile(f.lockPath+".leader", record)
+		}
+		if err != nil {
+			_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+			_ = lockFile.Close()
+			return nil, err
+		}
 		lctx, cancel := context.WithCancel(ctx)
 		f.mu.Lock()
 		f.lockFile = lockFile
@@ -118,14 +128,67 @@ func (f *FileLockElection) Resign(_ context.Context) error {
 	return nil
 }
 
-func (f *FileLockElection) GetLeader(_ context.Context) (string, string, error) {
+func (f *FileLockElection) GetLeader(ctx context.Context) (string, string, error) {
+	info, err := f.ReadLeader(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	return info.NodeID, info.Address, nil
+}
+
+// ReadLeader is a discovery hint, not an authority check. Confirm readiness
+// with the advertised node; it may lose the lock immediately after this read.
+func (f *FileLockElection) ReadLeader(ctx context.Context) (*LeaderInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	probe, err := os.OpenFile(f.lockPath, os.O_RDWR, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNoLeader
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer probe.Close()
+	err = syscall.Flock(int(probe.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err == nil {
+		_ = syscall.Flock(int(probe.Fd()), syscall.LOCK_UN)
+		return nil, ErrNoLeader
+	}
+	if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+		return nil, err
+	}
+	data, err := os.ReadFile(f.lockPath + ".leader")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNoLeader
+	}
+	if err != nil {
+		return nil, err
+	}
+	var info LeaderInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil, err
+	}
+	if info.NodeID == "" || info.Address == "" {
+		return nil, ErrNoLeader
+	}
+	return &info, nil
+}
+
+func (f *FileLockElection) PublishLeader(ctx context.Context, info LeaderInfo) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
-	if f.lctx == nil {
-		return "", "", ErrNoLeader
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return f.nodeID, f.addr, nil
+	if f.lctx == nil || f.lctx.Ctx.Err() != nil || info.NodeID != f.nodeID {
+		return ErrNotLeader
+	}
+	data, err := json.Marshal(info)
+	if err != nil {
+		return err
+	}
+	return writeDurableElectionFile(f.lockPath+".leader", data)
 }
 
 func (f *FileLockElection) Close() error {

@@ -27,3 +27,10 @@ type LeaderElection interface {
 	// Close releases resources held by the election backend.
 	Close() error
 }
+
+// LeaderDiscovery publishes the recovered epoch and routable endpoints. The
+// returned record is a hint; callers must confirm readiness and RPC identity.
+type LeaderDiscovery interface {
+	ReadLeader(context.Context) (*LeaderInfo, error)
+	PublishLeader(context.Context, LeaderInfo) error
+}

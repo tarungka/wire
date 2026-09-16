@@ -150,13 +150,6 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 		}
 	}
 
-	// Create metadata store (PebbleDB).
-	store, err := coordinator.NewPebbleStore(wireCfg.Node.DataDir)
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to open coordinator metadata store")
-	}
-	defer func() { _ = store.Close() }()
-
 	// Create leader election backend.
 	var election coordinator.LeaderElection
 	switch wireCfg.Election.Backend {
@@ -179,17 +172,29 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 		DataDir:                          wireCfg.Node.DataDir,
 		NodeID:                           nodeID,
 		ListenAddr:                       wireCfg.HTTP.Addr,
+		RPCAdvertiseAddr:                 wireCfg.Listen,
 	}
+	rpcTLS, err := coordinatorRPCTLS(wireCfg.NodeTLS)
+	if err != nil {
+		return err
+	}
+	if election != nil {
+		service := coordinator.NewHAService(coordCfg, wireCfg.Listen, election, func() (coordinator.MetadataStore, error) {
+			return coordinator.NewPebbleStore(wireCfg.Node.DataDir)
+		}, rpcTLS, log.Logger)
+		return service.Run(ctx)
+	}
+	store, err := coordinator.NewPebbleStore(wireCfg.Node.DataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
 	coord := coordinator.New(coordCfg, store, election, log.Logger)
 
 	// Create HTTP server.
 	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger)
 
 	// Create transport server for worker RPC connections.
-	rpcTLS, err := coordinatorRPCTLS(wireCfg.NodeTLS)
-	if err != nil {
-		return err
-	}
 	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger, rpcTLS)
 
 	// Start everything in an errgroup.
