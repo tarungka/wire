@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -163,6 +164,7 @@ func (s *HTTPServer) writeStandbyRedirect(w http.ResponseWriter, r *http.Request
 	if info != nil && info.Address != "" && (info.NodeID != s.coord.nodeID || s.coord.IsReady()) {
 		w.Header().Set("X-Wire-Leader-Id", info.NodeID)
 		w.Header().Set("X-Wire-Leader-Addr", info.Address)
+		w.Header().Set("X-Wire-Leader-Epoch", strconv.FormatUint(info.Epoch, 10))
 		// Build redirect URL preserving the original request path.
 		location := "http://" + info.Address + r.URL.Path
 		if r.URL.RawQuery != "" {

@@ -41,7 +41,7 @@ This produces the `wire` binary in the project root.
 | `--listen` | `:4002` | Wire protocol listen address |
 | `--coordinator-data-dir` | `data/coordinator` | Coordinator metadata storage directory |
 | `--node-id` | hostname | Coordinator node ID |
-| `--election-backend` | `noop` | Leader election backend: `noop` (single-node) or `filelock` |
+| `--election-backend` | `noop` | Leader election backend: `noop` (single-node), `filelock` (same-host HA), or `kubernetes` (Lease election) |
 | `--election-lock-path` | `data/coordinator/leader.lock` | File path for the filelock election backend |
 | `--config` | `.config/config.json` | Path to one or more config files (merged in order) |
 | `--debug` | `false` | Enable verbose debug logging |
@@ -435,3 +435,5 @@ All errors follow a standard format:
 | `NO_LEADER` | 503 | No leader has been elected yet |
 | `NOT_IMPLEMENTED` | 501 | Feature not yet supported |
 | `INTERNAL_ERROR` | 500 | Unexpected server error |
+
+For coordinator HA configuration and worker discovery, see the [WIP-09 runtime contract](trds/WIP-09/runtime-contract.md) and [Kubernetes deployment requirements](trds/WIP-09/kubernetes.md).
