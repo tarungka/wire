@@ -66,4 +66,4 @@ Final code-audit item: the legacy `Coordinator.runMultiNode` path still accepts 
 - Personal GitHub identity verified as `tarungka`; master remains `1ebb36e`. Follow-up links should reference merged WIP-09 PR #200.
 - Retiring the unsafe legacy elected `Coordinator.Run` entry point was rejected by automatic approval review as a compatibility change. The explicit approval question remains pending; that retirement has not been applied.
 
-- The numbered atomic-batch interruption scenario still needs direct coverage: the current hard-kill test verifies acknowledged batches, not an interrupted commit. This remains an explicit acceptance gap.
+- Closed the numbered atomic-batch interruption gap with `TestPebbleBatchCrashIsAtomic`: a test filesystem persists a partial WAL write, signals the parent while Commit remains blocked, then the parent kills the process. Reopening preserves the previous three-key batch without any replacement values. Three race repetitions passed. This supplements the acknowledged-batch durability test.

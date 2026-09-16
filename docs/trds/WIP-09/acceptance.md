@@ -4,7 +4,7 @@ Audit in progress. This records evidence by requirement; it is not yet a complet
 
 | Requirement | Implementation and direct evidence | Assessment |
 |---|---|---|
-| Atomic batch interrupted by process death | Existing batch tests and acknowledged-batch crash recovery do not exercise an interrupted commit | Dedicated interruption test still required |
+| Atomic batch interrupted by process death | `TestPebbleBatchCrashIsAtomic` persists a partial WAL write inside production WriteBatch, kills the child before Commit returns, and verifies all three previous values on reopen | Verified three race repetitions |
 | Durable metadata store; Get/Set/Delete/WriteBatch/PrefixScan/Snapshot/Close | Existing Pebble interface tests; `TestLeadershipStoreRevocationAndDurableTakeover`; `TestLeadershipStoreCloseJoinsAdmittedWrite`; 1,000-job snapshot reopen and byte comparison benchmark | Verified API operations; no claim of 100% source-line coverage |
 | Election before storage open; standby remains available | `HAService`, `TestHAServiceSharedMetadataTakeover`, `TestHACrashReopensDurableMetadataInStandbyProcess` (standby health is checked before killing leader) | Verified |
 | Epoch monotonicity, corruption/exhaustion, effective election token persisted | `TestFileLockElectionRejectsInvalidEpochWithoutOverwriting`, `TestRecoveryRejectsInvalidEpochWithoutOverwrite`, `TestRecoveryPersistsEffectiveElectionEpoch` | Verified |
