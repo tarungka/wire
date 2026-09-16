@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -144,8 +145,46 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 	}
 	c.activeCheckpoints[jobID] = *checkpoint
 	c.mu.Unlock()
+	sent := make(map[string]bool)
 	for taskID, workerID := range assignment.Assignments {
-		c.EnqueueCommand(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeTakeSnapshot, JobID: jobID, TaskID: taskID, Data: trigger})
+		c.mu.RLock()
+		worker := c.workers[workerID]
+		var peer *rpc.Client
+		reserved := worker != nil && worker.SupportsReservations
+		if reserved {
+			peer = worker.RPCClient
+		}
+		c.mu.RUnlock()
+		if !reserved {
+			c.EnqueueCommand(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeTakeSnapshot, JobID: jobID, TaskID: taskID, Data: trigger})
+			continue
+		}
+		if sent[workerID] {
+			continue
+		}
+		sent[workerID] = true
+		var request rpc.TriggerCheckpointRequest
+		if err := protocol.DecodeMsgPack(trigger, &request); err != nil {
+			return nil, err
+		}
+		var triggerErr error
+		if peer == nil {
+			triggerErr = errors.New("checkpoint worker RPC disconnected")
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), rpc.DefaultTriggerCheckpointTimeout)
+			response, err := peer.TriggerCheckpoint(ctx, &request)
+			cancel()
+			triggerErr = err
+			if err == nil && !response.Accepted {
+				triggerErr = errors.New(response.Message)
+			}
+		}
+		if triggerErr != nil {
+			if err := c.abortCheckpoint(jobID, checkpoint.ID, checkpoint.EpochID, triggerErr.Error(), false); err != nil {
+				return nil, err
+			}
+			return nil, triggerErr
+		}
 	}
 	return checkpoint, nil
 }

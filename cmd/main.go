@@ -184,7 +184,11 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger)
 
 	// Create transport server for worker RPC connections.
-	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger)
+	rpcTLS, err := coordinatorRPCTLS(wireCfg.NodeTLS)
+	if err != nil {
+		return err
+	}
+	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger, rpcTLS)
 
 	// Start everything in an errgroup.
 	g, gCtx := errgroup.WithContext(ctx)
@@ -232,7 +236,12 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 	if cfg := wireCfg.Worker.CheckpointReplica; cfg.ListenAddr != "" {
 		replicaConfig = &worker.CheckpointReplicaConfig{ListenAddr: cfg.ListenAddr, AdvertiseAddr: cfg.AdvertiseAddr, StoreRoot: cfg.StoreRoot, ArtifactRoot: cfg.ArtifactRoot, StagingRoot: cfg.StagingRoot, Concurrency: cfg.Concurrency}
 	}
+	rpcTLS, err := workerRPCTLS(wireCfg.NodeTLS)
+	if err != nil {
+		return err
+	}
 	w := worker.New(worker.Config{
+		RPCTLSConfig:      rpcTLS,
 		CheckpointReplica: replicaConfig,
 		TaskSlot:          &taskConfig,
 		WorkerID:          wireCfg.Worker.WorkerID,

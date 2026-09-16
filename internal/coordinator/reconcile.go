@@ -10,12 +10,13 @@ import (
 
 // RegisterWorkerRequest is the request payload for worker registration.
 type RegisterWorkerRequest struct {
-	CheckpointAddress string   `codec:"checkpoint_address,omitempty"`
-	WorkerID          string   `codec:"worker_id"`
-	Address           string   `codec:"address"`
-	TaskSlotsTotal    int      `codec:"task_slots_total"`
-	HighestSeenEpoch  uint64   `codec:"highest_seen_epoch"`
-	RunningTasks      []string `codec:"running_tasks"`
+	SupportsReservations bool     `codec:"slot_reservations,omitempty"`
+	CheckpointAddress    string   `codec:"checkpoint_address,omitempty"`
+	WorkerID             string   `codec:"worker_id"`
+	Address              string   `codec:"address"`
+	TaskSlotsTotal       int      `codec:"task_slots_total"`
+	HighestSeenEpoch     uint64   `codec:"highest_seen_epoch"`
+	RunningTasks         []string `codec:"running_tasks"`
 }
 
 // RegisterWorkerResponse is returned to a worker after registration.
@@ -42,13 +43,14 @@ func (c *Coordinator) RegisterWorker(req RegisterWorkerRequest) (*RegisterWorker
 	}
 
 	worker := &WorkerMeta{
-		CheckpointAddress:  req.CheckpointAddress,
-		ID:                 req.WorkerID,
-		Address:            req.Address,
-		TaskSlotsTotal:     req.TaskSlotsTotal,
-		TaskSlotsAvailable: req.TaskSlotsTotal,
-		LastHeartbeat:      time.Now().UTC(),
-		RunningTasks:       req.RunningTasks,
+		SupportsReservations: req.SupportsReservations,
+		CheckpointAddress:    req.CheckpointAddress,
+		ID:                   req.WorkerID,
+		Address:              req.Address,
+		TaskSlotsTotal:       req.TaskSlotsTotal,
+		TaskSlotsAvailable:   req.TaskSlotsTotal,
+		LastHeartbeat:        time.Now().UTC(),
+		RunningTasks:         req.RunningTasks,
 	}
 
 	workerData, err := protocol.EncodeMsgPack(worker)

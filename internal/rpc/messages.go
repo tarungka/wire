@@ -241,12 +241,15 @@ func (d DirectiveType) String() string {
 
 // SubmitJobRequest is sent from the Coordinator to deploy a job to a Worker.
 type SubmitJobRequest struct {
-	JobID       string                 `codec:"jid"`
-	JobName     string                 `codec:"jn"`
-	Graph       JobGraph               `codec:"g"`
-	Config      JobConfig              `codec:"cfg"`
-	EpochID     uint64                 `codec:"eid"`
-	RestoreInfo *CheckpointRestoreInfo `codec:"ri,omitempty"`
+	ReservationID string                 `codec:"reservation_id,omitempty"`
+	AttemptID     string                 `codec:"attempt_id,omitempty"`
+	Tasks         []TaskDescriptor       `codec:"tasks,omitempty"`
+	JobID         string                 `codec:"jid"`
+	JobName       string                 `codec:"jn"`
+	Graph         JobGraph               `codec:"g"`
+	Config        JobConfig              `codec:"cfg"`
+	EpochID       uint64                 `codec:"eid"`
+	RestoreInfo   *CheckpointRestoreInfo `codec:"ri,omitempty"`
 }
 
 // SubmitJobResponse is the Worker's reply to SubmitJob.
@@ -510,13 +513,19 @@ type AckCheckpointMetrics struct {
 
 // RequestTaskSlotsRequest is sent from Coordinator to Worker to query available slots.
 type RequestTaskSlotsRequest struct {
-	JobID         string `codec:"jid"`
-	RequiredSlots int32  `codec:"rs"`
-	MemoryMB      int32  `codec:"mem,omitempty"`
+	EpochID              uint64 `codec:"epoch,omitempty"`
+	ReservationID        string `codec:"reservation_id,omitempty"`
+	ReservationTimeoutMs int64  `codec:"reservation_timeout_ms,omitempty"`
+	Release              bool   `codec:"release,omitempty"`
+	JobID                string `codec:"jid"`
+	RequiredSlots        int32  `codec:"rs"`
+	MemoryMB             int32  `codec:"mem,omitempty"`
 }
 
 // RequestTaskSlotsResponse is the Worker's reply.
 type RequestTaskSlotsResponse struct {
+	ReservationID  string              `codec:"reservation_id,omitempty"`
+	ExpiresAtMs    int64               `codec:"expires_at_ms,omitempty"`
 	Granted        int32               `codec:"g"`
 	AvailableSlots int32               `codec:"as"`
 	Resource       *WorkerResourceInfo `codec:"res,omitempty"`
@@ -582,12 +591,13 @@ type RunningTaskSummary struct {
 
 // RegisterWorkerRequest is sent from Worker to Coordinator to register or re-register.
 type RegisterWorkerRequest struct {
-	CheckpointAddress string   `codec:"checkpoint_addr,omitempty"`
-	WorkerID          string   `codec:"wid"`
-	Address           string   `codec:"addr"`
-	TaskSlotsTotal    int      `codec:"tst"`
-	HighestSeenEpoch  uint64   `codec:"hse"`
-	RunningTasks      []string `codec:"rt,omitempty"`
+	SupportsReservations bool     `codec:"slot_reservations,omitempty"`
+	CheckpointAddress    string   `codec:"checkpoint_addr,omitempty"`
+	WorkerID             string   `codec:"wid"`
+	Address              string   `codec:"addr"`
+	TaskSlotsTotal       int      `codec:"tst"`
+	HighestSeenEpoch     uint64   `codec:"hse"`
+	RunningTasks         []string `codec:"rt,omitempty"`
 }
 
 // RegisterWorkerResponse is the Coordinator's reply to RegisterWorker.

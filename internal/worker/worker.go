@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 // Config holds worker configuration.
 type Config struct {
+	RPCTLSConfig      *tls.Config
 	CheckpointReplica *CheckpointReplicaConfig
 	TaskSlot          *engine.TaskSlotConfig // Nil selects engine defaults.
 	WorkerID          string
@@ -41,18 +43,22 @@ type taskHandle struct {
 // Deployed tasks are resolved against the Worker's Registry and executed
 // via taskExecutor.
 type Worker struct {
-	cfg          Config
-	reg          *Registry
-	executor     *taskExecutor
-	client       *rpc.Client
-	session      *transport.Session
-	data         *transport.Mux
-	epoch        uint64
-	mu           sync.RWMutex
-	stopping     bool
-	closeReplica func()
-	tasks        map[string]*taskHandle // taskID -> handle
-	log          zerolog.Logger
+	cancelledAttempts  map[string]bool
+	cancelAcks         map[cancelAckKey]bool
+	reservations       map[string]*slotReservation
+	deploymentReceipts map[string][32]byte
+	cfg                Config
+	reg                *Registry
+	executor           *taskExecutor
+	client             *rpc.Client
+	session            *transport.Session
+	data               *transport.Mux
+	epoch              uint64
+	mu                 sync.RWMutex
+	stopping           bool
+	closeReplica       func()
+	tasks              map[string]*taskHandle // taskID -> handle
+	log                zerolog.Logger
 }
 
 // New creates a new Worker using the package-level default registry. User
@@ -174,6 +180,7 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 
 	// 1. Establish transport session.
 	tcfg := transport.DefaultConfig()
+	tcfg.TLSConfig = w.cfg.RPCTLSConfig
 	session, err := transport.NewClientSessionContext(ctx, w.cfg.CoordinatorAddr, tcfg)
 	if err != nil {
 		return fmt.Errorf("worker: connect to coordinator: %w", err)
@@ -194,16 +201,35 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 	w.client = rpc.NewClient(session.YamuxSession(), rpcCfg)
 	w.mu.Unlock()
 
+	// Serve reverse RPCs on the existing worker-initiated session.
+	reverseServer := rpc.NewServer(rpcCfg)
+	reverseServer.Register(rpc.MethodRequestTaskSlots, w.handleRequestTaskSlots)
+	reverseServer.Register(rpc.MethodSubmitJob, w.handleSubmitJob)
+	reverseServer.Register(rpc.MethodTriggerCheckpoint, w.handleTriggerCheckpoint)
+	reverseDone := make(chan struct{})
+	go func() { defer close(reverseDone); reverseServer.ServeSession(ctx, session.YamuxSession()) }()
+	defer func() {
+		_ = session.Close()
+		reverseServer.Stop()
+		<-reverseDone
+		w.mu.Lock()
+		w.reservations = nil
+		w.deploymentReceipts = nil
+		w.cancelledAttempts = nil
+		w.mu.Unlock()
+	}()
+
 	// 3. Register with coordinator.
 	w.mu.RLock()
 	highestEpoch := w.epoch
 	w.mu.RUnlock()
 	regReq := &rpc.RegisterWorkerRequest{
-		HighestSeenEpoch:  highestEpoch,
-		CheckpointAddress: checkpointAddress,
-		WorkerID:          workerID,
-		Address:           w.cfg.ListenAddr,
-		TaskSlotsTotal:    w.cfg.TaskSlots,
+		SupportsReservations: true,
+		HighestSeenEpoch:     highestEpoch,
+		CheckpointAddress:    checkpointAddress,
+		WorkerID:             workerID,
+		Address:              w.cfg.ListenAddr,
+		TaskSlotsTotal:       w.cfg.TaskSlots,
 	}
 	regResp, err := w.client.RegisterWorker(ctx, regReq)
 	if err != nil {
@@ -390,10 +416,10 @@ func (w *Worker) Shutdown(ctx context.Context) error {
 
 // buildHeartbeatRequest constructs a HeartbeatRequest from the worker's current state.
 func (w *Worker) buildHeartbeatRequest() *rpc.HeartbeatRequest {
-	w.mu.RLock()
-	activeSlots := int32(len(w.tasks))
+	w.mu.Lock()
+	activeSlots := int32(w.cfg.TaskSlots - w.availableSlotsLocked(time.Now()))
 	epoch := w.epoch
-	w.mu.RUnlock()
+	w.mu.Unlock()
 
 	return &rpc.HeartbeatRequest{
 		WorkerID:  w.cfg.WorkerID,
@@ -449,22 +475,18 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 		w.log.Debug().Str("task_id", cmd.TaskID).Msg("ignoring duplicate DeployTask")
 		return
 	}
+	if w.cancelledAttempts[desc.AttemptID] {
+		w.mu.Unlock()
+		cancel()
+		return
+	}
 	if desc.EpochID != 0 && desc.EpochID != w.epoch {
 		w.mu.Unlock()
 		cancel()
 		w.log.Warn().Uint64("epoch", desc.EpochID).Str("task_id", cmd.TaskID).Msg("ignoring deployment from a different coordinator epoch")
 		return
 	}
-	handle := &taskHandle{done: make(chan struct{}), cancel: cancel, jobID: cmd.JobID, epoch: desc.EpochID, attemptID: desc.AttemptID}
-	if desc.CheckpointReplicaAddress != "" || desc.RestoreCheckpoint != nil || desc.RestoreRescale != nil {
-		handle.checkpoint = &taskCheckpointRuntime{triggers: make(chan engine.CheckpointTrigger, 1), decisions: make(chan engine.ControlMsg, 16)}
-		for _, operator := range desc.OperatorChain {
-			if operator.Type == rpc.OperatorTypeSource {
-				handle.checkpoint.source = true
-			}
-		}
-	}
-	w.tasks[cmd.TaskID] = handle
+	w.installTaskLocked(cmd.JobID, cmd.TaskID, desc, cancel)
 	w.mu.Unlock()
 
 	taskLog := w.log.With().
@@ -588,11 +610,23 @@ func (w *Worker) handleCommands(cmds []rpc.WorkerCommand) {
 		case rpc.CommandTypeCancelTask:
 			w.log.Info().Str("task_id", cmd.TaskID).Msg("received CancelTask command")
 			w.mu.Lock()
+			if cmd.EpochID == w.epoch && cmd.AttemptID != "" {
+				if w.cancelledAttempts == nil {
+					w.cancelledAttempts = make(map[string]bool)
+				}
+				w.cancelledAttempts[cmd.AttemptID] = true
+				delete(w.reservations, cmd.AttemptID)
+			}
+			absent := w.tasks[cmd.TaskID] == nil && cmd.EpochID == w.epoch && cmd.AttemptID != "" && cmd.JobID != ""
+			client := w.client
 			if h, ok := w.tasks[cmd.TaskID]; ok && h.jobID == cmd.JobID && h.epoch == cmd.EpochID && h.attemptID == cmd.AttemptID {
 				h.cancel()
 				// Don't delete here — runTask's defer cleans up.
 			}
 			w.mu.Unlock()
+			if absent && client != nil {
+				w.acknowledgeAbsentCancellation(client, cmd)
+			}
 		case rpc.CommandTypeTakeSnapshot, rpc.CommandTypeCommitCheckpoint, rpc.CommandTypeAbortCheckpoint:
 			w.handleCheckpointCommand(cmd)
 		default:
@@ -635,4 +669,48 @@ func (w *Worker) joinTasksForReconnect() error {
 		}
 	}
 	return nil
+}
+
+func (w *Worker) installTaskLocked(jobID, taskID string, desc rpc.TaskDescriptor, cancel context.CancelFunc) {
+	handle := &taskHandle{done: make(chan struct{}), cancel: cancel, jobID: jobID, epoch: desc.EpochID, attemptID: desc.AttemptID}
+	if desc.CheckpointReplicaAddress != "" || desc.RestoreCheckpoint != nil || desc.RestoreRescale != nil {
+		handle.checkpoint = &taskCheckpointRuntime{triggers: make(chan engine.CheckpointTrigger, 1), decisions: make(chan engine.ControlMsg, 16)}
+		for _, operator := range desc.OperatorChain {
+			if operator.Type == rpc.OperatorTypeSource {
+				handle.checkpoint.source = true
+			}
+		}
+	}
+	w.tasks[taskID] = handle
+}
+
+// Bound outstanding acknowledgements and coalesce repeated scheduler cancels.
+// If saturated, the coordinator's next cancellation retries admission.
+type cancelAckKey struct {
+	client                   *rpc.Client
+	jobID, taskID, attemptID string
+	epoch                    uint64
+}
+
+func (w *Worker) acknowledgeAbsentCancellation(client *rpc.Client, cmd rpc.WorkerCommand) {
+	key := cancelAckKey{client, cmd.JobID, cmd.TaskID, cmd.AttemptID, cmd.EpochID}
+	w.mu.Lock()
+	if w.cancelAcks[key] || len(w.cancelAcks) >= 32 {
+		w.mu.Unlock()
+		return
+	}
+	if w.cancelAcks == nil {
+		w.cancelAcks = make(map[cancelAckKey]bool)
+	}
+	w.cancelAcks[key] = true
+	w.mu.Unlock()
+	go func() {
+		defer func() { w.mu.Lock(); delete(w.cancelAcks, key); w.mu.Unlock() }()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := client.UpdateTaskStatus(ctx, &rpc.UpdateTaskStatusRequest{WorkerID: w.workerID(), JobID: cmd.JobID, TaskID: cmd.TaskID, EpochID: cmd.EpochID, AttemptID: cmd.AttemptID, Status: rpc.TaskStatusCanceled})
+		if err != nil {
+			w.log.Warn().Err(err).Msg("cannot acknowledge absent task cancellation")
+		}
+	}()
 }

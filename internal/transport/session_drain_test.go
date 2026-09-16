@@ -43,12 +43,13 @@ func TestSessionDrainRequiresNegotiatedFeature(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A peer that sends the extension despite not negotiating it is rejected.
-	if err := protocol.EncodeAndWriteFrame(client.control, &protocol.SessionDrainMsg{}); err != nil {
-		t.Fatal(err)
-	}
+	// The server can reject the frame and close Yamux before the sender's
+	// write returns. Either write result is valid; peer shutdown is the
+	// protocol outcome being tested.
+	writeErr := protocol.EncodeAndWriteFrame(client.control, &protocol.SessionDrainMsg{})
 	select {
 	case <-server.yamux.CloseChan():
 	case <-ctx.Done():
-		t.Fatal("unnegotiated drain was accepted")
+		t.Fatalf("peer did not reject unnegotiated drain (write error: %v)", writeErr)
 	}
 }
