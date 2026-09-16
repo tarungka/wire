@@ -105,7 +105,10 @@ func (h *HAService) campaign(ctx context.Context) error {
 		// runTerm drains metadata ownership before this releases election.
 		resignErr := h.election.Resign(context.Background())
 		if resignErr != nil {
-			return errors.Join(err, resignErr)
+			// Local authority and storage ownership are already gone. A
+			// failed API release leaves the remote lease to expire; keep
+			// this process available as a standby while the API recovers.
+			h.log.Warn().Err(resignErr).Msg("election release failed; waiting to campaign again")
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
