@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -16,14 +17,15 @@ import (
 // its own coordinator, caches, sessions, and irrevocable metadata handle. A
 // delayed old request can never see a subsequent term's store or mutable state.
 type HAService struct {
-	cfg       CoordinatorConfig
-	election  LeaderElection
-	openStore func() (MetadataStore, error)
-	log       zerolog.Logger
-	active    atomic.Pointer[haTerm]
-	standby   *HTTPServer
-	http      *http.Server
-	transport *TransportServer
+	cfg          CoordinatorConfig
+	election     LeaderElection
+	openStore    func() (MetadataStore, error)
+	log          zerolog.Logger
+	active       atomic.Pointer[haTerm]
+	standby      *HTTPServer
+	http         *http.Server
+	httpListener net.Listener
+	transport    *TransportServer
 }
 
 type haTerm struct {
@@ -46,6 +48,51 @@ func NewHAService(cfg CoordinatorConfig, rpcAddr string, election LeaderElection
 		return term.coord, term.ctx
 	}, rpcAddr, log, tlsConfig)
 	return h
+}
+
+// Listen binds both endpoints before Run. It supports ephemeral ports in
+// embedded deployments and tests without reserving then releasing port numbers.
+func (h *HAService) Listen() error {
+	if h.httpListener != nil {
+		return fmt.Errorf("HA service already listening")
+	}
+	listener, err := net.Listen("tcp", h.cfg.ListenAddr)
+	if err != nil {
+		return err
+	}
+	if err := h.transport.Listen(); err != nil {
+		_ = listener.Close()
+		return err
+	}
+	h.httpListener = listener
+	if h.cfg.HTTPAdvertiseAddr == h.cfg.ListenAddr {
+		if _, port, _ := net.SplitHostPort(h.cfg.ListenAddr); port == "0" {
+			h.cfg.HTTPAdvertiseAddr = listener.Addr().String()
+		}
+	}
+	if h.cfg.RPCAdvertiseAddr == "" || h.cfg.RPCAdvertiseAddr == h.transport.listenAddr {
+		h.cfg.RPCAdvertiseAddr = h.transport.Addr()
+	}
+	h.standby.coord.config.HTTPAdvertiseAddr = h.cfg.HTTPAdvertiseAddr
+	return nil
+}
+
+func (h *HAService) HTTPAddr() string {
+	if h.httpListener != nil {
+		return h.httpListener.Addr().String()
+	}
+	return h.cfg.ListenAddr
+}
+func (h *HAService) RPCAddr() string { return h.transport.Addr() }
+
+// CurrentCoordinator returns a snapshot of the ready term. A retained old
+// pointer remains fenced after takeover; callers should reacquire per operation.
+func (h *HAService) CurrentCoordinator() (*Coordinator, bool) {
+	term := h.active.Load()
+	if term == nil || !term.coord.IsReady() {
+		return nil, false
+	}
+	return term.coord, true
 }
 
 func (h *HAService) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -72,19 +119,24 @@ func (h *HAService) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer h.election.Close()
-	if err := h.transport.Listen(); err != nil {
-		return err
+	if h.httpListener == nil {
+		if err := h.Listen(); err != nil {
+			return err
+		}
 	}
 	defer h.transport.Shutdown(context.Background())
 	httpDone := make(chan error, 1)
 	rpcDone := make(chan error, 1)
-	go func() { err := h.http.ListenAndServe(); httpDone <- err; cancel() }()
+	go func() { err := h.http.Serve(h.httpListener); httpDone <- err; cancel() }()
 	go func() { err := h.transport.Serve(ctx); rpcDone <- err; cancel() }()
 	err := h.campaign(ctx)
 	cancel()
 	shutdownCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
-	_ = h.http.Shutdown(shutdownCtx)
+	shutdownErr := h.http.Shutdown(shutdownCtx)
+	if shutdownErr != nil {
+		_ = h.http.Close()
+	}
 	httpErr, rpcErr := <-httpDone, <-rpcDone
 	if errors.Is(httpErr, http.ErrServerClosed) {
 		httpErr = nil
@@ -92,7 +144,7 @@ func (h *HAService) Run(ctx context.Context) error {
 	if errors.Is(err, context.Canceled) {
 		err = nil
 	}
-	return errors.Join(err, httpErr, rpcErr)
+	return errors.Join(err, httpErr, rpcErr, shutdownErr)
 }
 
 func (h *HAService) campaign(ctx context.Context) error {
@@ -127,7 +179,7 @@ func (h *HAService) campaign(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (h *HAService) runTerm(parent context.Context, grant *LeaderContext) error {
+func (h *HAService) runTerm(parent context.Context, grant *LeaderContext) (retErr error) {
 	ctx, cancel := context.WithCancel(grant.Ctx)
 	stop := context.AfterFunc(parent, cancel)
 	defer stop()
@@ -136,7 +188,7 @@ func (h *HAService) runTerm(parent context.Context, grant *LeaderContext) error 
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { retErr = errors.Join(retErr, store.Close()) }()
 	coord := New(h.cfg, store, h.election, h.log)
 	coord.state = StateLeader
 	coord.epoch = grant.Epoch
