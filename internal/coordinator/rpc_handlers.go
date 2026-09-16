@@ -30,29 +30,12 @@ func (c *Coordinator) HandleRegisterWorker(ctx context.Context, _ uint64, payloa
 		RunningTasks:         rpcReq.RunningTasks,
 	}
 
-	resp, err := c.RegisterWorker(coordReq)
+	peer, done := rpc.SessionPeer(ctx)
+	resp, err := c.registerWorker(coordReq, peer, done)
 	if err != nil {
 		return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, fmt.Sprintf("register worker: %v", err))
 	}
 
-	if rpcReq.SupportsReservations {
-		peer, done := rpc.SessionPeer(ctx)
-		if peer != nil {
-			c.mu.Lock()
-			worker := c.workers[rpcReq.WorkerID]
-			worker.RPCClient = peer
-			worker.RPCPeerEpoch = resp.Epoch
-			c.mu.Unlock()
-			go func() {
-				<-done
-				c.mu.Lock()
-				if current := c.workers[rpcReq.WorkerID]; current == worker {
-					current.RPCClient = nil
-				}
-				c.mu.Unlock()
-			}()
-		}
-	}
 	return &rpc.RegisterWorkerResponse{
 		Epoch:         resp.Epoch,
 		TasksToCancel: resp.TasksToCancel,
@@ -62,7 +45,7 @@ func (c *Coordinator) HandleRegisterWorker(ctx context.Context, _ uint64, payloa
 
 // HandleHeartbeat is an RPC handler that bridges the rpc.Server to
 // the Coordinator's worker heartbeat tracking.
-func (c *Coordinator) HandleHeartbeat(_ context.Context, _ uint64, payload []byte) (any, *rpc.RPCError) {
+func (c *Coordinator) HandleHeartbeat(ctx context.Context, _ uint64, payload []byte) (any, *rpc.RPCError) {
 	var req rpc.HeartbeatRequest
 	if err := rpc.DecodeRPCPayload(rpc.RPCFrame{Payload: payload}, &req); err != nil {
 		return nil, rpc.NewRPCError(rpc.ErrCodeSerializationError, fmt.Sprintf("decode HeartbeatRequest: %v", err))
@@ -79,7 +62,19 @@ func (c *Coordinator) HandleHeartbeat(_ context.Context, _ uint64, payload []byt
 		c.mu.Unlock()
 		return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, fmt.Sprintf("unknown worker: %s", req.WorkerID))
 	}
-	w.LastHeartbeat = time.Now().UTC()
+	if peer, _ := rpc.SessionPeer(ctx); peer != nil && w.RPCClient != peer {
+		c.mu.Unlock()
+		return &rpc.HeartbeatResponse{Accepted: false, EpochID: epoch}, nil
+	}
+	if w.Lost || w.LastHeartbeat.IsZero() || time.Since(w.LastHeartbeat) >= c.config.WorkerTimeout {
+		c.mu.Unlock()
+		c.expireTaskWorkers()
+		c.kickScheduler()
+		return &rpc.HeartbeatResponse{Accepted: false, EpochID: epoch}, nil
+	}
+	w.LastHeartbeat = time.Now()
+	w.Resources = req.Resources
+	w.TaskReports = req.Tasks
 	freed := false
 	if req.Load != nil {
 		available := max(0, min(w.TaskSlotsTotal, w.TaskSlotsTotal-int(req.Load.ActiveSlots)))

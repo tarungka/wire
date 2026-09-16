@@ -114,7 +114,7 @@ func (c *Coordinator) recordRescalePlacementFailure(job *JobMeta, now time.Time)
 	// Cancellation acknowledgements precede slot updates. Allow two full
 	// worker heartbeat intervals after the first failed placement, regardless
 	// of scheduler tick frequency, before giving up on the larger topology.
-	rollback.Attempted = now.Sub(rollback.PlacementFailedSince) >= 2*rpc.DefaultHeartbeatInterval
+	rollback.Attempted = now.Sub(rollback.PlacementFailedSince) >= 2*c.config.HeartbeatInterval
 	next.RescaleRollback = &rollback
 	if err := c.persistJobLocked(&next); err != nil {
 		c.log.Warn().Err(err).Msg("cannot persist rescale placement failure")
