@@ -61,8 +61,11 @@ func (c *WireConfig) Validate() error {
 
 	// Worker-specific validation.
 	if c.Mode == "worker" {
-		if c.Worker.CoordinatorAddr == "" {
-			errs = append(errs, fmt.Errorf("worker.coordinator_addr is required in worker mode"))
+		if c.Worker.CoordinatorAddr == "" && len(c.Worker.CoordinatorSeeds) == 0 {
+			errs = append(errs, fmt.Errorf("worker.coordinator_addr or worker.coordinator_seeds is required in worker mode"))
+		}
+		if len(c.Worker.CoordinatorSeeds) > 0 && c.Worker.EpochPath == "" {
+			errs = append(errs, errors.New("worker.epoch_path is required for HA discovery"))
 		}
 		if c.Worker.TaskSlots <= 0 {
 			errs = append(errs, fmt.Errorf("worker.task_slots must be > 0, got %d", c.Worker.TaskSlots))

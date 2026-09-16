@@ -30,6 +30,7 @@ into the current runtime; setting them does not enable those features.
 | `task_slot.drain_timeout` | duration string | `5s` | — |
 | `mode` | string | `coordinator` | `--mode` |
 | `listen` | string | `:4002` | `--listen` |
+| `node.rpc_advertise_addr` | string | `""` | — |
 | `node.id` | string | `""` | `--node-id` |
 | `node.data_dir` | string | `data/coordinator` | `--coordinator-data-dir` |
 | `node.store_db` | string | `pebble` | — |
@@ -54,6 +55,8 @@ into the current runtime; setting them does not enable those features.
 | `write_queue.transactional` | bool | `false` | — |
 | `election.backend` | string | `noop` | `--election-backend` |
 | `election.lock_path` | string | `data/coordinator/leader.lock` | `--election-lock-path` |
+| `worker.coordinator_seeds` | slice | `[]` | — |
+| `worker.epoch_path` | string | `data/worker/epoch` | — |
 | `worker.checkpoint_replica.listen_addr` | string | `""` | — |
 | `worker.checkpoint_replica.advertise_addr` | string | `""` | — |
 | `worker.checkpoint_replica.store_root` | string | `""` | — |

@@ -154,7 +154,11 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 	var election coordinator.LeaderElection
 	switch wireCfg.Election.Backend {
 	case "filelock":
-		election = coordinator.NewFileLockElection(wireCfg.Election.LockPath, wireCfg.HTTP.Addr)
+		httpAddr := wireCfg.HTTP.AdvAddr
+		if httpAddr == "" {
+			httpAddr = wireCfg.HTTP.Addr
+		}
+		election = coordinator.NewFileLockElection(wireCfg.Election.LockPath, httpAddr)
 	case "noop", "":
 		// Single-node mode: no election needed.
 	default:
@@ -172,7 +176,11 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 		DataDir:                          wireCfg.Node.DataDir,
 		NodeID:                           nodeID,
 		ListenAddr:                       wireCfg.HTTP.Addr,
-		RPCAdvertiseAddr:                 wireCfg.Listen,
+		RPCAdvertiseAddr:                 wireCfg.Node.RPCAdvertiseAddr,
+		HTTPAdvertiseAddr:                wireCfg.HTTP.AdvAddr,
+	}
+	if coordCfg.RPCAdvertiseAddr == "" {
+		coordCfg.RPCAdvertiseAddr = wireCfg.Listen
 	}
 	rpcTLS, err := coordinatorRPCTLS(wireCfg.NodeTLS)
 	if err != nil {
@@ -248,6 +256,8 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 		return err
 	}
 	w := worker.New(worker.Config{
+		EpochPath:            wireCfg.Worker.EpochPath,
+		CoordinatorSeeds:     wireCfg.Worker.CoordinatorSeeds,
 		HeartbeatInterval:    wireCfg.Heartbeat.Interval.Duration,
 		HeartbeatTimeout:     wireCfg.Heartbeat.Timeout.Duration,
 		HeartbeatMaxFailures: wireCfg.Heartbeat.MaxFailures,

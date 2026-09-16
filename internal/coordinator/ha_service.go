@@ -33,6 +33,7 @@ type haTerm struct {
 }
 
 func NewHAService(cfg CoordinatorConfig, rpcAddr string, election LeaderElection, openStore func() (MetadataStore, error), tlsConfig *tls.Config, log zerolog.Logger) *HAService {
+	cfg.resolve()
 	h := &HAService{cfg: cfg, election: election, openStore: openStore, log: log}
 	standby := New(cfg, nil, election, log)
 	h.standby = NewHTTPServer(standby, cfg.ListenAddr, log)
@@ -144,7 +145,7 @@ func (h *HAService) runTerm(parent context.Context, grant *LeaderContext) error 
 		return ctx.Err()
 	}
 	if discovery, ok := h.election.(LeaderDiscovery); ok {
-		if err := discovery.PublishLeader(ctx, LeaderInfo{NodeID: h.cfg.NodeID, Address: h.cfg.ListenAddr, RPCAddress: h.cfg.RPCAdvertiseAddr, Epoch: coord.CurrentEpoch()}); err != nil {
+		if err := discovery.PublishLeader(ctx, LeaderInfo{NodeID: h.cfg.NodeID, Address: h.cfg.HTTPAdvertiseAddr, RPCAddress: h.cfg.RPCAdvertiseAddr, Epoch: coord.CurrentEpoch()}); err != nil {
 			return err
 		}
 	}

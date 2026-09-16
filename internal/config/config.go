@@ -26,6 +26,8 @@ type CheckpointConfig struct {
 
 // WorkerConfig holds settings for running in worker mode.
 type WorkerConfig struct {
+	CoordinatorSeeds  []string                `yaml:"coordinator_seeds" json:"coordinator_seeds" koanf:"coordinator_seeds"`
+	EpochPath         string                  `yaml:"epoch_path" json:"epoch_path" koanf:"epoch_path"`
 	CheckpointReplica CheckpointReplicaConfig `yaml:"checkpoint_replica" json:"checkpoint_replica" koanf:"checkpoint_replica"`
 	CoordinatorAddr   string                  `yaml:"coordinator_addr" json:"coordinator_addr" koanf:"coordinator_addr"`
 	WorkerID          string                  `yaml:"worker_id"        json:"worker_id"        koanf:"worker_id"`
@@ -46,10 +48,11 @@ type CheckpointReplicaConfig struct {
 
 // NodeConfig holds node identity and storage settings.
 type NodeConfig struct {
-	ID      string `yaml:"id"       json:"id"       koanf:"id"`
-	DataDir string `yaml:"data_dir" json:"data_dir" koanf:"data_dir"`
-	StoreDB string `yaml:"store_db" json:"store_db" koanf:"store_db"`
-	Debug   bool   `yaml:"debug"    json:"debug"    koanf:"debug"`
+	RPCAdvertiseAddr string `yaml:"rpc_advertise_addr" json:"rpc_advertise_addr" koanf:"rpc_advertise_addr"`
+	ID               string `yaml:"id"       json:"id"       koanf:"id"`
+	DataDir          string `yaml:"data_dir" json:"data_dir" koanf:"data_dir"`
+	StoreDB          string `yaml:"store_db" json:"store_db" koanf:"store_db"`
+	Debug            bool   `yaml:"debug"    json:"debug"    koanf:"debug"`
 }
 
 // HTTPConfig holds HTTP API server settings.

@@ -127,6 +127,7 @@ func (s *HTTPServer) handleReady(w http.ResponseWriter, r *http.Request) {
 
 // leaderResponse is the JSON response for the leader endpoint.
 type leaderResponse struct {
+	Ready          bool   `json:"ready"`
 	LeaderID       string `json:"leader_id"`
 	LeaderHTTPAddr string `json:"leader_http_addr"`
 	LeaderRPCAddr  string `json:"leader_rpc_addr"`
@@ -143,6 +144,7 @@ func (s *HTTPServer) handleLeader(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := leaderResponse{
+		Ready:          isSelf && s.coord.IsReady(),
 		LeaderID:       info.NodeID,
 		LeaderHTTPAddr: info.Address,
 		LeaderRPCAddr:  info.RPCAddress,
