@@ -11,6 +11,15 @@ import (
 // validation errors rather than failing on the first one.
 func (c *WireConfig) Validate() error {
 	var errs []error
+	if c.Heartbeat.Interval.Duration <= 0 {
+		errs = append(errs, errors.New("heartbeat.interval must be positive"))
+	}
+	if c.Heartbeat.Timeout.Duration <= c.Heartbeat.Interval.Duration {
+		errs = append(errs, errors.New("heartbeat.timeout must be greater than heartbeat.interval"))
+	}
+	if c.Heartbeat.MaxFailures < 0 {
+		errs = append(errs, errors.New("heartbeat.max_failures must be nonnegative"))
+	}
 	if c.Checkpoint.MinPause.Duration < 0 {
 		errs = append(errs, errors.New("checkpoint.min_pause must be nonnegative"))
 	}

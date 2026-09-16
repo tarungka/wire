@@ -425,12 +425,13 @@ type UpdateTaskStatusResponse struct {
 
 // TaskMetrics carries runtime metrics for a task.
 type TaskMetrics struct {
-	RecordsIn   int64   `codec:"ri"`
-	RecordsOut  int64   `codec:"ro"`
-	BytesIn     int64   `codec:"bi"`
-	BytesOut    int64   `codec:"bo"`
-	Latency99   float64 `codec:"l99,omitempty"`
-	BacklogSize int64   `codec:"bl,omitempty"`
+	BackpressureMs int64   `codec:"bp_ms,omitempty"`
+	RecordsIn      int64   `codec:"ri"`
+	RecordsOut     int64   `codec:"ro"`
+	BytesIn        int64   `codec:"bi"`
+	BytesOut       int64   `codec:"bo"`
+	Latency99      float64 `codec:"l99,omitempty"`
+	BacklogSize    int64   `codec:"bl,omitempty"`
 }
 
 // TaskFailureInfo describes a task failure.
@@ -545,12 +546,14 @@ type WorkerResourceInfo struct {
 
 // ResourceReport carries worker-level resource utilization.
 type ResourceReport struct {
-	CPUUsagePercent  float64 `codec:"cpu"`
-	MemoryUsedBytes  int64   `codec:"mub"`
-	MemoryTotalBytes int64   `codec:"mtb"`
-	DiskUsedBytes    int64   `codec:"dub"`
-	DiskTotalBytes   int64   `codec:"dtb"`
-	GoroutineCount   int     `codec:"gc"`
+	SampledAt        int64    `codec:"sampled_at,omitempty"`
+	Unavailable      []string `codec:"unavailable,omitempty"`
+	CPUUsagePercent  float64  `codec:"cpu"`
+	MemoryUsedBytes  int64    `codec:"mub"`
+	MemoryTotalBytes int64    `codec:"mtb"`
+	DiskUsedBytes    int64    `codec:"dub"`
+	DiskTotalBytes   int64    `codec:"dtb"`
+	GoroutineCount   int      `codec:"gc"`
 }
 
 // HeartbeatRequest is sent from Worker to Coordinator as a liveness signal.
@@ -580,11 +583,13 @@ type WorkerLoad struct {
 
 // RunningTaskSummary is a brief status of a running task.
 type RunningTaskSummary struct {
-	TaskID   string       `codec:"tid"`
-	JobID    string       `codec:"jid"`
-	Status   TaskStatus   `codec:"st"`
-	UptimeMs int64        `codec:"up"`
-	Metrics  *TaskMetrics `codec:"met,omitempty"`
+	AttemptID string       `codec:"aid,omitempty"`
+	EpochID   uint64       `codec:"eid,omitempty"`
+	TaskID    string       `codec:"tid"`
+	JobID     string       `codec:"jid"`
+	Status    TaskStatus   `codec:"st"`
+	UptimeMs  int64        `codec:"up"`
+	Metrics   *TaskMetrics `codec:"met,omitempty"`
 }
 
 // ---------- RegisterWorker RPC ----------

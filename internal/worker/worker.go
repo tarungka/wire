@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/engine"
+	"github.com/tarungka/wire/internal/observability"
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
 	"github.com/tarungka/wire/internal/transport"
@@ -19,46 +20,55 @@ import (
 
 // Config holds worker configuration.
 type Config struct {
-	RPCTLSConfig      *tls.Config
-	CheckpointReplica *CheckpointReplicaConfig
-	TaskSlot          *engine.TaskSlotConfig // Nil selects engine defaults.
-	WorkerID          string
-	CoordinatorAddr   string
-	ListenAddr        string
-	TaskSlots         int
+	HeartbeatInterval    time.Duration
+	HeartbeatTimeout     time.Duration
+	HeartbeatMaxFailures int
+	RPCTLSConfig         *tls.Config
+	CheckpointReplica    *CheckpointReplicaConfig
+	TaskSlot             *engine.TaskSlotConfig // Nil selects engine defaults.
+	WorkerID             string
+	CoordinatorAddr      string
+	ListenAddr           string
+	TaskSlots            int
 }
 
 // taskHandle tracks a running task so it can be cancelled on demand or
 // on worker shutdown.
 type taskHandle struct {
-	done       chan struct{}
-	attemptID  string
-	cancel     context.CancelFunc
-	jobID      string
-	epoch      uint64
-	checkpoint *taskCheckpointRuntime
+	status             rpc.TaskStatus
+	started            time.Time
+	statistics         *engine.TaskStatistics
+	lastBackpressureMs int64
+	done               chan struct{}
+	attemptID          string
+	cancel             context.CancelFunc
+	jobID              string
+	epoch              uint64
+	checkpoint         *taskCheckpointRuntime
 }
 
 // Worker connects to a coordinator, registers, and runs a heartbeat loop.
 // Deployed tasks are resolved against the Worker's Registry and executed
 // via taskExecutor.
 type Worker struct {
-	cancelledAttempts  map[string]bool
-	cancelAcks         map[cancelAckKey]bool
-	reservations       map[string]*slotReservation
-	deploymentReceipts map[string][32]byte
-	cfg                Config
-	reg                *Registry
-	executor           *taskExecutor
-	client             *rpc.Client
-	session            *transport.Session
-	data               *transport.Mux
-	epoch              uint64
-	mu                 sync.RWMutex
-	stopping           bool
-	closeReplica       func()
-	tasks              map[string]*taskHandle // taskID -> handle
-	log                zerolog.Logger
+	resources              *rpc.ResourceReport
+	lastCoordinatorContact time.Time
+	cancelledAttempts      map[string]bool
+	cancelAcks             map[cancelAckKey]bool
+	reservations           map[string]*slotReservation
+	deploymentReceipts     map[string][32]byte
+	cfg                    Config
+	reg                    *Registry
+	executor               *taskExecutor
+	client                 *rpc.Client
+	session                *transport.Session
+	data                   *transport.Mux
+	epoch                  uint64
+	mu                     sync.RWMutex
+	stopping               bool
+	closeReplica           func()
+	tasks                  map[string]*taskHandle // taskID -> handle
+	log                    zerolog.Logger
 }
 
 // New creates a new Worker using the package-level default registry. User
@@ -90,7 +100,17 @@ func NewWithRegistry(cfg Config, reg *Registry, log zerolog.Logger) *Worker {
 
 // Run connects to the coordinator, registers, and starts the heartbeat loop.
 // It blocks until ctx is canceled or an unrecoverable error occurs.
-func (w *Worker) Run(ctx context.Context) error {
+func (w *Worker) Run(ctx context.Context) (retErr error) {
+	parent := ctx
+	ctx, cancelContact := context.WithCancelCause(ctx)
+	defer cancelContact(nil)
+	defer func() {
+		if parent.Err() == nil && errors.Is(context.Cause(ctx), ErrCoordinatorContactLost) {
+			retErr = ErrCoordinatorContactLost
+		}
+	}()
+	w.confirmCoordinatorContact()
+	go w.watchCoordinatorContact(ctx, cancelContact)
 	// Resolve worker ID.
 	workerID := w.cfg.WorkerID
 	if workerID == "" {
@@ -142,6 +162,9 @@ func (w *Worker) Run(ctx context.Context) error {
 	w.cfg.ListenAddr = data.ListenAddr()
 	w.mu.Unlock()
 	defer w.Shutdown(context.Background())
+	resourceCtx, stopResources := context.WithCancel(ctx)
+	defer stopResources()
+	go w.runResourceSampler(resourceCtx)
 
 	for ctx.Err() == nil {
 		w.mu.RLock()
@@ -154,7 +177,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if errors.Is(err, errReconnectTaskJoin) {
+		if errors.Is(err, errReconnectTaskJoin) || errors.Is(err, ErrCoordinatorContactLost) {
 			return err
 		}
 		w.log.Warn().Err(err).Msg("coordinator session ended; reconnecting")
@@ -166,6 +189,9 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 	return nil
 }
+
+// ErrCoordinatorContactLost asks the supervisor to restart a fenced worker.
+var ErrCoordinatorContactLost = errors.New("coordinator contact deadline expired")
 
 var errReconnectTaskJoin = errors.New("old tasks did not stop before coordinator reconnect")
 
@@ -188,6 +214,19 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 	w.mu.Lock()
 	w.session = session
 	w.mu.Unlock()
+	// A closed coordinator session should reconnect promptly (not wait for
+	// the contact deadline). The process watchdog still bounds repeated failures.
+	sessionWatchDone := make(chan struct{})
+	go func() {
+		defer close(sessionWatchDone)
+		select {
+		case <-ctx.Done():
+		case <-session.YamuxSession().CloseChan():
+			w.cancelTasksOnContactLoss()
+			stopSession()
+		}
+	}()
+	defer func() { stopSession(); <-sessionWatchDone }()
 	defer func() {
 		_ = session.Close()
 		if err := w.joinTasksForReconnect(); err != nil {
@@ -197,6 +236,13 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 
 	// 2. Create RPC client.
 	rpcCfg := rpc.DefaultConfig()
+	if w.cfg.HeartbeatInterval > 0 {
+		rpcCfg.HeartbeatInterval = w.cfg.HeartbeatInterval
+	}
+	if w.cfg.HeartbeatTimeout > 0 {
+		rpcCfg.CoordinatorContactTimeout = w.cfg.HeartbeatTimeout
+	}
+	rpcCfg.MaxConsecutiveHeartbeatFailures = w.cfg.HeartbeatMaxFailures
 	w.mu.Lock()
 	w.client = rpc.NewClient(session.YamuxSession(), rpcCfg)
 	w.mu.Unlock()
@@ -231,6 +277,7 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 		Address:              w.cfg.ListenAddr,
 		TaskSlotsTotal:       w.cfg.TaskSlots,
 	}
+	registrationStarted := time.Now()
 	regResp, err := w.client.RegisterWorker(ctx, regReq)
 	if err != nil {
 		_ = session.Close()
@@ -241,7 +288,13 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 		return fmt.Errorf("coordinator registration returned stale epoch %d", regResp.Epoch)
 	}
 	w.mu.Lock()
+	if w.stopping || (!w.lastCoordinatorContact.IsZero() && time.Since(w.lastCoordinatorContact) >= w.contactTimeout()) {
+		w.mu.Unlock()
+		w.fenceForContactLoss()
+		return ErrCoordinatorContactLost
+	}
 	w.epoch = regResp.Epoch
+	w.lastCoordinatorContact = registrationStarted
 	w.mu.Unlock()
 
 	w.log.Info().
@@ -279,6 +332,8 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 		rpcCfg,
 		w.buildHeartbeatRequest,
 		w.handleCommands,
+		rpc.WithSenderMetrics(observability.HeartbeatMetrics{}),
+		rpc.WithContactConfirmedCallback(w.confirmCoordinatorContactAt),
 		rpc.WithNewEpochCallback(func(epoch uint64) {
 			w.log.Warn().Uint64("epoch", epoch).Msg("coordinator epoch changed; stopping old tasks")
 			w.cancelTasksOnContactLoss()
@@ -286,7 +341,8 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 		}),
 		rpc.WithContactLostCallback(func() {
 			w.log.Error().Msg("lost contact with coordinator")
-			w.cancelTasksOnContactLoss()
+			retErr = ErrCoordinatorContactLost
+			w.fenceForContactLoss()
 			stopSession()
 		}),
 	)
@@ -294,7 +350,7 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 	w.log.Info().Msg("heartbeat loop started")
 	heartbeat.Run(ctx)
 
-	return nil
+	return retErr
 }
 
 // runWatchCommands maintains a long-lived RPC stream to the coordinator
@@ -419,16 +475,30 @@ func (w *Worker) buildHeartbeatRequest() *rpc.HeartbeatRequest {
 	w.mu.Lock()
 	activeSlots := int32(w.cfg.TaskSlots - w.availableSlotsLocked(time.Now()))
 	epoch := w.epoch
+	resources := w.resources
+	tasks := make([]rpc.RunningTaskSummary, 0, len(w.tasks))
+	for id, h := range w.tasks {
+		stats := h.statistics.Snapshot()
+		blocked := max(0, stats.BackpressureMs-h.lastBackpressureMs)
+		h.lastBackpressureMs = stats.BackpressureMs
+		tasks = append(tasks, rpc.RunningTaskSummary{TaskID: id, JobID: h.jobID, Status: h.status, AttemptID: h.attemptID, EpochID: h.epoch, UptimeMs: time.Since(h.started).Milliseconds(), Metrics: &rpc.TaskMetrics{RecordsIn: stats.RecordsIn, RecordsOut: stats.RecordsOut, BytesIn: stats.BytesIn, BytesOut: stats.BytesOut, BackpressureMs: blocked}})
+	}
 	w.mu.Unlock()
 
+	load := &rpc.WorkerLoad{ActiveSlots: activeSlots, TotalSlots: int32(w.cfg.TaskSlots)}
+	if resources != nil {
+		load.CPUUsage = resources.CPUUsagePercent / 100
+		if resources.MemoryTotalBytes > 0 {
+			load.MemoryUsage = float64(resources.MemoryUsedBytes) / float64(resources.MemoryTotalBytes)
+		}
+	}
 	return &rpc.HeartbeatRequest{
+		Tasks:     tasks,
+		Resources: resources,
 		WorkerID:  w.cfg.WorkerID,
 		EpochID:   epoch,
 		Timestamp: time.Now().UnixMilli(),
-		Load: &rpc.WorkerLoad{
-			ActiveSlots: activeSlots,
-			TotalSlots:  int32(w.cfg.TaskSlots),
-		},
+		Load:      load,
 	}
 }
 
@@ -507,6 +577,9 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 	w.mu.RLock()
 	handle := w.tasks[taskID]
 	w.mu.RUnlock()
+	if handle != nil && handle.statistics != nil {
+		ctx = engine.WithTaskStatistics(ctx, handle.statistics)
+	}
 	defer func() {
 		if handle != nil && handle.done != nil {
 			close(handle.done)
@@ -555,14 +628,15 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 
 // reportTaskStatus sends an UpdateTaskStatus RPC with no failure info.
 func (w *Worker) reportTaskStatus(jobID, taskID string, status rpc.TaskStatus, failure *rpc.TaskFailureInfo) {
-	w.mu.RLock()
+	w.mu.Lock()
 	epoch := w.epoch
 	attemptID := ""
 	if handle := w.tasks[taskID]; handle != nil && handle.jobID == jobID {
+		handle.status = status
 		epoch = handle.epoch
 		attemptID = handle.attemptID
 	}
-	w.mu.RUnlock()
+	w.mu.Unlock()
 
 	req := &rpc.UpdateTaskStatusRequest{
 		AttemptID: attemptID,
@@ -672,7 +746,8 @@ func (w *Worker) joinTasksForReconnect() error {
 }
 
 func (w *Worker) installTaskLocked(jobID, taskID string, desc rpc.TaskDescriptor, cancel context.CancelFunc) {
-	handle := &taskHandle{done: make(chan struct{}), cancel: cancel, jobID: jobID, epoch: desc.EpochID, attemptID: desc.AttemptID}
+	handle := &taskHandle{
+		status: rpc.TaskStatusDeploying, started: time.Now(), statistics: &engine.TaskStatistics{}, done: make(chan struct{}), cancel: cancel, jobID: jobID, epoch: desc.EpochID, attemptID: desc.AttemptID}
 	if desc.CheckpointReplicaAddress != "" || desc.RestoreCheckpoint != nil || desc.RestoreRescale != nil {
 		handle.checkpoint = &taskCheckpointRuntime{triggers: make(chan engine.CheckpointTrigger, 1), decisions: make(chan engine.ControlMsg, 16)}
 		for _, operator := range desc.OperatorChain {

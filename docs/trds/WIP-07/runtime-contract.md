@@ -47,7 +47,7 @@ Checkpoint triggers are deduplicated by checkpoint ID under the source queue loc
 
 ## Heartbeats and failure handling
 
-The runtime heartbeat interval is 5s, request timeout 2s, and contact loss occurs after six consecutive failures; workers then cancel/join old tasks and reconnect. Coordinator placement and recovery use the configured WorkerTimeout (30s by default), not the obsolete unconditional 15s claim in the original proposal. WIP-08 owns the complete health-policy configuration and SUSPECT/DEAD presentation; the reusable HeartbeatTracker has separate suspect/dead thresholds. Coordinator lost-worker detection already fails affected tasks and enters checkpoint recovery.
+WIP-08 supersedes the original count-only heartbeat policy with configurable interval/elapsed timeout/failure limit (5s/30s/0 by default). Closed coordinator sessions reconnect promptly; expiry stops admission, cancels tasks, closes transports and returns a fatal worker error. See [the WIP-08 runtime contract](../WIP-08/runtime-contract.md).
 
 WIP-21 WatchCommands is the primary low-latency cancellation/commit/abort path. Heartbeat responses drain the fallback queue. Commands preserve epoch/attempt/checkpoint fencing whichever delivery path is used. A partition does not grant permanent authority to keep old tasks running; reconnect joins them before registering the new session.
 

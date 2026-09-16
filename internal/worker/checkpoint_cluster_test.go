@@ -35,6 +35,10 @@ func (*checkpointTestSource) ReadBatch(ctx context.Context) ([]engine.Event, err
 	}
 }
 
+func TestClusterCheckpointRestartsAfterWorkerLoss(t *testing.T) {
+	testClusterCheckpoint(t, false, false, false, false, false, false, false, true)
+}
+
 func TestClusterCheckpointRestartsFromReplica(t *testing.T) {
 	testClusterCheckpoint(t, false, false, true)
 }
@@ -81,6 +85,7 @@ func TestClusterCheckpointCoordinatorFailover(t *testing.T) {
 func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 	t.Helper()
 	failover := len(transactional) > 2 && transactional[2]
+	workerLoss := len(transactional) > 6 && transactional[6]
 	fallback := len(transactional) > 3 && transactional[3]
 	timeout := 15 * time.Second
 	if fallback {
@@ -94,7 +99,12 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 	coordCtx, stopCoordinator := context.WithCancel(ctx)
 	defer func() { stopCoordinator() }()
 	metadata := coordinator.NewMemoryStore()
-	coord := coordinator.New(coordinator.CoordinatorConfig{NodeID: "coordinator"}, metadata, nil, zerolog.Nop())
+	coordinatorConfig := coordinator.CoordinatorConfig{NodeID: "coordinator"}
+	if workerLoss {
+		coordinatorConfig.WorkerTimeout = 500 * time.Millisecond
+		coordinatorConfig.HeartbeatInterval = 50 * time.Millisecond
+	}
+	coord := coordinator.New(coordinatorConfig, metadata, nil, zerolog.Nop())
 	coordDone := make(chan error, 1)
 	go func() { coordDone <- coord.Run(coordCtx) }()
 	waitFor(t, 2*time.Second, coord.IsReady)
@@ -117,7 +127,7 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 	var restoredRead atomic.Bool
 	registry := worker.NewRegistry()
 	registry.RegisterSource("checkpoint-source", func(context.Context, []byte, worker.TaskContext) (engine.SourceOperator, error) {
-		if restart || failover {
+		if restart || failover || workerLoss {
 			return &restartCheckpointSource{fail: &failSource, needsRestore: instances.Add(1) > 1, readAfterRestore: &restoredRead}, nil
 		}
 		return &checkpointTestSource{}, nil
@@ -153,7 +163,12 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 			replica.Authorize = func(context.Context, rpc.ReplicateCheckpointRequest) error { return errors.New("replica refused") }
 			taskConfig.Checkpoint.MaxConsecutiveFailures = 2
 		}
-		w := worker.NewWithRegistry(worker.Config{WorkerID: fmt.Sprintf("worker-%d", i), CoordinatorAddr: server.Addr(), TaskSlots: 1, TaskSlot: &taskConfig, CheckpointReplica: replica}, registry, zerolog.Nop())
+		workerConfig := worker.Config{WorkerID: fmt.Sprintf("worker-%d", i), CoordinatorAddr: server.Addr(), TaskSlots: 1, TaskSlot: &taskConfig, CheckpointReplica: replica}
+		if workerLoss {
+			workerConfig.HeartbeatInterval = 50 * time.Millisecond
+			workerConfig.HeartbeatTimeout = 500 * time.Millisecond
+		}
+		w := worker.NewWithRegistry(workerConfig, registry, zerolog.Nop())
 		workers = append(workers, w)
 		ch := make(chan error, 1)
 		done = append(done, ch)
@@ -268,6 +283,37 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 			t.Fatalf("remote snapshot: %+v, %v", snapshot, err)
 		}
 	}
+	if workerLoss {
+		var owner string
+		for _, id := range checkpoint.Tasks {
+			owner = id
+			break
+		}
+		victim := 0
+		if owner == "worker-1" {
+			victim = 1
+		}
+		lostAt := time.Now()
+		if err := workers[victim].Shutdown(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, time.Second+coordinatorConfig.WorkerTimeout, func() bool {
+			for _, w := range coord.ListWorkers() {
+				if w.ID == owner {
+					return w.Lost
+				}
+			}
+			return false
+		})
+		if time.Since(lostAt) > coordinatorConfig.WorkerTimeout+time.Second {
+			t.Fatal("worker loss detection exceeded budget")
+		}
+		waitFor(t, 5*time.Second, func() bool {
+			current, err := coord.GetJob(job.ID)
+			return err == nil && current.Status == coordinator.JobRunning && current.RestartCount == 1 && restoredRead.Load()
+		})
+	}
+
 	if failover {
 		oldEpoch := coord.CurrentEpoch()
 		address := server.Addr()

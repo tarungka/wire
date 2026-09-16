@@ -170,6 +170,8 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 
 	// Create coordinator.
 	coordCfg := coordinator.CoordinatorConfig{
+		WorkerTimeout:                    wireCfg.Heartbeat.Timeout.Duration,
+		HeartbeatInterval:                wireCfg.Heartbeat.Interval.Duration,
 		CheckpointTimeout:                wireCfg.Checkpoint.Timeout.Duration,
 		CheckpointMinPause:               wireCfg.Checkpoint.MinPause.Duration,
 		CheckpointMaxConsecutiveFailures: wireCfg.Checkpoint.MaxConsecutiveFailures,
@@ -241,13 +243,16 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 		return err
 	}
 	w := worker.New(worker.Config{
-		RPCTLSConfig:      rpcTLS,
-		CheckpointReplica: replicaConfig,
-		TaskSlot:          &taskConfig,
-		WorkerID:          wireCfg.Worker.WorkerID,
-		CoordinatorAddr:   wireCfg.Worker.CoordinatorAddr,
-		ListenAddr:        wireCfg.Worker.ListenAddr,
-		TaskSlots:         wireCfg.Worker.TaskSlots,
+		HeartbeatInterval:    wireCfg.Heartbeat.Interval.Duration,
+		HeartbeatTimeout:     wireCfg.Heartbeat.Timeout.Duration,
+		HeartbeatMaxFailures: wireCfg.Heartbeat.MaxFailures,
+		RPCTLSConfig:         rpcTLS,
+		CheckpointReplica:    replicaConfig,
+		TaskSlot:             &taskConfig,
+		WorkerID:             wireCfg.Worker.WorkerID,
+		CoordinatorAddr:      wireCfg.Worker.CoordinatorAddr,
+		ListenAddr:           wireCfg.Worker.ListenAddr,
+		TaskSlots:            wireCfg.Worker.TaskSlots,
 	}, log.Logger)
 
 	g, gCtx := errgroup.WithContext(ctx)

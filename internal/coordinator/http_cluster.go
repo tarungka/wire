@@ -1,6 +1,9 @@
 package coordinator
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
 func (s *HTTPServer) handleClusterStatus(w http.ResponseWriter, _ *http.Request) {
 	info, isSelf, err := s.coord.GetLeaderInfo()
@@ -19,7 +22,12 @@ func (s *HTTPServer) handleClusterStatus(w http.ResponseWriter, _ *http.Request)
 	wms := s.coord.ListWorkers()
 	workers := make([]nodeResponse, 0, len(wms))
 	for _, w := range wms {
+		status := "ALIVE"
+		if w.Lost || w.LastHeartbeat.IsZero() || time.Since(w.LastHeartbeat) >= s.coord.config.WorkerTimeout {
+			status = "LOST"
+		}
 		workers = append(workers, nodeResponse{
+			Status:             status,
 			ID:                 w.ID,
 			Address:            w.Address,
 			TaskSlotsTotal:     w.TaskSlotsTotal,

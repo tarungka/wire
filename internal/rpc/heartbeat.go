@@ -134,9 +134,14 @@ func (ht *HeartbeatTracker) RecordHeartbeat(id string, load *WorkerLoad, resourc
 	ht.mu.Lock()
 	w, ok := ht.workers[id]
 	if ok {
-		if w.State == WorkerDead {
-			// Dead workers must re-register; ignore stale heartbeats.
+		timeout := ht.cfg.CoordinatorContactTimeout
+		if timeout <= 0 {
+			timeout = DefaultCoordinatorContactTimeout
+		}
+		if w.State == WorkerDead || time.Since(w.LastHeartbeat) >= timeout {
+			// A late heartbeat cannot revive expired authority between checks.
 			ht.mu.Unlock()
+			ht.checkWorkers()
 			return
 		}
 		w.MissedCount = 0
@@ -196,9 +201,7 @@ func (ht *HeartbeatTracker) GetAllWorkers() []WorkerInfo {
 	return result
 }
 
-// Run starts the heartbeat check loop. It increments MissedCount for all workers
-// every HeartbeatInterval and evaluates liveness thresholds. It blocks until ctx
-// is canceled.
+// Run evaluates elapsed receipt time every heartbeat interval until cancellation.
 func (ht *HeartbeatTracker) Run(ctx context.Context) {
 	ticker := time.NewTicker(ht.cfg.HeartbeatInterval)
 	defer ticker.Stop()
@@ -213,8 +216,10 @@ func (ht *HeartbeatTracker) Run(ctx context.Context) {
 	}
 }
 
-// checkWorkers increments missed counts and evaluates thresholds.
-func (ht *HeartbeatTracker) checkWorkers() {
+// checkWorkers uses elapsed receipt time; delayed checks cannot postpone loss.
+func (ht *HeartbeatTracker) checkWorkers() { ht.checkWorkersAt(time.Now()) }
+
+func (ht *HeartbeatTracker) checkWorkersAt(now time.Time) {
 	var transitions []stateTransition
 
 	ht.mu.Lock()
@@ -225,10 +230,15 @@ func (ht *HeartbeatTracker) checkWorkers() {
 			continue
 		}
 
-		w.MissedCount++
+		elapsed := now.Sub(w.LastHeartbeat)
+		w.MissedCount = int(elapsed / ht.cfg.HeartbeatInterval)
+		timeout := ht.cfg.CoordinatorContactTimeout
+		if timeout <= 0 {
+			timeout = DefaultCoordinatorContactTimeout
+		}
 
 		switch {
-		case w.MissedCount >= ht.cfg.DeadThreshold && w.State == WorkerSuspect:
+		case elapsed >= timeout:
 			old := w.State
 			w.State = WorkerDead
 			ht.log.Warn().
@@ -288,11 +298,13 @@ type HeartbeatSender struct {
 	buildRequestFn      func() *HeartbeatRequest
 	handleCommandsFn    func([]WorkerCommand)
 	onContactLost       func()
+	onContactConfirmed  func(time.Time)
 	onNewEpoch          func(uint64)
 	metrics             HeartbeatMetrics
 	mu                  sync.Mutex
 	consecutiveFailures int
 	contactLostFired    bool
+	lastContact         time.Time
 	log                 zerolog.Logger
 }
 
@@ -311,6 +323,12 @@ func WithContactLostCallback(fn func()) HeartbeatSenderOption {
 	return func(hs *HeartbeatSender) { hs.onContactLost = fn }
 }
 
+// WithContactConfirmedCallback reports accepted heartbeats to the worker's
+// process-wide watchdog, which also spans coordinator reconnect attempts.
+func WithContactConfirmedCallback(fn func(time.Time)) HeartbeatSenderOption {
+	return func(hs *HeartbeatSender) { hs.onContactConfirmed = fn }
+}
+
 // WithNewEpochCallback reports a newer coordinator fencing token before any
 // commands are dispatched. The owner must stop executions from the old epoch.
 func WithNewEpochCallback(fn func(uint64)) HeartbeatSenderOption {
@@ -327,6 +345,7 @@ func NewHeartbeatSender(
 ) *HeartbeatSender {
 	hs := &HeartbeatSender{
 		client:           client,
+		lastContact:      time.Now(),
 		cfg:              cfg,
 		buildRequestFn:   buildRequestFn,
 		handleCommandsFn: handleCommandsFn,
@@ -343,28 +362,76 @@ func NewHeartbeatSender(
 func (hs *HeartbeatSender) Run(ctx context.Context) {
 	ticker := time.NewTicker(hs.cfg.HeartbeatInterval)
 	defer ticker.Stop()
-
 	for {
+		hs.mu.Lock()
+		if hs.lastContact.IsZero() {
+			hs.lastContact = time.Now()
+		}
+		remaining := time.Until(hs.lastContact.Add(hs.contactTimeout()))
+		hs.mu.Unlock()
+		timer := time.NewTimer(max(0, remaining))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			hs.fireContactLost()
 			return
 		case <-ticker.C:
+			timer.Stop()
 			hs.sendHeartbeat(ctx)
 		}
 	}
 }
 
+func (hs *HeartbeatSender) contactTimeout() time.Duration {
+	if hs.cfg.CoordinatorContactTimeout > 0 {
+		return hs.cfg.CoordinatorContactTimeout
+	}
+	return DefaultCoordinatorContactTimeout
+}
+
+func (hs *HeartbeatSender) fireContactLost() {
+	hs.mu.Lock()
+	fired := hs.contactLostFired
+	hs.contactLostFired = true
+	hs.mu.Unlock()
+	if !fired && hs.onContactLost != nil {
+		hs.onContactLost()
+	}
+}
+
 // sendHeartbeat sends a single heartbeat and processes the response.
 func (hs *HeartbeatSender) sendHeartbeat(ctx context.Context) {
+	parent := ctx
+	hs.mu.Lock()
+	if hs.lastContact.IsZero() {
+		hs.lastContact = time.Now()
+	}
+	deadline := hs.lastContact.Add(hs.contactTimeout())
+	hs.mu.Unlock()
+	if !time.Now().Before(deadline) {
+		hs.fireContactLost()
+		return
+	}
+	callDeadline := minTime(deadline, time.Now().Add(hs.cfg.methodTimeout(MethodHeartbeat)))
+	ctx, cancel := context.WithDeadline(ctx, callDeadline)
+	defer cancel()
 	req := hs.buildRequestFn()
 
 	start := time.Now()
 	resp, err := hs.client.Heartbeat(ctx, req)
+	if parent.Err() != nil {
+		return
+	}
+	hs.metrics.ObserveLatency(time.Since(start))
+	err = heartbeatReplyDeadline(err, time.Now(), deadline)
 	if err == nil && resp.EpochID > req.EpochID {
 		if hs.onNewEpoch != nil {
 			hs.onNewEpoch(resp.EpochID)
 		}
-		err = errors.New("coordinator epoch changed")
+		// A new epoch requires registration, not a contact-failure budget charge.
+		return
 	}
 	if err == nil && !resp.Accepted {
 		err = errors.New("coordinator rejected heartbeat")
@@ -379,23 +446,39 @@ func (hs *HeartbeatSender) sendHeartbeat(ctx context.Context) {
 		fired := hs.contactLostFired
 		hs.mu.Unlock()
 
-		if failures >= hs.cfg.MaxConsecutiveHeartbeatFailures && !fired && hs.onContactLost != nil {
-			hs.mu.Lock()
-			hs.contactLostFired = true
-			hs.mu.Unlock()
-			hs.onContactLost()
+		if !fired && ((hs.cfg.MaxConsecutiveHeartbeatFailures > 0 && failures >= hs.cfg.MaxConsecutiveHeartbeatFailures) || !time.Now().Before(deadline)) {
+			hs.fireContactLost()
 		}
 		return
 	}
 
-	hs.metrics.ObserveLatency(time.Since(start))
+	if hs.onContactConfirmed != nil {
+		hs.onContactConfirmed(start)
+	}
 
 	hs.mu.Lock()
 	hs.consecutiveFailures = 0
+	hs.lastContact = start
 	hs.contactLostFired = false
 	hs.mu.Unlock()
 
 	if len(resp.Commands) > 0 && hs.handleCommandsFn != nil {
 		hs.handleCommandsFn(resp.Commands)
 	}
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+// The explicit time argument makes the late-reply race testable even when the
+// process resumes after a pause before the context timer goroutine can run.
+func heartbeatReplyDeadline(err error, now, deadline time.Time) error {
+	if err == nil && !now.Before(deadline) {
+		return errors.New("heartbeat reply arrived after contact deadline")
+	}
+	return err
 }

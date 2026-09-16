@@ -132,7 +132,7 @@ func TestCoordinator_WriteThrough_Worker(t *testing.T) {
 	}
 }
 
-func TestCoordinator_HeartbeatFlush(t *testing.T) {
+func TestCoordinator_HeartbeatStateIsEphemeral(t *testing.T) {
 	store := NewMemoryStore()
 	defer func() { _ = store.Close() }()
 
@@ -156,15 +156,15 @@ func TestCoordinator_HeartbeatFlush(t *testing.T) {
 	}
 	c.mu.Unlock()
 
-	// Wait for heartbeat flush.
+	// Several former flush intervals must not write ephemeral liveness.
 	time.Sleep(200 * time.Millisecond)
 
 	val, err := store.Get(WorkerHeartbeatKey("w1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if val == nil {
-		t.Fatal("worker heartbeat not flushed to store")
+	if val != nil {
+		t.Fatal("ephemeral heartbeat was persisted")
 	}
 }
 

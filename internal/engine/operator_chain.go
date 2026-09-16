@@ -238,6 +238,7 @@ func processEvent(cc *chainContext, event Event) error {
 	if event.watermark != nil {
 		return processWatermark(cc, *event.watermark)
 	}
+	recordTaskInput(cc.ctx, event)
 	return processEventFrom(cc, event, cc.links)
 }
 
@@ -351,11 +352,16 @@ func invokeSinkWithRetry(cc *chainContext, link ChainLink, e Event, op SinkOpera
 		if err := op.Write(cc.ctx, e); err != nil {
 			return fmt.Errorf("sink operator: %w", err)
 		}
+		recordTaskOutput(cc.ctx, e)
 		return nil
 	}
 
 	return invokeWithRetry(cc, link, e, func() error {
-		return op.Write(cc.ctx, e)
+		err := op.Write(cc.ctx, e)
+		if err == nil {
+			recordTaskOutput(cc.ctx, e)
+		}
+		return err
 	})
 }
 

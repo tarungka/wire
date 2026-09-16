@@ -16,6 +16,9 @@ into the current runtime; setting them does not enable those features.
 
 | Field | Type | Default | CLI override |
 | --- | --- | --- | --- |
+| `heartbeat.interval` | duration string | `5s` | — |
+| `heartbeat.timeout` | duration string | `30s` | — |
+| `heartbeat.max_failures` | int | `0` | — |
 | `checkpoint.min_pause` | duration string | `0s` | — |
 | `checkpoint.tolerable_failure_rate` | float64 | `0` | — |
 | `checkpoint.max_consecutive_failures` | int | `0` | — |

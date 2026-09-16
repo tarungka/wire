@@ -61,6 +61,7 @@ type savepointResponse struct {
 
 // nodeResponse is the API representation of a worker node.
 type nodeResponse struct {
+	Status             string   `json:"status"`
 	ID                 string   `json:"id"`
 	Address            string   `json:"address"`
 	TaskSlotsTotal     int      `json:"task_slots_total"`
