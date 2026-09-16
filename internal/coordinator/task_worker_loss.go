@@ -12,8 +12,8 @@ import (
 // to acknowledge cancellation before prepareTaskRestart permits redeployment.
 func (c *Coordinator) detectLostTaskWorkers() bool {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.state != StateLeader || !c.recovered {
-		c.mu.Unlock()
 		return false
 	}
 	changed := false
@@ -53,11 +53,20 @@ func (c *Coordinator) detectLostTaskWorkers() bool {
 			}
 		}
 	}
-	c.mu.Unlock()
+	// Publish failure before releasing the ownership lock. Otherwise a quick
+	// re-registration/redeploy could replace this attempt between detection and
+	// transition, and this old loss notification would fail the new attempt.
 	for job := range failed {
-		if err := c.transitionJob(job, JobFailing); err != nil {
+		next := *job
+		c.resetStableRecoveryBudget(&next, now)
+		next.Status = JobFailing
+		next.UpdatedAt = now.UTC()
+		if err := c.persistJobLocked(&next); err != nil {
 			c.log.Warn().Err(err).Str("job_id", job.ID).Msg("cannot recover lost worker")
+			continue
 		}
+		*job = next
+		c.jobs[job.ID] = job
 	}
 	return changed || len(failed) > 0
 }
