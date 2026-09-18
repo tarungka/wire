@@ -1,6 +1,10 @@
 package sdk
 
-import "context"
+import (
+	"context"
+
+	"github.com/tarungka/wire/internal/engine"
+)
 
 // Sink consumes events as a terminal operator.
 type Sink interface {
@@ -40,6 +44,10 @@ type BatchSink interface {
 // This interface does not provide cross-sink atomic visibility.
 type TransactionalSink interface {
 	Sink
+	// RecoverTransactions must establish the external DeploymentGeneration fence
+	// and abort orphan transactions, preserving only the selected completed
+	// checkpoint for commit. It must reject stale generations and be idempotent.
+	RecoverTransactions(ctx context.Context, recovery TransactionRecovery) error
 	BeginTransaction(ctx context.Context) error
 	PreCommit(ctx context.Context, checkpointID uint64) error
 	Commit(ctx context.Context, checkpointID uint64) error
@@ -47,3 +55,7 @@ type TransactionalSink interface {
 	Checkpoint(checkpointID uint64) ([]byte, error)
 	RestoreCheckpoint(state []byte) error
 }
+
+// TransactionRecovery carries task authority and the selected global checkpoint
+// decision for connector-side fencing and orphan reconciliation.
+type TransactionRecovery = engine.TransactionRecovery

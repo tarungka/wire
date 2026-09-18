@@ -322,6 +322,7 @@ type RescaleRestoreDescriptor struct {
 }
 
 type TaskDescriptor struct {
+	DeploymentGeneration     uint64                       `codec:"deployment_generation,omitempty"`
 	RestoreRescale           *RescaleRestoreDescriptor    `codec:"restore_rescale,omitempty"`
 	OutputKeyGroups          int                          `codec:"output_key_groups,omitempty"`
 	NumKeyGroups             int                          `codec:"key_groups,omitempty"`

@@ -91,3 +91,7 @@ func TestEmbeddedTransactionRequiresDurableCheckpointRuntime(t *testing.T) {
 		t.Fatal("unsupported runtime opened external transaction resources")
 	}
 }
+
+func (*sdkTransactionProbe) RecoverTransactions(context.Context, TransactionRecovery) error {
+	return nil
+}

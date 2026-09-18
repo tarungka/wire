@@ -255,9 +255,24 @@ func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 		}
 	}
 
+	// Persist an ordered external writer fence with the deployment. Recovery
+	// counters reset and random attempt IDs cannot fence a delayed old writer.
+	if job.DeploymentGeneration == ^uint64(0) {
+		c.mu.Unlock()
+		c.log.Error().Str("job_id", jobID).Msg("deployment generation exhausted")
+		return
+	}
+	generation := job.DeploymentGeneration + 1
+	for _, workerTasks := range assignments {
+		for i := range workerTasks {
+			workerTasks[i].DeploymentGeneration = generation
+		}
+	}
+
 	// Persist the physical topology used by this deployment. A later rescale
 	// must restore the old chains/ranges, not regenerate them from a new graph.
 	for _, task := range tasks {
+		task.DeploymentGeneration = generation
 		task.Upstream, task.Downstream = nil, nil
 		task.RestoreCheckpoint = nil
 		task.RestoreRescale = nil
@@ -279,6 +294,7 @@ func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 	// One synchronous batch prevents both a second fsync under c.mu and a
 	// partially persisted deployment if writing assignments fails.
 	next := *job
+	next.DeploymentGeneration = generation
 	if job.RescaleRollback != nil {
 		rollback := *job.RescaleRollback
 		rollback.Attempted = true

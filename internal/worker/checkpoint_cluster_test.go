@@ -463,3 +463,7 @@ func (*checkpointTestSink) BeginTransaction(context.Context) error      { return
 func (*checkpointTestSink) PreCommit(context.Context, uint64) error     { return nil }
 func (s *checkpointTestSink) Commit(_ context.Context, id uint64) error { s.commit(id); return nil }
 func (s *checkpointTestSink) Abort(context.Context) error               { s.abort(); return nil }
+
+func (*checkpointTestSink) RecoverTransactions(context.Context, engine.TransactionRecovery) error {
+	return nil
+}

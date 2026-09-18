@@ -53,3 +53,11 @@ External transaction semantics cannot be invented by the runtime: the connector 
 - PreCommit receives a deadline derived from checkpoint alignment start and the configured checkpoint timeout; deadline errors retain their cause and cannot produce an ACK.
 - Full engine race suite passes. The worker suite identified an old test that explicitly expected continued writes after rollback; its transactional branch now requires failure/recovery, while the non-transactional tolerance branch remains unchanged. Transactional abort/commit and ordinary failure-threshold cluster tests pass three race repetitions; engine/worker lint passes.
 - The abort fixture has no prior completed checkpoint, so it safely fails rather than silently continuing. Recovery before the first completed checkpoint and orphan resolution are still open; this test does not prove complete replay acceptance.
+
+## Progress: external writer fencing and orphan reconciliation
+
+- Distributed task startup now requires RecoverTransactions for transactional sinks. It runs after checkpoint handle restoration and before replaying Commit or reporting RUNNING. The selected completed checkpoint is preserved; all other uncommitted transactions, including aborted gaps below it, must be discarded by the connector.
+- Added a per-job DeploymentGeneration persisted atomically with assignments and propagated to worker factories and the recovery hook. It advances on normal deployment, recovery and rescale independently of resettable recovery counters. A connector can reject delayed old recovery calls using this ordered external fence.
+- Repartitioned transactional restoration without handle mapping fails before orphan cleanup. Missing recovery hooks or authority fail before RUNNING and BeginTransaction.
+- Added on-disk external ledger tests that reopen connector instances, preserve committed output, abort orphan preparations, replay a lost Commit response without duplicate output, and reject stale/conflicting writers. These are durable fixture tests, not process-kill acceptance.
+- Engine, coordinator, worker and SDK full race suites pass; affected-package lint is clean. A follow-up assertion also checks that the deployed descriptor carries the persisted generation.

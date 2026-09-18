@@ -14,6 +14,9 @@ import (
 // TaskContext is passed to an operator factory when a task is deployed.
 // It carries per-task identity and scheduling information.
 type TaskContext struct {
+	DeploymentGeneration uint64
+	EpochID              uint64
+	AttemptID            string
 	// NumKeyGroups is fixed for the job and must be used when hashing state keys.
 	NumKeyGroups int
 	TaskID       string

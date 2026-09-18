@@ -19,9 +19,12 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
-	InputIdleTimeouts []time.Duration
-	RestoreCheckpoint *TaskCheckpoint
-	RescaleState      []OperatorRescaleState
+	// TransactionRecovery supplies distributed writer identity; completed boundary
+	// is derived from RestoreCheckpoint rather than trusted from this field.
+	TransactionRecovery *TransactionRecovery
+	InputIdleTimeouts   []time.Duration
+	RestoreCheckpoint   *TaskCheckpoint
+	RescaleState        []OperatorRescaleState
 	// CheckpointReport delivers checkpoint ID, epoch, and upload error to an
 	// external coordinator. It must honor cancellation. Nil means report acceptance,
 	// not global commit; commit and abort arrive through CheckpointDecisions.
@@ -101,9 +104,12 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		if err := ts.restoreCheckpoint(); err != nil {
 			return err
 		}
-		if err := ts.restoreSinkTransaction(ctx); err != nil {
-			return err
-		}
+	}
+	if err := ts.recoverSinkTransactions(ctx); err != nil {
+		return err
+	}
+	if err := ts.restoreSinkTransaction(ctx); err != nil {
+		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
