@@ -60,6 +60,8 @@ For coordinator B use `coordinator-b`, HTTP port 4201 and RPC port 4202; retain 
 
 For disaster recovery, fence/stop all old coordinators and workers before replacing the metadata directory with a verified snapshot. Retain epoch evidence; do not reset worker epoch files merely to force an older restored database to accept them. An old metadata snapshot can omit acknowledged jobs, newer checkpoints and committed external sink decisions. It therefore requires explicit operator reconciliation and cannot promise automatic exactly-once continuation. Normal HA takeover uses current authoritative storage and does not take this path.
 
-## Compatibility audit still pending
+## Internal startup compatibility
 
-The production CLI uses HAService. The preexisting embedded `Coordinator.Run` elected-store entry point remains under compatibility review because it accepts an already-open store and reuses coordinator state. Do not use that path to construct new HA deployments; the factory lifecycle is the tested implementation. The WIP remains under completion audit until this entry-point decision and final validation are resolved.
+Elected deployments must use `NewHAService` with a metadata store factory. Calling `Coordinator.Run` with a non-nil election now returns `ErrHARequiresStoreFactory` before campaigning or changing metadata. This intentionally retires the legacy preopened-store election loop, which could retain storage and coordinator state across leadership periods. Direct single-node `Coordinator.Run` with nil election remains supported.
+
+The CLI already selects HAService for elected deployments. Internal callers and forks using `New(config, store, election, logger).Run(ctx)` must migrate to `NewHAService(config, rpcAddress, election, openStore, tlsConfig, logger).Run(ctx)`. The factory opens the authoritative store only after election; callers must not preopen it. This requires no metadata-format migration.

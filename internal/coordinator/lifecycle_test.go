@@ -37,35 +37,22 @@ func TestLifecycle_SingleNode(t *testing.T) {
 	}
 }
 
-func TestLifecycle_MultiNode_ElectionWin(t *testing.T) {
+func TestLifecycle_ElectedRunRequiresHAService(t *testing.T) {
 	store := NewMemoryStore()
 	defer func() { _ = store.Close() }()
-
 	election := NewNoopElection(":4001")
-	c := New(CoordinatorConfig{
-		NodeID:                 "n1",
-		ListenAddr:             ":4001",
-		HeartbeatFlushInterval: 50 * time.Millisecond,
-	}, store, election, zerolog.Nop())
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- c.Run(ctx)
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-	if c.State() != StateLeader {
-		t.Fatalf("expected LEADER, got %s", c.State())
+	c := New(CoordinatorConfig{NodeID: "n1"}, store, election, zerolog.Nop())
+	if err := c.Run(t.Context()); err != ErrHARequiresStoreFactory {
+		t.Fatalf("expected migration error, got %v", err)
 	}
-	if !c.IsReady() {
-		t.Fatal("expected ready")
+	if c.IsReady() || c.State() != StateStandby {
+		t.Fatal("rejected startup changed leadership state")
 	}
-
-	cancel()
-	err := <-done
-	if err != nil && err != context.Canceled {
-		t.Fatalf("unexpected error: %v", err)
+	if _, _, err := election.GetLeader(t.Context()); err != ErrNoLeader {
+		t.Fatalf("rejected startup campaigned: %v", err)
+	}
+	if epoch, err := store.Get(ClusterEpochKey()); err != nil || epoch != nil {
+		t.Fatalf("rejected startup changed metadata: epoch=%v error=%v", epoch, err)
 	}
 }
 

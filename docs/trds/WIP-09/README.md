@@ -10,7 +10,7 @@
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-09-16`
+> **Last Updated:** `2026-09-18`
 
 ### Revision History
 
@@ -25,7 +25,7 @@
 
 The completion follow-up implements the current Phase A/B/C path: election-before-open Pebble ownership, isolated coordinator terms, file-lock and Kubernetes Lease election, standby discovery, persistent worker epochs and checkpoint-restored job takeover. See the [runtime contract](runtime-contract.md), [Kubernetes deployment contract](kubernetes.md) and [requirement-by-requirement acceptance audit](acceptance.md).
 
-**Still under audit:** compatibility of the legacy preopened-store entry point, final validation and PR CI. Status remains Partially Implemented until these are resolved. Embedded consensus remains explicitly deferred Phase D.
+The legacy elected preopened-store entry point is retired in a separate stacked follow-up to #222, as requested. Elected callers must use HAService; direct single-node callers remain supported. Final stacked-PR validation is in progress. Embedded consensus remains explicitly deferred Phase D.
 
 The proposal below is historical design context. Its references to a minimally implemented coordinator, periodic heartbeat flushing, automatic repair from stale snapshots and vote-based diagrams do not describe the current runtime. The runtime contract explains those differences; the full original scope and acceptance targets remain visible below.
 
