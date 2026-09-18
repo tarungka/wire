@@ -24,3 +24,11 @@ External transaction semantics cannot be invented by the runtime: the connector 
 - Moved PreCommit before operator snapshot capture, while keeping ACK after successful snapshot capture and replica handling. Prepared transaction state can now be included in the archived sink snapshot.
 - Added TestTransactionalSnapshotFollowsPrepareBeforeACK, covering success, failed preparation and failed snapshot. The fixture refuses to snapshot an unprepared transaction; ACK asserts snapshot completion.
 - Targeted transactional tests and the complete engine package pass under -race. This does not yet establish recovery correctness; the remaining requirements above are still open.
+
+## Progress: commit recovery and uncertain cleanup
+
+- Commit retries the same checkpoint identity five times with 100ms exponentially increasing waits (1.5s total waiting), preserving the underlying cause on exhaustion. Cancellation interrupts waits; connector Commit must honor its context. No new transaction is begun by retry itself.
+- Cleanup no longer aborts a prepared transaction once an ACK/upload may have reached the coordinator or commit has been attempted. Explicit abort decisions still abort; ordinary unreported transactions retain bounded independent cleanup. Connector Close is documented to preserve externally prepared transactions with uncertain decisions.
+- Restoration of a globally completed SinkPrepared snapshot restores the operator handle and re-drives idempotent Commit before RUNNING or processing. The chain inherits the restored committed boundary. Prepared snapshots reject non-transactional replacement operators and inconsistent committed checkpoint metadata.
+- Full engine race suite passes after runtime changes. Additional focused regressions prove failed recovery cannot report RUNNING, begin another transaction or abort prepared state; engine lint passes.
+- Still open: coordinator/connector reconciliation of orphan transactions not represented by the selected snapshot, checkpoint/epoch/attempt decision fencing, abort-and-replay policy, terminal bounded-source data, SDK propagation and durable cluster/process acceptance tests. Preserving uncertain prepared state is necessary but is not complete orphan cleanup or an exactly-once acceptance claim.

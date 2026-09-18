@@ -19,27 +19,28 @@ var errChainDone = errors.New("operator chain done")
 // chainContext consolidates parameters passed between the operator chain
 // functions, avoiding long parameter lists.
 type chainContext struct {
-	checkpoint          *chainCheckpointState
-	draining            bool
-	preparedCheckpoint  uint64
-	transactionPrepared bool
-	lastCommitted       uint64
-	lastAborted         checkpointIdentity
-	deferredEOF         []ControlMsg
-	deferredEvents      []Event
-	ctx                 context.Context
-	links               []ChainLink
-	inputCh             <-chan Event
-	controlCh           <-chan ControlMsg
-	outputCh            chan<- OutputMsg
-	dlqCh               chan<- DLQEvent // nil if no DLQ configured.
-	aligner             *BarrierAligner
-	numInputs           int
-	cpMetrics           CheckpointMetrics
-	errMetrics          ErrorMetrics
-	log                 zerolog.Logger
-	txnSink             TransactionalSink
-	ackFn               func(checkpointID uint64)
+	checkpoint                 *chainCheckpointState
+	draining                   bool
+	preparedCheckpoint         uint64
+	transactionPrepared        bool
+	transactionDecisionPending bool
+	lastCommitted              uint64
+	lastAborted                checkpointIdentity
+	deferredEOF                []ControlMsg
+	deferredEvents             []Event
+	ctx                        context.Context
+	links                      []ChainLink
+	inputCh                    <-chan Event
+	controlCh                  <-chan ControlMsg
+	outputCh                   chan<- OutputMsg
+	dlqCh                      chan<- DLQEvent // nil if no DLQ configured.
+	aligner                    *BarrierAligner
+	numInputs                  int
+	cpMetrics                  CheckpointMetrics
+	errMetrics                 ErrorMetrics
+	log                        zerolog.Logger
+	txnSink                    TransactionalSink
+	ackFn                      func(checkpointID uint64)
 }
 
 // runOperatorChain is the main processing goroutine. It reads events from
@@ -76,7 +77,7 @@ func runOperatorChain(
 		return err
 	}
 	defer closeOperators()
-	return runOpenedOperatorChain(ctx, operators, inputCh, controlCh, outputCh, aligner, numInputs, metrics, log, txnSink, ackFn, errorConfigs, dlqCh, errMetrics)
+	return runOpenedOperatorChain(ctx, operators, inputCh, controlCh, outputCh, aligner, numInputs, metrics, log, txnSink, ackFn, errorConfigs, dlqCh, errMetrics, 0)
 }
 
 // runOpenedOperatorChain processes an already-opened chain. Its caller owns
@@ -96,6 +97,7 @@ func runOpenedOperatorChain(
 	errorConfigs []ErrorHandlerConfig,
 	dlqCh chan<- DLQEvent,
 	errMetrics ErrorMetrics,
+	restoredCommitted uint64,
 	checkpoint ...*chainCheckpointState,
 ) (retErr error) {
 	defer func() {
@@ -105,14 +107,19 @@ func runOpenedOperatorChain(
 		}
 	}()
 
+	var cc *chainContext
 	// If the last operator is a TransactionalSink, begin the initial transaction.
 	if txnSink != nil {
 		if err := txnSink.BeginTransaction(ctx); err != nil {
 			return fmt.Errorf("%w: %v", ErrBeginTransactionFailed, err)
 		}
-		// Every successful decision starts another transaction. Roll back
-		// the remaining transaction before Close, even after cancellation.
+		// Only an unreported transaction is safe to abort locally. Once an ACK
+		// may have reached the coordinator (or commit was attempted), recovery
+		// must resolve the durable decision; cancellation is not an abort vote.
 		defer func() {
+			if cc != nil && cc.transactionDecisionPending {
+				return
+			}
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
 			if err := safeInvoke(func() error { return txnSink.Abort(cleanupCtx) }); err != nil {
@@ -129,20 +136,21 @@ func runOpenedOperatorChain(
 		errMetrics = NoopErrorMetrics()
 	}
 
-	cc := &chainContext{
-		ctx:        ctx,
-		links:      links,
-		inputCh:    inputCh,
-		controlCh:  controlCh,
-		outputCh:   outputCh,
-		dlqCh:      dlqCh,
-		aligner:    aligner,
-		numInputs:  numInputs,
-		cpMetrics:  metrics,
-		errMetrics: errMetrics,
-		log:        log,
-		txnSink:    txnSink,
-		ackFn:      ackFn,
+	cc = &chainContext{
+		lastCommitted: restoredCommitted,
+		ctx:           ctx,
+		links:         links,
+		inputCh:       inputCh,
+		controlCh:     controlCh,
+		outputCh:      outputCh,
+		dlqCh:         dlqCh,
+		aligner:       aligner,
+		numInputs:     numInputs,
+		cpMetrics:     metrics,
+		errMetrics:    errMetrics,
+		log:           log,
+		txnSink:       txnSink,
+		ackFn:         ackFn,
 	}
 
 	if len(checkpoint) > 0 {
@@ -473,6 +481,7 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 
 		if cc.txnSink != nil {
 			if cc.ackFn != nil && cc.checkpoint == nil {
+				cc.transactionDecisionPending = true
 				cc.ackFn(ctrl.CheckpointID)
 			}
 		} else {
@@ -488,6 +497,9 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		}
 
 		if cc.checkpoint != nil {
+			// Upload/report is asynchronous. Preserve prepared state even if
+			// cancellation races a successful report and its commit decision.
+			cc.transactionDecisionPending = cc.transactionPrepared
 			if err := cc.checkpoint.submit(cc.ctx, ctrl.CheckpointID, ctrl.EpochID, snapshots, stateHandleIndexes, cc.transactionPrepared, cc.lastCommitted, ctrl.sourceBoundary); err != nil {
 				return err
 			}
@@ -516,11 +528,13 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			return fmt.Errorf("commit checkpoint %d does not match prepared transaction", ctrl.CheckpointID)
 		}
 		cc.log.Debug().Uint64("checkpoint", ctrl.CheckpointID).Msg("committing transaction")
-		if err := cc.txnSink.Commit(cc.ctx, ctrl.CheckpointID); err != nil {
-			return fmt.Errorf("%w: %v", ErrCommitFailed, err)
+		cc.transactionDecisionPending = true
+		if err := commitTransaction(cc.ctx, cc.txnSink, ctrl.CheckpointID); err != nil {
+			return err
 		}
 		cc.lastCommitted = ctrl.CheckpointID
 		cc.transactionPrepared = false
+		cc.transactionDecisionPending = false
 		if err := cc.txnSink.BeginTransaction(cc.ctx); err != nil {
 			return fmt.Errorf("%w: %v", ErrBeginTransactionFailed, err)
 		}
@@ -543,6 +557,7 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			return fmt.Errorf("%w: %v", ErrAbortFailed, err)
 		}
 		cc.transactionPrepared = false
+		cc.transactionDecisionPending = false
 		cc.lastAborted = checkpointIdentity{ctrl.CheckpointID, ctrl.EpochID}
 		if err := cc.txnSink.BeginTransaction(cc.ctx); err != nil {
 			return fmt.Errorf("%w: %v", ErrBeginTransactionFailed, err)

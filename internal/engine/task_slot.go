@@ -101,6 +101,9 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		if err := ts.restoreCheckpoint(); err != nil {
 			return err
 		}
+		if err := ts.restoreSinkTransaction(ctx); err != nil {
+			return err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -441,7 +444,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		if dlqCh != nil {
 			defer close(dlqCh)
 		}
-		err := runOpenedOperatorChain(chainCtx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics, checkpoint)
+		err := runOpenedOperatorChain(chainCtx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics, ts.RestoredCheckpointID, checkpoint)
 		if err != nil {
 			chainErr.Store(&err)
 		} else {

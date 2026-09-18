@@ -61,7 +61,14 @@ type SinkOperator interface {
 //   - BeginTransaction: open a new transaction (called at startup and after each Commit/Abort)
 //   - PreCommit: flush buffered data and prepare the transaction for commit
 //   - Commit: finalize the transaction after global checkpoint completion
-//   - Abort: rollback the in-flight transaction on failure
+//   - Abort: rollback an active transaction or one with an explicit abort decision
+//
+// PreCommit must durably prepare external writes. Checkpoint is called afterward
+// and must capture enough identity to repeat Commit after RestoreCheckpoint.
+// Commit must be idempotent, including when an earlier call succeeded externally
+// but its response was lost. Close must release local resources without aborting
+// a prepared transaction whose global decision is unknown. The runtime preserves
+// such transactions for decision-driven recovery rather than guessing on exit.
 type TransactionalSink interface {
 	SinkOperator
 	BeginTransaction(ctx context.Context) error

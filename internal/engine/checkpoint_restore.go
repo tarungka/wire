@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 )
@@ -52,4 +53,26 @@ func (ts *TaskSlot) restoreCheckpoint() error {
 	}
 	ts.RestoredCheckpointID = snapshot.CheckpointID
 	return nil
+}
+
+// restoreSinkTransaction resolves the completed checkpoint's commit decision
+// before RUNNING, BeginTransaction or source/input processing. Restoration is
+// authorized only for a globally completed checkpoint, as selected by the
+// coordinator; a replica receipt alone is not a commit decision.
+func (ts *TaskSlot) restoreSinkTransaction(ctx context.Context) error {
+	snapshot := ts.RestoreCheckpoint
+	if snapshot == nil || !snapshot.SinkPrepared {
+		return nil
+	}
+	if len(ts.Operators) == 0 {
+		return fmt.Errorf("prepared sink checkpoint has no sink operator")
+	}
+	sink, ok := ts.Operators[len(ts.Operators)-1].(TransactionalSink)
+	if !ok {
+		return fmt.Errorf("prepared sink checkpoint requires a transactional sink")
+	}
+	if snapshot.SinkCommittedCheckpoint >= snapshot.CheckpointID {
+		return fmt.Errorf("prepared checkpoint has inconsistent committed boundary")
+	}
+	return commitTransaction(ctx, sink, snapshot.CheckpointID)
 }
