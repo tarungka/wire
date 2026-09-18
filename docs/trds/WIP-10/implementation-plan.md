@@ -39,3 +39,10 @@ External transaction semantics cannot be invented by the runtime: the connector 
 - Prepared transactions record the barrier's epoch. Commit, abort and duplicate barrier controls from another epoch are ignored before touching the transaction or checkpoint upload state.
 - Added coordinator and worker regressions for missing/old/current attempts, and engine regressions for stale and future decision epochs. Existing fixtures now specify the epoch they actually prepared.
 - This changes checkpoint protocol compatibility: a new worker will reject an old coordinator's unfenced commands for a named attempt. Deployment/upgrade guidance must cover this explicitly; do not silently weaken the check to permit missing identity.
+
+## Progress: SDK contract and runtime capability boundary
+
+- Added sdk.TransactionalSink with transaction hooks and prepared-handle checkpoint/restore methods. It fits registered worker sink factories structurally; the adapter preserves its concrete capabilities and ordinary sinks remain non-transactional.
+- The embedded executor passes no checkpoint coordinator or transaction ACK path. It now rejects transactional sinks before Open rather than silently executing them as ordinary sinks. This is a documented runtime support boundary, not a claim that embedded checkpoint coordination has been implemented.
+- Added SDK adapter, worker-factory compatibility and fail-fast tests. The full SDK/connectors race suite and SDK lint pass.
+- Added runtime-contract.md and corrected the WIP's stale claim that cluster checkpoint wiring is absent. Remaining distributed recovery and acceptance work is still explicit; no completion status or PR publication yet.

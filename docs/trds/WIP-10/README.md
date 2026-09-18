@@ -10,7 +10,7 @@
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-09-12`
+> **Last Updated:** `2026-09-19`
 
 ### Revision History
 
@@ -21,13 +21,13 @@
 
 ---
 
-## Implementation Status — 2026-09-12
+## Implementation Status — 2026-09-19
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Completion work is on `codex/wip-10-complete`, based on master `1ebb36e`. Status remains Partially Implemented.
 
-- **Implemented:** Engine transactional-sink interfaces, transaction state, and checkpoint-linked commit handling are implemented and tested. Prepared transactions now pause normal input, defer EOF and post-barrier side-buffer records, validate matching commit decisions, ignore duplicate commits, and abort remaining transactions before close with a separate cleanup context.
-- **Remaining:** The cluster worker executor passes no transactional sink or checkpoint ACK callback. Durable transaction-decision recovery, checkpoint epoch fencing, and cluster integration remain incomplete; these local ordering fixes do not establish external exactly-once delivery.
-- **Evidence:** [operator.go](../../../internal/engine/operator.go), [checkpoint_coordinator.go](../../../internal/engine/checkpoint_coordinator.go), [task_executor.go](../../../internal/worker/task_executor.go).
+- **Implemented:** Cluster checkpoint replication, ACK and commit/abort delivery already existed. The follow-up prepares sinks before snapshot capture, retries commit decisions, restores completed prepared transactions before processing, preserves uncertain decisions on cleanup, and fences commands/reports by deployment attempt and epoch. The public SDK now defines the transactional and recoverable-state contract without erasing it in adapters.
+- **Remaining:** Durable orphan reconciliation, abort-and-replay behavior, final records from bounded sources, and full cluster/process failure acceptance. The embedded SDK has no durable global checkpoint service and rejects transactional sinks explicitly.
+- **Evidence and contract:** [Implementation plan](implementation-plan.md), [runtime contract](runtime-contract.md), and focused engine/coordinator/worker/RPC/SDK regressions. These incremental fixes do not yet constitute external exactly-once acceptance.
 
 ---
 
