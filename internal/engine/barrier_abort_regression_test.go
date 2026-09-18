@@ -37,24 +37,22 @@ func TestAbortRejectsDelayedBarriersAndAllowsNextCheckpoint(t *testing.T) {
 	}
 }
 
-func TestRepeatedAbortDoesNotAbortReplacementTransaction(t *testing.T) {
+func TestAbortDecisionIsTerminalWithoutReopeningTransaction(t *testing.T) {
 	sink := &mockTransactionalSink{}
-	cc := &chainContext{ctx: context.Background(), txnSink: sink, aligner: NewBarrierAligner(1, 4), cpMetrics: NoopCheckpointMetrics(), log: testLogger(), transactionPrepared: true, preparedCheckpoint: 7}
+	cc := &chainContext{ctx: context.Background(), txnSink: sink, aligner: NewBarrierAligner(1, 4), cpMetrics: NoopCheckpointMetrics(), log: testLogger(), transactionPrepared: true, preparedCheckpoint: 7, preparedEpoch: 5}
 	eof := 0
 	for range 3 {
-		if err := handleControl(cc, ControlMsg{Type: CtrlAbortTransaction, CheckpointID: 7, EpochID: 5}, &eof); err != nil {
-			t.Fatal(err)
+		if err := handleControl(cc, ControlMsg{Type: CtrlAbortTransaction, CheckpointID: 7, EpochID: 5}, &eof); err != ErrTransactionAborted {
+			t.Fatalf("abort must require replay: %v", err)
 		}
 	}
-	if sink.abortCalls != 1 || sink.beginTxnCalls != 1 {
-		t.Fatalf("repeated abort damaged replacement transaction: aborts=%d begins=%d", sink.abortCalls, sink.beginTxnCalls)
+	if sink.abortCalls != 1 || sink.beginTxnCalls != 0 || !cc.transactionAborted {
+		t.Fatalf("abort reopened or repeated transaction: aborts=%d begins=%d", sink.abortCalls, sink.beginTxnCalls)
 	}
-	cc.transactionPrepared = true
-	cc.preparedCheckpoint = 8
-	if err := handleControl(cc, ControlMsg{Type: CtrlAbortTransaction, CheckpointID: 7, EpochID: 5}, &eof); err != nil {
-		t.Fatal(err)
+	if err := handleControl(cc, ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 7, EpochID: 5}, &eof); err != ErrTransactionAborted {
+		t.Fatalf("terminal abort accepted another decision: %v", err)
 	}
-	if !cc.transactionPrepared || sink.abortCalls != 1 {
-		t.Fatal("old abort affected newer prepared transaction")
+	if len(sink.CommitCallIDs()) != 0 {
+		t.Fatal("aborted transaction committed")
 	}
 }

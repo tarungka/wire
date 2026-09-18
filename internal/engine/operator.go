@@ -58,14 +58,47 @@ type SinkOperator interface {
 
 // TransactionalSink extends SinkOperator with two-phase commit (2PC) support.
 // Sinks that implement this interface participate in the checkpoint protocol:
-//   - BeginTransaction: open a new transaction (called at startup and after each Commit/Abort)
+//   - BeginTransaction: open a new transaction (called at startup and after each Commit)
 //   - PreCommit: flush buffered data and prepare the transaction for commit
 //   - Commit: finalize the transaction after global checkpoint completion
-//   - Abort: rollback the in-flight transaction on failure
+//   - Abort: rollback an active transaction or one with an explicit abort decision
+//
+// PreCommit must durably prepare external writes. Checkpoint is called afterward
+// and must capture enough identity to repeat Commit after RestoreCheckpoint.
+// Commit must be idempotent, including when an earlier call succeeded externally
+// but its response was lost. Close must release local resources without aborting
+// a prepared transaction whose global decision is unknown. The runtime preserves
+// such transactions for decision-driven recovery rather than guessing on exit.
 type TransactionalSink interface {
 	SinkOperator
 	BeginTransaction(ctx context.Context) error
 	PreCommit(ctx context.Context, checkpointID uint64) error
 	Commit(ctx context.Context, checkpointID uint64) error
 	Abort(ctx context.Context) error
+}
+
+// TransactionRecovery identifies the new writer and its selected global decision.
+// The connector must fence the previous writer for this job/task before cleanup.
+// Only CompletedCheckpointID is eligible for commit. Other uncommitted external
+// transactions must be aborted, including older aborted checkpoint IDs; a numeric
+// less-than comparison is not sufficient evidence of a commit decision.
+type TransactionRecovery struct {
+	// DeploymentGeneration must be compared atomically in the external store.
+	DeploymentGeneration  uint64
+	JobID                 string
+	TaskID                string
+	EpochID               uint64
+	AttemptID             string
+	CompletedCheckpointID uint64 // Zero means no globally completed snapshot.
+}
+
+// RecoverableTransactionalSink is required for distributed task startup.
+// RecoverTransactions runs after checkpoint handle restoration, before Commit,
+// BeginTransaction, RUNNING or input processing. It must atomically fence stale
+// writers in the external system and resolve orphaned active/prepared work,
+// preserving the selected completed transaction for idempotent Commit. Repeated
+// recovery calls must be safe, including after failure midway through cleanup.
+type RecoverableTransactionalSink interface {
+	TransactionalSink
+	RecoverTransactions(context.Context, TransactionRecovery) error
 }

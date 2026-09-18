@@ -96,3 +96,12 @@ var (
 	_ engine.SourceOperator  = (*sourceAdapter)(nil)
 	_ engine.SinkOperator    = (*sinkAdapter)(nil)
 )
+
+// adaptSink preserves the transaction and restoration methods instead of
+// wrapping them in the ordinary sink's stateless checkpoint implementation.
+func adaptSink(sink Sink) engine.SinkOperator {
+	if transactional, ok := sink.(TransactionalSink); ok {
+		return transactional
+	}
+	return &sinkAdapter{sink: sink}
+}

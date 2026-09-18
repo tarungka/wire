@@ -19,9 +19,14 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
-	InputIdleTimeouts []time.Duration
-	RestoreCheckpoint *TaskCheckpoint
-	RescaleState      []OperatorRescaleState
+	// SourceExhausted parks a bounded source until its final global checkpoint.
+	SourceExhausted func(context.Context) error
+	// TransactionRecovery supplies distributed writer identity; completed boundary
+	// is derived from RestoreCheckpoint rather than trusted from this field.
+	TransactionRecovery *TransactionRecovery
+	InputIdleTimeouts   []time.Duration
+	RestoreCheckpoint   *TaskCheckpoint
+	RescaleState        []OperatorRescaleState
 	// CheckpointReport delivers checkpoint ID, epoch, and upload error to an
 	// external coordinator. It must honor cancellation. Nil means report acceptance,
 	// not global commit; commit and abort arrive through CheckpointDecisions.
@@ -101,6 +106,12 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		if err := ts.restoreCheckpoint(); err != nil {
 			return err
 		}
+	}
+	if err := ts.recoverSinkTransactions(ctx); err != nil {
+		return err
+	}
+	if err := ts.restoreSinkTransaction(ctx); err != nil {
+		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -272,7 +283,9 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	if ts.Source != nil {
 		strategy := ts.resolveStrategy()
 		watermarkQueue := &sourceWatermarkQueue{}
-		sourceCheckpoints := &sourceCheckpointInput{watermarks: watermarkQueue, requests: ts.CheckpointTriggers, source: ts.Source, aligner: aligner, control: controlCh}
+		watermarkCtx, stopWatermarks := context.WithCancel(intakeCtx)
+		defer stopWatermarks()
+		sourceCheckpoints := &sourceCheckpointInput{onExhausted: ts.SourceExhausted, stopWatermarks: stopWatermarks, watermarks: watermarkQueue, requests: ts.CheckpointTriggers, source: ts.Source, aligner: aligner, control: controlCh}
 
 		inputWg.Add(1)
 		g.Go(func() error {
@@ -290,7 +303,11 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 			defer taskGoroutineStarted(runCtx)()
 			defer producerWg.Done()
 			return normalizeIntake(invokeOperator(func() error {
-				return watermarkQueue.run(intakeCtx, strategy, eventCh, emitInterval)
+				err := watermarkQueue.run(watermarkCtx, strategy, eventCh, emitInterval)
+				if errors.Is(err, context.Canceled) && watermarkCtx.Err() != nil {
+					return nil
+				}
+				return err
 			}))
 		})
 	} else if numInputs > 0 {
@@ -441,7 +458,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		if dlqCh != nil {
 			defer close(dlqCh)
 		}
-		err := runOpenedOperatorChain(chainCtx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics, checkpoint)
+		err := runOpenedOperatorChain(chainCtx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics, ts.RestoredCheckpointID, checkpoint)
 		if err != nil {
 			chainErr.Store(&err)
 		} else {
@@ -551,6 +568,12 @@ func runSourceReaderWithContexts(intakeCtx, ctx context.Context, source SourceOp
 		}
 
 		if batch == nil {
+			// Keep the source available for a final global checkpoint before EOP.
+			if len(checkpoints) > 0 {
+				if err := checkpoints[0].finish(intakeCtx, ctx); err != nil {
+					return err
+				}
+			}
 			// End of source input.
 			ctrl := ControlMsg{
 				Type:       CtrlEndOfPartition,
