@@ -1,6 +1,6 @@
 # WIP-09 implementation and acceptance plan
 
-Work in progress, based on master `1ebb36e` (WIP-08). This is a requirements checklist, not a completion claim.
+Implemented across #222 and stacked #223, based on master `1ebb36e` (WIP-08). Full local race/integration suites, build, vet and lint pass after legacy retirement. The progress sections below are a chronological record: their pending items describe those earlier stages, not current blockers. See acceptance.md for current evidence and GitHub for exact-head CI.
 
 ## Scope and implementation order
 
