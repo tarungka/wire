@@ -147,3 +147,19 @@ func TestFailedRecoveryCommitCannotReportRunning(t *testing.T) {
 		t.Fatalf("failed recovery admitted new work or aborted: err=%v running=%v", err, running)
 	}
 }
+
+func TestPreparedTransactionRejectsOtherEpochDecisions(t *testing.T) {
+	for _, kind := range []ControlType{CtrlCommitCheckpoint, CtrlAbortTransaction, CtrlAbortCheckpoint, CtrlBarrierReceived} {
+		for _, epoch := range []uint64{4, 6} {
+			sink := &mockTransactionalSink{}
+			cc := &chainContext{ctx: t.Context(), txnSink: sink, transactionPrepared: true, preparedCheckpoint: 7, preparedEpoch: 5}
+			eof := 0
+			if err := handleControl(cc, ControlMsg{Type: kind, CheckpointID: 7, EpochID: epoch}, &eof); err != nil {
+				t.Fatal(err)
+			}
+			if !cc.transactionPrepared || sink.AbortCallCount() != 0 || len(sink.CommitCallIDs()) != 0 || sink.BeginTxnCalls() != 0 {
+				t.Fatalf("kind=%v epoch=%d changed prepared transaction", kind, epoch)
+			}
+		}
+	}
+}

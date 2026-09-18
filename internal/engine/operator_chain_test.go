@@ -1717,7 +1717,7 @@ func TestTransactionSideBufferWaitsForDecision(t *testing.T) {
 	if written != 0 || len(cc.deferredEvents) != 1 {
 		t.Fatal("post-barrier event entered prepared transaction")
 	}
-	if err := handleControl(cc, ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 7}, &eof); err != nil {
+	if err := handleControl(cc, ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 7, EpochID: 1}, &eof); err != nil {
 		t.Fatal(err)
 	}
 	sink.mu.Lock()

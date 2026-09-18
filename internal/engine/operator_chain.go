@@ -22,6 +22,7 @@ type chainContext struct {
 	checkpoint                 *chainCheckpointState
 	draining                   bool
 	preparedCheckpoint         uint64
+	preparedEpoch              uint64
 	transactionPrepared        bool
 	transactionDecisionPending bool
 	lastCommitted              uint64
@@ -396,6 +397,12 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 	if ctrl.sourceBoundary != nil {
 		defer close(ctrl.sourceBoundary.done)
 	}
+	if cc.transactionPrepared && ctrl.EpochID != cc.preparedEpoch {
+		switch ctrl.Type {
+		case CtrlBarrierReceived, CtrlCommitCheckpoint, CtrlAbortCheckpoint, CtrlAbortTransaction:
+			return nil // A decision for another term cannot change this prepared transaction.
+		}
+	}
 	if cc.checkpoint != nil && ctrl.Type == CtrlAbortCheckpoint {
 		cc.checkpoint.abort(ctrl.CheckpointID, ctrl.EpochID)
 	}
@@ -457,6 +464,7 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 				return fmt.Errorf("%w: %v", ErrPreCommitFailed, err)
 			}
 			cc.preparedCheckpoint = ctrl.CheckpointID
+			cc.preparedEpoch = ctrl.EpochID
 			cc.transactionPrepared = true
 		}
 

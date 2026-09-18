@@ -101,7 +101,7 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 			return nil, err
 		}
 	}
-	checkpoint := &CheckpointMeta{ManifestVersion: 1, TaskDescriptors: assignment.TaskDescriptors, NumKeyGroups: count, SavepointID: savepointID, ID: highest + 1, EpochID: c.epoch, JobID: jobID, Status: CheckpointInProgress, Timestamp: time.Now().UTC(), Tasks: assignment.Assignments, Replicas: assignment.Replicas}
+	checkpoint := &CheckpointMeta{AttemptID: assignment.AttemptID, ManifestVersion: 1, TaskDescriptors: assignment.TaskDescriptors, NumKeyGroups: count, SavepointID: savepointID, ID: highest + 1, EpochID: c.epoch, JobID: jobID, Status: CheckpointInProgress, Timestamp: time.Now().UTC(), Tasks: assignment.Assignments, Replicas: assignment.Replicas}
 	encoded, err := protocol.EncodeMsgPack(checkpoint)
 	if err != nil {
 		c.mu.Unlock()
@@ -111,7 +111,7 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 	if savepointID != "" {
 		kind = rpc.CheckpointTypeSavepoint
 	}
-	trigger, err := protocol.EncodeMsgPack(rpc.TriggerCheckpointRequest{JobID: jobID, CheckpointID: checkpoint.ID, EpochID: checkpoint.EpochID, Type: kind, Timestamp: checkpoint.Timestamp.UnixMilli()})
+	trigger, err := protocol.EncodeMsgPack(rpc.TriggerCheckpointRequest{AttemptID: checkpoint.AttemptID, JobID: jobID, CheckpointID: checkpoint.ID, EpochID: checkpoint.EpochID, Type: kind, Timestamp: checkpoint.Timestamp.UnixMilli()})
 	if err != nil {
 		c.mu.Unlock()
 		return nil, err
@@ -230,7 +230,7 @@ func (c *Coordinator) abortCheckpoint(jobID string, id, epoch uint64, failure st
 		c.mu.Unlock()
 		return err
 	}
-	command, err := protocol.EncodeMsgPack(rpc.TriggerCheckpointRequest{JobID: jobID, CheckpointID: id, EpochID: epoch})
+	command, err := protocol.EncodeMsgPack(rpc.TriggerCheckpointRequest{AttemptID: checkpoint.AttemptID, JobID: jobID, CheckpointID: id, EpochID: epoch})
 	if err != nil {
 		c.mu.Unlock()
 		return err
@@ -304,7 +304,7 @@ func (c *Coordinator) abortCheckpoint(jobID string, id, epoch uint64, failure st
 // report only after the replica receipt; the coordinator fences assignment and
 // epoch and atomically commits metadata once every captured task has reported.
 func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointRequest) error {
-	decision, err := protocol.EncodeMsgPack(rpc.TriggerCheckpointRequest{JobID: request.JobID, CheckpointID: request.CheckpointID, EpochID: request.EpochID})
+	decision, err := protocol.EncodeMsgPack(rpc.TriggerCheckpointRequest{AttemptID: request.AttemptID, JobID: request.JobID, CheckpointID: request.CheckpointID, EpochID: request.EpochID})
 	if err != nil {
 		return err
 	}
@@ -334,7 +334,7 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 		return ErrStaleEpoch
 	}
 	worker, ok := checkpoint.Tasks[request.TaskID]
-	if !ok || worker == "" || worker != request.WorkerID {
+	if !ok || worker == "" || worker != request.WorkerID || request.AttemptID != checkpoint.AttemptID {
 		return errors.New("checkpoint acknowledgement does not match task assignment")
 	}
 	if request.State == nil || request.State.TaskID != request.TaskID || request.State.Path == "" {
@@ -472,7 +472,7 @@ func (c *Coordinator) ReportCheckpointFailure(request rpc.AcknowledgeCheckpointR
 		return err
 	}
 	worker, ok := checkpoint.Tasks[request.TaskID]
-	if !ok || worker == "" || worker != request.WorkerID {
+	if !ok || worker == "" || worker != request.WorkerID || request.AttemptID != checkpoint.AttemptID {
 		return errors.New("checkpoint failure does not match task assignment")
 	}
 	return c.abortCheckpoint(request.JobID, request.CheckpointID, request.EpochID, request.Failure, false)

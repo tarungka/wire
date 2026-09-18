@@ -39,7 +39,7 @@ func TestAbortRejectsDelayedBarriersAndAllowsNextCheckpoint(t *testing.T) {
 
 func TestRepeatedAbortDoesNotAbortReplacementTransaction(t *testing.T) {
 	sink := &mockTransactionalSink{}
-	cc := &chainContext{ctx: context.Background(), txnSink: sink, aligner: NewBarrierAligner(1, 4), cpMetrics: NoopCheckpointMetrics(), log: testLogger(), transactionPrepared: true, preparedCheckpoint: 7}
+	cc := &chainContext{ctx: context.Background(), txnSink: sink, aligner: NewBarrierAligner(1, 4), cpMetrics: NoopCheckpointMetrics(), log: testLogger(), transactionPrepared: true, preparedCheckpoint: 7, preparedEpoch: 5}
 	eof := 0
 	for range 3 {
 		if err := handleControl(cc, ControlMsg{Type: CtrlAbortTransaction, CheckpointID: 7, EpochID: 5}, &eof); err != nil {

@@ -32,3 +32,10 @@ External transaction semantics cannot be invented by the runtime: the connector 
 - Restoration of a globally completed SinkPrepared snapshot restores the operator handle and re-drives idempotent Commit before RUNNING or processing. The chain inherits the restored committed boundary. Prepared snapshots reject non-transactional replacement operators and inconsistent committed checkpoint metadata.
 - Full engine race suite passes after runtime changes. Additional focused regressions prove failed recovery cannot report RUNNING, begin another transaction or abort prepared state; engine lint passes.
 - Still open: coordinator/connector reconciliation of orphan transactions not represented by the selected snapshot, checkpoint/epoch/attempt decision fencing, abort-and-replay policy, terminal bounded-source data, SDK propagation and durable cluster/process acceptance tests. Preserving uncertain prepared state is necessary but is not complete orphan cleanup or an exactly-once acceptance claim.
+
+## Progress: checkpoint decision ownership
+
+- Checkpoint metadata captures the deployment AttemptID. Trigger/commit/abort payloads carry it, worker reports echo it, and both coordinator ACK/failure handling and worker command delivery reject another attempt. Missing identity cannot authorize a command for a named current attempt.
+- Prepared transactions record the barrier's epoch. Commit, abort and duplicate barrier controls from another epoch are ignored before touching the transaction or checkpoint upload state.
+- Added coordinator and worker regressions for missing/old/current attempts, and engine regressions for stale and future decision epochs. Existing fixtures now specify the epoch they actually prepared.
+- This changes checkpoint protocol compatibility: a new worker will reject an old coordinator's unfenced commands for a named attempt. Deployment/upgrade guidance must cover this explicitly; do not silently weaken the check to permit missing identity.

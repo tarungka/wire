@@ -63,7 +63,7 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 	replicator := &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: &reconnectingCheckpointClient{address: desc.CheckpointReplicaAddress}}
 	runtime.replicator = replicator
 	runtime.report = func(ctx context.Context, id, epoch uint64, uploadErr error) error {
-		request := &rpc.AcknowledgeCheckpointRequest{WorkerID: w.cfg.WorkerID, JobID: jobID, TaskID: taskID, CheckpointID: id, EpochID: epoch}
+		request := &rpc.AcknowledgeCheckpointRequest{AttemptID: desc.AttemptID, WorkerID: w.cfg.WorkerID, JobID: jobID, TaskID: taskID, CheckpointID: id, EpochID: epoch}
 		if uploadErr != nil {
 			request.Failure = uploadErr.Error()
 		} else {
@@ -100,7 +100,7 @@ func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) (accepted bo
 	}
 	w.mu.RLock()
 	handle := w.tasks[command.TaskID]
-	if handle == nil || handle.jobID != command.JobID || request.JobID != command.JobID || request.CheckpointID == 0 || request.EpochID != handle.epoch || request.EpochID != w.epoch || handle.checkpoint == nil {
+	if handle == nil || request.AttemptID != handle.attemptID || handle.jobID != command.JobID || request.JobID != command.JobID || request.CheckpointID == 0 || request.EpochID != handle.epoch || request.EpochID != w.epoch || handle.checkpoint == nil {
 		w.mu.RUnlock()
 		return
 	}
