@@ -1,6 +1,6 @@
 # WIP-09 acceptance audit
 
-Audit in progress. This records evidence by requirement; it is not yet a completion declaration. Base: master `1ebb36e`. Current implementation history and outstanding items are recorded in [implementation-plan.md](implementation-plan.md).
+Implementation acceptance record for [#222](https://github.com/tarungka/wire/pull/222) and stacked [#223](https://github.com/tarungka/wire/pull/223), based on master `1ebb36e`. The table records local evidence and deployment limits; exact-head CI results are available on the linked PRs. See [implementation-plan.md](implementation-plan.md) for the chronological work log.
 
 | Requirement | Implementation and direct evidence | Assessment |
 |---|---|---|
@@ -8,7 +8,7 @@ Audit in progress. This records evidence by requirement; it is not yet a complet
 | Durable metadata store; Get/Set/Delete/WriteBatch/PrefixScan/Snapshot/Close | Existing Pebble interface tests; `TestLeadershipStoreRevocationAndDurableTakeover`; `TestLeadershipStoreCloseJoinsAdmittedWrite`; 1,000-job snapshot reopen and byte comparison benchmark | Verified API operations; no claim of 100% source-line coverage |
 | Election before storage open; standby remains available | `HAService`, `TestHAServiceSharedMetadataTakeover`, `TestHACrashReopensDurableMetadataInStandbyProcess` (standby health is checked before killing leader) | Verified |
 | Epoch monotonicity, corruption/exhaustion, effective election token persisted | `TestFileLockElectionRejectsInvalidEpochWithoutOverwriting`, `TestRecoveryRejectsInvalidEpochWithoutOverwrite`, `TestRecoveryPersistsEffectiveElectionEpoch` | Verified |
-| No old-term storage reuse; loss during recovery | `TestLeadershipStoreRevocationAndDurableTakeover`, `TestLeadershipStoreRevokedDuringOpen`, `TestHALossDuringRecoveryNeverPublishesReady` | Verified on HAService path; legacy entry-point decision pending |
+| No old-term storage reuse; loss during recovery | `TestLeadershipStoreRevocationAndDurableTakeover`, `TestLeadershipStoreRevokedDuringOpen`, `TestHALossDuringRecoveryNeverPublishesReady` | Verified on HAService path; `TestLifecycle_ElectedRunRequiresHAService` checks the old entry point fails before campaigning or changing metadata |
 | Kubernetes Lease ownership and renewal | `TestKubernetesLeaseCompetingCandidatesAndDiscovery`, `TestKubernetesLeaseAPIFailureRevokesAndExpires`, `TestKubernetesLeaseHungRenewalRevokesAuthority`, `TestKubernetesLeaseDeniedCredentialsFailCampaign` | Verified through HTTPS Lease API fixture |
 | Standby HTTP/RPC discovery and ready leader confirmation | `TestFileLockStandbyDiscoversPublishedLeader`, `TestDiscoveryConfirmsLeaderAndSkipsStaleSeeds`, `TestDiscoveryRejectsUnreadyLeader`, `TestDiscoveryCancellationStopsBlockedSeed` | Verified |
 | Worker fencing survives restart, stale leader cannot admit commands | `TestWorkerEpochSurvivesRestartAndRejectsRegression`, `TestWorkerEpochCorruptionFailsClosed`, `TestRestartedWorkerAdvertisesPersistedEpochAndRejectsOlderLeader` plus existing worker epoch/reservation tests | Verified |
@@ -18,8 +18,8 @@ Audit in progress. This records evidence by requirement; it is not yet a complet
 | Restart <10s; failover <15s | Process takeover 184–194ms; checkpoint-restored running job 2.13–2.32s, Kubernetes API-backed version 2.25–2.28s | Verified locally; not a network-storage SLA |
 | 10,000-job recovery <5s | `BenchmarkHARecover10000Jobs`, 10,000 jobs with 1KiB config each and one completed checkpoint each: 61–77ms | Verified on Apple M4/Darwin arm64, three one-iteration measurements |
 | Snapshot/write benchmarks | `BenchmarkHASnapshot1000Jobs`: 31–36ms; verified 2,000 keys after reopen. `BenchmarkHADurableMetadataWrite`: 3.84–3.88ms per synced 1KiB write | Measured locally, not sustained-throughput claims |
-| Storage/election operational requirements, RBAC, discovery config, backup limitations | [Runtime contract](runtime-contract.md), [Kubernetes deployment](kubernetes.md), generated configuration reference | Written; final doc reconciliation pending |
-| Full validation and linked follow-up PR | Full race suite, integration-tagged suite, build, vet and lint passed after redirect epoch-header and election-grant fixes | Exact PR-head CI pending |
+| Storage/election operational requirements, RBAC, discovery config, backup limitations | [Runtime contract](runtime-contract.md), [Kubernetes deployment](kubernetes.md), generated configuration reference | Documented, including internal-caller migration |
+| Full validation and linked follow-up PR | Full race suite, integration-tagged suite, build, vet and lint passed after legacy retirement; #222 CI passed at ce4f454 | Local validation passed; final stacked CI is tracked on #223 |
 
 ## Scope and limits carried from the design
 

@@ -1,6 +1,6 @@
 # WIP-09 implementation and acceptance plan
 
-Work in progress, based on master `1ebb36e` (WIP-08). This is a requirements checklist, not a completion claim.
+Implemented across #222 and stacked #223, based on master `1ebb36e` (WIP-08). Full local race/integration suites, build, vet and lint pass after legacy retirement. The progress sections below are a chronological record: their pending items describe those earlier stages, not current blockers. See acceptance.md for current evidence and GitHub for exact-head CI.
 
 ## Scope and implementation order
 
@@ -67,3 +67,7 @@ Final code-audit item: the legacy `Coordinator.runMultiNode` path still accepts 
 - Retiring the unsafe legacy elected `Coordinator.Run` entry point was rejected by automatic approval review as a compatibility change. The explicit approval question remains pending; that retirement has not been applied.
 
 - Closed the numbered atomic-batch interruption gap with `TestPebbleBatchCrashIsAtomic`: a test filesystem persists a partial WAL write, signals the parent while Commit remains blocked, then the parent kills the process. Reopening preserves the previous three-key batch without any replacement values. Three race repetitions passed. This supplements the acknowledged-batch durability test.
+
+## Approved stacked compatibility change — 2026-09-18
+
+The user approved retiring the legacy elected entry point in a separate stacked PR. Coordinator.Run now returns ErrHARequiresStoreFactory for non-nil election before campaigning or writing metadata; HAService remains the sole elected lifecycle. The replacement regression checks the error, standby state, absence of an election winner and unchanged epoch storage. CLI and direct single-node behavior remain supported. CI triggers also cover PRs targeting codex branches so the stack receives normal checks.
