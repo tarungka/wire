@@ -448,9 +448,11 @@ func (c *Coordinator) allTasksInStatus(jobID string, status rpc.TaskStatus) bool
 		return false
 	}
 	for taskID := range assignments.Assignments {
-		if c.taskStatuses[taskID] != status {
-			return false
+		observed := c.taskStatuses[taskID]
+		if observed == status || (status == rpc.TaskStatusRunning && observed == rpc.TaskStatusFinishing) {
+			continue
 		}
+		return false
 	}
 	return true
 }

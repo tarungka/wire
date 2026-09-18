@@ -209,7 +209,7 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 			c.mu.Unlock()
 			return &rpc.UpdateTaskStatusResponse{Accepted: true, Message: "terminal task status retained"}, nil
 		}
-		if previous == rpc.TaskStatusRunning && req.Status == rpc.TaskStatusDeploying {
+		if (previous == rpc.TaskStatusRunning && req.Status == rpc.TaskStatusDeploying) || (previous == rpc.TaskStatusFinishing && (req.Status == rpc.TaskStatusRunning || req.Status == rpc.TaskStatusDeploying)) {
 			c.mu.Unlock()
 			return &rpc.UpdateTaskStatusResponse{Accepted: true, Message: "newer task status retained"}, nil
 		}
@@ -277,7 +277,10 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 
 	// Check for job-level transitions based on task status.
 	switch req.Status {
-	case rpc.TaskStatusRunning:
+	case rpc.TaskStatusRunning, rpc.TaskStatusFinishing:
+		if req.Status == rpc.TaskStatusFinishing {
+			defer c.kickScheduler()
+		}
 		c.mu.RLock()
 		allRunning := c.allTasksInStatus(req.JobID, rpc.TaskStatusRunning)
 		currentStatus := job.Status

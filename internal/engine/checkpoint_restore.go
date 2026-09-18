@@ -85,6 +85,9 @@ func (ts *TaskSlot) recoverSinkTransactions(ctx context.Context) error {
 	if _, ok := operator.(TransactionalSink); !ok {
 		return nil
 	}
+	if ts.CheckpointReplicator == nil {
+		return fmt.Errorf("distributed transactional sink requires checkpoint replication")
+	}
 	sink, ok := operator.(RecoverableTransactionalSink)
 	if !ok {
 		return fmt.Errorf("distributed transactional sink requires RecoverTransactions")

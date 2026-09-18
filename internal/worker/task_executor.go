@@ -162,6 +162,7 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		slot.CheckpointDecisions = checkpoint.decisions
 		if sourceOp != nil && checkpoint.replicator != nil {
 			slot.CheckpointTriggers = checkpoint.triggers
+			slot.SourceExhausted = checkpoint.sourceExhausted
 		}
 	}
 	return slot.Run(ctx)

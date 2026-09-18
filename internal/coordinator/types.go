@@ -153,6 +153,7 @@ type TaskAssignmentMap struct {
 
 // CheckpointMeta holds persisted metadata for a single checkpoint.
 type CheckpointMeta struct {
+	Final           bool                 `codec:"final,omitempty"`
 	AttemptID       string               `codec:"attempt_id,omitempty"`
 	InvalidReason   string               `codec:"invalid_reason,omitempty"`
 	ManifestVersion int                  `codec:"manifest_version,omitempty"`

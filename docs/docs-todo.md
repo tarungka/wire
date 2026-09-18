@@ -53,7 +53,7 @@ These topics are mentioned but lack enough detail to code from.
 
 11. **Coordinator HA** — ~~The coordinator is "lightweight and generally stateless (relying on an external metadata store or leader election for HA)" — but which metadata store? What leader election? Raft is in go.mod but not in the docs.~~ **Resolved (WIP-09).** WIP-09 defines a phased HA strategy: Phase A (PebbleDB persistence), Phase B (pluggable leader election), Phase C (fencing tokens), Phase D (embedded Raft, deferred).
 
-12. **Two-Phase Commit for Sinks** — execution-model.md says exactly-once requires "transactional or idempotent" sinks but never defines the 2PC protocol, pre-commit/commit hooks, or how it integrates with checkpointing.
+12. **Two-Phase Commit for Sinks** — **Resolved (WIP-10).** The [runtime contract](trds/WIP-10/runtime-contract.md) defines preparation, durable decisions, recovery fencing, orphan cleanup and final checkpoints; [acceptance](trds/WIP-10/acceptance.md) records distributed and process-kill tests.
 
 13. **Barrier Alignment Timeout** — What happens if a barrier never arrives on one input? The docs describe the happy path but not the failure case. Does the checkpoint timeout? Is the job killed?
 
@@ -103,7 +103,7 @@ This file is labeled Draft v0.1.0 but is functionally an outline, not documentat
 | **P1** | RPC interface spec | Can't implement coordinator-worker communication |
 | **P1** | Wire protocol / serialization | Can't implement inter-node data transport |
 | **P1** | ~~Coordinator HA~~ Addressed (WIP-09) | ~~Can't run Wire in production~~ Phased HA strategy documented |
-| **P1** | 2PC for transactional sinks | Can't deliver exactly-once to external systems |
+| **Resolved** | 2PC for transactional sinks | WIP-10 distributed protocol and acceptance complete; connector compliance remains required |
 | **P1** | Security (mTLS, auth) | Can't run Wire in production |
 | **P2** | Barrier alignment timeout | Edge case but affects correctness |
 | **P2** | Watermark generation algorithm | Affects correctness |

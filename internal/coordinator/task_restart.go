@@ -40,7 +40,6 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 		}
 	}
 	checkpoint := c.activeCheckpoints[job.ID]
-	latest := job.LatestCheckpoint
 	restarts, updated := job.RecoveryAttempts, job.UpdatedAt
 	rescale := job.RescaleRequested
 	c.mu.RUnlock()
@@ -55,7 +54,10 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 	if len(cancelTasks) > 0 {
 		return false
 	}
-	if latest == 0 || (!rescale && restarts >= c.config.RestartMaxAttempts) {
+	// Before the first completed checkpoint, recovery reopens sources at their
+	// configured initial position. No transactional output has a commit decision;
+	// replacement sinks fence and abort orphan transactions at boundary zero.
+	if !rescale && restarts >= c.config.RestartMaxAttempts {
 		if err := c.transitionJob(job, JobFailed); err != nil {
 			c.log.Warn().Err(err).Str("job_id", job.ID).Msg("cannot finalize failed job")
 		}

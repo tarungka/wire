@@ -3,6 +3,8 @@ package engine
 import "errors"
 
 var (
+	// ErrUncommittedTransactionAtEOF prevents successful completion with lost output.
+	ErrUncommittedTransactionAtEOF = errors.New("engine: source ended without a final committed transaction")
 	// ErrTaskFailed indicates the task slot failed during execution.
 	ErrTaskFailed = errors.New("engine: task failed")
 

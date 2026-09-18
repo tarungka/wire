@@ -6,7 +6,7 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
@@ -18,16 +18,18 @@
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
 | 0.2 | 2026-02-23 | Tarun Ashok | Removed connector-specific mappings; scoped to protocol only |
+| 1.0 | 2026-09-19 | Tarun Ashok | Distributed recovery, writer fencing, final checkpoints and crash acceptance |
 
 ---
 
 ## Implementation Status — 2026-09-19
 
-Completion work is on `codex/wip-10-complete`, based on master `1ebb36e`. Status remains Partially Implemented.
+Implemented by the distributed runtime follow-up to #199. See the [runtime contract](runtime-contract.md) for connector requirements and the [acceptance record](acceptance.md) for verified tests.
 
-- **Implemented:** Cluster checkpoint replication, ACK and commit/abort delivery already existed. The follow-up prepares sinks before snapshot capture, retries commit decisions, restores completed prepared transactions before processing, preserves uncertain decisions on cleanup, and fences commands/reports by deployment attempt and epoch. The public SDK now defines the transactional and recoverable-state contract without erasing it in adapters.
-- **Remaining:** Durable orphan reconciliation, abort-and-replay behavior, final records from bounded sources, and full cluster/process failure acceptance. The embedded SDK has no durable global checkpoint service and rejects transactional sinks explicitly.
-- **Evidence and contract:** [Implementation plan](implementation-plan.md), [runtime contract](runtime-contract.md), and focused engine/coordinator/worker/RPC/SDK regressions. These incremental fixes do not yet constitute external exactly-once acceptance.
+- PreCommit precedes recoverable snapshot capture and durable replication. Completed checkpoint decisions authorize idempotent Commit with bounded exponential retry.
+- Replacement tasks restore prepared handles, establish a persisted deployment-generation fence, resolve orphan transactions, and finish the selected commit before RUNNING. Abort requires replay, including bounded retries from the initial source position before the first checkpoint.
+- Bounded distributed sources coordinate a final global checkpoint before successful EOF. Missing transaction durability or an uncommitted final interval fails visibly.
+- `sdk.TransactionalSink` exposes recovery, checkpoint and transaction hooks. Embedded execution has no durable global checkpoint service and rejects transactional sinks before Open. Transactional rescale without a transaction-handle mapping is rejected; cross-system atomic visibility remains out of scope.
 
 ---
 
@@ -118,8 +120,8 @@ sequenceDiagram
     alt Phase 1 Failure (before global completion)
         Note over S: Worker crashes during PreCommit
         C->>C: Checkpoint N timeout, Job = FAILING
-        C->>S: Cancel tasks
-        S->>Ext: Abort() — rollback prepared tx
+        C->>S: Cancel and replace tasks
+        S->>Ext: RecoverTransactions — fence and abort orphan tx
         C->>C: Restart from Checkpoint N-1
         S->>Ext: BeginTransaction() — fresh tx
         Note over S: Events from Epoch N reprocessed
@@ -155,10 +157,10 @@ sequenceDiagram
 
 1. **Coordinator** triggers Checkpoint N by injecting barriers into all source streams.
 2. Barriers flow through the operator graph (with alignment per execution-model.md).
-3. Each **operator** snapshots its Pebble state when the barrier arrives.
+3. Each **operator chain** drains its pre-barrier records; a transactional sink prepares before the chain snapshots recoverable operator state.
 4. **Sink** receives the barrier:
    a. Calls `sink.PreCommit(ctx, N)` — flushes all buffered writes, prepares the transaction.
-   b. Sends `AcknowledgeCheckpoint(N, taskID, stateHandle)` to Coordinator.
+   b. Captures the prepared transaction identity, replicates the snapshot, then sends `AcknowledgeCheckpoint(N, taskID, stateHandle)` to Coordinator.
 5. **Coordinator** collects ACKs from ALL tasks.
 6. When all ACKs received: Checkpoint N is globally complete.
 7. Coordinator notifies all sink tasks: **Commit Checkpoint N**.
@@ -170,45 +172,35 @@ sequenceDiagram
 **Failure during Phase 1 (before global completion):**
 1. Job enters FAILING state.
 2. All tasks are canceled.
-3. Sink tasks call `sink.Abort(ctx)` — rolls back any prepared-but-not-committed transactions.
-4. Job restarts from last **committed** Checkpoint (N-1).
+3. Explicit abort decisions roll back the transaction and stop the task. A disconnected worker preserves any preparation whose commit decision is uncertain; replacement startup resolves it using durable coordinator metadata and `RecoverTransactions`.
+4. Job restarts from the selected globally completed checkpoint. Before the first checkpoint, a bounded retry reopens a replayable source at its configured initial position.
 5. Sink re-opens and calls `BeginTransaction(ctx)` — fresh transaction.
 6. Events from Epoch N are reprocessed. No duplicates because the Epoch N transaction was aborted.
 
 **Failure during Phase 2 (Commit):**
-1. If `Commit(N)` succeeds on some sinks but the ACK is lost, on restart the Coordinator re-sends the Commit notification.
+1. The completed checkpoint remains the durable decision even if Commit delivery or its external response is lost. Replacement workers restore its prepared handle and re-drive Commit before processing.
 2. Sink implementations **must handle idempotent Commit** — committing the same checkpointID twice must be a no-op.
 3. If `Commit(N)` fails (e.g., external system down), the sink retries with exponential backoff.
-4. If retries are exhausted, the job enters FAILING. On restart, the Coordinator will re-attempt the Commit.
+4. If five attempts fail, the task fails while preserving the decision. Recovery retries Commit; it must not fall back past potentially committed transactional output.
 
 ---
 
 ## 3. API Design
 
-### 3.1 TransactionalSink Interface (from WIP-16)
+### 3.1 Public TransactionalSink Interface (`sdk/sink.go`)
 
 ```go
 type TransactionalSink interface {
     Sink
-
-    // BeginTransaction starts a new transaction context.
-    // Called once at startup and after each Commit.
-    BeginTransaction(ctx context.Context) error
-
-    // PreCommit flushes all buffered data and prepares the transaction.
-    // After PreCommit returns, no more WriteBatch calls occur until Commit or Abort.
-    // This is Phase 1 of the two-phase commit.
-    PreCommit(ctx context.Context, checkpointID int64) error
-
-    // Commit finalizes the transaction. Called ONLY after global checkpoint completion.
-    // Must be idempotent — calling Commit(N) twice must be safe.
-    // This is Phase 2 of the two-phase commit.
-    Commit(ctx context.Context, checkpointID int64) error
-
-    // Abort rolls back the current transaction.
-    // Called on failure recovery before restarting from a checkpoint.
-    Abort(ctx context.Context) error
+    RecoverTransactions(context.Context, TransactionRecovery) error
+    BeginTransaction(context.Context) error
+    PreCommit(context.Context, uint64) error
+    Commit(context.Context, uint64) error
+    Abort(context.Context) error
+    Checkpoint(uint64) ([]byte, error)
+    RestoreCheckpoint([]byte) error
 }
+
 ```
 
 ### 3.2 Implementing 2PC for Custom Connectors
@@ -235,13 +227,14 @@ Custom connectors that support transactions must map Wire's 2PC phases to the ex
 
 ### 4.1 Checkpoint-Transaction State
 
-The Coordinator tracks per-sink-task transaction state:
+The coordinator persists prepared-sink inventory and the global decision. Workers track the active transaction locally; a completed checkpoint authorizes commit but does not prove that every external system has already applied it. The connector stores recoverable external identity and enforces writer authority:
 
 | Field | Type | Description |
 | -- | -- | -- |
 | task_id | string | Sink task identifier |
 | current_checkpoint | int64 | Checkpoint currently in PreCommit |
-| last_committed_checkpoint | int64 | Last successfully committed checkpoint |
+| last_committed_checkpoint | uint64 | Worker-reported boundary captured in the next snapshot |
+| deployment_generation | uint64 | Persisted monotonic writer fence per job deployment |
 | transaction_state | enum | ACTIVE / PRE_COMMITTED / COMMITTED |
 
 ```mermaid
@@ -310,7 +303,7 @@ On recovery, the Coordinator determines which transactions need Commit vs Abort:
 ### 7.1 Transaction Credentials
 
 * TransactionalSink implementations inherit the same authentication as the underlying Sink.
-* Credentials support `${ENV_VAR}` substitution — never stored in plain text in pipeline configs.
+* Resolve secret references at the worker; do not put credentials in transaction handles. This transaction interface does not encrypt or redact submitted pipeline configurations.
 
 ### 7.2 Data Consistency
 
@@ -325,7 +318,7 @@ On recovery, the Coordinator determines which transactions need Commit vs Abort:
 | -- | -- | -- | -- |
 | Unit Tests | 2PC state machine, phase transitions | Go `testing` | 100% of state transitions |
 | Integration Tests | Full 2PC cycle with mock TransactionalSink | Go `testing` + mocks | Happy path + failure in each phase |
-| Chaos Tests | Kill worker during PreCommit/Commit | toxiproxy + Docker | All failure scenarios in Section 6 |
+| Process failure tests | Kill worker after durable PreCommit; reopen coordinator storage | Go subprocess kill + Pebble reopen | See acceptance record; external service behavior remains connector-specific |
 
 ### 8.1 Key Test Scenarios
 
@@ -341,6 +334,6 @@ On recovery, the Coordinator determines which transactions need Commit vs Abort:
 
 | # | Question / Risk | Owner | Status |
 | -- | -- | -- | -- |
-| 1 | Should we support cross-sink atomic commits (e.g., two sinks in one transaction)? | Tarun | Open — likely No for v1 |
-| 2 | Should PreCommit have its own timeout separate from the checkpoint timeout? | Tarun | Open |
+| 1 | Cross-sink atomic visibility | Tarun | Closed — outside the protocol scope |
+| 2 | PreCommit deadline | Tarun | Resolved — uses the remaining checkpoint deadline; connectors must honor cancellation |
 | 3 | Risk: External systems with short transaction timeouts may conflict with long checkpoint intervals. Need to document recommended configuration. | — | Acknowledged |

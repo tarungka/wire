@@ -214,3 +214,35 @@ func TestWorkerReregistrationResetsOnlyStableRecoveryBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestRestartBeforeFirstCheckpointReplaysInitialBoundary(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	job := &JobMeta{ID: "job", Status: JobFailing, Parallelism: 1, Config: encode(t, linearGraph()), DeploymentGeneration: 1}
+	c.jobs[job.ID] = job
+	c.workers["worker"] = &WorkerMeta{ID: "worker", TaskSlotsTotal: 1, TaskSlotsAvailable: 1, LastHeartbeat: time.Now()}
+	if err := store.Set(JobAssignmentsKey(job.ID), encode(t, TaskAssignmentMap{JobID: job.ID, AttemptID: "old", EpochID: 5, Assignments: map[string]string{"job/m/0": "worker"}})); err != nil {
+		t.Fatal(err)
+	}
+	c.taskStatuses["job/m/0"] = rpc.TaskStatusCanceled
+	c.scheduleTick(t.Context())
+	if job.Status != JobDeploying || job.RecoveryAttempts != 1 {
+		t.Fatalf("initial-boundary recovery failed: %+v", job)
+	}
+	commands := c.DrainCommands("worker")
+	if len(commands) != 1 || commands[0].Type != rpc.CommandTypeDeployTask {
+		t.Fatal(commands)
+	}
+	var task rpc.TaskDescriptor
+	if err := protocol.DecodeMsgPack(commands[0].Data, &task); err != nil {
+		t.Fatal(err)
+	}
+	if task.RestoreCheckpoint != nil || task.AttemptID == "old" || task.DeploymentGeneration != 2 {
+		t.Fatalf("unsafe initial recovery: %+v", task)
+	}
+	job.Status = JobFailing
+	job.RecoveryAttempts = c.config.RestartMaxAttempts
+	c.taskStatuses[task.TaskID] = rpc.TaskStatusFailed
+	if c.prepareTaskRestart(job) || job.Status != JobFailed {
+		t.Fatal("initial recovery bypassed retry budget")
+	}
+}

@@ -454,6 +454,7 @@ type CoordinatorDirective struct {
 
 // TriggerCheckpointRequest is sent from Coordinator to Worker to initiate a checkpoint.
 type TriggerCheckpointRequest struct {
+	Final        bool              `codec:"final,omitempty"`
 	AttemptID    string            `codec:"attempt_id,omitempty"`
 	JobID        string            `codec:"jid"`
 	CheckpointID uint64            `codec:"cid"`

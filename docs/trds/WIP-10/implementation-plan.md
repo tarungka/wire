@@ -61,3 +61,12 @@ External transaction semantics cannot be invented by the runtime: the connector 
 - Repartitioned transactional restoration without handle mapping fails before orphan cleanup. Missing recovery hooks or authority fail before RUNNING and BeginTransaction.
 - Added on-disk external ledger tests that reopen connector instances, preserve committed output, abort orphan preparations, replay a lost Commit response without duplicate output, and reject stale/conflicting writers. These are durable fixture tests, not process-kill acceptance.
 - Engine, coordinator, worker and SDK full race suites pass; affected-package lint is clean. A follow-up assertion also checks that the deployed descriptor carries the persisted generation.
+
+## Completion: replay, terminal boundaries and acceptance
+
+- Recovery before the first checkpoint now retries from the configured initial source position within the normal restart limit. Source replayability is an explicit contract requirement.
+- Sources with distributed replication park at EOF, stop watermark production and report FINISHING. After all sources park, the coordinator creates a final checkpoint independent of periodic minimum pause. Source EOP follows the final barrier, prepared sinks defer EOP until Commit, and any uncommitted tail is a visible error. Aborting a final checkpoint requests replay even with unlimited ordinary checkpoint failure tolerance.
+- Added a real worker subprocess kill during the third prepared transaction, with an on-disk external ledger. Across 300/300/400-record intervals, recovery preserves exactly the first 600 and final replay produces 1,000 unique outputs. Added two-source network-shuffle final-output and lost-commit-response tests. All three pass three race repetitions.
+- Added Pebble coordinator reopen coverage: completed prepared decisions and deployment generations survive dropping all queued commands; the next incomplete checkpoint is selected for abort.
+- Repository-wide race tests, build, vet and lint pass. See acceptance.md for named evidence and the distinction between process failure tests and host power loss.
+- Remaining delivery steps: commit documentation, publish the linked follow-up PR using tarungka, and verify CI. WIP-09 #222/#223 remain separate open PRs.

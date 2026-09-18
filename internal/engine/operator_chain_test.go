@@ -1641,7 +1641,7 @@ func (m *selectiveErrorMap) Map(ctx context.Context, e Event) (Event, error) {
 	return e, nil
 }
 
-func TestPreparedTransactionDefersEOFAcrossCommit(t *testing.T) {
+func TestPreparedTransactionDefersEOFButRejectsUncommittedTail(t *testing.T) {
 	sink := &mockTransactionalSink{}
 	input := make(chan Event, 1)
 	input <- Event{Value: []byte("next transaction")}
@@ -1655,8 +1655,8 @@ func TestPreparedTransactionDefersEOFAcrossCommit(t *testing.T) {
 		t.Fatal("EOF drained records before commit")
 	}
 	err := handleControl(cc, ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 7}, &eof)
-	if err != errChainDone {
-		t.Fatalf("deferred EOF: %v", err)
+	if !errors.Is(err, ErrUncommittedTransactionAtEOF) {
+		t.Fatalf("deferred EOF must reject uncommitted tail: %v", err)
 	}
 	if len(input) != 0 || sink.BeginTxnCalls() != 1 || len(sink.CommitCallIDs()) != 1 {
 		t.Fatal("pending records did not resume after commit")

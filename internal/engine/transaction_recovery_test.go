@@ -106,7 +106,7 @@ func TestRecoverOrphansPreservesOnlySelectedDecision(t *testing.T) {
 			// Reopen from disk twice: once for recovery, once to simulate a lost Commit response.
 			for generation := uint64(2); generation <= 3; generation++ {
 				sink := &ledgerTransactionSink{path: path}
-				slot := &TaskSlot{TaskID: "sink", Operators: []Operator{sink}, TransactionRecovery: &TransactionRecovery{JobID: "job", TaskID: "sink", EpochID: 2, DeploymentGeneration: generation, AttemptID: "new"}}
+				slot := &TaskSlot{CheckpointReplicator: ledgerRecoveryReplicator{}, TaskID: "sink", Operators: []Operator{sink}, TransactionRecovery: &TransactionRecovery{JobID: "job", TaskID: "sink", EpochID: 2, DeploymentGeneration: generation, AttemptID: "new"}}
 				if boundary != 0 {
 					slot.RestoreCheckpoint = &TaskCheckpoint{TaskID: "sink", CheckpointID: boundary, SinkPrepared: true, Operators: [][]byte{[]byte("7")}}
 					if err := slot.restoreCheckpoint(); err != nil {
@@ -152,6 +152,8 @@ func TestDistributedTransactionRecoveryFailsBeforeRunning(t *testing.T) {
 			sink := &ledgerTransactionSink{}
 			slot := NewTaskSlot(DefaultTaskSlotConfig(), nil, nil, []Operator{sink}, nil)
 			slot.TaskID = "sink"
+			slot.CheckpointReplicator = ledgerRecoveryReplicator{}
+			slot.CheckpointReport = func(context.Context, uint64, uint64, error) error { return nil }
 			slot.TransactionRecovery = &TransactionRecovery{JobID: "job", TaskID: "sink", EpochID: 1, DeploymentGeneration: 1, AttemptID: "attempt"}
 			switch kind {
 			case "missing-hook":
@@ -171,4 +173,10 @@ func TestDistributedTransactionRecoveryFailsBeforeRunning(t *testing.T) {
 			}
 		})
 	}
+}
+
+type ledgerRecoveryReplicator struct{}
+
+func (ledgerRecoveryReplicator) Replicate(context.Context, TaskCheckpoint) error {
+	return nil
 }

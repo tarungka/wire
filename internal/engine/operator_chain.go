@@ -24,6 +24,7 @@ type chainContext struct {
 	preparedCheckpoint         uint64
 	preparedEpoch              uint64
 	transactionPrepared        bool
+	transactionDirty           bool
 	transactionAborted         bool
 	transactionDecisionPending bool
 	lastCommitted              uint64
@@ -355,6 +356,9 @@ func invokeFlatMapWithRetry(cc *chainContext, link ChainLink, e Event, op FlatMa
 
 // invokeSinkWithRetry wraps a SinkOperator Write call with error handling.
 func invokeSinkWithRetry(cc *chainContext, link ChainLink, e Event, op SinkOperator) error {
+	if cc.txnSink != nil {
+		cc.transactionDirty = true
+	}
 	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob || link.Config.Classifier != nil
 
 	if !hasErrorHandling {
@@ -558,6 +562,7 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			return err
 		}
 		cc.lastCommitted = ctrl.CheckpointID
+		cc.transactionDirty = false
 		cc.transactionPrepared = false
 		cc.transactionDecisionPending = false
 		if err := cc.txnSink.BeginTransaction(cc.ctx); err != nil {
@@ -692,5 +697,8 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 }
 
 func emitChainEnd(cc *chainContext) error {
+	if cc.txnSink != nil && cc.transactionDirty {
+		return ErrUncommittedTransactionAtEOF
+	}
 	return cc.sendOutput(OutputMsg{Type: OutputEnd, End: &protocol.EndOfPartitionMsg{Reason: protocol.EndReasonExhausted}})
 }

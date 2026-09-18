@@ -19,6 +19,8 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
+	// SourceExhausted parks a bounded source until its final global checkpoint.
+	SourceExhausted func(context.Context) error
 	// TransactionRecovery supplies distributed writer identity; completed boundary
 	// is derived from RestoreCheckpoint rather than trusted from this field.
 	TransactionRecovery *TransactionRecovery
@@ -281,7 +283,9 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	if ts.Source != nil {
 		strategy := ts.resolveStrategy()
 		watermarkQueue := &sourceWatermarkQueue{}
-		sourceCheckpoints := &sourceCheckpointInput{watermarks: watermarkQueue, requests: ts.CheckpointTriggers, source: ts.Source, aligner: aligner, control: controlCh}
+		watermarkCtx, stopWatermarks := context.WithCancel(intakeCtx)
+		defer stopWatermarks()
+		sourceCheckpoints := &sourceCheckpointInput{onExhausted: ts.SourceExhausted, stopWatermarks: stopWatermarks, watermarks: watermarkQueue, requests: ts.CheckpointTriggers, source: ts.Source, aligner: aligner, control: controlCh}
 
 		inputWg.Add(1)
 		g.Go(func() error {
@@ -299,7 +303,11 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 			defer taskGoroutineStarted(runCtx)()
 			defer producerWg.Done()
 			return normalizeIntake(invokeOperator(func() error {
-				return watermarkQueue.run(intakeCtx, strategy, eventCh, emitInterval)
+				err := watermarkQueue.run(watermarkCtx, strategy, eventCh, emitInterval)
+				if errors.Is(err, context.Canceled) && watermarkCtx.Err() != nil {
+					return nil
+				}
+				return err
 			}))
 		})
 	} else if numInputs > 0 {
@@ -560,6 +568,12 @@ func runSourceReaderWithContexts(intakeCtx, ctx context.Context, source SourceOp
 		}
 
 		if batch == nil {
+			// Keep the source available for a final global checkpoint before EOP.
+			if len(checkpoints) > 0 {
+				if err := checkpoints[0].finish(intakeCtx, ctx); err != nil {
+					return err
+				}
+			}
 			// End of source input.
 			ctrl := ControlMsg{
 				Type:       CtrlEndOfPartition,

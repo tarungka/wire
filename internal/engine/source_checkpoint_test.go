@@ -104,7 +104,7 @@ func TestSourceCheckpointIgnoresRedeliveredIdentity(t *testing.T) {
 	source.mu.Lock()
 	source.batchIdx = 1
 	source.mu.Unlock()
-	for _, request := range []CheckpointTrigger{{7, 2}, {6, 2}, {99, 1}} {
+	for _, request := range []CheckpointTrigger{{CheckpointID: 7, EpochID: 2}, {CheckpointID: 6, EpochID: 2}, {CheckpointID: 99, EpochID: 1}} {
 		requests <- request
 		if err := input.atBoundary(ctx, ctx); err != nil {
 			t.Fatal(err)
@@ -155,5 +155,53 @@ func TestSourceCheckpointFreezesPeriodicWatermarks(t *testing.T) {
 	}
 	if event := <-events; event.watermark == nil || *event.watermark != 100 {
 		t.Fatal("watermark emission did not resume after checkpoint")
+	}
+}
+
+func TestExhaustedSourceWaitsForFinalBoundary(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	requests := make(chan CheckpointTrigger, 2)
+	controls := make(chan ControlMsg, 2)
+	exhausted := make(chan struct{})
+	source := &checkpointBoundarySource{newMockSource(nil)}
+	checkpoint := &sourceCheckpointInput{requests: requests, source: source, aligner: NewBarrierAligner(1, 10), control: controls, onExhausted: func(context.Context) error { close(exhausted); return nil }}
+	done := make(chan error, 1)
+	go func() {
+		done <- runSourceReaderWithContexts(ctx, ctx, source, nil, make(chan Event), controls, testLogger(), checkpoint)
+	}()
+	select {
+	case <-exhausted:
+	case <-ctx.Done():
+		t.Fatal("source did not report exhaustion")
+	}
+	select {
+	case control := <-controls:
+		t.Fatalf("premature EOF: %+v", control)
+	default:
+	}
+	for id := uint64(1); id <= 2; id++ {
+		requests <- CheckpointTrigger{CheckpointID: id, EpochID: 3, Final: id == 2}
+		select {
+		case control := <-controls:
+			if control.Type != CtrlBarrierReceived || control.CheckpointID != id || control.sourceBoundary == nil {
+				t.Fatalf("missing final boundary: %+v", control)
+			}
+			checkpoint.aligner.FinishAlignment(id)
+			close(control.sourceBoundary.done)
+		case <-ctx.Done():
+			t.Fatal("checkpoint missing")
+		}
+	}
+	select {
+	case control := <-controls:
+		if control.Type != CtrlEndOfPartition {
+			t.Fatal(control)
+		}
+	case <-ctx.Done():
+		t.Fatal("EOF missing")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
