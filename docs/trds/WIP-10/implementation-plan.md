@@ -1,6 +1,6 @@
 # WIP-10 completion plan
 
-Based on current master, with a separate `codex/wip-10-complete` branch. WIP-09 #222/#223 remain open and are not silently included in this PR. Status remains Partially Implemented until acceptance is verified.
+Based on current master, with a separate `codex/wip-10-complete` branch. WIP-09 #222/#223 remain open and are not silently included in this PR. The entries below preserve the implementation history. Acceptance is now verified locally; the completed follow-up is [PR #224](https://github.com/tarungka/wire/pull/224).
 
 ## Requirements and evidence to produce
 
@@ -69,4 +69,4 @@ External transaction semantics cannot be invented by the runtime: the connector 
 - Added a real worker subprocess kill during the third prepared transaction, with an on-disk external ledger. Across 300/300/400-record intervals, recovery preserves exactly the first 600 and final replay produces 1,000 unique outputs. Added two-source network-shuffle final-output and lost-commit-response tests. All three pass three race repetitions.
 - Added Pebble coordinator reopen coverage: completed prepared decisions and deployment generations survive dropping all queued commands; the next incomplete checkpoint is selected for abort.
 - Repository-wide race tests, build, vet and lint pass. See acceptance.md for named evidence and the distinction between process failure tests and host power loss.
-- Remaining delivery steps: commit documentation, publish the linked follow-up PR using tarungka, and verify CI. WIP-09 #222/#223 remain separate open PRs.
+- Published the completed follow-up as [PR #224](https://github.com/tarungka/wire/pull/224), ready for review, using tarungka. CI is the remaining delivery verification. WIP-09 #222/#223 remain separate open PRs.
