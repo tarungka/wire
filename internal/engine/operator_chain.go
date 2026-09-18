@@ -437,6 +437,21 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			return err
 		}
 
+		// Prepare first so the snapshot can contain the durable transaction
+		// handle needed to repeat Commit after a worker restart.
+		if cc.txnSink != nil {
+			if cc.transactionPrepared {
+				return fmt.Errorf("transaction already prepared for checkpoint %d", cc.preparedCheckpoint)
+			}
+			// Transactional sink: PreCommit and ACK to coordinator.
+			// Do NOT forward barrier downstream (sink is terminal).
+			if err := cc.txnSink.PreCommit(cc.ctx, ctrl.CheckpointID); err != nil {
+				return fmt.Errorf("%w: %v", ErrPreCommitFailed, err)
+			}
+			cc.preparedCheckpoint = ctrl.CheckpointID
+			cc.transactionPrepared = true
+		}
+
 		// Capture snapshot bytes synchronously at the aligned boundary.
 		var snapshots [][]byte
 		var stateHandleIndexes []int
@@ -457,16 +472,6 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		}
 
 		if cc.txnSink != nil {
-			if cc.transactionPrepared {
-				return fmt.Errorf("transaction already prepared for checkpoint %d", cc.preparedCheckpoint)
-			}
-			// Transactional sink: PreCommit and ACK to coordinator.
-			// Do NOT forward barrier downstream (sink is terminal).
-			if err := cc.txnSink.PreCommit(cc.ctx, ctrl.CheckpointID); err != nil {
-				return fmt.Errorf("%w: %v", ErrPreCommitFailed, err)
-			}
-			cc.preparedCheckpoint = ctrl.CheckpointID
-			cc.transactionPrepared = true
 			if cc.ackFn != nil && cc.checkpoint == nil {
 				cc.ackFn(ctrl.CheckpointID)
 			}
