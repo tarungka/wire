@@ -3,6 +3,9 @@ package coordinator
 import "errors"
 
 var (
+	// ErrHARequiresStoreFactory rejects elected startup with a preopened store.
+	ErrHARequiresStoreFactory = errors.New("coordinator: elected startup requires HAService with a metadata store factory")
+
 	ErrCheckpointUnavailable = errors.New("coordinator: checkpoint replica unavailable")
 	ErrSavepointInUse        = errors.New("coordinator: savepoint is required for rescale recovery")
 	ErrCheckpointInProgress  = errors.New("coordinator: checkpoint already in progress")

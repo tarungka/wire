@@ -124,7 +124,9 @@ type Coordinator struct {
 	recovered bool
 }
 
-// New creates a new Coordinator. Pass nil for election to use single-node mode.
+// New creates a coordinator with an already-open store. Pass nil for election
+// when using Run. Elected lifecycles must use NewHAService; non-nil election
+// here is reserved for term-local leader discovery managed by HAService.
 func New(cfg CoordinatorConfig, store MetadataStore, election LeaderElection, log zerolog.Logger) *Coordinator {
 	cfg.resolve()
 	return &Coordinator{
@@ -145,7 +147,8 @@ func New(cfg CoordinatorConfig, store MetadataStore, election LeaderElection, lo
 }
 
 // Run starts the coordinator lifecycle. It blocks until ctx is canceled
-// or an unrecoverable error occurs.
+// or an unrecoverable error occurs. Elected deployments must use HAService,
+// which opens metadata only after election and isolates each leadership term.
 func (c *Coordinator) Run(ctx context.Context) error {
 	c.log.Info().Str("node_id", c.nodeID).Msg("coordinator starting")
 
@@ -153,7 +156,7 @@ func (c *Coordinator) Run(ctx context.Context) error {
 		// Single-node mode: become leader immediately.
 		return c.runSingleNode(ctx)
 	}
-	return c.runMultiNode(ctx)
+	return ErrHARequiresStoreFactory
 }
 
 func (c *Coordinator) runSingleNode(ctx context.Context) error {
@@ -169,86 +172,6 @@ func (c *Coordinator) runSingleNode(ctx context.Context) error {
 
 	c.log.Info().Uint64("epoch", c.epoch).Msg("leader (single-node)")
 	return c.serve(c.leaderCtx)
-}
-
-func (c *Coordinator) runMultiNode(ctx context.Context) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		c.mu.Lock()
-		c.state = StateCandidate
-		c.recovered = false
-		c.mu.Unlock()
-
-		c.log.Info().Msg("campaigning for leadership")
-
-		lctx, err := c.election.Campaign(ctx, c.nodeID)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return fmt.Errorf("campaign failed: %w", err)
-		}
-
-		c.mu.Lock()
-		c.state = StateLeader
-		c.epoch = lctx.Epoch
-		c.leaderCtx, c.leaderCancel = context.WithCancel(ctx)
-		c.mu.Unlock()
-
-		if err := c.recover(); err != nil {
-			c.log.Error().Err(err).Msg("recovery failed, resigning")
-			_ = c.election.Resign(ctx)
-			continue
-		}
-
-		c.log.Info().Uint64("epoch", c.epoch).Msg("became leader")
-
-		// Watch for leadership loss.
-		done := make(chan struct{})
-		go func() {
-			select {
-			case <-lctx.Ctx.Done():
-			case <-ctx.Done():
-			}
-			close(done)
-		}()
-
-		// Serve until leadership loss or shutdown.
-		serveDone := make(chan error, 1)
-		serveCtx, serveCancel := context.WithCancel(ctx)
-		go func() {
-			serveDone <- c.serve(serveCtx)
-		}()
-
-		select {
-		case <-done:
-			// Leadership lost or context canceled.
-			serveCancel()
-			<-serveDone
-			c.mu.Lock()
-			c.state = StateStandby
-			c.recovered = false
-			c.jobs = make(map[string]*JobMeta)
-			c.workers = make(map[string]*WorkerMeta)
-			c.pendingCmds = make(map[string][]rpc.WorkerCommand)
-			c.taskStatuses = make(map[string]rpc.TaskStatus)
-			c.mu.Unlock()
-
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			c.log.Warn().Msg("leadership lost, returning to standby")
-			// Loop back to campaign again.
-		case err := <-serveDone:
-			serveCancel()
-			return err
-		}
-	}
 }
 
 // recover loads state from the metadata store.
