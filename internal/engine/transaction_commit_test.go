@@ -163,3 +163,53 @@ func TestPreparedTransactionRejectsOtherEpochDecisions(t *testing.T) {
 		}
 	}
 }
+
+func TestAbortDoesNotConsumePostBarrierRecords(t *testing.T) {
+	sink := &mockTransactionalSink{}
+	input := make(chan Event, 1)
+	input <- Event{Value: []byte("queued-after-barrier")}
+	cc := &chainContext{
+		ctx: t.Context(), txnSink: sink, links: buildChainLinks([]Operator{sink}, nil),
+		transactionPrepared: true, transactionDecisionPending: true,
+		preparedCheckpoint: 7, preparedEpoch: 5,
+		inputCh: input, deferredEvents: []Event{{Value: []byte("aligned-after-barrier")}},
+		log: testLogger(),
+	}
+	eof := 0
+	err := handleControl(cc, ControlMsg{Type: CtrlAbortTransaction, CheckpointID: 7, EpochID: 5}, &eof)
+	if !errors.Is(err, ErrTransactionAborted) {
+		t.Fatalf("abort must request replay: %v", err)
+	}
+	if len(input) != 1 || len(cc.deferredEvents) != 1 || len(sink.Written()) != 0 || sink.BeginTxnCalls() != 0 {
+		t.Fatal("abort resumed post-barrier records without source rollback")
+	}
+}
+
+type deadlinePrepareSink struct{ mockTransactionalSink }
+
+func (*deadlinePrepareSink) PreCommit(ctx context.Context, _ uint64) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestPrepareUsesCheckpointDeadline(t *testing.T) {
+	sink := &deadlinePrepareSink{}
+	aligner := NewBarrierAligner(1, 10)
+	aligner.OnBarrier(0, 7, 5)
+	acked := false
+	cc := &chainContext{
+		ctx: t.Context(), txnSink: sink, aligner: aligner,
+		inputCh: make(chan Event), cpMetrics: NoopCheckpointMetrics(), log: testLogger(),
+		checkpoint: &chainCheckpointState{uploader: &checkpointUploader{timeout: 20 * time.Millisecond}},
+		ackFn:      func(uint64) { acked = true },
+	}
+	eof := 0
+	started := time.Now()
+	err := handleControl(cc, ControlMsg{Type: CtrlBarrierReceived, CheckpointID: 7, EpochID: 5}, &eof)
+	if !errors.Is(err, ErrPreCommitFailed) || !errors.Is(err, context.DeadlineExceeded) || acked || cc.transactionPrepared {
+		t.Fatalf("timed out preparation was admitted: %v", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("checkpoint deadline did not bound preparation")
+	}
+}

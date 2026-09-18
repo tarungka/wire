@@ -923,16 +923,16 @@ func TestOperatorChain_TransactionalSink_AbortThenRestart(t *testing.T) {
 
 	ops := []Operator{sink}
 	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil, nil, nil, NoopErrorMetrics())
-	if err != nil {
+	if !errors.Is(err, ErrTransactionAborted) {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
 
-	// BeginTransaction at startup + after Abort.
-	if sink.BeginTxnCalls() != 2 {
-		t.Errorf("BeginTransaction calls: got %d, want 2", sink.BeginTxnCalls())
+	// Recovery must replay the rolled-back interval before a fresh transaction.
+	if sink.BeginTxnCalls() != 1 {
+		t.Errorf("BeginTransaction calls: got %d, want 1", sink.BeginTxnCalls())
 	}
-	if sink.AbortCallCount() != 2 {
-		t.Errorf("Abort calls: got %d, want 2", sink.AbortCallCount())
+	if sink.AbortCallCount() != 1 {
+		t.Errorf("Abort calls: got %d, want 1", sink.AbortCallCount())
 	}
 }
 

@@ -57,6 +57,9 @@ var (
 	// ErrCommitFailed indicates a transactional sink failed to commit a transaction.
 	ErrCommitFailed = errors.New("engine: transactional sink commit failed")
 
+	// ErrTransactionAborted requires task recovery so rolled-back records are replayed.
+	ErrTransactionAborted = errors.New("engine: transaction aborted; checkpoint recovery required")
+
 	// ErrAbortFailed indicates a transactional sink failed to abort a transaction.
 	ErrAbortFailed = errors.New("engine: transactional sink abort failed")
 

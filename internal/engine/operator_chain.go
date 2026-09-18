@@ -24,6 +24,7 @@ type chainContext struct {
 	preparedCheckpoint         uint64
 	preparedEpoch              uint64
 	transactionPrepared        bool
+	transactionAborted         bool
 	transactionDecisionPending bool
 	lastCommitted              uint64
 	lastAborted                checkpointIdentity
@@ -118,7 +119,7 @@ func runOpenedOperatorChain(
 		// may have reached the coordinator (or commit was attempted), recovery
 		// must resolve the durable decision; cancellation is not an abort vote.
 		defer func() {
-			if cc != nil && cc.transactionDecisionPending {
+			if cc != nil && (cc.transactionDecisionPending || cc.transactionAborted) {
 				return
 			}
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -397,6 +398,9 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 	if ctrl.sourceBoundary != nil {
 		defer close(ctrl.sourceBoundary.done)
 	}
+	if cc.transactionAborted {
+		return ErrTransactionAborted
+	}
 	if cc.transactionPrepared && ctrl.EpochID != cc.preparedEpoch {
 		switch ctrl.Type {
 		case CtrlBarrierReceived, CtrlCommitCheckpoint, CtrlAbortCheckpoint, CtrlAbortTransaction:
@@ -460,8 +464,21 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 			}
 			// Transactional sink: PreCommit and ACK to coordinator.
 			// Do NOT forward barrier downstream (sink is terminal).
-			if err := cc.txnSink.PreCommit(cc.ctx, ctrl.CheckpointID); err != nil {
-				return fmt.Errorf("%w: %v", ErrPreCommitFailed, err)
+			timeout := DefaultCheckpointTimeout
+			if cc.checkpoint != nil && cc.checkpoint.uploader != nil {
+				timeout = cc.checkpoint.uploader.timeout
+			}
+			started := cc.aligner.AlignmentStartTime()
+			if started.IsZero() {
+				started = time.Now()
+			}
+			prepareCtx, cancelPrepare := context.WithDeadline(cc.ctx, started.Add(timeout))
+			err := func() error {
+				defer cancelPrepare()
+				return cc.txnSink.PreCommit(prepareCtx, ctrl.CheckpointID)
+			}()
+			if err != nil {
+				return fmt.Errorf("%w: %w", ErrPreCommitFailed, err)
 			}
 			cc.preparedCheckpoint = ctrl.CheckpointID
 			cc.preparedEpoch = ctrl.EpochID
@@ -567,9 +584,11 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		cc.transactionPrepared = false
 		cc.transactionDecisionPending = false
 		cc.lastAborted = checkpointIdentity{ctrl.CheckpointID, ctrl.EpochID}
-		if err := cc.txnSink.BeginTransaction(cc.ctx); err != nil {
-			return fmt.Errorf("%w: %v", ErrBeginTransactionFailed, err)
-		}
+		cc.transactionAborted = true
+		// The source has advanced past records whose external writes were
+		// just rolled back. Continuing here would silently lose those records.
+		// Fail the task so the coordinator restores the completed checkpoint.
+		return ErrTransactionAborted
 
 	case CtrlAbortCheckpoint:
 		cc.log.Warn().Uint64("checkpoint", ctrl.CheckpointID).Msg("aborting checkpoint")

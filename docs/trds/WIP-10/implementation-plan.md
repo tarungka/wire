@@ -46,3 +46,10 @@ External transaction semantics cannot be invented by the runtime: the connector 
 - The embedded executor passes no checkpoint coordinator or transaction ACK path. It now rejects transactional sinks before Open rather than silently executing them as ordinary sinks. This is a documented runtime support boundary, not a claim that embedded checkpoint coordination has been implemented.
 - Added SDK adapter, worker-factory compatibility and fail-fast tests. The full SDK/connectors race suite and SDK lint pass.
 - Added runtime-contract.md and corrected the WIP's stale claim that cluster checkpoint wiring is absent. Remaining distributed recovery and acceptance work is still explicit; no completion status or PR publication yet.
+
+## Progress: abort-and-replay and preparation timeout
+
+- Explicit transactional abort now returns ErrTransactionAborted after one successful Abort. It neither begins a replacement transaction nor drains queued/alignment-buffered records. Deferred cleanup does not abort it a second time. The worker reports task failure so coordinator recovery can replay the rolled-back interval.
+- PreCommit receives a deadline derived from checkpoint alignment start and the configured checkpoint timeout; deadline errors retain their cause and cannot produce an ACK.
+- Full engine race suite passes. The worker suite identified an old test that explicitly expected continued writes after rollback; its transactional branch now requires failure/recovery, while the non-transactional tolerance branch remains unchanged. Transactional abort/commit and ordinary failure-threshold cluster tests pass three race repetitions; engine/worker lint passes.
+- The abort fixture has no prior completed checkpoint, so it safely fails rather than silently continuing. Recovery before the first completed checkpoint and orphan resolution are still open; this test does not prove complete replay acceptance.
