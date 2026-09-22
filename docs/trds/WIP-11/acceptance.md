@@ -1,7 +1,7 @@
 # WIP-11 acceptance evidence
 
 Implementation branch: `codex/wip-11-complete`, based on master `b76fa56`.
-Follow-up to [#194](https://github.com/tarungka/wire/pull/194). WIP-10 #224 is
+[Completion PR #225](https://github.com/tarungka/wire/pull/225), following [#194](https://github.com/tarungka/wire/pull/194). WIP-10 #224 is
 separate and is not included in this branch.
 
 ## Requirement mapping

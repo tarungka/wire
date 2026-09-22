@@ -17,8 +17,8 @@ Branch: `codex/wip-11-complete`, based on master `b76fa56`. WIP-10 #224 remains 
 Requirements 1–6 have direct unit, MiniCluster, runtime-metric and cross-worker
 transport evidence in [acceptance.md](acceptance.md). The full repository race
 suite, build, vet and pinned lint checks pass. Requirement 7's local documentation
-and checks are complete; publication and GitHub CI are tracked on the follow-up
-PR. Local test results are not represented as GitHub CI results.
+and checks are complete; publication and GitHub CI are tracked on
+[PR #225](https://github.com/tarungka/wire/pull/225). Local test results are not represented as GitHub CI results.
 
 The audit also resolved gaps that passing earlier tests had missed: partial
 output escaping failed calls, mutation of retry/DLQ input bytes, cancellation

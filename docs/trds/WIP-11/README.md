@@ -24,7 +24,8 @@
 ## Implementation Status — 2026-09-22
 
 WIP-11 is implemented on the completion branch based on master `b76fa56`, as a
-follow-up to [#194](https://github.com/tarungka/wire/pull/194). See the
+[completion PR #225](https://github.com/tarungka/wire/pull/225), following
+[#194](https://github.com/tarungka/wire/pull/194). See the
 [acceptance record](acceptance.md) for requirement-by-requirement evidence and
 [current API usage](../../sdk/error_handling.md) for the supported Go/YAML API.
 
