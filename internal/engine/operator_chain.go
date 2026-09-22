@@ -126,7 +126,7 @@ func runOpenedOperatorChain(
 
 	// Resolve error metrics.
 	if errMetrics == nil {
-		errMetrics = NoopErrorMetrics()
+		errMetrics = NewTelemetryErrorMetrics("")
 	}
 
 	cc := &chainContext{
@@ -289,7 +289,12 @@ func invokeMapWithRetry(cc *chainContext, link ChainLink, e Event, op MapOperato
 
 	if !hasErrorHandling {
 		// Legacy path: no error handling, fail on any error.
-		result, err := op.Map(cc.ctx, e)
+		var result Event
+		err := invokeLegacyWithMetrics(cc, link, func() error {
+			var callErr error
+			result, callErr = op.Map(cc.ctx, e)
+			return callErr
+		})
 		if err != nil {
 			return nil, fmt.Errorf("map operator: %w", err)
 		}
@@ -301,8 +306,10 @@ func invokeMapWithRetry(cc *chainContext, link ChainLink, e Event, op MapOperato
 
 	var result Event
 	err := invokeWithRetry(cc, link, e, func() error {
-		var mapErr error
-		result, mapErr = op.Map(cc.ctx, e)
+		candidate, mapErr := op.Map(cc.ctx, cloneEventPayload(e))
+		if mapErr == nil {
+			result = candidate
+		}
 		return mapErr
 	})
 	if err != nil {
@@ -321,8 +328,10 @@ func invokeFlatMapWithRetry(cc *chainContext, link ChainLink, e Event, op FlatMa
 	if !hasErrorHandling {
 		// Legacy path.
 		var emitted []Event
-		err := op.FlatMap(cc.ctx, e, func(out Event) {
-			emitted = append(emitted, out)
+		err := invokeLegacyWithMetrics(cc, link, func() error {
+			return op.FlatMap(cc.ctx, e, func(out Event) {
+				emitted = append(emitted, out)
+			})
 		})
 		if err != nil {
 			return nil, fmt.Errorf("flatmap operator: %w", err)
@@ -332,10 +341,16 @@ func invokeFlatMapWithRetry(cc *chainContext, link ChainLink, e Event, op FlatMa
 
 	var emitted []Event
 	err := invokeWithRetry(cc, link, e, func() error {
-		emitted = nil // Reset on retry.
-		return op.FlatMap(cc.ctx, e, func(out Event) {
-			emitted = append(emitted, out)
-		})
+		// Publish only a successful invocation's output. A failed attempt may
+		// emit before returning an error or panicking; DLQ/drop must discard it.
+		var attemptOutput []Event
+		if err := op.FlatMap(cc.ctx, cloneEventPayload(e), func(out Event) {
+			attemptOutput = append(attemptOutput, out)
+		}); err != nil {
+			return err
+		}
+		emitted = attemptOutput
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -349,7 +364,7 @@ func invokeSinkWithRetry(cc *chainContext, link ChainLink, e Event, op SinkOpera
 
 	if !hasErrorHandling {
 		// Legacy path.
-		if err := op.Write(cc.ctx, e); err != nil {
+		if err := invokeLegacyWithMetrics(cc, link, func() error { return op.Write(cc.ctx, e) }); err != nil {
 			return fmt.Errorf("sink operator: %w", err)
 		}
 		recordTaskOutput(cc.ctx, e)
@@ -357,7 +372,7 @@ func invokeSinkWithRetry(cc *chainContext, link ChainLink, e Event, op SinkOpera
 	}
 
 	return invokeWithRetry(cc, link, e, func() error {
-		err := op.Write(cc.ctx, e)
+		err := op.Write(cc.ctx, cloneEventPayload(e))
 		if err == nil {
 			recordTaskOutput(cc.ctx, e)
 		}

@@ -21,11 +21,12 @@ type PipelineConnectors struct {
 }
 
 type pipelineOperator struct {
-	Name      string               `yaml:"name"`
-	Type      string               `yaml:"type"`
-	Input     string               `yaml:"input"`
-	Config    map[string]any       `yaml:"config"`
-	Watermark *rpc.WatermarkConfig `yaml:"watermark"`
+	ErrorHandling *pipelineErrorPolicy `yaml:"error_handling"`
+	Name          string               `yaml:"name"`
+	Type          string               `yaml:"type"`
+	Input         string               `yaml:"input"`
+	Config        map[string]any       `yaml:"config"`
+	Watermark     *rpc.WatermarkConfig `yaml:"watermark"`
 }
 type pipelineDocument struct {
 	APIVersion string `yaml:"apiVersion"`
@@ -142,7 +143,7 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 	byName := map[string]pipelineOperator{}
 	kinds := map[string]StreamNodeType{}
 	for i, op := range definitions {
-		if op.Name == "" || op.Type == "" {
+		if op.Name == "" || op.Name == "__dlq__" || op.Type == "" {
 			return nil, fmt.Errorf("%w: operator name/type required", ErrInvalidConfig)
 		}
 		if _, ok := byName[op.Name]; ok {
@@ -164,6 +165,19 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 			kinds[op.Name] = NodeMap
 		}
 	}
+	var dlqName string
+	for _, op := range definitions {
+		if op.Input != "__dlq__" {
+			continue
+		}
+		if kinds[op.Name] != NodeSink || op.ErrorHandling != nil || dlqName != "" {
+			return nil, fmt.Errorf("%w: __dlq__ requires one sink without its own error policy", ErrInvalidConfig)
+		}
+		dlqName = op.Name
+	}
+	if dlqName != "" && len(doc.Spec.Sinks) == 1 {
+		return nil, ErrNoSinks
+	}
 	var ordered []pipelineOperator
 	visited := map[string]uint8{}
 	var visit func(string) error
@@ -176,7 +190,7 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 		}
 		visited[name] = 1
 		op := byName[name]
-		if kinds[name] != NodeSource {
+		if kinds[name] != NodeSource && name != dlqName {
 			if _, ok := byName[op.Input]; !ok || kinds[op.Input] == NodeSink {
 				return fmt.Errorf("%w: %q input %q is not a source or transform", ErrInvalidConfig, name, op.Input)
 			}
@@ -226,10 +240,28 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 				return nil, fmt.Errorf("%w: transform %q: %v", ErrInvalidConfig, op.Name, err)
 			}
 		}
+		if err := op.ErrorHandling.compile(node); err != nil {
+			return nil, fmt.Errorf("%w: error handling for %q: %v", ErrInvalidConfig, op.Name, err)
+		}
 		nodes[op.Name] = node
 	}
+	var dlq Sink
+	if dlqName != "" {
+		op := byName[dlqName]
+		destination, factoryErr := connectors.Sinks[op.Type](op.Config)
+		if factoryErr != nil || destination == nil {
+			return nil, fmt.Errorf("%w: DLQ connector %q: %v", ErrInvalidConfig, dlqName, factoryErr)
+		}
+		dlq = &sharedPipelineDLQSink{sink: destination}
+	}
 	for _, op := range ordered {
+		if op.Name == dlqName {
+			continue
+		}
 		node := nodes[op.Name]
+		if dlq != nil && node.ErrorPolicy != nil && node.ErrorPolicy.OnExhausted == "dlq" {
+			node.DLQSink = dlq
+		}
 		switch node.Type {
 		case NodeSource:
 			node.Source, err = connectors.Sources[op.Type](op.Config)

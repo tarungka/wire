@@ -6,29 +6,38 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-09-12`
+> **Last Updated:** `2026-09-22`
 
 ### Revision History
 
 | Version | Date | Author | Changes |
 | -- | -- | -- | -- |
 | 0.1 | 2026-02-22 | Tarun Ashok | Initial draft |
+| 1.0 | 2026-09-22 | Tarun Ashok | Complete YAML/DLQ policies, live metrics, error-path correctness and acceptance coverage |
 
 ---
 
-## Implementation Status — 2026-09-12
+## Implementation Status — 2026-09-22
 
-Base audit assessed `master` at `0e78195`; the evidence below includes this WIP-11 implementation. This section records current implementation; the proposal below retains its original design context and targets.
+WIP-11 is implemented on the completion branch based on master `b76fa56`, as a
+follow-up to [#194](https://github.com/tarungka/wire/pull/194). See the
+[acceptance record](acceptance.md) for requirement-by-requirement evidence and
+[current API usage](../../sdk/error_handling.md) for the supported Go/YAML API.
 
-- **Implemented:** Error classification, cancellation-aware capped retries, panic handling, SDK per-operator policies, serialized worker policies, and synchronous best-effort DLQ delivery. Embedded jobs accept inline sinks; cluster descriptors select registered sink factories. DLQ records use the documented JSON envelope. Missing/failed/full DLQ destinations count drops; missing destinations log an error.
-- **Remaining:** YAML policy parsing and reserved `__dlq__` graph input, exported runtime metrics (executors currently use noop counters), full MiniCluster error-policy coverage, and the stated 100% unit-coverage target. The worker uses the shared TaskSlot lifecycle merged through WIP-20, with per-operator error configurations passed into that runtime. This change owns the added DLQ sink lifecycle.
-- **Evidence:** [error_handler.go](../../../internal/engine/error_handler.go), [task_executor.go](../../../internal/worker/task_executor.go), [SDK API](../../../sdk/error_handler.go), [SDK execution tests](../../../sdk/error_handler_test.go), [worker DLQ test](../../../internal/worker/task_error_policy_test.go).
+- Per-operator transient/poison/fatal policies support bounded fixed/exponential/no-delay retries, cancellation, panic recovery and fail/drop/DLQ outcomes in SDK and worker execution. Standard network/resource errors and explicit error markers are classified consistently.
+- Failed Map/FlatMap attempts cannot leak partial output. Retries and DLQ preserve original key/value/header bytes even when user code mutates an attempted input. Retry exhaustion retains the original error cause.
+- Strict YAML `error_handling` is validated before connector factories. The reserved `__dlq__` input selects one shared side-output destination without adding a normal data edge; ambiguous or recursive bindings are rejected.
+- DLQ is synchronous and best effort. Missing/full/failed destinations log and count drops; Open/Close failures and panics are isolated from the main job. DLQ writes receive the active chain context and never participate in checkpoint transactions.
+- Error/retry/DLQ/drop counters use the configured OTel provider, with operator/error-class and distributed task attribution. Explicit no-op metrics remain supported.
+- All five named MiniCluster scenarios, all supported executable transformations, actual HTTP WriteBatch retries and cross-worker serialized policies are covered. The full repository race suite, build, vet and pinned CI lint pass. Core retry/classification/backoff/exhaustion functions have 100% statement coverage.
 
-See [current API usage](../../sdk/error_handling.md). The proposal examples below describe the intended API; current retry fields are serializable millisecond values and actions are strings.
+The proposal below has been reconciled with the shipped API and reliability
+contract. Exactly-once DLQ, replay tooling, circuit breakers and global rate
+limits remain non-goals or deferred open questions, not implementation gaps.
 
 ---
 
@@ -40,7 +49,7 @@ Wire has **no documented strategy for handling processing errors, poison message
 
 ### 1.2 Proposed Solution (Technical Summary)
 
-Implement a three-tier error handling model: (1) **Retry** — transient errors are retried with configurable backoff, (2) **Side Output / DLQ** — poison messages that fail after retries are routed to a Dead Letter Queue side output instead of crashing the job, (3) **Fail Job** — catastrophic errors (OOM, state corruption) cause job failure. Each operator can configure its error handling policy. A built-in DLQ sink writes failed events with error metadata.
+Implement a three-tier error handling model: (1) **Retry** — transient errors are retried with configurable backoff, (2) **Side Output / DLQ** — poison messages that fail after retries are routed to a Dead Letter Queue side output instead of crashing the job, (3) **Fail Job** — catastrophic errors (OOM, state corruption) cause job failure. Each operator can configure its error handling policy. A configured DLQ sink receives failed events with error metadata.
 
 ### 1.3 Goals & Non-Goals
 
@@ -121,8 +130,8 @@ flowchart TD
 
 | Category | Examples | Default Handling |
 |----------|----------|-----------------|
-| **Transient** | Network timeout, connection reset, temporary unavailability | Retry with backoff |
-| **Poison** | Deserialization failure, null pointer in user code, schema mismatch | Route to DLQ |
+| **Transient** | Network timeout, connection reset, temporary unavailability | Retry within the configured budget (default: zero retries, then fail) |
+| **Poison** | Deserialization failure, panic in user code, schema mismatch | Skip retries; apply the configured exhausted action (default: fail) |
 | **Fatal** | Out of memory, state corruption, disk full | Fail job |
 
 ### 2.3 Component Breakdown
@@ -130,11 +139,11 @@ flowchart TD
 **Component 1:** Error Handler (per operator)
 * **Responsibility:** Classify errors, apply retry logic, route to DLQ or fail.
 * **Technology:** Wrapper around user-provided operator functions
-* **Interactions:** Catches errors from Map/FlatMap/Filter/Process/WriteBatch. Applies configured policy.
+* **Interactions:** Catches errors from Map/FlatMap/Filter/Process and synchronous Sink.Write, including sinks that delegate Write to WriteBatch. Applies configured policy; it does not add multi-record batching.
 
 **Component 2:** DLQ Side Output
 * **Responsibility:** Collect failed events with error metadata. Route to a configured DLQ sink.
-* **Technology:** Wire's existing side output mechanism (see WIP-14)
+* **Technology:** Per-operator DLQ writer alongside the normal output path
 * **Interactions:** DLQ events include original event + error message + operator name + timestamp.
 
 ---
@@ -144,11 +153,14 @@ flowchart TD
 ### 3.1 Error Handling Configuration (Go SDK)
 
 ```go
-stream.Map("parse", parseFunc).
+stream.MapWithName("parse", parseFunc).
     WithErrorHandler(sdk.ErrorHandler{
         MaxRetries:   3,
-        Backoff:      sdk.ExponentialBackoff(100*time.Millisecond, 10*time.Second, 2.0),
-        OnExhausted:  sdk.RouteToDLQ,   // RouteToDLQ | FailJob | DropEvent
+        Backoff:      "exponential",
+        InitialDelayMS: 100,
+        MaxDelayMS:   10000,
+        Multiplier:   2.0,
+        OnExhausted:  "dlq",            // dlq | fail | drop
     })
 ```
 
@@ -266,8 +278,8 @@ Retry state is ephemeral — held in memory during retry attempts. If the task c
 | **Context** | Failed events need to go somewhere. |
 | **Options Considered** | (A) Side output to a DLQ sink, (B) Separate DLQ pipeline, (C) In-place error field on the event |
 | **Decision** | Option A |
-| **Rationale** | Reuses Wire's existing side output infrastructure (WIP-14). No new infrastructure. DLQ sink is just a regular Sink with a reserved input name. |
-| **Trade-offs Accepted** | DLQ events don't participate in checkpointing (at-least-once delivery to DLQ). |
+| **Rationale** | DLQ delivery uses a per-operator side-output writer. The destination is a regular sink, selected by the reserved YAML input or the SDK DLQ binding. |
+| **Trade-offs Accepted** | DLQ events do not participate in checkpointing. Best-effort delivery may lose records on failure and duplicate records on replay. |
 | **Revisit Trigger** | If users need exactly-once DLQ delivery. |
 
 ---
@@ -278,9 +290,9 @@ Retry state is ephemeral — held in memory during retry attempts. If the task c
 | -- | -- | -- | -- | -- |
 | 1 | Every event fails (100% error rate) | All events routed to DLQ. Pipeline runs but produces no output. Metric alerts should catch this. | No useful output | High |
 | 2 | DLQ sink itself fails | DLQ write failure logged. Original event dropped. DLQ is best-effort. | Lost DLQ record | Medium |
-| 3 | Retry delay > checkpoint interval | Retry still in progress when barrier arrives. Barrier waits for retry to complete (bounded by max_delay). | Checkpoint delayed | Medium |
+| 3 | Retry delay > checkpoint interval | Retry still in progress when barrier arrives. Barrier waits for the current call and retry sequence. Backoff is bounded by retry count and max_delay; user calls and sink writes must honor cancellation. | Checkpoint delayed | Medium |
 | 4 | User function panics (not returns error) | Caught by `recover()`, wrapped as error, treated as poison message → DLQ | Event to DLQ | Medium |
-| 5 | Transient error becomes permanent | Retries exhausted → DLQ. If DLQ configured, pipeline continues. If not, event dropped with log. | Individual events lost | Medium |
+| 5 | Transient error becomes permanent | Reclassify immediately; poison errors use the configured exhausted action, fatal errors fail. A missing DLQ logs and drops. | Individual events lost | Medium |
 
 ---
 
@@ -304,9 +316,9 @@ Retry state is ephemeral — held in memory during retry attempts. If the task c
 
 1. Map returns error on 1 of 100 events → 99 events to sink, 1 to DLQ
 2. Sink WriteBatch fails transiently → retry succeeds → no data loss
-3. Sink WriteBatch fails permanently → retries exhausted → job fails (Sink errors are fatal by default)
+3. Sink WriteBatch remains unavailable → retries exhausted → job fails (the default exhausted action is fail; explicitly fatal errors skip retries)
 4. Panic in user function → caught → event to DLQ → pipeline continues
-5. No DLQ configured + on_exhausted=dlq → event dropped with warning log
+5. No DLQ configured + on_exhausted=dlq → event dropped with ERROR log
 
 ---
 

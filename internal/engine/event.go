@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"bytes"
+
 	"github.com/tarungka/wire/internal/protocol"
 )
 
@@ -14,6 +16,21 @@ type Event struct {
 	Value          []byte
 	EventTime      int64
 	Headers        map[string][]byte
+}
+
+// cloneEventPayload gives an operator attempt its own mutable payload. Internal
+// queue/activity markers retain their identity and are never exposed to users.
+func cloneEventPayload(e Event) Event {
+	e.Key = bytes.Clone(e.Key)
+	e.Value = bytes.Clone(e.Value)
+	if e.Headers != nil {
+		headers := make(map[string][]byte, len(e.Headers))
+		for key, value := range e.Headers {
+			headers[key] = bytes.Clone(value)
+		}
+		e.Headers = headers
+	}
+	return e
 }
 
 type inputActivity struct {

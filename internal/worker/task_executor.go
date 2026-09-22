@@ -105,17 +105,9 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			if !ok {
 				return fmt.Errorf("worker: DLQ factory returned %T", dlqOp)
 			}
-			if err := sink.Open(ctx); err != nil {
-				return fmt.Errorf("worker: open DLQ: %w", err)
-			}
-			defer sink.Close()
-			cfg.DLQWriter = func(e engine.DLQEvent) error {
-				data, err := engine.MarshalDLQEvent(e)
-				if err != nil {
-					return err
-				}
-				return sink.Write(ctx, engine.Event{Key: e.OriginalEvent.Key, Value: data, EventTime: e.Timestamp})
-			}
+			destination := engine.OpenDLQDestination(ctx, sink, log.With().Str("operator", od.OperatorID).Logger())
+			defer destination.Close()
+			cfg.DLQWriter = destination.Write
 		}
 		errorConfigs = append(errorConfigs, cfg)
 	}

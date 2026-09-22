@@ -7,6 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/engine"
@@ -48,6 +52,11 @@ func (s *policySink) Write(_ context.Context, e engine.Event) error {
 	return nil
 }
 func TestTaskExecutorNamedDLQ(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	previous := otel.GetMeterProvider()
+	otel.SetMeterProvider(provider)
+	defer func() { otel.SetMeterProvider(previous); _ = provider.Shutdown(context.Background()) }()
 	reg := NewRegistry()
 	dlq := &policySink{}
 	reg.RegisterSource("source", func(context.Context, []byte, TaskContext) (engine.SourceOperator, error) { return &policySource{}, nil })
@@ -64,6 +73,29 @@ func TestTaskExecutorNamedDLQ(t *testing.T) {
 	}
 	if !dlq.opened || !dlq.closed || len(dlq.events) != 1 {
 		t.Fatalf("DLQ lifecycle/output: %+v", dlq)
+	}
+	var collected metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &collected); err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int64{}
+	for _, scope := range collected.ScopeMetrics {
+		for _, metric := range scope.Metrics {
+			if metric.Name != "wire_operator_errors_total" && metric.Name != "wire_dlq_events_total" {
+				continue
+			}
+			for _, point := range metric.Data.(metricdata.Sum[int64]).DataPoints {
+				op, _ := point.Attributes.Value("operator")
+				task, _ := point.Attributes.Value("task_id")
+				if op.AsString() != "parse" || task.AsString() != "task" {
+					t.Fatalf("wrong attribution: %+v", point)
+				}
+				counts[metric.Name] += point.Value
+			}
+		}
+	}
+	if counts["wire_operator_errors_total"] != 1 || counts["wire_dlq_events_total"] != 1 {
+		t.Fatalf("missing runtime counters: %+v", counts)
 	}
 	var record map[string]json.RawMessage
 	if err := json.Unmarshal(dlq.events[0].Value, &record); err != nil {
