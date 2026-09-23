@@ -126,3 +126,21 @@ This alignment ensures the snapshot captures **exactly** the state of "All event
     *   **Idempotent Sinks (KV Store):** Naturally Exactly-Once.
     *   **Transactional Sinks:** Use checkpoint-driven two-phase commit. Preparation precedes snapshot capture and replication; a durable global decision authorizes idempotent commit. Recovery fences prior writers, resolves orphan transactions and finishes the selected commit before replay. Aborts require task recovery, and bounded sources coordinate a final checkpoint. See the [WIP-10 runtime contract](trds/WIP-10/runtime-contract.md) for the public SDK interface, connector obligations and runtime limits.
     *   **Standard Sinks:** At-Least-Once (may see duplicates after replay).
+
+
+## 7. Operator Errors and Dead Letter Queues
+
+The default operator error policy fails the task. Per-operator policies can
+retry transient failures with bounded backoff, drop a failed record, or send its
+original payload and error metadata to a configured DLQ sink. Poison errors and
+processing panics skip retries; fatal resource/state errors fail immediately.
+A retry blocks progress of that operator chain, including checkpoint barriers,
+until the call succeeds, exhausts its policy or is cancelled. User calls must
+honor cancellation; a backoff cap cannot bound an uncooperative user function.
+
+Only successful attempts publish normal output. Retryable state mutations and
+external side effects must tolerate repeated execution. DLQ writes are
+synchronous, cancellable and best effort: missing/failed destinations log and
+count drops, and replay can duplicate DLQ records. DLQ delivery does not
+participate in checkpoint transactions. See [error-policy usage](sdk/error_handling.md)
+and [WIP-11 acceptance](trds/WIP-11/acceptance.md).

@@ -67,7 +67,7 @@ type TaskSlotConfig struct {
 	Watermark                   WatermarkConfig      // Watermark generation and propagation config.
 	Checkpoint                  CheckpointConfig     // Checkpoint timeout and failure tracking config.
 	ErrorConfigs                []ErrorHandlerConfig // Per-operator error handling config. nil = legacy behavior (fail on any error).
-	DLQBufferSize               int                  // DLQ channel buffer capacity. 0 → DefaultDLQBufferSize.
+	DLQBufferSize               int                  // Deprecated: task DLQ delivery uses ErrorConfigs.DLQWriter; this field is ignored.
 }
 
 // DefaultTaskSlotConfig returns a TaskSlotConfig populated with default values.

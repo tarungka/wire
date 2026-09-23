@@ -3,6 +3,7 @@ package sdk
 import (
 	"fmt"
 
+	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/rpc"
 )
 
@@ -147,6 +148,12 @@ func (g *StreamGraph) validate() error {
 	hasSources := false
 	hasSinks := false
 	for _, node := range g.nodes {
+		if node.ErrorPolicy != nil && node.ErrorPolicy.OnExhausted == "dlq" && node.DLQSink == nil && (node.NamedDLQ == nil || node.NamedDLQ.ClassName == "") {
+			return fmt.Errorf("%w: DLQ destination required for %q", ErrInvalidConfig, node.Name)
+		}
+		if _, ok := node.Sink.(engine.TransactionalSink); ok && node.ErrorPolicy != nil && (node.ErrorPolicy.MaxRetries != 0 || (node.ErrorPolicy.OnExhausted != "" && node.ErrorPolicy.OnExhausted != "fail")) {
+			return fmt.Errorf("%w: transactional sink requires fail policy with no record retries", ErrInvalidConfig)
+		}
 		if node.Watermark != nil {
 			if node.Type != NodeSource {
 				return fmt.Errorf("watermark strategy requires a source: %s", node.Name)

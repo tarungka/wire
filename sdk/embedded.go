@@ -19,6 +19,7 @@ import (
 // embeddedExecutor runs pipelines in-process.
 type embeddedExecutor struct {
 	env *StreamExecutionEnvironment
+	dlq map[int]*engine.DLQDestination
 }
 
 // stageIO holds the channels for a single pipeline stage's parallel instances.
@@ -48,13 +49,27 @@ func (ex *embeddedExecutor) run(ctx context.Context, jobName string) (*JobResult
 			return nil, fmt.Errorf("sdk: named DLQ sinks require cluster mode")
 		}
 	}
+	ex.dlq = make(map[int]*engine.DLQDestination)
+	shared := make(map[*sharedPipelineDLQSink]*engine.DLQDestination)
 	for _, node := range sorted {
-		if node.DLQSink != nil {
-			if err := node.DLQSink.Open(ctx); err != nil {
-				return nil, fmt.Errorf("sdk: open DLQ for %q: %w", node.Name, err)
-			}
-			defer node.DLQSink.Close()
+		if node.DLQSink == nil {
+			continue
 		}
+		if sink, ok := node.DLQSink.(*sharedPipelineDLQSink); ok {
+			if destination := shared[sink]; destination != nil {
+				ex.dlq[node.ID] = destination
+				continue
+			}
+		}
+		destination, err := engine.OpenDLQDestination(ctx, node.DLQSink, log.With().Str("operator", node.Name).Logger())
+		if err != nil {
+			return nil, err
+		}
+		ex.dlq[node.ID] = destination
+		if sink, ok := node.DLQSink.(*sharedPipelineDLQSink); ok {
+			shared[sink] = destination
+		}
+		defer destination.Close()
 	}
 	hasShuffleBoundary := false
 	for _, edge := range graph.edges {
@@ -142,15 +157,8 @@ func (ex *embeddedExecutor) runLinearInstance(
 			if err != nil {
 				return err
 			}
-			if node.DLQSink != nil {
-				sink := node.DLQSink
-				cfg.DLQWriter = func(e engine.DLQEvent) error {
-					data, err := engine.MarshalDLQEvent(e)
-					if err != nil {
-						return err
-					}
-					return sink.Write(ctx, Event{Key: e.OriginalEvent.Key, Value: data, EventTime: e.Timestamp})
-				}
+			if destination := ex.dlq[node.ID]; destination != nil {
+				cfg.DLQWriter = destination.Write
 			}
 			errorConfigs = append(errorConfigs, cfg)
 		}
@@ -172,7 +180,7 @@ func (ex *embeddedExecutor) runLinearInstance(
 
 	aligner := engine.NewBarrierAligner(1, engine.DefaultAlignmentBufferSize)
 	metrics := engine.NoopCheckpointMetrics()
-	errMetrics := engine.NoopErrorMetrics()
+	errMetrics := engine.NewTelemetryErrorMetrics("")
 	chainLog := log.With().Int("instance", instanceIdx).Logger()
 
 	ig, igctx := errgroup.WithContext(runCtx)
@@ -382,15 +390,8 @@ func (ex *embeddedExecutor) runStageInstance(
 			if err != nil {
 				return err
 			}
-			if node.DLQSink != nil {
-				sink := node.DLQSink
-				cfg.DLQWriter = func(e engine.DLQEvent) error {
-					data, err := engine.MarshalDLQEvent(e)
-					if err != nil {
-						return err
-					}
-					return sink.Write(ctx, Event{Key: e.OriginalEvent.Key, Value: data, EventTime: e.Timestamp})
-				}
+			if destination := ex.dlq[node.ID]; destination != nil {
+				cfg.DLQWriter = destination.Write
 			}
 			errorConfigs = append(errorConfigs, cfg)
 		}
@@ -409,7 +410,7 @@ func (ex *embeddedExecutor) runStageInstance(
 
 	aligner := engine.NewBarrierAligner(1, engine.DefaultAlignmentBufferSize)
 	metrics := engine.NoopCheckpointMetrics()
-	errMetrics := engine.NoopErrorMetrics()
+	errMetrics := engine.NewTelemetryErrorMetrics("")
 	chainLog := log.With().Int("instance", instanceIdx).Logger()
 
 	ig, igctx := errgroup.WithContext(runCtx)

@@ -1,9 +1,12 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
+	"net"
+	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -37,7 +40,7 @@ type ErrorClassifier func(err error) ErrorClass
 // ErrorHandlerConfig holds per-operator error handling configuration.
 type ErrorHandlerConfig struct {
 	// DLQWriter synchronously delivers a failed event; failures are logged and counted as drops.
-	DLQWriter    func(DLQEvent) error
+	DLQWriter    func(context.Context, DLQEvent) error
 	OperatorName string          // Human-readable operator name (for metrics/DLQ).
 	MaxRetries   int             // 0 = no retries (default).
 	Backoff      BackoffStrategy // nil = no backoff.
@@ -81,12 +84,17 @@ func ExponentialBackoff(initialDelay, maxDelay time.Duration, multiplier float64
 	}
 }
 
-// defaultClassifier classifies errors based on sentinel wrapping.
+// defaultClassifier recognizes explicit markers and standard resource/network
+// failures. Domain-specific errors can wrap ErrTransient or ErrFatal.
 func defaultClassifier(err error) ErrorClass {
-	if errors.Is(err, ErrFatal) {
+	if errors.Is(err, ErrFatal) || errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.ENOMEM) {
 		return ErrorClassFatal
 	}
-	if errors.Is(err, ErrTransient) {
+	if errors.Is(err, ErrTransient) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) {
+		return ErrorClassTransient
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
 		return ErrorClassTransient
 	}
 	return ErrorClassPoison
@@ -95,10 +103,18 @@ func defaultClassifier(err error) ErrorClass {
 // classify returns the ErrorClass for err using the config's classifier
 // or the default classifier.
 func classify(cfg ErrorHandlerConfig, err error) ErrorClass {
-	if cfg.Classifier != nil {
-		return cfg.Classifier(err)
+	classified := defaultClassifier(err)
+	if classified == ErrorClassFatal {
+		return classified
 	}
-	return defaultClassifier(err)
+	if cfg.Classifier != nil {
+		custom := cfg.Classifier(err)
+		if custom > ErrorClassFatal {
+			return ErrorClassFatal
+		}
+		return custom
+	}
+	return classified
 }
 
 // safeInvoke calls fn with panic recovery. Panics are wrapped as ErrOperatorPanic.
@@ -131,9 +147,12 @@ func invokeWithRetry(
 		return nil
 	}
 
-	metrics.IncErrorTotal(cfg.OperatorName)
-
+	// Task cancellation is a lifecycle event, not a poison record.
+	if ctxErr := cc.ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
 	cls := classify(cfg, err)
+	recordOperatorError(metrics, cfg.OperatorName, cls)
 
 	// Fatal errors always fail the job immediately.
 	if cls == ErrorClassFatal {
@@ -142,7 +161,7 @@ func invokeWithRetry(
 
 	// Poison errors skip retries and go straight to exhausted handling.
 	if cls == ErrorClassPoison {
-		return handleExhausted(cfg, event, err, 0, cc.dlqCh, metrics, cc.log)
+		return handleExhausted(cc.ctx, cfg, event, err, 0, cc.dlqCh, metrics, cc.log)
 	}
 
 	// Transient errors: retry up to MaxRetries times.
@@ -172,25 +191,29 @@ func invokeWithRetry(
 			return nil
 		}
 
-		metrics.IncErrorTotal(cfg.OperatorName)
-
+		// Task cancellation is a lifecycle event, not a poison record.
+		if ctxErr := cc.ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		// Re-classify — error nature may change between attempts.
 		cls = classify(cfg, err)
+		recordOperatorError(metrics, cfg.OperatorName, cls)
 		if cls == ErrorClassFatal {
 			return err
 		}
 		if cls == ErrorClassPoison {
-			return handleExhausted(cfg, event, err, attempt, cc.dlqCh, metrics, cc.log)
+			return handleExhausted(cc.ctx, cfg, event, err, attempt, cc.dlqCh, metrics, cc.log)
 		}
 	}
 
 	// Retries exhausted.
-	return handleExhausted(cfg, event, fmt.Errorf("%w: %v", ErrRetriesExhausted, err), cfg.MaxRetries, cc.dlqCh, metrics, cc.log)
+	return handleExhausted(cc.ctx, cfg, event, fmt.Errorf("%w: %w", ErrRetriesExhausted, err), cfg.MaxRetries, cc.dlqCh, metrics, cc.log)
 }
 
 // handleExhausted applies the OnExhausted policy. Returns nil for DLQ/Drop
 // (event handled), or the error for FailJob.
 func handleExhausted(
+	ctx context.Context,
 	cfg ErrorHandlerConfig,
 	event Event,
 	err error,
@@ -199,6 +222,9 @@ func handleExhausted(
 	metrics ErrorMetrics,
 	log zerolog.Logger,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	switch cfg.OnExhausted {
 	case RouteToDLQ:
 		dlqEvent := DLQEvent{
@@ -209,7 +235,10 @@ func handleExhausted(
 			RetryCount:    retryCount,
 		}
 		if cfg.DLQWriter != nil {
-			if writeErr := safeInvoke(func() error { return cfg.DLQWriter(dlqEvent) }); writeErr != nil {
+			if writeErr := safeInvoke(func() error { return cfg.DLQWriter(ctx, dlqEvent) }); writeErr != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				metrics.IncDropTotal(cfg.OperatorName)
 				log.Error().Str("operator", cfg.OperatorName).Err(writeErr).Msg("DLQ sink failed, dropping event")
 			} else {
@@ -252,4 +281,20 @@ func buildChainLinks(operators []Operator, errorConfigs []ErrorHandlerConfig) []
 		links[i] = ChainLink{Operator: op, Config: cfg}
 	}
 	return links
+}
+
+// ValidateTransactionalErrorPolicies rejects record-level recovery on a sink
+// that may have staged a write before returning an error. Replaying the whole
+// transaction is necessary; retrying or dropping one record is unsafe.
+func ValidateTransactionalErrorPolicies(operators []Operator, configs []ErrorHandlerConfig) error {
+	for i, op := range operators {
+		if _, ok := op.(TransactionalSink); !ok || i >= len(configs) {
+			continue
+		}
+		cfg := configs[i]
+		if cfg.MaxRetries != 0 || cfg.OnExhausted != FailJob {
+			return fmt.Errorf("transactional sink %q requires fail policy with no record retries", cfg.OperatorName)
+		}
+	}
+	return nil
 }

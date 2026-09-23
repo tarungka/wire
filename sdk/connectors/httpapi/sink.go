@@ -44,6 +44,12 @@ func (e *DeliveryError) Error() string {
 	return fmt.Sprintf("http-api: delivery failed (status %d, permanent=%t)", e.StatusCode, e.Permanent)
 }
 
+// Is lets the operator error policy retry temporary delivery failures after
+// the connector's own bounded attempts are exhausted.
+func (e *DeliveryError) Is(target error) bool {
+	return !e.Permanent && target == engine.ErrTransient
+}
+
 // Sink sends each Write synchronously. WriteBatch amortizes request overhead;
 // it never acknowledges a locally buffered event before delivery succeeds.
 type Sink struct {

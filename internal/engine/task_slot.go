@@ -82,6 +82,10 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		return errors.New("checkpoint upload concurrency must not be negative")
 	}
 
+	if err := ValidateTransactionalErrorPolicies(ts.Operators, ts.Config.ErrorConfigs); err != nil {
+		return err
+	}
+
 	// Initialize synchronously so workers report RUNNING only after every
 	// operator, including the source, has opened successfully.
 	operators := make([]Operator, 0, len(ts.Operators)+1)
@@ -381,17 +385,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// Resolve error metrics.
 	errMetrics := ts.ErrorMetrics
 	if errMetrics == nil {
-		errMetrics = NoopErrorMetrics()
-	}
-
-	// Create DLQ channel if error configs are configured.
-	var dlqCh chan DLQEvent
-	if ts.Config.ErrorConfigs != nil {
-		bufSize := ts.Config.DLQBufferSize
-		if bufSize <= 0 {
-			bufSize = DefaultDLQBufferSize
-		}
-		dlqCh = make(chan DLQEvent, bufSize)
+		errMetrics = NewTelemetryErrorMetrics(ts.TaskID)
 	}
 
 	// Detect if the last operator is a TransactionalSink.
@@ -422,22 +416,6 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		})
 	}
 
-	// Launch DLQ drain goroutine if DLQ is configured.
-	if dlqCh != nil {
-		dlqLog := ts.log.With().Str("component", "dlq").Logger()
-		g.Go(func() error {
-			defer taskGoroutineStarted(runCtx)()
-			for dlqEvent := range dlqCh {
-				dlqLog.Error().
-					Str("operator", dlqEvent.OperatorName).
-					Str("error", dlqEvent.Error).
-					Int("retries", dlqEvent.RetryCount).
-					Msg("event routed to DLQ")
-			}
-			return nil
-		})
-	}
-
 	// Launch operator chain (the main processing goroutine).
 	// When it finishes, cancel the run context to shut down all other goroutines.
 	//
@@ -455,10 +433,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		defer taskGoroutineStarted(runCtx)()
 		defer producerWg.Done()
 		defer runCancel() // Signal all goroutines to stop when chain exits.
-		if dlqCh != nil {
-			defer close(dlqCh)
-		}
-		err := runOpenedOperatorChain(chainCtx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics, ts.RestoredCheckpointID, checkpoint)
+		err := runOpenedOperatorChain(chainCtx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, nil, errMetrics, ts.RestoredCheckpointID, checkpoint)
 		if err != nil {
 			chainErr.Store(&err)
 		} else {

@@ -39,7 +39,7 @@ These topics are completely absent — no doc covers them.
 
 6. **Security** — The technical doc has empty headings for "Data Encryption" and "Secret Management" with questions but no answers. mTLS, auth, RBAC — all absent.
 
-7. **Error Handling & Dead Letter Queue** — No documented strategy for handling processing errors, poison messages, or routing failed events. The Gemini research recommended first-class DLQ; nothing was captured.
+7. **Error Handling & Dead Letter Queue — resolved by WIP-11.** [Go/YAML usage](sdk/error_handling.md) covers retry classification, exhausted actions, best-effort DLQ delivery and metrics. [Acceptance evidence](trds/WIP-11/acceptance.md) records runtime and integration verification.
 
 8. **Job Lifecycle** — No documentation on how jobs are submitted, started, paused, canceled, or upgraded. No REST API spec.
 
@@ -108,7 +108,7 @@ This file is labeled Draft v0.1.0 but is functionally an outline, not documentat
 | **P2** | Barrier alignment timeout | Edge case but affects correctness |
 | **P2** | Watermark generation algorithm | Affects correctness |
 | **P2** | Key Group assignment | Affects rescaling correctness |
-| **P2** | Error handling / DLQ | Affects operability |
+| **Resolved** | Error handling / DLQ | WIP-11 usage and acceptance documented |
 | **P2** | Late data side outputs | Feature completeness |
 | **P3** | Glossary | Developer onboarding |
 | **P3** | Goroutine model details | Performance tuning |
