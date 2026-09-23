@@ -299,3 +299,7 @@ func (s *watermarkTransactionalSink) Abort(context.Context) error {
 	s.prepared = 0
 	return nil
 }
+
+func (*watermarkTransactionalSink) RecoverTransactions(context.Context, engine.TransactionRecovery) error {
+	return nil
+}

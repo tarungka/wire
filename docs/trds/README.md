@@ -80,7 +80,7 @@ All 25 proposals, initially audited against `master` at `0e78195` on 2026-09-12 
 | [WIP-07](WIP-07/README.md) | RPC Interface Specification | Implemented |
 | [WIP-08](WIP-08/README.md) | Heartbeat & Health Monitoring | Implemented |
 | [WIP-09](WIP-09/README.md) | Coordinator High Availability | Implemented |
-| [WIP-10](WIP-10/README.md) | Two-Phase Commit for Transactional Sinks | Partially Implemented |
+| [WIP-10](WIP-10/README.md) | Two-Phase Commit for Transactional Sinks | Implemented |
 | [WIP-11](WIP-11/README.md) | Error Handling & Dead Letter Queues | Partially Implemented |
 | [WIP-12](WIP-12/README.md) | Late Data & Allowed Lateness | Partially Implemented |
 | [WIP-20](WIP-20/README.md) | Task Execution Engine | Implemented |
@@ -132,7 +132,7 @@ completion merged in [#188](https://github.com/tarungka/wire/pull/188).
 | [WIP-07](WIP-07/README.md) | [#202](https://github.com/tarungka/wire/pull/202) | Concurrent RPC session shutdown |
 | [WIP-08](WIP-08/README.md) | [#201](https://github.com/tarungka/wire/pull/201) | Live-worker placement |
 | [WIP-09](WIP-09/README.md) | [#200](https://github.com/tarungka/wire/pull/200) | Recovery fencing metadata validation |
-| [WIP-10](WIP-10/README.md) | [#199](https://github.com/tarungka/wire/pull/199) | Local transaction boundaries |
+| [WIP-10](WIP-10/README.md) | [#224](https://github.com/tarungka/wire/pull/224) | Distributed transactional recovery and final checkpoints; follows #199 |
 | [WIP-11](WIP-11/README.md) | [#194](https://github.com/tarungka/wire/pull/194) | Runtime error policies and DLQ sinks |
 | [WIP-12](WIP-12/README.md) | [#193](https://github.com/tarungka/wire/pull/193) | Window lateness and snapshots |
 | [WIP-13](WIP-13/README.md) | [#195](https://github.com/tarungka/wire/pull/195) | Configuration reference and substitution |

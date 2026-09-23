@@ -17,6 +17,9 @@ type sourceWatermarkQueue struct{ mu sync.Mutex }
 func (q *sourceWatermarkQueue) emit(ctx context.Context, strategy WatermarkStrategy, events chan<- Event, timestamp *int64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	next := strategy.GenerateWatermark()
 	if next <= *timestamp {
 		return nil

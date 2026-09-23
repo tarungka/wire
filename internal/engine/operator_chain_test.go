@@ -923,16 +923,16 @@ func TestOperatorChain_TransactionalSink_AbortThenRestart(t *testing.T) {
 
 	ops := []Operator{sink}
 	err := runOperatorChain(ctx, ops, inputCh, controlCh, outputCh, aligner, 1, NoopCheckpointMetrics(), testLogger(), sink, nil, nil, nil, NoopErrorMetrics())
-	if err != nil {
+	if !errors.Is(err, ErrTransactionAborted) {
 		t.Fatalf("runOperatorChain: %v", err)
 	}
 
-	// BeginTransaction at startup + after Abort.
-	if sink.BeginTxnCalls() != 2 {
-		t.Errorf("BeginTransaction calls: got %d, want 2", sink.BeginTxnCalls())
+	// Recovery must replay the rolled-back interval before a fresh transaction.
+	if sink.BeginTxnCalls() != 1 {
+		t.Errorf("BeginTransaction calls: got %d, want 1", sink.BeginTxnCalls())
 	}
-	if sink.AbortCallCount() != 2 {
-		t.Errorf("Abort calls: got %d, want 2", sink.AbortCallCount())
+	if sink.AbortCallCount() != 1 {
+		t.Errorf("Abort calls: got %d, want 1", sink.AbortCallCount())
 	}
 }
 
@@ -1641,7 +1641,7 @@ func (m *selectiveErrorMap) Map(ctx context.Context, e Event) (Event, error) {
 	return e, nil
 }
 
-func TestPreparedTransactionDefersEOFAcrossCommit(t *testing.T) {
+func TestPreparedTransactionDefersEOFButRejectsUncommittedTail(t *testing.T) {
 	sink := &mockTransactionalSink{}
 	input := make(chan Event, 1)
 	input <- Event{Value: []byte("next transaction")}
@@ -1655,8 +1655,8 @@ func TestPreparedTransactionDefersEOFAcrossCommit(t *testing.T) {
 		t.Fatal("EOF drained records before commit")
 	}
 	err := handleControl(cc, ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 7}, &eof)
-	if err != errChainDone {
-		t.Fatalf("deferred EOF: %v", err)
+	if !errors.Is(err, ErrUncommittedTransactionAtEOF) {
+		t.Fatalf("deferred EOF must reject uncommitted tail: %v", err)
 	}
 	if len(input) != 0 || sink.BeginTxnCalls() != 1 || len(sink.CommitCallIDs()) != 1 {
 		t.Fatal("pending records did not resume after commit")
@@ -1717,7 +1717,7 @@ func TestTransactionSideBufferWaitsForDecision(t *testing.T) {
 	if written != 0 || len(cc.deferredEvents) != 1 {
 		t.Fatal("post-barrier event entered prepared transaction")
 	}
-	if err := handleControl(cc, ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 7}, &eof); err != nil {
+	if err := handleControl(cc, ControlMsg{Type: CtrlCommitCheckpoint, CheckpointID: 7, EpochID: 1}, &eof); err != nil {
 		t.Fatal(err)
 	}
 	sink.mu.Lock()

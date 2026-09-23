@@ -109,6 +109,7 @@ func (s CheckpointStatus) String() string {
 
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
+	DeploymentGeneration          uint64    `codec:"deployment_generation,omitempty"`
 	CheckpointOutcomes            []bool    `codec:"checkpoint_outcomes,omitempty"`
 	CheckpointAttempts            uint64    `codec:"checkpoint_attempts,omitempty"`
 	CheckpointFailures            uint64    `codec:"checkpoint_failures,omitempty"`
@@ -152,6 +153,8 @@ type TaskAssignmentMap struct {
 
 // CheckpointMeta holds persisted metadata for a single checkpoint.
 type CheckpointMeta struct {
+	Final           bool                 `codec:"final,omitempty"`
+	AttemptID       string               `codec:"attempt_id,omitempty"`
 	InvalidReason   string               `codec:"invalid_reason,omitempty"`
 	ManifestVersion int                  `codec:"manifest_version,omitempty"`
 	TaskManifests   map[string][]byte    `codec:"task_manifests,omitempty"`

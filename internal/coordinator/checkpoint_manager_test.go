@@ -249,3 +249,46 @@ func TestCheckpointRejectsUnassignedReplicaWithoutChangingDecision(t *testing.T)
 		})
 	}
 }
+
+func TestCheckpointReportsAreFencedToDeploymentAttempt(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
+	assignment := TaskAssignmentMap{AttemptID: "current", TaskDescriptors: manifestTaskDescriptors("task"), JobID: "job", Assignments: map[string]string{"task": "worker"}, Replicas: map[string]string{"task": "replica"}}
+	data, err := protocol.EncodeMsgPack(assignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(JobAssignmentsKey("job"), data); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := c.TriggerCheckpoint("job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp.AttemptID != "current" {
+		t.Fatal("checkpoint did not capture deployment attempt")
+	}
+	for _, attempt := range []string{"", "old"} {
+		req := rpc.AcknowledgeCheckpointRequest{AttemptID: attempt, JobID: "job", TaskID: "task", WorkerID: "worker", CheckpointID: cp.ID, EpochID: 5, State: manifestState(t, "task", "replica")}
+		if err := c.AcknowledgeCheckpoint(req); err == nil {
+			t.Fatal("stale attempt acknowledged checkpoint")
+		}
+		req.Failure = "upload failed"
+		if err := c.ReportCheckpointFailure(req); err == nil {
+			t.Fatal("stale attempt aborted checkpoint")
+		}
+	}
+	req := rpc.AcknowledgeCheckpointRequest{AttemptID: "current", JobID: "job", TaskID: "task", WorkerID: "worker", CheckpointID: cp.ID, EpochID: 5, State: manifestState(t, "task", "replica")}
+	if err := c.AcknowledgeCheckpoint(req); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range c.DrainCommands("worker") {
+		var decision rpc.TriggerCheckpointRequest
+		if err := protocol.DecodeMsgPack(command.Data, &decision); err != nil {
+			t.Fatal(err)
+		}
+		if decision.AttemptID != "current" {
+			t.Fatal("checkpoint command lost deployment fence")
+		}
+	}
+}

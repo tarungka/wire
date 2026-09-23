@@ -11,16 +11,17 @@ import (
 )
 
 type taskCheckpointRuntime struct {
-	triggerMu   sync.Mutex
-	lastTrigger uint64
-	rescale     []engine.OperatorRescaleState
-	restoredID  uint64
-	restore     *engine.TaskCheckpoint
-	source      bool
-	triggers    chan engine.CheckpointTrigger
-	decisions   chan engine.ControlMsg
-	replicator  engine.CheckpointReplicator
-	report      func(context.Context, uint64, uint64, error) error
+	sourceExhausted func(context.Context) error
+	triggerMu       sync.Mutex
+	lastTrigger     uint64
+	rescale         []engine.OperatorRescaleState
+	restoredID      uint64
+	restore         *engine.TaskCheckpoint
+	source          bool
+	triggers        chan engine.CheckpointTrigger
+	decisions       chan engine.ControlMsg
+	replicator      engine.CheckpointReplicator
+	report          func(context.Context, uint64, uint64, error) error
 }
 
 func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor) (*taskCheckpointRuntime, func(), error) {
@@ -62,8 +63,25 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 	consecutiveFailures := 0
 	replicator := &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: &reconnectingCheckpointClient{address: desc.CheckpointReplicaAddress}}
 	runtime.replicator = replicator
+	runtime.sourceExhausted = func(ctx context.Context) error {
+		w.mu.Lock()
+		if w.tasks[taskID] != handle {
+			w.mu.Unlock()
+			return fmt.Errorf("source attempt replaced")
+		}
+		handle.status = rpc.TaskStatusFinishing
+		w.mu.Unlock()
+		response, err := w.client.UpdateTaskStatus(ctx, &rpc.UpdateTaskStatusRequest{WorkerID: w.cfg.WorkerID, JobID: jobID, TaskID: taskID, AttemptID: desc.AttemptID, EpochID: desc.EpochID, Status: rpc.TaskStatusFinishing})
+		if err != nil {
+			return err
+		}
+		if !response.Accepted {
+			return fmt.Errorf("source completion refused: %s", response.Message)
+		}
+		return nil
+	}
 	runtime.report = func(ctx context.Context, id, epoch uint64, uploadErr error) error {
-		request := &rpc.AcknowledgeCheckpointRequest{WorkerID: w.cfg.WorkerID, JobID: jobID, TaskID: taskID, CheckpointID: id, EpochID: epoch}
+		request := &rpc.AcknowledgeCheckpointRequest{AttemptID: desc.AttemptID, WorkerID: w.cfg.WorkerID, JobID: jobID, TaskID: taskID, CheckpointID: id, EpochID: epoch}
 		if uploadErr != nil {
 			request.Failure = uploadErr.Error()
 		} else {
@@ -100,7 +118,7 @@ func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) (accepted bo
 	}
 	w.mu.RLock()
 	handle := w.tasks[command.TaskID]
-	if handle == nil || handle.jobID != command.JobID || request.JobID != command.JobID || request.CheckpointID == 0 || request.EpochID != handle.epoch || request.EpochID != w.epoch || handle.checkpoint == nil {
+	if handle == nil || request.AttemptID != handle.attemptID || handle.jobID != command.JobID || request.JobID != command.JobID || request.CheckpointID == 0 || request.EpochID != handle.epoch || request.EpochID != w.epoch || handle.checkpoint == nil {
 		w.mu.RUnlock()
 		return
 	}
@@ -118,7 +136,7 @@ func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) (accepted bo
 		}
 		checkpoint.lastTrigger = request.CheckpointID
 		select {
-		case checkpoint.triggers <- engine.CheckpointTrigger{CheckpointID: request.CheckpointID, EpochID: request.EpochID}:
+		case checkpoint.triggers <- engine.CheckpointTrigger{Final: request.Final, CheckpointID: request.CheckpointID, EpochID: request.EpochID}:
 			return
 		default:
 			// Coalesce queued source triggers. The coordinator permits only
@@ -128,7 +146,7 @@ func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) (accepted bo
 			default:
 			}
 			select {
-			case checkpoint.triggers <- engine.CheckpointTrigger{CheckpointID: request.CheckpointID, EpochID: request.EpochID}:
+			case checkpoint.triggers <- engine.CheckpointTrigger{Final: request.Final, CheckpointID: request.CheckpointID, EpochID: request.EpochID}:
 			default:
 			}
 			return
@@ -137,16 +155,10 @@ func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) (accepted bo
 		kind := engine.CtrlAbortCheckpoint
 		if command.Type == rpc.CommandTypeCommitCheckpoint {
 			kind = engine.CtrlCommitCheckpoint
-		} else {
-			// Roll back prepared sinks before releasing aligned records.
-			select {
-			case checkpoint.decisions <- engine.ControlMsg{Type: engine.CtrlAbortTransaction, CheckpointID: request.CheckpointID, EpochID: request.EpochID}:
-			default:
-				w.log.Error().Str("task_id", command.TaskID).Msg("checkpoint command mailbox exhausted")
-				handle.cancel()
-				return
-			}
 		}
+		// The chain owns transaction state. One abort control atomically
+		// rolls back only a matching prepared transaction, or retires an
+		// unprepared alignment while preserving its current writes.
 		select {
 		case checkpoint.decisions <- engine.ControlMsg{Type: kind, CheckpointID: request.CheckpointID, EpochID: request.EpochID}:
 			return

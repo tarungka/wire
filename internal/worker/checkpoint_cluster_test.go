@@ -216,17 +216,23 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 			var state coordinator.CheckpointMeta
 			return protocol.DecodeMsgPack(data, &state) == nil && state.Status == coordinator.CheckpointAborted
 		})
-		current, err := coord.GetJob(job.ID)
-		if err != nil || current.Status != coordinator.JobRunning {
-			t.Fatalf("first failure killed job: %+v, %v", current, err)
-		}
 		if len(transactional) > 0 && transactional[0] {
 			waitFor(t, 3*time.Second, func() bool { return aborted.Load() > 0 })
-			before := written.Load()
-			waitFor(t, 3*time.Second, func() bool { return written.Load() > before })
+			// Transaction rollback requires source replay even when ordinary
+			// checkpoint failure policy would tolerate the failed snapshot.
+			// There is no completed checkpoint in this fixture to restore.
+			waitFor(t, 3*time.Second, func() bool {
+				current, err := coord.GetJob(job.ID)
+				return err == nil && (current.Status == coordinator.JobFailing || current.Status == coordinator.JobFailed)
+			})
 			if committed.Load() != 0 {
 				t.Fatal("failed checkpoint committed transaction")
 			}
+			return
+		}
+		current, err := coord.GetJob(job.ID)
+		if err != nil || current.Status != coordinator.JobRunning {
+			t.Fatalf("first non-transactional checkpoint failure killed job: %+v, %v", current, err)
 		}
 		if _, err := coord.TriggerCheckpoint(job.ID); err != nil {
 			t.Fatal(err)
@@ -457,3 +463,7 @@ func (*checkpointTestSink) BeginTransaction(context.Context) error      { return
 func (*checkpointTestSink) PreCommit(context.Context, uint64) error     { return nil }
 func (s *checkpointTestSink) Commit(_ context.Context, id uint64) error { s.commit(id); return nil }
 func (s *checkpointTestSink) Abort(context.Context) error               { s.abort(); return nil }
+
+func (*checkpointTestSink) RecoverTransactions(context.Context, engine.TransactionRecovery) error {
+	return nil
+}
