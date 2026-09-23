@@ -196,3 +196,6 @@ type JobMetrics struct {
 	RecordsOut int64
 	Duration   time.Duration
 }
+
+// NewStreamExecutionEnvironment is the descriptive alias for New.
+func NewStreamExecutionEnvironment() *StreamExecutionEnvironment { return New() }

@@ -16,3 +16,8 @@ func (env *StreamExecutionEnvironment) SetCheckpointMinPause(d time.Duration) *S
 func (env *StreamExecutionEnvironment) checkpointPolicy() *rpc.CheckpointPolicy {
 	return &rpc.CheckpointPolicy{Interval: env.checkpointInterval, Timeout: env.checkpointTimeout, MinPause: env.checkpointMinPause}
 }
+
+// SetMinPauseBetweenCheckpoints is an alias for SetCheckpointMinPause.
+func (env *StreamExecutionEnvironment) SetMinPauseBetweenCheckpoints(d time.Duration) *StreamExecutionEnvironment {
+	return env.SetCheckpointMinPause(d)
+}

@@ -15,7 +15,7 @@ Do not mark WIP-14 implemented until each item has execution evidence.
   Interval, timeout, minimum pause and restart policies are wired; audit the
   original named configuration APIs and concurrent-checkpoint requirement.
 - [x] MiniCluster and test harness exercise parallel state, timers, side outputs and recovery.
-- [ ] Public API walkthrough and runnable examples, YAML schema delegation to WIP-19.
+- [x] Public API walkthrough and runnable examples, YAML schema delegation to WIP-19.
 - [ ] Integration and race tests, build/vet/lint, one ready PR with acceptance evidence.
 
 ## Verified implementation checkpoint — 2026-09-24
@@ -89,3 +89,14 @@ process-crash durability. Sources must support replayable offsets for checkpoint
 recovery; ordinary sinks can see replayed records. Transactional sink correctness
 still requires the WIP-10 sink contract. Public walkthrough and final scope audit
 remain outstanding before a ready WIP-14 PR.
+
+## Walkthrough and original-scope audit
+
+The runnable stateful example uses only public SDK APIs, with bounded and
+injected-recovery modes. Both are asserted under race detection, and the recovery
+command was run verbatim. docs/sdk-walkthrough.md explains connector factories,
+managed state/timers, checkpoint/restart settings, side outputs, replay limits
+and remote named execution. SDK unit coverage measured 82.8% before the two new
+API aliases. scope-audit.md records original requirements and outstanding
+configuration/remote-backend/security/YAML cross-WIP gates without marking them
+complete. The descriptive constructor and minimum-pause aliases are available.
