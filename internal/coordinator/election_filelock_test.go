@@ -1,7 +1,11 @@
 package coordinator
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -113,5 +117,74 @@ func TestFileLockElection_SecondProcessBlocked(t *testing.T) {
 	}
 	if ctx.Err() == nil {
 		t.Fatal("expected context timeout")
+	}
+}
+
+func TestFileLockElectionRejectsInvalidEpochWithoutOverwriting(t *testing.T) {
+	for _, data := range [][]byte{{}, {1, 2}, {255, 255, 255, 255, 255, 255, 255, 255}} {
+		t.Run(fmt.Sprintf("%x", data), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "leader.lock")
+			if err := os.WriteFile(path+".epoch", data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			election := NewFileLockElection(path, ":4001")
+			defer election.Close()
+			if _, err := election.Campaign(context.Background(), "node"); err == nil {
+				t.Fatal("accepted corrupt or exhausted epoch")
+			}
+			got, err := os.ReadFile(path + ".epoch")
+			if err != nil || !bytes.Equal(got, data) {
+				t.Fatalf("overwrote fencing evidence: %x %v", got, err)
+			}
+			// Failed campaigning must release the lock, including on epoch errors.
+			if err := os.Remove(path + ".epoch"); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if _, err := election.Campaign(ctx, "node"); err != nil {
+				t.Fatalf("failed campaign leaked lock: %v", err)
+			}
+		})
+	}
+}
+
+func TestFileLockElectionParentCancellationRevokesAuthority(t *testing.T) {
+	election := NewFileLockElection(filepath.Join(t.TempDir(), "leader.lock"), ":4001")
+	defer election.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	grant, err := election.Campaign(ctx, "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if grant.Ctx.Err() == nil {
+		t.Fatal("election grant outlived its owner")
+	}
+}
+
+func TestFileLockStandbyDiscoversPublishedLeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "leader.lock")
+	leader := NewFileLockElection(path, "leader:4001")
+	standby := NewFileLockElection(path, "standby:4001")
+	defer leader.Close()
+	defer standby.Close()
+	if _, err := leader.Campaign(context.Background(), "leader"); err != nil {
+		t.Fatal(err)
+	}
+	want := LeaderInfo{NodeID: "leader", Address: "leader:4001", RPCAddress: "leader:4002", Epoch: 100}
+	if err := leader.PublishLeader(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := standby.ReadLeader(context.Background())
+	if err != nil || *got != want {
+		t.Fatalf("standby discovery: %+v %v", got, err)
+	}
+	if err := leader.Resign(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := standby.ReadLeader(context.Background()); !errors.Is(err, ErrNoLeader) {
+		t.Fatalf("advertised stale leader record after resign: %v", err)
 	}
 }

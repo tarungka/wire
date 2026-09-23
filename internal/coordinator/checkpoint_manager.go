@@ -31,7 +31,7 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 
 func (c *Coordinator) triggerCheckpointBoundary(jobID, savepointID string, final bool) (*CheckpointMeta, error) {
 	c.mu.Lock()
-	if c.state != StateLeader || !c.recovered {
+	if !c.readyLocked() {
 		c.mu.Unlock()
 		return nil, ErrNotLeader
 	}
@@ -209,7 +209,7 @@ func (c *Coordinator) AbortCheckpoint(jobID string, id, epoch uint64) error {
 
 func (c *Coordinator) abortCheckpoint(jobID string, id, epoch uint64, failure string, timedOut bool) error {
 	c.mu.Lock()
-	if c.state != StateLeader || !c.recovered {
+	if !c.readyLocked() {
 		c.mu.Unlock()
 		return ErrNotLeader
 	}
@@ -328,7 +328,7 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 			c.EnqueueCommand(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeCommitCheckpoint, JobID: request.JobID, TaskID: taskID, Data: decision})
 		}
 	}()
-	if c.state != StateLeader || !c.recovered {
+	if !c.readyLocked() {
 		return ErrNotLeader
 	}
 	if request.EpochID != c.epoch {
@@ -466,7 +466,7 @@ func (c *Coordinator) ReportCheckpointFailure(request rpc.AcknowledgeCheckpointR
 		return errors.New("checkpoint failure reason is required")
 	}
 	c.mu.RLock()
-	if c.state != StateLeader || !c.recovered {
+	if !c.readyLocked() {
 		c.mu.RUnlock()
 		return ErrNotLeader
 	}

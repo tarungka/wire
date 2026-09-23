@@ -79,7 +79,7 @@ All 25 proposals, initially audited against `master` at `0e78195` on 2026-09-12 
 |-----|-------|--------|
 | [WIP-07](WIP-07/README.md) | RPC Interface Specification | Implemented |
 | [WIP-08](WIP-08/README.md) | Heartbeat & Health Monitoring | Implemented |
-| [WIP-09](WIP-09/README.md) | Coordinator High Availability | Partially Implemented |
+| [WIP-09](WIP-09/README.md) | Coordinator High Availability | Implemented |
 | [WIP-10](WIP-10/README.md) | Two-Phase Commit for Transactional Sinks | Implemented |
 | [WIP-11](WIP-11/README.md) | Error Handling & Dead Letter Queues | Partially Implemented |
 | [WIP-12](WIP-12/README.md) | Late Data & Allowed Lateness | Partially Implemented |

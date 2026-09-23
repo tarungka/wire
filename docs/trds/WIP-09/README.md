@@ -6,11 +6,11 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-09-12`
+> **Last Updated:** `2026-09-18`
 
 ### Revision History
 
@@ -21,13 +21,13 @@
 
 ---
 
-## Implementation Status — 2026-09-12
+## Implementation Status — 2026-09-18
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+The completion follow-up implements the current Phase A/B/C path: election-before-open Pebble ownership, isolated coordinator terms, file-lock and Kubernetes Lease election, standby discovery, persistent worker epochs and checkpoint-restored job takeover. See the [runtime contract](runtime-contract.md), [Kubernetes deployment contract](kubernetes.md) and [requirement-by-requirement acceptance audit](acceptance.md).
 
-- **Implemented:** Pebble metadata persistence/recovery, the election abstraction, noop/file-lock backends, and epoch fencing are implemented. Recovery rejects malformed or exhausted stored epochs and job/worker identities that disagree with their metadata keys; failed validation does not overwrite the fencing token.
-- **Remaining:** Multi-host standby recovery with accessible durable metadata and restoration of running jobs remains incomplete. Embedded consensus is explicitly deferred (Phase D), not required for the current phase.
-- **Evidence:** [store_pebble.go](../../../internal/coordinator/store_pebble.go), [recovery.go](../../../internal/coordinator/recovery.go), [election_filelock.go](../../../internal/coordinator/election_filelock.go).
+Implemented across [#222](https://github.com/tarungka/wire/pull/222) and stacked compatibility change [#223](https://github.com/tarungka/wire/pull/223). Elected callers must use HAService; direct single-node callers remain supported. Full local race and integration suites, build, vet and lint pass. PR checks are tracked on GitHub. Embedded consensus remains explicitly deferred Phase D.
+
+The proposal below is historical design context. Its references to a minimally implemented coordinator, periodic heartbeat flushing, automatic repair from stale snapshots and vote-based diagrams do not describe the current runtime. The runtime contract explains those differences; the full original scope and acceptance targets remain visible below.
 
 ---
 

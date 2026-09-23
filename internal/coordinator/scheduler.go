@@ -199,7 +199,7 @@ func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 	// Transition CREATED → DEPLOYING and persist assignments under Lock.
 	c.mu.Lock()
 	// Re-check status under lock (another tick may have grabbed it).
-	if ctx.Err() != nil || c.state != StateLeader || !c.recovered || (job.Status != JobCreated && job.Status != JobFailing) || !c.assignmentsLiveLocked(assignments, time.Now(), peers) {
+	if ctx.Err() != nil || !c.readyLocked() || (job.Status != JobCreated && job.Status != JobFailing) || !c.assignmentsLiveLocked(assignments, time.Now(), peers) {
 		c.mu.Unlock()
 		return
 	}

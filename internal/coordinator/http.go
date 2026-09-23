@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -127,8 +128,10 @@ func (s *HTTPServer) handleReady(w http.ResponseWriter, r *http.Request) {
 
 // leaderResponse is the JSON response for the leader endpoint.
 type leaderResponse struct {
+	Ready          bool   `json:"ready"`
 	LeaderID       string `json:"leader_id"`
 	LeaderHTTPAddr string `json:"leader_http_addr"`
+	LeaderRPCAddr  string `json:"leader_rpc_addr"`
 	LeaderEpoch    uint64 `json:"leader_epoch"`
 	IsSelf         bool   `json:"is_self"`
 }
@@ -142,8 +145,10 @@ func (s *HTTPServer) handleLeader(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := leaderResponse{
+		Ready:          isSelf && s.coord.IsReady(),
 		LeaderID:       info.NodeID,
 		LeaderHTTPAddr: info.Address,
+		LeaderRPCAddr:  info.RPCAddress,
 		LeaderEpoch:    info.Epoch,
 		IsSelf:         isSelf,
 	}
@@ -156,9 +161,10 @@ func (s *HTTPServer) handleLeader(w http.ResponseWriter, r *http.Request) {
 // writeStandbyRedirect writes a 307 Temporary Redirect for standby nodes,
 // pointing to the leader's address so HTTP clients can seamlessly follow.
 func (s *HTTPServer) writeStandbyRedirect(w http.ResponseWriter, r *http.Request, info *LeaderInfo) {
-	if info != nil && info.Address != "" {
+	if info != nil && info.Address != "" && (info.NodeID != s.coord.nodeID || s.coord.IsReady()) {
 		w.Header().Set("X-Wire-Leader-Id", info.NodeID)
 		w.Header().Set("X-Wire-Leader-Addr", info.Address)
+		w.Header().Set("X-Wire-Leader-Epoch", strconv.FormatUint(info.Epoch, 10))
 		// Build redirect URL preserving the original request path.
 		location := "http://" + info.Address + r.URL.Path
 		if r.URL.RawQuery != "" {

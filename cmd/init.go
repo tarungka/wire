@@ -46,7 +46,7 @@ type Config struct {
 	// HTTPListenAddr is the HTTP API listen address.
 	HTTPListenAddr string
 
-	// ElectionBackend selects the leader election backend ("noop" or "filelock").
+	// ElectionBackend selects the leader election backend ("noop", "filelock", or "kubernetes").
 	ElectionBackend string
 
 	// ElectionLockPath is the path to the lock file for the filelock election backend.
@@ -114,7 +114,7 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, *pflag.FlagSet, er
 	f.StringVar(&config.CoordinatorDataDir, "coordinator-data-dir", "data/coordinator", "coordinator metadata storage directory")
 	f.StringVar(&config.CoordinatorNodeID, "node-id", "", "coordinator node ID (defaults to hostname)")
 	f.StringVar(&config.HTTPListenAddr, "http-listen", ":4001", "HTTP API listen address")
-	f.StringVar(&config.ElectionBackend, "election-backend", "noop", "leader election backend (noop, filelock)")
+	f.StringVar(&config.ElectionBackend, "election-backend", "noop", "leader election backend (noop, filelock, kubernetes)")
 	f.StringVar(&config.ElectionLockPath, "election-lock-path", "data/coordinator/leader.lock", "file path for filelock election backend")
 
 	// Worker flags

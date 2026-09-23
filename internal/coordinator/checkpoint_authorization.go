@@ -18,7 +18,7 @@ func (c *Coordinator) HandleAuthorizeCheckpointReplica(_ context.Context, _ uint
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if c.state != StateLeader || !c.recovered || request.Snapshot.EpochID != c.epoch {
+	if !c.readyLocked() || request.Snapshot.EpochID != c.epoch {
 		return denied, nil
 	}
 	worker := c.workers[request.WorkerID]
@@ -56,7 +56,7 @@ func (c *Coordinator) HandleAuthorizeCheckpointFetch(_ context.Context, _ uint64
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if c.state != StateLeader || !c.recovered || fetch.DeploymentEpoch != c.epoch {
+	if !c.readyLocked() || fetch.DeploymentEpoch != c.epoch {
 		return denied, nil
 	}
 	replica := c.workers[request.ReplicaWorkerID]

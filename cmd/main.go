@@ -150,18 +150,22 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 		}
 	}
 
-	// Create metadata store (PebbleDB).
-	store, err := coordinator.NewPebbleStore(wireCfg.Node.DataDir)
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to open coordinator metadata store")
-	}
-	defer func() { _ = store.Close() }()
-
 	// Create leader election backend.
 	var election coordinator.LeaderElection
 	switch wireCfg.Election.Backend {
 	case "filelock":
-		election = coordinator.NewFileLockElection(wireCfg.Election.LockPath, wireCfg.HTTP.Addr)
+		httpAddr := wireCfg.HTTP.AdvAddr
+		if httpAddr == "" {
+			httpAddr = wireCfg.HTTP.Addr
+		}
+		election = coordinator.NewFileLockElection(wireCfg.Election.LockPath, httpAddr)
+	case "kubernetes":
+		cfg := wireCfg.Election.Kubernetes
+		backend, err := coordinator.NewKubernetesLeaseElection(coordinator.KubernetesLeaseConfig{APIServer: cfg.APIServer, Namespace: cfg.Namespace, LeaseName: cfg.LeaseName, TokenFile: cfg.TokenFile, CAFile: cfg.CAFile, LeaseDuration: cfg.LeaseDuration.Duration, RenewDeadline: cfg.RenewDeadline.Duration, RetryPeriod: cfg.RetryPeriod.Duration})
+		if err != nil {
+			return err
+		}
+		election = backend
 	case "noop", "":
 		// Single-node mode: no election needed.
 	default:
@@ -179,17 +183,33 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 		DataDir:                          wireCfg.Node.DataDir,
 		NodeID:                           nodeID,
 		ListenAddr:                       wireCfg.HTTP.Addr,
+		RPCAdvertiseAddr:                 wireCfg.Node.RPCAdvertiseAddr,
+		HTTPAdvertiseAddr:                wireCfg.HTTP.AdvAddr,
 	}
+	if coordCfg.RPCAdvertiseAddr == "" {
+		coordCfg.RPCAdvertiseAddr = wireCfg.Listen
+	}
+	rpcTLS, err := coordinatorRPCTLS(wireCfg.NodeTLS)
+	if err != nil {
+		return err
+	}
+	if election != nil {
+		service := coordinator.NewHAService(coordCfg, wireCfg.Listen, election, func() (coordinator.MetadataStore, error) {
+			return coordinator.NewPebbleStore(wireCfg.Node.DataDir)
+		}, rpcTLS, log.Logger)
+		return service.Run(ctx)
+	}
+	store, err := coordinator.NewPebbleStore(wireCfg.Node.DataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
 	coord := coordinator.New(coordCfg, store, election, log.Logger)
 
 	// Create HTTP server.
 	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger)
 
 	// Create transport server for worker RPC connections.
-	rpcTLS, err := coordinatorRPCTLS(wireCfg.NodeTLS)
-	if err != nil {
-		return err
-	}
 	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger, rpcTLS)
 
 	// Start everything in an errgroup.
@@ -243,6 +263,8 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 		return err
 	}
 	w := worker.New(worker.Config{
+		EpochPath:            wireCfg.Worker.EpochPath,
+		CoordinatorSeeds:     wireCfg.Worker.CoordinatorSeeds,
 		HeartbeatInterval:    wireCfg.Heartbeat.Interval.Duration,
 		HeartbeatTimeout:     wireCfg.Heartbeat.Timeout.Duration,
 		HeartbeatMaxFailures: wireCfg.Heartbeat.MaxFailures,

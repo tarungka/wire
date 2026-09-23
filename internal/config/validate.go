@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"os"
+	"time"
 )
 
 // Validate checks the WireConfig for semantic errors. It collects all
@@ -61,8 +63,11 @@ func (c *WireConfig) Validate() error {
 
 	// Worker-specific validation.
 	if c.Mode == "worker" {
-		if c.Worker.CoordinatorAddr == "" {
-			errs = append(errs, fmt.Errorf("worker.coordinator_addr is required in worker mode"))
+		if c.Worker.CoordinatorAddr == "" && len(c.Worker.CoordinatorSeeds) == 0 {
+			errs = append(errs, fmt.Errorf("worker.coordinator_addr or worker.coordinator_seeds is required in worker mode"))
+		}
+		if len(c.Worker.CoordinatorSeeds) > 0 && c.Worker.EpochPath == "" {
+			errs = append(errs, errors.New("worker.epoch_path is required for HA discovery"))
 		}
 		if c.Worker.TaskSlots <= 0 {
 			errs = append(errs, fmt.Errorf("worker.task_slots must be > 0, got %d", c.Worker.TaskSlots))
@@ -104,13 +109,27 @@ func (c *WireConfig) Validate() error {
 
 	// Election backend.
 	switch c.Election.Backend {
-	case "noop", "filelock", "":
+	case "noop", "filelock", "kubernetes", "":
 		// valid
 	default:
-		errs = append(errs, fmt.Errorf("election.backend must be \"noop\", \"filelock\", or \"\", got %q",
+		errs = append(errs, fmt.Errorf("election.backend must be \"noop\", \"filelock\", \"kubernetes\", or \"\", got %q",
 			c.Election.Backend))
 	}
 
+	if c.Election.Backend == "kubernetes" {
+		lease := c.Election.Kubernetes
+		if lease.RetryPeriod.Duration <= 0 || lease.RenewDeadline.Duration <= lease.RetryPeriod.Duration || lease.LeaseDuration.Duration <= lease.RenewDeadline.Duration || lease.LeaseDuration.Duration%time.Second != 0 || lease.LeaseDuration.Duration/time.Second > 2147483647 {
+			errs = append(errs, errors.New("election.kubernetes requires whole-second lease_duration > renew_deadline > positive retry_period"))
+		}
+		if c.Mode != "worker" {
+			for name, addr := range map[string]string{"http.adv_addr": c.HTTP.AdvAddr, "node.rpc_advertise_addr": c.Node.RPCAdvertiseAddr} {
+				host, _, err := net.SplitHostPort(addr)
+				if err != nil || host == "" || host == "0.0.0.0" || host == "::" {
+					errs = append(errs, fmt.Errorf("%s must be a routable host:port for Kubernetes HA", name))
+				}
+			}
+		}
+	}
 	if len(errs) == 0 {
 		return nil
 	}

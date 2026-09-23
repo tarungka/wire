@@ -22,9 +22,11 @@ const (
 
 // CoordinatorConfig configures the Coordinator.
 type CoordinatorConfig struct {
-	DataDir    string
-	NodeID     string
-	ListenAddr string
+	DataDir           string
+	NodeID            string
+	ListenAddr        string
+	RPCAdvertiseAddr  string
+	HTTPAdvertiseAddr string
 	// Deprecated: heartbeat receipt times are now ephemeral; no periodic flush runs.
 	HeartbeatFlushInterval           time.Duration
 	WorkerTimeout                    time.Duration
@@ -39,6 +41,9 @@ type CoordinatorConfig struct {
 }
 
 func (c *CoordinatorConfig) resolve() {
+	if c.HTTPAdvertiseAddr == "" {
+		c.HTTPAdvertiseAddr = c.ListenAddr
+	}
 	if c.HeartbeatInterval <= 0 {
 		c.HeartbeatInterval = rpc.DefaultHeartbeatInterval
 	}
@@ -111,11 +116,17 @@ type Coordinator struct {
 	leaderCtx    context.Context
 	leaderCancel context.CancelFunc
 
+	// recoveryFenceUntil bounds authority held by workers from the previous
+	// coordinator term. Zeroed heartbeat history is not proof of task exit.
+	recoveryFenceUntil time.Time
+
 	// recovered tracks whether recovery has completed.
 	recovered bool
 }
 
-// New creates a new Coordinator. Pass nil for election to use single-node mode.
+// New creates a coordinator with an already-open store. Pass nil for election
+// when using Run. Elected lifecycles must use NewHAService; non-nil election
+// here is reserved for term-local leader discovery managed by HAService.
 func New(cfg CoordinatorConfig, store MetadataStore, election LeaderElection, log zerolog.Logger) *Coordinator {
 	cfg.resolve()
 	return &Coordinator{
@@ -136,7 +147,8 @@ func New(cfg CoordinatorConfig, store MetadataStore, election LeaderElection, lo
 }
 
 // Run starts the coordinator lifecycle. It blocks until ctx is canceled
-// or an unrecoverable error occurs.
+// or an unrecoverable error occurs. Elected deployments must use HAService,
+// which opens metadata only after election and isolates each leadership term.
 func (c *Coordinator) Run(ctx context.Context) error {
 	c.log.Info().Str("node_id", c.nodeID).Msg("coordinator starting")
 
@@ -144,7 +156,7 @@ func (c *Coordinator) Run(ctx context.Context) error {
 		// Single-node mode: become leader immediately.
 		return c.runSingleNode(ctx)
 	}
-	return c.runMultiNode(ctx)
+	return ErrHARequiresStoreFactory
 }
 
 func (c *Coordinator) runSingleNode(ctx context.Context) error {
@@ -162,89 +174,12 @@ func (c *Coordinator) runSingleNode(ctx context.Context) error {
 	return c.serve(c.leaderCtx)
 }
 
-func (c *Coordinator) runMultiNode(ctx context.Context) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		c.mu.Lock()
-		c.state = StateCandidate
-		c.recovered = false
-		c.mu.Unlock()
-
-		c.log.Info().Msg("campaigning for leadership")
-
-		lctx, err := c.election.Campaign(ctx, c.nodeID)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return fmt.Errorf("campaign failed: %w", err)
-		}
-
-		c.mu.Lock()
-		c.state = StateLeader
-		c.epoch = lctx.Epoch
-		c.leaderCtx, c.leaderCancel = context.WithCancel(ctx)
-		c.mu.Unlock()
-
-		if err := c.recover(); err != nil {
-			c.log.Error().Err(err).Msg("recovery failed, resigning")
-			_ = c.election.Resign(ctx)
-			continue
-		}
-
-		c.log.Info().Uint64("epoch", c.epoch).Msg("became leader")
-
-		// Watch for leadership loss.
-		done := make(chan struct{})
-		go func() {
-			select {
-			case <-lctx.Ctx.Done():
-			case <-ctx.Done():
-			}
-			close(done)
-		}()
-
-		// Serve until leadership loss or shutdown.
-		serveDone := make(chan error, 1)
-		serveCtx, serveCancel := context.WithCancel(ctx)
-		go func() {
-			serveDone <- c.serve(serveCtx)
-		}()
-
-		select {
-		case <-done:
-			// Leadership lost or context canceled.
-			serveCancel()
-			<-serveDone
-			c.mu.Lock()
-			c.state = StateStandby
-			c.recovered = false
-			c.jobs = make(map[string]*JobMeta)
-			c.workers = make(map[string]*WorkerMeta)
-			c.pendingCmds = make(map[string][]rpc.WorkerCommand)
-			c.taskStatuses = make(map[string]rpc.TaskStatus)
-			c.mu.Unlock()
-
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			c.log.Warn().Msg("leadership lost, returning to standby")
-			// Loop back to campaign again.
-		case err := <-serveDone:
-			serveCancel()
-			return err
-		}
-	}
-}
-
 // recover loads state from the metadata store.
 func (c *Coordinator) recover() error {
-	state, err := recoverFromStore(c.store)
+	c.mu.RLock()
+	electionEpoch := c.epoch
+	c.mu.RUnlock()
+	state, err := recoverFromStore(c.store, electionEpoch)
 	if err != nil {
 		return err
 	}
@@ -278,6 +213,7 @@ func (c *Coordinator) recover() error {
 
 	c.jobs = state.jobs
 	c.workers = state.workers
+	c.recoveryFenceUntil = time.Now().Add(c.config.WorkerTimeout)
 	// Rebuild the active-name index from the recovered jobs. Only
 	// non-terminal jobs reserve names, matching the SubmitJob check.
 	c.activeJobNames = make(map[string]string, len(state.jobs))
@@ -647,7 +583,7 @@ func (c *Coordinator) IsLeader() bool {
 func (c *Coordinator) IsReady() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.state == StateLeader && c.recovered
+	return c.readyLocked()
 }
 
 // GetLeaderInfo returns information about the current leader.
@@ -656,7 +592,7 @@ func (c *Coordinator) GetLeaderInfo() (*LeaderInfo, bool, error) {
 		c.mu.RLock()
 		info := &LeaderInfo{
 			NodeID:  c.nodeID,
-			Address: c.config.ListenAddr,
+			Address: c.config.HTTPAdvertiseAddr,
 			Epoch:   c.epoch,
 		}
 		isSelf := c.state == StateLeader
@@ -664,6 +600,13 @@ func (c *Coordinator) GetLeaderInfo() (*LeaderInfo, bool, error) {
 		return info, isSelf, nil
 	}
 
+	if discovery, ok := c.election.(LeaderDiscovery); ok {
+		info, err := discovery.ReadLeader(context.Background())
+		if err != nil {
+			return nil, false, err
+		}
+		return info, info.NodeID == c.nodeID, nil
+	}
 	nodeID, addr, err := c.election.GetLeader(context.Background())
 	if err != nil {
 		return nil, false, err
@@ -712,4 +655,10 @@ func (c *Coordinator) aliveWorkerCount() int {
 		}
 	}
 	return n
+}
+
+// readyLocked also checks authority before lifecycle cleanup obtains mu. A
+// revoked lease must immediately stop accepting heartbeats and mutations.
+func (c *Coordinator) readyLocked() bool {
+	return c.state == StateLeader && c.recovered && (c.leaderCtx == nil || c.leaderCtx.Err() == nil)
 }

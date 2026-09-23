@@ -124,7 +124,11 @@ func TestReservedJobRunsOverMutualTLS(t *testing.T) {
 	wait(func() bool {
 		c.mu.RLock()
 		defer c.mu.RUnlock()
-		return c.workers["worker"] != nil && c.workers["worker"].RPCClient != nil
+		// Registration publishes the reverse peer before its reply reaches the
+		// worker. WatchCommands starts only after the worker accepts/persists
+		// the epoch, so reservations are then ready. This test schedules once;
+		// unlike the production scheduler it cannot retry an early refusal.
+		return c.workers["worker"] != nil && c.workers["worker"].RPCClient != nil && c.cmdStreams["worker"] != nil
 	})
 	sinkID := t.Name()
 	defer memory.Reset(sinkID)

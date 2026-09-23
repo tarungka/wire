@@ -232,9 +232,10 @@ type ClusterConfig struct {
 
 // LeaderInfo describes the current cluster leader.
 type LeaderInfo struct {
-	NodeID  string `codec:"node_id"  json:"leader_id"`
-	Address string `codec:"address"  json:"leader_http_addr"`
-	Epoch   uint64 `codec:"epoch"    json:"leader_epoch"`
+	RPCAddress string `codec:"rpc_address" json:"leader_rpc_addr"`
+	NodeID     string `codec:"node_id"  json:"leader_id"`
+	Address    string `codec:"address"  json:"leader_http_addr"`
+	Epoch      uint64 `codec:"epoch"    json:"leader_epoch"`
 }
 
 // CommandType identifies the type of a coordinator command.
