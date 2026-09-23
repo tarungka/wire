@@ -1,42 +1,80 @@
 # Configuration loading and validation
 
-Use `--config first.yaml,second.json` to merge files in order. Only explicitly
-set flags override file values. The default missing `.config/config.json` is
-skipped; other missing files and unsupported extensions fail loading.
+Load order is defaults, files in argument order, `WIRE_*` environment overrides,
+`${VAR}` substitution in string values, then explicitly supplied CLI flags.
+`--config first.yaml,second.json` merges both files. Only the missing default
+`.config/config.json` is skipped; other missing files and unsupported extensions
+fail. `Load` decodes configuration; the CLI applies flags and calls `Validate`.
 
-Environment substitution applies to string fields after decoding. `${VAR}`
-fails if unset; `${VAR:-fallback}` uses the fallback only when unset. A variable
-set to an empty string remains empty. Substitution does not parse booleans,
-integers, or durations, and does not implement automatic `WIRE_*` overrides.
-Unknown keys are currently ignored. Durations must be quoted strings such as
-`50ms`; numeric duration values fail loading.
+## Environment
 
-After loading and CLI overrides, `WireConfig.Validate` aggregates these rules:
+Every system-file leaf has an environment override: uppercase the dotted key,
+replace dots with underscores, and prefix `WIRE_`. For example:
 
-- Mode is `coordinator`, `worker`, or empty.
-- Worker mode requires a nonempty `worker.coordinator_addr` and positive
-  `worker.task_slots`.
-- Each TLS certificate/key pair must either both be set or both be empty.
-- Configured TLS certificate, key, CA, and authentication paths must exist.
-  This check does not validate certificate contents or ensure a regular file.
-- Write-queue capacity, batch size, and timeout must be nonnegative; batch
-  size must not exceed capacity.
-- Election backend is `noop`, `filelock`, or empty.
+```sh
+export WIRE_MODE=worker
+export WIRE_WORKER_COORDINATOR_ADDR=localhost:4002
+export WIRE_WORKER_TASK_SLOTS=8
+export WIRE_HEARTBEAT_INTERVAL=5s
+export WIRE_WORKER_COORDINATOR_SEEDS='["localhost:4002"]'
+```
 
-These checks do not prove address reachability or enable configured features.
-Runtime TLS/authentication remain unwired. Filesystem permission errors are
-not classified as missing files by the current validation routine.
+Booleans and numbers are parsed as their field types, durations use Go duration
+strings, and lists use JSON string arrays. An empty variable is an explicit
+value, not absence. Unrelated environment names are ignored. The `--config`,
+`--version`, and metrics flags are CLI-only, with no generated environment key.
+Explicit flags win over environment overrides; flag defaults do not.
 
-For exact diagnostic messages, see
-[`internal/config/validate.go`](../internal/config/validate.go). The field table
-and checked runnable configuration files are linked from
-[the WIP-13 reference](trds/WIP-13/README.md).
+Substitution works in every system string field and string-list element,
+including HA seeds, Kubernetes settings and replica storage paths. `${VAR}`
+fails when unset; `${VAR:-fallback}` uses the fallback only when unset, not when
+set to empty. Replacement values are not recursively expanded. Substitution
+itself does not parse numbers or durations; use the corresponding `WIRE_*`
+override for those fields. Pipeline connector configuration is a separate API:
+see [the YAML parser reference](../sdk/pipeline_yaml.md).
 
-## Worker data-frame limit
+## Schemas and semantic checks
 
-`max_frame_size` (CLI `--max-frame-size`) defaults to 16 MiB and controls the
-worker data mux's framed records and controls. It must be at least five bytes
-for the type/CRC fields; useful values must also fit handshake and routing
-messages. The setting does not change coordinator RPC payload limits or
-checkpoint archive limits. Workers must use compatible limits; frame sizes are
-not negotiated down automatically.
+The [node schema](schemas/wire.schema.json) and
+[pipeline schema](schemas/pipeline.schema.json) are JSON Schema 2020-12 documents
+for editor/CI authoring checks on JSON or YAML converted to JSON. They reject
+unknown keys; the node loader still ignores unknown keys for compatibility.
+The node schema describes partial files before default/overlay merging. It is
+structural, not a replacement for semantic validation or runtime capability
+checks. The pipeline schema leaves connector and transform `config` objects to
+the parser/factories, which validate their types, expressions and graph edges.
+
+After merging, the node validator collects errors for:
+
+- Frame sizes below five bytes (type plus CRC).
+- Nonpositive heartbeat interval, timeout not greater than interval, or negative
+  maximum failures.
+- Negative checkpoint minimum pause, nonpositive timeout, negative consecutive
+  limit, or failure rate outside `[0,1]` (including NaN/Inf).
+- Replica listeners without positive concurrency or nonempty store, artifact
+  and staging roots.
+- Negative task buffers, upload concurrency or drain timeout. Zero selects the
+  lower-level default where supported.
+- Unknown modes; workers without a coordinator address or seed, nonpositive
+  slots, or HA seeds without an epoch path.
+- Unpaired TLS certificate/key files, and missing configured certificate, key,
+  CA or authentication paths. This checks existence, not certificate contents;
+  permission errors are not currently classified as missing files.
+- Negative write-queue capacity, batch size or timeout; batch size above capacity.
+- Unknown election backends. Allowed: empty, `noop`, `filelock`, `kubernetes`.
+- Kubernetes leases not satisfying whole-second lease duration greater than
+  renew deadline greater than positive retry period (lease seconds must fit
+  int32), or coordinators without routable HTTP/RPC advertised addresses.
+
+Exact diagnostic strings are in [validate.go](../internal/config/validate.go).
+Address reachability and free ports are runtime checks. Node TLS is active;
+HTTP TLS, authentication, and write-queue tuning include settings not yet wired
+into the runtime. Accepting them does not enable security or tuning features.
+See [WIP-17](trds/WIP-17/README.md) for the security implementation work.
+
+The [generated field reference](configuration-reference.md) records every
+accepted field/default/flag mapping. Regenerate it with
+`go test ./internal/config -run TestConfigurationReference -update-config-reference`.
+Regenerate the node schema with
+`go test ./internal/config -run TestConfigurationSchema -update-config-schema`.
+Both files have drift checks; the pipeline schema has a YAML field-coverage test.

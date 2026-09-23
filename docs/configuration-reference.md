@@ -3,7 +3,7 @@
 Generated from the current config types, defaults, and CLI mapping. Regenerate with
 `go test ./internal/config -run TestConfigurationReference -update-config-reference`.
 
-Load order is built-in defaults, configuration files in argument order, string
+Load order is built-in defaults, configuration files in argument order, WIRE_* environment overrides, string
 environment substitution, then explicitly supplied CLI flags. Only the missing
 default `.config/config.json` file is ignored. Other missing files are errors.
 Duration values are strings such as `50ms`; bare numeric durations are rejected.
@@ -11,8 +11,8 @@ Loading does not itself run semantic validation: the CLI applies overrides and
 then calls Validate. Unknown fields are currently ignored by the loader.
 
 This table describes accepted configuration, not runtime feature availability.
-Authentication, TLS, and write-queue settings include fields that are not wired
-into the current runtime; setting them does not enable those features.
+Node TLS is active. HTTP TLS, authentication and write-queue settings include
+fields not yet wired into the runtime. See configuration-validation.md.
 
 | Field | Type | Default | CLI override |
 | --- | --- | --- | --- |

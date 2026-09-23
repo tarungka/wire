@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"regexp"
 )
 
@@ -43,42 +44,40 @@ func EnvSubst(s string) (string, error) {
 	return result, nil
 }
 
-// envSubstConfig applies environment variable substitution to all string
-// fields in cfg. Fields are enumerated explicitly (no reflection).
+// envSubstConfig visits every string, including strings inside lists. Walking
+// the configuration shape prevents newly added fields from silently missing
+// substitution. Duration and numeric fields deliberately remain typed values.
 func envSubstConfig(cfg *WireConfig) error {
-	fields := []*string{
-		&cfg.Mode,
-		&cfg.Listen,
-		&cfg.Worker.CoordinatorAddr,
-		&cfg.Worker.WorkerID,
-		&cfg.Worker.ListenAddr,
-		&cfg.Node.ID,
-		&cfg.Node.DataDir,
-		&cfg.Node.StoreDB,
-		&cfg.HTTP.Addr,
-		&cfg.HTTP.AdvAddr,
-		&cfg.HTTP.AllowOrigin,
-		&cfg.HTTP.TLS.Cert,
-		&cfg.HTTP.TLS.Key,
-		&cfg.HTTP.TLS.CACert,
-		&cfg.HTTP.TLS.VerifyServerName,
-		&cfg.NodeTLS.Cert,
-		&cfg.NodeTLS.Key,
-		&cfg.NodeTLS.CACert,
-		&cfg.NodeTLS.VerifyServerName,
-		&cfg.Auth.File,
-		&cfg.Election.Backend,
-		&cfg.Election.LockPath,
-	}
-	for _, fp := range fields {
-		if *fp == "" {
-			continue
-		}
-		val, err := EnvSubst(*fp)
+	return substConfigValue(reflect.ValueOf(cfg).Elem(), "")
+}
+
+func substConfigValue(value reflect.Value, path string) error {
+	switch value.Kind() {
+	case reflect.String:
+		result, err := EnvSubst(value.String())
 		if err != nil {
-			return err
+			return fmt.Errorf("%s: %w", path, err)
 		}
-		*fp = val
+		value.SetString(result)
+	case reflect.Struct:
+		if value.Type() == reflect.TypeOf(Duration{}) {
+			return nil
+		}
+		for i := 0; i < value.NumField(); i++ {
+			name := value.Type().Field(i).Tag.Get("koanf")
+			if path != "" {
+				name = path + "." + name
+			}
+			if err := substConfigValue(value.Field(i), name); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice:
+		for i := 0; i < value.Len(); i++ {
+			if err := substConfigValue(value.Index(i), fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

@@ -89,7 +89,7 @@ All 25 proposals, initially audited against `master` at `0e78195` on 2026-09-12 
 
 | WIP | Title | Status |
 |-----|-------|--------|
-| [WIP-13](WIP-13/README.md) | Configuration Reference | Partially Implemented |
+| [WIP-13](WIP-13/README.md) | Configuration Reference | Implemented |
 | [WIP-14](WIP-14/README.md) | User API & Go SDK | Partially Implemented |
 | [WIP-15](WIP-15/README.md) | Job Lifecycle & REST API | Partially Implemented |
 | [WIP-16](WIP-16/README.md) | Connector SDK & Built-in Connectors | Partially Implemented |

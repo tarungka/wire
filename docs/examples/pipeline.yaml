@@ -1,0 +1,19 @@
+apiVersion: wire/v1
+kind: Pipeline
+metadata:
+  name: configured-pipeline
+spec:
+  parallelism: 1
+  sources:
+    - name: input
+      type: app-input
+  transforms:
+    - name: keep
+      type: filter
+      input: input
+      config:
+        expression: 'true'
+  sinks:
+    - name: output
+      type: app-output
+      input: keep
