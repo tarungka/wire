@@ -38,3 +38,21 @@ completed runtime pause/savepoint/restore workflow. Similarly, triggering a
 savepoint returns its current metadata status, not a guarantee of a completed
 durable snapshot. Inspect returned status before relying on it. Upgrades,
 rescaling, and binary submission remain unsupported.
+
+### Cancellation completion
+
+`wire jobs cancel JOB_ID` records the request and returns `CANCELING`. It does
+not claim that worker tasks have already stopped. Use `wire jobs get JOB_ID`
+until the status becomes `CANCELED`.
+
+The coordinator aborts any active checkpoint before issuing cancellation,
+retries commands for tasks that have not stopped, and keeps the job name
+reserved during teardown. A task may need time to finish its connector's
+`Close`. For an unreachable worker, cancellation waits for its execution lease
+to expire; coordinator recovery also respects the old epoch's fencing interval.
+Cancellation resumes after a coordinator restart. Repeating the command while
+`CANCELING` is safe. Created, deploying, running, finishing, failing and paused
+jobs can be canceled; terminal jobs reject the transition.
+
+Cancellation without a savepoint does not create a new restore point. The
+savepoint-before-cancel workflow remains a WIP-15 implementation item.

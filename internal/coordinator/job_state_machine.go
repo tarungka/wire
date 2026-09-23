@@ -20,9 +20,9 @@ var validTransitions = map[JobStatus][]JobStatus{
 	JobCreated:   {JobDeploying, JobFailing, JobCanceling},
 	JobDeploying: {JobRunning, JobFailing, JobCanceling},
 	JobRunning:   {JobFinishing, JobPaused, JobFailing, JobCanceling},
-	JobPaused:    {JobDeploying},
-	JobFinishing: {JobFinished},
-	JobFailing:   {JobDeploying, JobFailed, JobCanceled},
+	JobPaused:    {JobDeploying, JobCanceling},
+	JobFinishing: {JobFinished, JobCanceling},
+	JobFailing:   {JobDeploying, JobFailed, JobCanceled, JobCanceling},
 	JobCanceling: {JobCanceled},
 	// Terminal states have no outgoing transitions.
 	JobFinished: {},
@@ -49,11 +49,14 @@ func ValidateTransition(from, to JobStatus) error {
 // All mutations are performed under c.mu.Lock() to prevent data races with
 // concurrent HTTP handlers reading the same *JobMeta.
 func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
-	now := time.Now().UTC()
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.transitionJobLocked(job, to)
+}
 
+// transitionJobLocked requires the ownership lock and publishes only durable state.
+func (c *Coordinator) transitionJobLocked(job *JobMeta, to JobStatus) error {
+	now := time.Now().UTC()
 	if err := ValidateTransition(job.Status, to); err != nil {
 		return err
 	}

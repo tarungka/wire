@@ -106,6 +106,7 @@ func (c *Coordinator) schedulePending(ctx context.Context, dispatch func(*JobMet
 		return
 	}
 	c.detectLostTaskWorkers()
+	c.scheduleCancellations()
 	c.scheduleFinalCheckpoints(ctx)
 
 	// Snapshot CREATED jobs under RLock.

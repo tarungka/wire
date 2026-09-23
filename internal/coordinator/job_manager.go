@@ -156,43 +156,26 @@ func (c *Coordinator) ListJobs(statusFilter *JobStatus) []*JobMeta {
 	return result
 }
 
-// CancelJob transitions a job to the CANCELING state.
+// CancelJob durably requests cancellation. The scheduler retries cancellation
+// until all old tasks have stopped; only then does it publish CANCELED.
 func (c *Coordinator) CancelJob(jobID string) (*JobMeta, error) {
-	if !c.IsReady() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.readyLocked() {
 		return nil, ErrNotLeader
 	}
-
-	c.mu.RLock()
-	job, ok := c.jobs[jobID]
-	c.mu.RUnlock()
-	if !ok {
+	job := c.jobs[jobID]
+	if job == nil {
 		return nil, ErrJobNotFound
 	}
-
-	if err := c.transitionJob(job, JobCanceling); err != nil {
-		return nil, err
-	}
-
-	c.log.Info().Str("job_id", jobID).Msg("job canceling")
-
-	// Load task assignments and enqueue cancel commands to workers.
-	data, err := c.store.Get(JobAssignmentsKey(jobID))
-	if err == nil && data != nil {
-		var tam TaskAssignmentMap
-		if err := protocol.DecodeMsgPack(data, &tam); err == nil {
-			for taskID, workerID := range tam.Assignments {
-				c.EnqueueCommand(workerID, rpc.WorkerCommand{
-					Type:      rpc.CommandTypeCancelTask,
-					AttemptID: tam.AttemptID,
-					EpochID:   tam.EpochID,
-					JobID:     jobID,
-					TaskID:    taskID,
-				})
-			}
+	if job.Status != JobCanceling {
+		if err := c.transitionJobLocked(job, JobCanceling); err != nil {
+			return nil, err
 		}
 	}
-
-	return job, nil
+	snapshot := *job
+	c.kickScheduler()
+	return &snapshot, nil
 }
 
 // PauseJob pauses a running job by triggering a savepoint and transitioning to PAUSED.

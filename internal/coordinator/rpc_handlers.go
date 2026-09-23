@@ -263,7 +263,8 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 		released = c.releaseTaskSlotLocked(req.WorkerID, req.TaskID)
 	}
 	c.mu.Unlock()
-	if released {
+	terminalChanged := (!known || previous != req.Status) && (req.Status == rpc.TaskStatusCanceled || req.Status == rpc.TaskStatusFailed || req.Status == rpc.TaskStatusFinished)
+	if released || terminalChanged {
 		// Wake the scheduler after the job-level transition below, so a queued
 		// or restarting job can use the slot without waiting for a heartbeat.
 		defer c.kickScheduler()

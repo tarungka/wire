@@ -34,3 +34,19 @@ changed cached status, timestamps/recovery counters or released the job name.
 Transitions now prepare a copy, persist it, then update the existing live job and
 name reservation. The same operation can be retried without double-counting a
 restart. The test checks stored/cache agreement after retry.
+
+## Cancellation reconciliation
+
+Cancellation now persists intent and returns a snapshot in CANCELING. A scheduler
+pass aborts active checkpoints durably, retries old-attempt cancellation commands,
+and publishes CANCELED only once tasks report terminal states or their execution
+authority expires. Recovery preserves CANCELING and waits for the old epoch fence.
+Created jobs with no assignments complete cancellation without waiting for tasks.
+Paused, failing and finishing jobs also accept cancellation; savepoint-before-cancel
+is still outstanding.
+
+`TestCLICancelWaitsForWorkerTeardown` uses the CLI, HTTP server, coordinator, real
+workers and a source whose Close is deliberately held. It verifies CANCELING
+while Close is blocked and CANCELED after teardown. Coordinator tests verify
+command retry/fencing, aborted checkpoint ordering, persistence failures and
+recovered cancellation. This does not complete pause/resume or the other rows.
