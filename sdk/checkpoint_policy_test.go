@@ -14,6 +14,7 @@ import (
 
 func TestClusterSubmissionCarriesCheckpointPolicy(t *testing.T) {
 	policies := make(chan *rpc.CheckpointPolicy, 1)
+	restarts := make(chan *rpc.RestartPolicy, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			var request submitJobRequest
@@ -35,14 +36,27 @@ func TestClusterSubmissionCarriesCheckpointPolicy(t *testing.T) {
 				return
 			}
 			policies <- graph.CheckpointPolicy
+			restarts <- graph.RestartPolicy
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"job","status":"FINISHED"}`))
 	}))
 	defer server.Close()
-	env := New().SetCoordinator(server.URL).SetCheckpointInterval(time.Second).SetCheckpointTimeout(time.Minute).SetCheckpointMinPause(2 * time.Second)
+	env := New().SetCoordinator(server.URL).SetCheckpointInterval(time.Second).SetCheckpointTimeout(time.Minute).SetCheckpointMinPause(2 * time.Second).SetRestartStrategy(ExponentialBackoff(7, time.Second, time.Minute, 1.5))
 	if _, err := (&clusterExecutor{env: env}).run(t.Context(), "policy"); err != nil {
 		t.Fatal(err)
+	}
+	wantRestart, err := env.restartPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case policy := <-restarts:
+		if policy == nil || *policy != *wantRestart {
+			t.Fatalf("restart policy missing: %+v", policy)
+		}
+	default:
+		t.Fatal("no restart policy received")
 	}
 	select {
 	case policy := <-policies:

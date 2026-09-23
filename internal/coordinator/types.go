@@ -109,6 +109,7 @@ func (s CheckpointStatus) String() string {
 
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
+	RestartPolicy                 *rpc.RestartPolicy    `codec:"restart_policy,omitempty"`
 	LastCheckpointTrigger         time.Time             `codec:"last_checkpoint_trigger,omitempty"`
 	CheckpointPolicy              *rpc.CheckpointPolicy `codec:"checkpoint_policy,omitempty"`
 	DeploymentGeneration          uint64                `codec:"deployment_generation,omitempty"`

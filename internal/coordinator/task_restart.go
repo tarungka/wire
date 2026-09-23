@@ -49,6 +49,15 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 	checkpoint := c.activeCheckpoints[job.ID]
 	restarts, updated := job.RecoveryAttempts, job.UpdatedAt
 	rescale := job.RescaleRequested
+	maxAttempts := c.config.RestartMaxAttempts
+	delay := time.Duration(0)
+	if restarts > 0 {
+		delay = c.config.RestartBackoff * time.Duration(1<<min(restarts-1, 6))
+	}
+	if job.RestartPolicy != nil {
+		maxAttempts = job.RestartPolicy.MaxAttempts
+		delay = job.RestartPolicy.DelayAfter(restarts)
+	}
 	c.mu.RUnlock()
 	if checkpoint.ID != 0 {
 		if err := c.AbortCheckpoint(job.ID, checkpoint.ID, checkpoint.EpochID); err != nil {
@@ -64,13 +73,13 @@ func (c *Coordinator) prepareTaskRestart(job *JobMeta) bool {
 	// Before the first completed checkpoint, recovery reopens sources at their
 	// configured initial position. No transactional output has a commit decision;
 	// replacement sinks fence and abort orphan transactions at boundary zero.
-	if !rescale && restarts >= c.config.RestartMaxAttempts {
+	if !rescale && restarts >= maxAttempts {
 		if err := c.transitionJob(job, JobFailed); err != nil {
 			c.log.Warn().Err(err).Str("job_id", job.ID).Msg("cannot finalize failed job")
 		}
 		return false
 	}
-	if !rescale && restarts > 0 && time.Since(updated) < c.config.RestartBackoff*time.Duration(1<<min(restarts-1, 6)) {
+	if !rescale && time.Since(updated) < delay {
 		return false
 	}
 	return true
@@ -102,7 +111,7 @@ func (c *Coordinator) rollbackFailedRescale(job *JobMeta) error {
 // resetStableRecoveryBudget is called before leaving RUNNING. Callers hold
 // c.mu and persist the updated job together with their state transition.
 func (c *Coordinator) resetStableRecoveryBudget(job *JobMeta, now time.Time) {
-	if job.Status == JobRunning && !job.RunningSince.IsZero() && now.Sub(job.RunningSince) >= c.config.RestartResetAfter {
+	if job.RestartPolicy == nil && job.Status == JobRunning && !job.RunningSince.IsZero() && now.Sub(job.RunningSince) >= c.config.RestartResetAfter {
 		job.RecoveryAttempts = 0
 	}
 }

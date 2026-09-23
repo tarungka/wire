@@ -35,7 +35,11 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 	// validated before reserving a job name or writing any metadata.
 	var graph rpc.JobGraph
 	var checkpointPolicy *rpc.CheckpointPolicy
+	var restartPolicy *rpc.RestartPolicy
 	if err := protocol.DecodeMsgPack(config, &graph); err == nil {
+		if err := graph.RestartPolicy.Validate(); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		}
 		if err := graph.CheckpointPolicy.Validate(); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 		}
@@ -43,11 +47,13 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 			return nil, err
 		}
 		checkpointPolicy = graph.CheckpointPolicy
+		restartPolicy = graph.RestartPolicy
 	}
 
 	now := time.Now().UTC()
 	job := &JobMeta{
 		CheckpointPolicy: checkpointPolicy,
+		RestartPolicy:    restartPolicy,
 		ID:               generateJobID(),
 		Name:             name,
 		Status:           JobCreated,

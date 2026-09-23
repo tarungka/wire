@@ -49,3 +49,16 @@ are persisted atomically with checkpoint decisions, active checkpoints prevent
 overlap, and savepoints/final checkpoints bypass minimum pause. Tests exercise
 the actual runner, persisted metadata, timeout boundary and SDK HTTP envelope.
 Restart strategies and the local MiniCluster driver remain pending.
+
+## Per-job restart policy
+
+Cluster submission now persists explicit fixed-delay, exponential-backoff and
+no-restart policies. The delay applies before the first retry; exponential
+delays saturate at the configured maximum. Explicit attempt budgets span the
+job lifetime and survive coordinator recovery; legacy graphs retain the global
+policy and stable-running reset. Requested rescales still bypass the recovery
+budget, and failed rescale rollback remains subject to it. Policy validation
+runs before SDK execution and coordinator persistence. Tests cover durable
+policy round trips, first/second retry timing, exhaustion, no-restart, overflow,
+invalid inputs, and the SDK HTTP submission envelope. Local execution still
+needs the MiniCluster driver to apply these policies.

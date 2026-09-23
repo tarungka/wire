@@ -146,6 +146,12 @@ func (env *StreamExecutionEnvironment) ExecuteWithName(ctx context.Context, jobN
 		return nil, err
 	}
 
+	if err := env.checkpointPolicy().Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	}
+	if _, err := env.restartPolicy(); err != nil {
+		return nil, err
+	}
 	if err := env.stateBackend.validate(); err != nil {
 		return nil, err
 	}
