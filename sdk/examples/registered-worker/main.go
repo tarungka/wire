@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -31,12 +32,12 @@ func (s *source) ReadBatch(ctx context.Context) ([]sdk.Event, error) {
 	return []sdk.Event{{Value: []byte("hello")}, {Value: []byte("world")}}, nil
 }
 
-type sink struct{}
+type sink struct{ output io.Writer }
 
 func (*sink) Open(context.Context) error { return nil }
 func (*sink) Close() error               { return nil }
-func (*sink) Write(_ context.Context, event sdk.Event) error {
-	_, err := fmt.Fprintln(os.Stdout, string(event.Value))
+func (s *sink) Write(_ context.Context, event sdk.Event) error {
+	_, err := fmt.Fprintln(s.output, string(event.Value))
 	return err
 }
 func main() {
@@ -46,8 +47,16 @@ func main() {
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	err := run(ctx, *mode, *rpc, *http, os.Stdout)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context, mode, rpc, http string, output io.Writer) error {
 	var err error
-	switch *mode {
+	switch mode {
 	case "worker":
 		registry := sdk.NewWorkerRegistry()
 		registry.RegisterSource("words", func(context.Context, []byte, sdk.WorkerTaskContext) (sdk.Source, error) { return &source{}, nil })
@@ -57,17 +66,16 @@ func main() {
 				return event, nil
 			}, nil
 		})
-		registry.RegisterSink("stdout", func(context.Context, []byte, sdk.WorkerTaskContext) (sdk.Sink, error) { return &sink{}, nil })
-		err = sdk.RunWorker(ctx, sdk.WorkerConfig{WorkerID: "example", CoordinatorAddr: *rpc, TaskSlots: 4}, registry)
+		registry.RegisterSink("stdout", func(context.Context, []byte, sdk.WorkerTaskContext) (sdk.Sink, error) {
+			return &sink{output: output}, nil
+		})
+		err = sdk.RunWorker(ctx, sdk.WorkerConfig{WorkerID: "example", CoordinatorAddr: rpc, TaskSlots: 4}, registry)
 	case "submit":
-		env := sdk.NewStreamExecutionEnvironment().SetMode(sdk.Cluster).SetCoordinator(*http).SetParallelism(1)
+		env := sdk.NewStreamExecutionEnvironment().SetMode(sdk.Cluster).SetCoordinator(http).SetParallelism(1)
 		env.AddSourceNamed("words", "words", nil).MapNamed("uppercase", "uppercase", nil).AddSinkNamed("stdout", "stdout", nil)
 		_, err = env.ExecuteWithName(ctx, "registered-example")
 	default:
-		err = fmt.Errorf("unknown mode %q", *mode)
+		err = fmt.Errorf("unknown mode %q", mode)
 	}
-	if err != nil && !errors.Is(err, context.Canceled) {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	return err
 }
