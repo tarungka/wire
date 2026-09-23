@@ -44,14 +44,6 @@ func (c *Coordinator) triggerCheckpointBoundary(jobID, savepointID string, final
 		c.mu.Unlock()
 		return nil, ErrJobNotRunning
 	}
-	minPause := c.config.CheckpointMinPause
-	if job.CheckpointPolicy != nil {
-		minPause = job.CheckpointPolicy.MinPause
-	}
-	if !final && savepointID == "" && minPause > 0 && !job.LastCheckpointCompletion.IsZero() && time.Since(job.LastCheckpointCompletion) < minPause {
-		c.mu.Unlock()
-		return nil, ErrCheckpointMinPause
-	}
 	data, err := c.store.Get(JobAssignmentsKey(jobID))
 	if err != nil {
 		c.mu.Unlock()
@@ -65,6 +57,19 @@ func (c *Coordinator) triggerCheckpointBoundary(jobID, savepointID string, final
 	if assignment.JobID != jobID || len(assignment.Assignments) == 0 {
 		c.mu.Unlock()
 		return nil, errors.New("checkpoint has no task assignments")
+	}
+	// An ordinary boundary becomes final once every source is exhausted.
+	// Otherwise frequent periodic checkpoints can starve the final scheduler.
+	if savepointID == "" && c.sourcesExhaustedLocked(assignment) {
+		final = true
+	}
+	minPause := c.config.CheckpointMinPause
+	if job.CheckpointPolicy != nil {
+		minPause = job.CheckpointPolicy.MinPause
+	}
+	if !final && savepointID == "" && minPause > 0 && !job.LastCheckpointCompletion.IsZero() && time.Since(job.LastCheckpointCompletion) < minPause {
+		c.mu.Unlock()
+		return nil, ErrCheckpointMinPause
 	}
 	if final && !c.sourcesExhaustedLocked(assignment) {
 		c.mu.Unlock()

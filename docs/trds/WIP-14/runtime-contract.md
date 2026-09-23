@@ -20,9 +20,13 @@ parallelism greater than one on a concrete connector is rejected. Map/Process
 functions may run concurrently across instances and must not mutate shared
 closure state unsafely.
 
-A closed embedded input contributes a terminal watermark, allowing bounded
-pipelines to flush their final windows and event-time timers. This does not change
-the distributed final-checkpoint protocol or resolve its mixed-source caveats.
+A bounded source queues a terminal watermark after its last records and before
+its final checkpoint. Each downstream chain processes the terminal minimum as
+soon as all inputs reach it, flushing windows/timers before the checkpoint
+snapshot rather than waiting for another periodic watermark tick. Ordinary
+checkpoint triggers become final when all sources are exhausted, so frequent
+periodic triggers cannot starve bounded completion. Mixed-source final-checkpoint
+caveats remain outside this change.
 Source timestamp extraction runs before watermark observation. Timestamp changes
 on later streams are explicit map nodes and cannot retroactively change source
 watermark generation. Cluster closures cannot be serialized: use registered
@@ -68,8 +72,10 @@ one atomic batch only on success. An error or panic discards those mutations,
 so record retry/drop/DLQ policies cannot double-apply managed state. This does not
 roll back external side effects inside callbacks; those must be idempotent.
 Timer errors during watermark handling fail the task and require checkpoint recovery.
-The embedded executor does not yet provide the full checkpoint/restart driver;
-that remains a WIP-14 completion gate, not an exactly-once claim.
+Embedded environments with checkpointing or restart policies enabled use the
+local coordinator/worker driver described below. Replay correctness still depends
+on the source and sink contracts; enabling checkpoints is not an exactly-once
+guarantee for ordinary sinks.
 
 ## Test harness
 
@@ -86,3 +92,33 @@ produces the same state-dependent output and timer result through separate main
 and side-output streams. A subsequent checkpoint completes across both branches.
 Its ordinary sinks intentionally observe replay; this is not a transactional-sink
 exactly-once claim.
+
+## Local execution and policies
+
+MiniCluster executes through a coordinator, worker RPCs, data streams and replica
+archives on loopback addresses. It registers closure factories locally; function
+values are never serialized. NumTaskSlots sets per-worker capacity and the default
+operator parallelism. Enough workers are provisioned for the graph, with at least
+two for replica storage. Each Execute has its own coordinator metadata and temporary
+replica directories, removed after all workers stop. Shutdown cancels and joins
+active executions and rejects later runs. This provides task recovery within a
+run, not persistence across a MiniCluster process crash.
+
+Checkpoint interval, timeout and minimum pause are persisted per job. Savepoints
+and final checkpoints bypass minimum pause. Fixed-delay and exponential-backoff
+restart policies delay the first retry as well as later retries; the latter caps
+at MaxDelay. MaxAttempts counts failed-job redeployments over the job lifetime,
+excluding the initial deployment and user-requested rescales. NoRestart is the
+SDK default. Older graphs without explicit policies keep coordinator defaults.
+
+CheckpointedSource.RestoreOffset runs after Open and before resumed reads, with
+the task context. Prefer connector factories for fresh attempt instances. A
+source without replayable offsets cannot promise correct checkpoint recovery;
+ordinary sinks may receive replayed records. Transactional sinks must satisfy
+the full WIP-10 contract. Local errors retain their Go identities for errors.Is.
+Local managed-state directories are scoped by job, operator and instance.
+
+`TestMiniClusterRestoresOffsetsAndManagedState` waits for a completed checkpoint,
+fails a source, then verifies restored offsets, keyed state, a pending timer and
+its main/side outputs. Existing MiniCluster tests exercise windows, reductions,
+DLQ startup/close, retries and parallel routing on this production runtime.

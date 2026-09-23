@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/tarungka/wire/internal/engine"
 )
@@ -62,11 +63,12 @@ func (a *filterAdapter) Map(_ context.Context, event Event) (Event, error) {
 
 // sourceAdapter wraps an sdk.Source to implement engine.SourceOperator.
 type sourceAdapter struct {
+	ctx       context.Context
 	source    Source
 	timestamp TimestampExtractor
 }
 
-func (a *sourceAdapter) Open(ctx context.Context) error { return a.source.Open(ctx) }
+func (a *sourceAdapter) Open(ctx context.Context) error { a.ctx = ctx; return a.source.Open(ctx) }
 func (a *sourceAdapter) Close() error                   { return a.source.Close() }
 func (a *sourceAdapter) Checkpoint(id uint64) ([]byte, error) {
 	if source, ok := a.source.(CheckpointedSource); ok {
@@ -84,6 +86,16 @@ func (a *sourceAdapter) ReadBatch(ctx context.Context) ([]Event, error) {
 	return events, err
 }
 func (a *sourceAdapter) GenerateWatermark() int64 { return a.source.GenerateWatermark() }
+
+func (a *sourceAdapter) RestoreCheckpoint(data []byte) error {
+	if source, ok := a.source.(CheckpointedSource); ok {
+		return source.RestoreOffset(a.ctx, append([]byte(nil), data...))
+	}
+	if len(data) != 0 {
+		return fmt.Errorf("source cannot restore nonempty checkpoint offsets")
+	}
+	return nil
+}
 
 // sinkAdapter wraps an sdk.Sink to implement engine.SinkOperator.
 type sinkAdapter struct {

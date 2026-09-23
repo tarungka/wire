@@ -11,6 +11,7 @@ import (
 // StreamExecutionEnvironment is the entry point for building and executing
 // streaming pipelines. It holds configuration and the logical stream graph.
 type StreamExecutionEnvironment struct {
+	miniCluster        *MiniCluster
 	parallelism        int
 	numKeyGroups       int
 	checkpointInterval time.Duration
@@ -162,6 +163,12 @@ func (env *StreamExecutionEnvironment) ExecuteWithName(ctx context.Context, jobN
 	case Embedded:
 		if err := env.graph.validateForEmbedded(); err != nil {
 			return nil, err
+		}
+		if env.miniCluster != nil {
+			return env.miniCluster.run(ctx, env, jobName)
+		}
+		if env.checkpointInterval > 0 || env.restartStrategy.Type != RestartNone {
+			return env.runLocal(ctx, jobName, env.parallelism)
 		}
 		executor := &embeddedExecutor{env: env}
 		return executor.run(ctx, jobName)

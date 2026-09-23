@@ -12,7 +12,9 @@ Do not mark WIP-14 implemented until each item has execution evidence.
 - [x] Checkpoint/restore of all managed state and timers; no cross-key/operator leakage.
 - [x] Named distributed Process registration and keyed execution with the same APIs.
 - [ ] Environment checkpoint/restart settings reach the runtime instead of being ignored.
-- [ ] MiniCluster and test harness exercise parallel state, timers, side outputs and recovery.
+  Interval, timeout, minimum pause and restart policies are wired; audit the
+  original named configuration APIs and concurrent-checkpoint requirement.
+- [x] MiniCluster and test harness exercise parallel state, timers, side outputs and recovery.
 - [ ] Public API walkthrough and runnable examples, YAML schema delegation to WIP-19.
 - [ ] Integration and race tests, build/vet/lint, one ready PR with acceptance evidence.
 
@@ -62,3 +64,28 @@ runs before SDK execution and coordinator persistence. Tests cover durable
 policy round trips, first/second retry timing, exhaustion, no-restart, overflow,
 invalid inputs, and the SDK HTTP submission envelope. Local execution still
 needs the MiniCluster driver to apply these policies.
+
+## Local coordinator/worker execution
+
+MiniCluster now provisions loopback workers and independent replica storage,
+registers SDK closures as worker factories, and submits the graph to the real
+coordinator. Embedded environments with checkpointing or restarts enabled use
+the same driver. Source offset restoration bridges CheckpointedSource into the
+engine; factories construct replacement attempts. Shutdown cancels and joins
+active executions. Local errors preserve Go error identities. Ordinary
+embedded execution without recovery settings retains its fast executor.
+
+The new acceptance scenario waits for a completed checkpoint, fails its source,
+restores source offsets plus keyed state and a pending timer, then checks timer
+and named side-output delivery at bounded completion. This exposed and fixed
+periodic checkpoint starvation of final boundaries, and terminal watermarks
+being lost between input tracking and the next periodic propagation tick.
+Terminal watermarks now traverse the ordered data queue before final snapshots;
+periodic emitters cannot regress them. Existing MiniCluster window/reduction,
+DLQ lifecycle and retry tests run against production workers.
+
+Local runtime metadata and replica storage are scoped to one Execute call, not
+process-crash durability. Sources must support replayable offsets for checkpoint
+recovery; ordinary sinks can see replayed records. Transactional sink correctness
+still requires the WIP-10 sink contract. Public walkthrough and final scope audit
+remain outstanding before a ready WIP-14 PR.

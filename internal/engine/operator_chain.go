@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"runtime/debug"
 	"time"
 
@@ -19,6 +20,8 @@ var errChainDone = errors.New("operator chain done")
 // chainContext consolidates parameters passed between the operator chain
 // functions, avoiding long parameter lists.
 type chainContext struct {
+	lastWatermark              int64
+	watermarkSet               bool
 	checkpoint                 *chainCheckpointState
 	draining                   bool
 	preparedCheckpoint         uint64
@@ -250,6 +253,14 @@ func processEvent(cc *chainContext, event Event) error {
 	}
 	if boundary := event.inputWatermark; boundary != nil {
 		boundary.tracker.AdvanceWatermark(boundary.input, boundary.timestamp)
+		if boundary.timestamp == math.MaxInt64 {
+			for i := range boundary.tracker.watermarks {
+				if boundary.tracker.watermarks[i].Load() != math.MaxInt64 {
+					return nil
+				}
+			}
+			return processWatermark(cc, math.MaxInt64)
+		}
 		return nil
 	}
 	if event.watermark != nil {

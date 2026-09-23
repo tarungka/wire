@@ -547,6 +547,15 @@ func runSourceReaderWithContexts(intakeCtx, ctx context.Context, source SourceOp
 		}
 
 		if batch == nil {
+			if strategy != nil {
+				queue := &sourceWatermarkQueue{}
+				if len(checkpoints) > 0 && checkpoints[0].watermarks != nil {
+					queue = checkpoints[0].watermarks
+				}
+				if err := queue.finish(ctx, eventCh); err != nil {
+					return err
+				}
+			}
 			// Keep the source available for a final global checkpoint before EOP.
 			if len(checkpoints) > 0 {
 				if err := checkpoints[0].finish(intakeCtx, ctx); err != nil {

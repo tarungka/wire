@@ -20,7 +20,10 @@ import (
 
 // Config holds worker configuration.
 type Config struct {
-	CoordinatorSeeds []string
+	// TaskFailureObserver receives task errors before reporting them. It must not block.
+	// Local SDK execution uses it to preserve Go error identities across its RPC boundary.
+	TaskFailureObserver func(jobID, taskID string, err error)
+	CoordinatorSeeds    []string
 	// EpochPath enables durable fencing across process restarts; required for HA discovery.
 	EpochPath            string
 	HeartbeatInterval    time.Duration
@@ -687,6 +690,9 @@ func (w *Worker) reportTaskStatus(jobID, taskID string, status rpc.TaskStatus, f
 // reportTaskFailed sends an UpdateTaskStatus RPC with status=Failed and the
 // error message populated in the failure info.
 func (w *Worker) reportTaskFailed(jobID, taskID string, err error) {
+	if w.cfg.TaskFailureObserver != nil {
+		w.cfg.TaskFailureObserver(jobID, taskID, err)
+	}
 	var panicErr *engine.OperatorPanicError
 	var stack string
 	class := ""
