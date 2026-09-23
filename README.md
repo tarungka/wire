@@ -1,11 +1,11 @@
 # Wire
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/go-%3E%3D1.24-blue.svg)](go.mod)
+[![Go Version](https://img.shields.io/badge/go-%3E%3D1.25-blue.svg)](go.mod)
 
 Wire is a distributed stream processing engine written in Go. It targets unbounded data streams with strict correctness guarantees: exactly-once semantics, deterministic recovery, and strict event ordering. State lives in an embedded PebbleDB; checkpoints use Asynchronous Barrier Snapshots (Chandy–Lamport). Wire is designed to run as a single binary with no external dependencies.
 
-> **Project status:** pre-`v0.1.0`, alpha. The codebase underwent a full architectural rewrite (merged March 2026, PR [#148](https://github.com/tarungka/wire/pull/148)). The engine, coordinator, and worker are in place; user-facing surfaces (configuration reference, Go SDK, REST API, connector SDK) are actively being specified under the [WIP process](docs/trds/). There are no built-in connectors yet.
+> **Project status:** pre-`v0.1.0`, alpha. The codebase underwent a full architectural rewrite (merged March 2026, PR [#148](https://github.com/tarungka/wire/pull/148)). The engine, coordinator, worker, Go SDK, REST API, job CLI, and HTTP API source/sink are implemented. YAML pipelines support a restricted embedded execution mode. Feature availability differs between embedded and distributed execution; see the [usage guide](docs/usage.md), [HTTP connector contract](sdk/connectors/httpapi/README.md), and [WIP runtime contracts](docs/trds/).
 
 ## Documentation
 
@@ -31,7 +31,7 @@ cd wire
 make build
 ```
 
-This produces the `wire` binary in the project root. Go 1.24+ is required.
+This produces the `wire` binary in the project root. Go 1.25.0 or later is required (see `go.mod`).
 
 ## Run
 
@@ -54,7 +54,8 @@ Wire runs as a single binary in either coordinator or worker mode. See [`docs/us
 ./wire \
   --mode worker \
   --coordinator-addr localhost:4002 \
-  --task-slots 4
+  --task-slots 4 \
+  --metrics-addr :9091
 ```
 
 ## Contributing
