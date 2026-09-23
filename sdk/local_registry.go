@@ -115,18 +115,16 @@ func (env *StreamExecutionEnvironment) localRegistry(ctx context.Context) (rpc.J
 			})
 		case NodeProcess:
 			reg.RegisterProcess(node.ClassName, func(context.Context, []byte, worker.TaskContext) (engine.FlatMapOperator, error) {
-				return NewProcessOperator(node.ProcessFn, node.TimerFn, env.stateBackend), nil
+				return NewProcessOperator(node.ProcessFn, node.TimerFn, StateBackendConfig{}), nil
 			})
 		case NodeWindow, NodeReduce:
-			reg.RegisterWindow(node.ClassName, func(_ context.Context, _ []byte, tc worker.TaskContext) (worker.WindowOperator, error) {
+			reg.RegisterWindow(node.ClassName, func(_ context.Context, _ []byte, _ worker.TaskContext) (worker.WindowOperator, error) {
 				op, err := embeddedWindow(&node)
 				if err != nil {
 					return nil, err
 				}
 				window := op.(*engine.EventTimeWindowOperator)
-				window.StateBackendFactory = func() (engine.StateBackend, func(), error) {
-					return env.stateBackend.forOperator(tc.JobID, tc.OperatorID).open(node.ID, int(tc.SubtaskIndex))
-				}
+
 				return window, nil
 			})
 		default:
@@ -135,6 +133,7 @@ func (env *StreamExecutionEnvironment) localRegistry(ctx context.Context) (rpc.J
 	}
 	result := graph.toJobGraph(env.parallelism)
 	result.NumKeyGroups = env.numKeyGroups
+	env.configureGraphStateBackend(&result)
 	result.CheckpointPolicy = env.checkpointPolicy()
 	var err error
 	result.RestartPolicy, err = env.restartPolicy()

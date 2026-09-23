@@ -271,6 +271,7 @@ type JobGraph struct {
 
 // OperatorDescriptor describes a single operator in the job graph.
 type OperatorDescriptor struct {
+	StateBackend   *StateBackendSpec  `codec:"state_backend,omitempty"`
 	SideOutputTags []string           `codec:"side_output_tags,omitempty"`
 	Window         *WindowDefinition  `codec:"window,omitempty"`
 	LateOutputTag  string             `codec:"late_output,omitempty"`

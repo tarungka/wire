@@ -16,7 +16,7 @@ PRs are dependencies, not merged functionality.
 | Checkpoint interval, timeout, minimum pause | SDK submission-envelope tests; coordinator persistence, trigger and timeout tests | None identified for these settings |
 | Maximum concurrent checkpoints API | Original proposal declares `SetMaxConcurrentCheckpoints`; runtime currently enforces one in-flight checkpoint, also required by WIP-05 acceptance | API/contract discrepancy remains open; do not silently ignore a setting |
 | Fixed/exponential/no-restart policies | RPC validation/delay tests, coordinator budget and persistence tests, real MiniCluster recovery | None identified for implemented policies |
-| State backend selection | Embedded and local worker Process/window backend factories | Remote per-job backend selection currently rejected; audit against WIP-18 |
+| State backend selection | SDK remote submission test, deployed memory-limit enforcement, worker pre-factory validation, scoped persistent state tests | WIP-18 broader storage contracts remain to audit |
 | TestHarness and MiniCluster | Real workers, replicas and recovery; shutdown joins executions; existing acceptance tests run on new driver | Final documented-API review |
 | Runnable examples and walkthrough | `docs/sdk-walkthrough.md`, `sdk/examples/stateful`, normal/recovery mode tests | Add further examples if reference review finds missing workflows |
 | YAML schema and identical SDK graph | Existing parser/validation tests; WIP-13 schema work in #228; remaining runtime/reload work assigned WIP-19 | Must verify across the final WIP-13–19 deliverables; do not claim all YAML execution here |

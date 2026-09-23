@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"path/filepath"
+
+	"github.com/tarungka/wire/internal/engine"
 )
 
 // ProcessNamed applies a registered worker Process factory to a keyed stream.
@@ -40,4 +42,9 @@ func (config StateBackendConfig) forOperator(jobID, operatorID string) StateBack
 		config.DataDir = filepath.Join(config.DataDir, fmt.Sprintf("%x", identity))
 	}
 	return config
+}
+
+// SetStateBackendFactory allows worker deployment to apply per-job storage.
+func (op *ProcessOperator) SetStateBackendFactory(factory func() (engine.StateBackend, func(), error)) {
+	op.backendFactory = factory
 }

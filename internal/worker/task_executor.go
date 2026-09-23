@@ -88,6 +88,9 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		if od.ErrorPolicy != nil && od.ErrorPolicy.OnExhausted == "dlq" && od.DLQSink == nil {
 			return fmt.Errorf("worker: DLQ destination required for %q", od.OperatorID)
 		}
+		if err := od.ValidateStateBackend(); err != nil {
+			return err
+		}
 		if od.DLQSink != nil && (od.DLQSink.ClassName == "" || od.ErrorPolicy == nil || od.ErrorPolicy.OnExhausted != "dlq") {
 			return fmt.Errorf("worker: invalid DLQ configuration for %q", od.OperatorID)
 		}
@@ -115,6 +118,17 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			}
 			sourceOp = so
 			continue
+		}
+		if od.StateBackend != nil {
+			target, ok := op.(interface {
+				SetStateBackendFactory(func() (engine.StateBackend, func(), error))
+			})
+			if !ok {
+				return fmt.Errorf("worker: operator %q cannot configure state backend", od.OperatorID)
+			}
+			s := od.StateBackend
+			cfg := engine.StateBackendConfig{Type: engine.StateBackendType(s.Type), PebbleDataDir: s.DataDir, HashMapMemLimit: s.MaxMemoryBytes, PebbleMaxCompactionConcurrency: s.MaxCompactionConcurrency}
+			target.SetStateBackendFactory(engine.ScopedStateBackendFactory(cfg, jobID, od.OperatorID, desc.AttemptID, int(desc.SubtaskIndex)))
 		}
 		if od.Window != nil {
 			target, ok := op.(interface {

@@ -122,3 +122,26 @@ Local managed-state directories are scoped by job, operator and instance.
 fails a source, then verifies restored offsets, keyed state, a pending timer and
 its main/side outputs. Existing MiniCluster tests exercise windows, reductions,
 DLQ startup/close, retries and parallel routing on this production runtime.
+
+## Remote state backend selection
+
+SetStateBackend now travels in managed Process/window operator descriptors.
+The coordinator validates type and limits before persisting a submission, and
+workers validate again before invoking factories. Deployment injects a scoped
+backend factory before Open. SDK ProcessOperator and EventTimeWindowOperator
+accept it; a custom operator without that configuration interface fails explicitly.
+Nil descriptors preserve the registered factory's own storage choice.
+
+Remote DataDir is a worker-local root. Explicit roots retain state below hashed
+job/operator identity and instance directories; absent roots use temporary storage
+cleaned after operator Close. Hashmap logical memory and Pebble compaction limits
+are preserved. Older workers do not understand the new descriptor field: upgrade
+coordinator and workers together before submitting backend-configured graphs.
+The submission-envelope test and MiniCluster memory-limit test cover encoding
+and actual enforcement, while scoped backend tests cover retained state and
+isolation across jobs, operators and instances.
+
+Explicit deployed backend roots also isolate deployment attempts. A retry before
+the first checkpoint starts with empty managed state; a checkpointed retry imports
+its authorized snapshot into the new attempt. Retained roots can contain state
+from older attempts and require operator-managed disk retention.

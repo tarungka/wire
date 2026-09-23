@@ -7,9 +7,10 @@ import (
 	"path/filepath"
 
 	"github.com/tarungka/wire/internal/engine"
+	"github.com/tarungka/wire/internal/rpc"
 )
 
-// StateBackendConfig selects storage for each embedded Process/window instance.
+// StateBackendConfig selects storage for each Process/window instance.
 // An explicit Pebble directory is retained across executions; an omitted one
 // uses a temporary directory removed when execution closes the operator.
 type StateBackendConfig struct {
@@ -33,8 +34,8 @@ func NewPebbleStateBackend(dataDir string) StateBackendConfig {
 	return StateBackendConfig{Type: "pebble", DataDir: dataDir}
 }
 
-// SetStateBackend selects the backend used by embedded keyed Process and window operators.
-// Cluster-mode backend selection is not supported yet and is rejected at Execute.
+// SetStateBackend selects storage for keyed Process and window operators.
+// In Cluster mode DataDir is a worker-local root, isolated by job/operator/instance.
 func (env *StreamExecutionEnvironment) SetStateBackend(config StateBackendConfig) *StreamExecutionEnvironment {
 	env.stateBackend = config
 	env.stateBackendSet = true
@@ -74,4 +75,17 @@ func (c StateBackendConfig) open(nodeID, instance int) (engine.StateBackend, fun
 		return nil, func() {}, err
 	}
 	return backend, cleanup, nil
+}
+
+func (env *StreamExecutionEnvironment) configureGraphStateBackend(graph *rpc.JobGraph) {
+	if !env.stateBackendSet {
+		return
+	}
+	c := env.stateBackend
+	for i := range graph.Operators {
+		op := &graph.Operators[i]
+		if op.Type == rpc.OperatorTypeProcess || op.Type == rpc.OperatorTypeWindow {
+			op.StateBackend = &rpc.StateBackendSpec{Type: c.Type, DataDir: c.DataDir, MaxMemoryBytes: int64(c.MaxMemoryMB) * 1024 * 1024, MaxCompactionConcurrency: c.MaxCompactionConcurrency}
+		}
+	}
 }

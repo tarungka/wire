@@ -11,6 +11,9 @@ func validateGraphWindows(graph rpc.JobGraph) error {
 	operators := make(map[string]rpc.OperatorDescriptor)
 	for _, op := range graph.Operators {
 		operators[op.OperatorID] = op
+		if err := op.ValidateStateBackend(); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		}
 		if err := op.ValidateSideOutputs(); err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 		}

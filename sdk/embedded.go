@@ -317,6 +317,7 @@ func (ex *embeddedExecutor) runStageInstance(
 
 // processAdapter wraps a ProcessFunc to implement engine.FlatMapOperator.
 type processAdapter struct {
+	backendFactory   func() (engine.StateBackend, func(), error)
 	clock            func() time.Time
 	fn               ProcessFunc
 	onTimer          TimerFunc
@@ -330,8 +331,15 @@ type processAdapter struct {
 
 func (a *processAdapter) Open(_ context.Context) error {
 	var err error
-	a.backend, a.cleanup, err = a.config.open(a.nodeID, a.instance)
+	if a.backendFactory != nil {
+		a.backend, a.cleanup, err = a.backendFactory()
+	} else {
+		a.backend, a.cleanup, err = a.config.open(a.nodeID, a.instance)
+	}
 	if err == nil {
+		if a.cleanup == nil {
+			a.cleanup = func() {}
+		}
 		err = a.loadWatermark()
 		if err != nil {
 			_ = a.Close()

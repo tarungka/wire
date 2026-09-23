@@ -171,3 +171,8 @@ func (op *EventTimeWindowOperator) ConfigureWindow(kind string, size, slide, gap
 	op.processor = processor
 	return nil
 }
+
+// SetStateBackendFactory applies a per-job backend before Open.
+func (op *EventTimeWindowOperator) SetStateBackendFactory(factory func() (StateBackend, func(), error)) {
+	op.StateBackendFactory = factory
+}

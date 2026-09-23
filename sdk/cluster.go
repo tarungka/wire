@@ -45,6 +45,7 @@ func (ex *clusterExecutor) run(ctx context.Context, jobName string) (*JobResult,
 	// Encode the graph.
 	graph := ex.env.graph.toJobGraph(ex.env.parallelism)
 	graph.NumKeyGroups = ex.env.numKeyGroups
+	ex.env.configureGraphStateBackend(&graph)
 	restartPolicy, err := ex.env.restartPolicy()
 	if err != nil {
 		return nil, err

@@ -103,8 +103,14 @@ env.SetCheckpointInterval(100 * time.Millisecond).
 The hashmap limit is in MiB of logical state payload. Use
 `sdk.NewPebbleStateBackend(directory)` for disk-backed state. In local worker
 execution, explicit directories are isolated by job/operator/instance and
-retained; temporary directories are cleaned up. The current checkpoint protocol
-allows one in-flight checkpoint per job. Savepoints and final checkpoints are
+retained; temporary directories are cleaned up. In remote mode, the same selection is sent to managed Process/window operators.
+`DataDir` then refers to a worker-local root, not a path on the submitting client.
+Workers add job/operator/instance isolation. Custom registered operators must
+accept backend factory configuration; unsupported operators fail deployment
+instead of silently ignoring it. Upgrade workers and the coordinator together
+before submitting graphs with this field.
+
+The current checkpoint protocol allows one in-flight checkpoint per job. Savepoints and final checkpoints are
 exempt from minimum pause.
 
 `NoRestart()` is the SDK default. `FixedDelay` applies the same delay before each
@@ -153,3 +159,8 @@ unencrypted and appropriate only for a trusted local setup.
 The [YAML format](../sdk/pipeline_yaml.md) compiles into SDK graphs. Its remaining
 execution and reload scope belongs to [WIP-19](trds/WIP-19/README.md); do not infer
 that every Go SDK capability is already available through YAML.
+
+Explicit deployed backend roots also isolate deployment attempts. A retry before
+the first checkpoint starts with empty managed state; a checkpointed retry imports
+its authorized snapshot into the new attempt. Retained roots can contain state
+from older attempts and require operator-managed disk retention.

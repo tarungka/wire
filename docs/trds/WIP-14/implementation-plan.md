@@ -100,3 +100,17 @@ and remote named execution. SDK unit coverage measured 82.8% before the two new
 API aliases. scope-audit.md records original requirements and outstanding
 configuration/remote-backend/security/YAML cross-WIP gates without marking them
 complete. The descriptive constructor and minimum-pause aliases are available.
+
+## Remote backend selection
+
+SDK SetStateBackend is now encoded on managed operator descriptors for Cluster
+execution instead of being rejected. Coordinator and worker validation reject
+invalid types/limits before user factories run. Workers configure backend factories
+before Open; Process and window adapters accept them. MiniCluster uses this same
+serialized configuration path. Tests verify remote submission, actual one-MiB
+hashmap limit enforcement, and retained Pebble state isolated by identity.
+
+Explicit deployed backend roots also isolate deployment attempts. A retry before
+the first checkpoint starts with empty managed state; a checkpointed retry imports
+its authorized snapshot into the new attempt. Retained roots can contain state
+from older attempts and require operator-managed disk retention.

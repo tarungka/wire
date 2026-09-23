@@ -156,9 +156,6 @@ func (env *StreamExecutionEnvironment) ExecuteWithName(ctx context.Context, jobN
 	if err := env.stateBackend.validate(); err != nil {
 		return nil, err
 	}
-	if env.mode == Cluster && env.stateBackendSet {
-		return nil, fmt.Errorf("%w: cluster state backend selection is not supported", ErrInvalidConfig)
-	}
 	switch env.mode {
 	case Embedded:
 		if err := env.graph.validateForEmbedded(); err != nil {
