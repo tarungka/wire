@@ -43,7 +43,7 @@ Acceptance must distinguish that existing limitation from window recovery proof.
   with window/task identities attached by embedded and worker runtimes. Gauge
   registration is released on Close. Targeted window/SDK/observability race tests
   and affected-package lint pass.
-- Still required: named late streams and routing, Reduce/Apply, backend persistence
+- At this increment, remaining work was named late streams and routing, Reduce/Apply, backend persistence
   and worker recovery acceptance, full requirement coverage and PR publication.
 
 ### Runtime and routing increment
@@ -67,10 +67,10 @@ Acceptance must distinguish that existing limitation from window recovery proof.
   types pass initial result -> late update -> purge -> one original late record.
   YAML execution and network grouped-fence tests pass. Full repository race
   suite, build, vet and pinned lint passed for this increment.
-- Completion remains unproven: add named-window SDK deployment configuration,
+- At this increment, remaining work was named-window SDK deployment configuration,
   real worker/coordinator late-output checkpoint/recovery acceptance, invalid
   routing/configuration coverage, metric restore/purge integration and a full
-  requirements/coverage audit. Then update final docs and publish the PR.
+  requirements/coverage audit, final documentation and PR publication.
 
 ### Deployment and recovery acceptance increment
 
@@ -96,3 +96,13 @@ Acceptance must distinguish that existing limitation from window recovery proof.
   This is the core late-detection/retention/purge target, not whole-package or
   snapshot/storage coverage. Remaining work: final runtime/storage audit,
   acceptance documentation, full final verification and completion PR.
+
+### Final acceptance audit
+
+The [acceptance record](acceptance.md) maps all five proposal scenarios and the
+configuration, routing, metrics, durable state and edge-case requirements to
+executed tests. The [runtime contract](runtime-contract.md) documents deployment
+configuration, resource bounds, upgrade ordering and replay visibility. Apply's
+WindowInfo.IsUpdate is asserted inside the callback as well as on result headers.
+The WIP and canon/index documentation now describe the implemented behavior.
+Final verification and PR publication are the remaining delivery gates.

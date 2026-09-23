@@ -69,7 +69,7 @@ These topics are mentioned but lack enough detail to code from.
 
 19. **Broadcast State** — Listed as a state type in state-backend.md ("Configuration data sent to all parallel instances") but no API, no update mechanism, no consistency guarantees.
 
-20. **Late Data / Allowed Lateness** — Mentioned as "configurable grace period" but no configuration syntax, no units, no per-operator scoping, no side-output mechanism.
+20. **Late Data / Allowed Lateness — resolved by WIP-12.** The [runtime contract](trds/WIP-12/runtime-contract.md) specifies SDK/YAML units, per-window retention, named late streams, update identity, backend bounds and metrics. [Acceptance evidence](trds/WIP-12/acceptance.md) covers embedded and distributed recovery.
 
 ### Category 3: The Technical Documentation Is Essentially Empty
 

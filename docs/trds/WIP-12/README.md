@@ -6,11 +6,11 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-09-12`
+> **Last Updated:** `2026-09-23`
 
 ### Revision History
 
@@ -20,13 +20,17 @@
 
 ---
 
-## Implementation Status — 2026-09-12
+## Implementation Status — 2026-09-23
 
-Base audit assessed `master` at `0e78195`; the implementation evidence below includes this WIP-12 change. This section records current implementation; the proposal below retains its original design context and targets.
+The completion branch implements ordered Aggregate/Reduce/Apply execution,
+per-window SDK/YAML lateness, named late branches, attributed live metrics,
+atomic backend persistence and portable checkpoint recovery. It follows #193
+and is based on master `931d02e` (including WIP-10 and WIP-11).
 
-- **Implemented:** The SDK contains window descriptions and AllowedLateness settings. The engine now has a WindowProcessor for tumbling/sliding/session assignment, initial and updated results, per-event too-late decisions, watermark-driven purge, local counters, bounded retained-window count, and checksummed snapshots preserving watermark/update flags.
-- **Remaining:** Connect the processor to ordered runtime watermark/event delivery, SDK Window/Reduce execution, named side-output routing, metrics export, and durable state/checkpoint restore. The embedded executor still skips Window/Reduce nodes; this processor API alone is not end-to-end window execution.
-- **Evidence:** [windowed_stream.go](../../../sdk/windowed_stream.go), [embedded.go](../../../sdk/embedded.go), [window_processor.go](../../../internal/engine/window_processor.go), [window_snapshot.go](../../../internal/engine/window_snapshot.go), [tests](../../../internal/engine/window_processor_test.go).
+See the [runtime contract](runtime-contract.md) for supported configuration,
+resource bounds and compatibility, and [acceptance evidence](acceptance.md) for
+the requirement-by-requirement test mapping. Completion means the scoped window
+behavior; it does not claim to resolve WIP-10's mixed-source completion issue.
 
 ---
 
@@ -118,9 +122,10 @@ windowed := keyed.Window(sdk.TumblingWindow(5 * time.Minute)).
     AllowedLateness(30 * time.Second).
     SetLateOutputTag(lateTag)
 
-// Collect too-late events as a separate stream
+// Create the main result stream, then collect its late branch.
+mainStream := windowed.Aggregate(sdk.CountAggregator{})
 lateStream := mainStream.GetSideOutput(lateTag)
-lateStream.AddSink("late-sink", lateSink)
+lateStream.AddSink(lateSink)
 ```
 
 ### 3.4 Updated Result Emission

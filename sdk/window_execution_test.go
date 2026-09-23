@@ -82,6 +82,9 @@ func TestWindowReduceAndApplyPreserveLateUpdates(t *testing.T) {
 						if info.Start >= info.End {
 							t.Fatal("missing window bounds")
 						}
+						if info.IsUpdate != (len(events) > 1) {
+							t.Fatalf("Apply update identity=%t for %d retained records", info.IsUpdate, len(events))
+						}
 						var data []byte
 						for _, event := range events {
 							data = append(data, event.Value...)
