@@ -33,8 +33,9 @@ acceptance, not successful deployment or completion. The server still accepts
 legacy `config` bytes, but the scheduler does not interpret those as a graph.
 
 `wire jobs pause JOB_ID` and `wire jobs resume JOB_ID` expose the existing REST
-endpoints. Those endpoints currently update metadata; they do not provide a
-completed runtime pause/savepoint/restore workflow. Similarly, triggering a
-savepoint returns its current metadata status, not a guarantee of a completed
-durable snapshot. Inspect returned status before relying on it. Upgrades,
-rescaling, and binary submission remain unsupported.
+endpoints. Pause triggers a checkpoint-backed savepoint and updates job metadata without
+waiting for completion or suspending tasks. Resume updates metadata but does not
+redeploy from that savepoint. Triggering a savepoint is asynchronous: inspect its
+status until completion before relying on it. Rescaling is available through the
+[REST rescale endpoint](rescale-safety.md), not a job CLI subcommand. Binary
+submission remains unsupported.

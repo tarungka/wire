@@ -31,3 +31,12 @@ For exact diagnostic messages, see
 [`internal/config/validate.go`](../internal/config/validate.go). The field table
 and checked runnable configuration files are linked from
 [the WIP-13 reference](trds/WIP-13/README.md).
+
+## Worker data-frame limit
+
+`max_frame_size` (CLI `--max-frame-size`) defaults to 16 MiB and controls the
+worker data mux's framed records and controls. It must be at least five bytes
+for the type/CRC fields; useful values must also fit handshake and routing
+messages. The setting does not change coordinator RPC payload limits or
+checkpoint archive limits. Workers must use compatible limits; frame sizes are
+not negotiated down automatically.

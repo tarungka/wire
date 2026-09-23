@@ -11,6 +11,7 @@ import (
 
 // flagToKey maps CLI flag names to koanf dotted key paths.
 var flagToKey = map[string]string{
+	"max-frame-size":       "max_frame_size",
 	"mode":                 "mode",
 	"listen":               "listen",
 	"debug":                "node.debug",

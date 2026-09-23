@@ -263,6 +263,7 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 		return err
 	}
 	w := worker.New(worker.Config{
+		MaxFrameSize:         wireCfg.MaxFrameSize,
 		EpochPath:            wireCfg.Worker.EpochPath,
 		CoordinatorSeeds:     wireCfg.Worker.CoordinatorSeeds,
 		HeartbeatInterval:    wireCfg.Heartbeat.Interval.Duration,

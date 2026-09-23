@@ -20,6 +20,7 @@ import (
 
 // Config holds worker configuration.
 type Config struct {
+	MaxFrameSize     uint32 // Zero keeps the transport default.
 	CoordinatorSeeds []string
 	// EpochPath enables durable fencing across process restarts; required for HA discovery.
 	EpochPath            string
@@ -163,6 +164,9 @@ func (w *Worker) Run(ctx context.Context) (retErr error) {
 		w.log.Info().Str("addr", addr).Msg("checkpoint replica listener started")
 	}
 	dataConfig := transport.DefaultConfig()
+	if w.cfg.MaxFrameSize != 0 {
+		dataConfig.MaxFrameSize = w.cfg.MaxFrameSize
+	}
 	dataConfig.TaskRegistrationTimeout = 5 * time.Second
 	dataConfig.NodeID = workerID
 	dataConfig.ListenAddr = w.cfg.ListenAddr
