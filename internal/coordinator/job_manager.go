@@ -34,21 +34,27 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 	// Legacy opaque configurations remain accepted. Structured graphs are
 	// validated before reserving a job name or writing any metadata.
 	var graph rpc.JobGraph
+	var checkpointPolicy *rpc.CheckpointPolicy
 	if err := protocol.DecodeMsgPack(config, &graph); err == nil {
+		if err := graph.CheckpointPolicy.Validate(); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		}
 		if _, err := validateGraphKeyGroups(graph, parallelism); err != nil {
 			return nil, err
 		}
+		checkpointPolicy = graph.CheckpointPolicy
 	}
 
 	now := time.Now().UTC()
 	job := &JobMeta{
-		ID:          generateJobID(),
-		Name:        name,
-		Status:      JobCreated,
-		Parallelism: parallelism,
-		Config:      config,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		CheckpointPolicy: checkpointPolicy,
+		ID:               generateJobID(),
+		Name:             name,
+		Status:           JobCreated,
+		Parallelism:      parallelism,
+		Config:           config,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 
 	// Encode outside the lock to avoid holding it during serialization.

@@ -240,6 +240,9 @@ func (c *Coordinator) recover() error {
 
 // serve runs the main coordinator service loop: heartbeat flushing and scheduling.
 func (c *Coordinator) serve(ctx context.Context) error {
+	checkpointDone := make(chan struct{})
+	go func() { defer close(checkpointDone); c.runPeriodicCheckpoints(ctx) }()
+	defer func() { <-checkpointDone }()
 	schedulerDone := make(chan struct{})
 	go func() { defer close(schedulerDone); c.runScheduler(ctx) }()
 	defer func() { <-schedulerDone }()

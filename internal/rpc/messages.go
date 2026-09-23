@@ -261,6 +261,7 @@ type SubmitJobResponse struct {
 
 // JobGraph describes the DAG of operators and edges.
 type JobGraph struct {
+	CheckpointPolicy *CheckpointPolicy `codec:"checkpoint_policy,omitempty"`
 	// NumKeyGroups is fixed for the job lifetime; zero selects the default 128.
 	NumKeyGroups int                  `codec:"key_groups,omitempty"`
 	Operators    []OperatorDescriptor `codec:"ops"`

@@ -15,6 +15,7 @@ type StreamExecutionEnvironment struct {
 	numKeyGroups       int
 	checkpointInterval time.Duration
 	checkpointTimeout  time.Duration
+	checkpointMinPause time.Duration
 	restartStrategy    RestartStrategy
 	mode               ExecutionMode
 	coordinatorURL     string

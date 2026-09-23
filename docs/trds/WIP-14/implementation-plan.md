@@ -38,3 +38,14 @@ checkpoint/restart settings into cluster submission and scheduling. Existing
 `SetCheckpointInterval` / `SetRestartStrategy` are still not runtime-complete.
 Keep WIP-14 Partially Implemented until those gates and the public walkthrough
 are verified; no completion PR has been created yet.
+
+## Per-job checkpoint policy
+
+SDK cluster submission now carries interval, timeout and minimum pause in the
+graph. Submission validates and persists the policy with job metadata; legacy
+graphs retain coordinator defaults. A joined coordinator runner schedules
+periodic checkpoints outside the placement and heartbeat loops. Trigger times
+are persisted atomically with checkpoint decisions, active checkpoints prevent
+overlap, and savepoints/final checkpoints bypass minimum pause. Tests exercise
+the actual runner, persisted metadata, timeout boundary and SDK HTTP envelope.
+Restart strategies and the local MiniCluster driver remain pending.

@@ -44,7 +44,11 @@ func (c *Coordinator) triggerCheckpointBoundary(jobID, savepointID string, final
 		c.mu.Unlock()
 		return nil, ErrJobNotRunning
 	}
-	if !final && savepointID == "" && c.config.CheckpointMinPause > 0 && !job.LastCheckpointCompletion.IsZero() && time.Since(job.LastCheckpointCompletion) < c.config.CheckpointMinPause {
+	minPause := c.config.CheckpointMinPause
+	if job.CheckpointPolicy != nil {
+		minPause = job.CheckpointPolicy.MinPause
+	}
+	if !final && savepointID == "" && minPause > 0 && !job.LastCheckpointCompletion.IsZero() && time.Since(job.LastCheckpointCompletion) < minPause {
 		c.mu.Unlock()
 		return nil, ErrCheckpointMinPause
 	}
@@ -131,6 +135,7 @@ func (c *Coordinator) triggerCheckpointBoundary(jobID, savepointID string, final
 	nextJob := *job
 	if savepointID == "" {
 		nextJob.CheckpointAttempts++
+		nextJob.LastCheckpointTrigger = checkpoint.Timestamp
 	}
 	jobData, err := protocol.EncodeMsgPack(nextJob)
 	if err != nil {
@@ -152,6 +157,7 @@ func (c *Coordinator) triggerCheckpointBoundary(jobID, savepointID string, final
 		return nil, err
 	}
 	job.CheckpointAttempts = nextJob.CheckpointAttempts
+	job.LastCheckpointTrigger = nextJob.LastCheckpointTrigger
 	if c.activeCheckpoints == nil {
 		c.activeCheckpoints = make(map[string]CheckpointMeta)
 	}
@@ -501,7 +507,11 @@ func (c *Coordinator) expireCheckpoints(now time.Time) {
 			delete(c.activeCheckpoints, jobID)
 			continue
 		}
-		if now.Sub(checkpoint.Timestamp) >= c.config.CheckpointTimeout {
+		timeout := c.config.CheckpointTimeout
+		if job := c.jobs[jobID]; job != nil && job.CheckpointPolicy != nil {
+			timeout = job.CheckpointPolicy.Timeout
+		}
+		if now.Sub(checkpoint.Timestamp) >= timeout {
 			expired = append(expired, checkpoint)
 		}
 	}
