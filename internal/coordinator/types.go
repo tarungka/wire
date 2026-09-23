@@ -199,6 +199,7 @@ func (s SavepointStatus) String() string {
 
 // SavepointMeta holds persisted metadata for a single savepoint.
 type SavepointMeta struct {
+	Queued         bool            `codec:"queued,omitempty"`
 	NumKeyGroups   int             `codec:"key_groups,omitempty"`
 	CheckpointID   uint64          `codec:"checkpoint_id,omitempty"`
 	EpochID        uint64          `codec:"epoch_id,omitempty"`

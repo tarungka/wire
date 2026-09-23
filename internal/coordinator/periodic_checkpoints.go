@@ -16,6 +16,7 @@ func (c *Coordinator) runPeriodicCheckpoints(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			c.expireCheckpoints(now)
+			c.scheduleQueuedSavepoints()
 			for _, jobID := range c.duePeriodicCheckpoints(now) {
 				if ctx.Err() != nil {
 					return

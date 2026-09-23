@@ -3,7 +3,9 @@ package coordinator
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/tarungka/wire/internal/protocol"
 )
@@ -17,13 +19,33 @@ func generateSavepointID() string {
 	return "sp-" + hex.EncodeToString(b)
 }
 
-// TriggerSavepoint creates a new in-progress savepoint for a running job.
+// TriggerSavepoint starts a savepoint or durably queues it behind the current
+// checkpoint. Queued requests retain their IDs across coordinator recovery.
 func (c *Coordinator) TriggerSavepoint(jobID string) (*SavepointMeta, error) {
 	id := generateSavepointID()
-	if _, err := c.triggerCheckpoint(jobID, id); err != nil {
+	if _, err := c.triggerCheckpoint(jobID, id); err == nil {
+		return c.GetSavepoint(jobID, id)
+	} else if !errors.Is(err, ErrCheckpointInProgress) {
 		return nil, err
 	}
-	return c.GetSavepoint(jobID, id)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.readyLocked() {
+		return nil, ErrNotLeader
+	}
+	job := c.jobs[jobID]
+	if job == nil {
+		return nil, ErrJobNotFound
+	}
+	if job.Status != JobRunning {
+		return nil, ErrJobNotRunning
+	}
+	sp := &SavepointMeta{ID: id, JobID: jobID, Status: SavepointInProgress, Queued: true, TriggerTime: time.Now().UTC()}
+	if err := c.persistSavepoint(sp); err != nil {
+		return nil, err
+	}
+	c.queuedSavepointJobs[jobID] = true
+	return sp, nil
 }
 
 // GetSavepoint retrieves a savepoint by job ID and savepoint ID.
@@ -90,7 +112,7 @@ func (c *Coordinator) DeleteSavepoint(jobID, spID string) error {
 	if job := c.jobs[jobID]; job != nil && !job.Status.IsTerminal() && job.RescaleCheckpoint != 0 && job.RescaleCheckpoint == sp.CheckpointID && job.LatestCheckpoint == sp.CheckpointID {
 		return ErrSavepointInUse
 	}
-	if sp.Status == SavepointInProgress {
+	if sp.Status == SavepointInProgress && !sp.Queued {
 		return ErrCheckpointInProgress
 	}
 

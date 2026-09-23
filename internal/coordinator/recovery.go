@@ -13,13 +13,14 @@ import (
 // recoveredState contains all state reconstructed from the metadata store
 // during crash recovery.
 type recoveredState struct {
-	jobs               map[string]*JobMeta
-	workers            map[string]*WorkerMeta
-	epoch              uint64
-	config             *ClusterConfig
-	latestCheckpoints  map[string]*CheckpointMeta // jobID → latest completed
-	checkpointsToAbort []*CheckpointMeta          // in-flight checkpoints to abort
-	savepointsToFail   []*SavepointMeta           // in-flight savepoints to mark failed
+	queuedSavepointJobs map[string]bool
+	jobs                map[string]*JobMeta
+	workers             map[string]*WorkerMeta
+	epoch               uint64
+	config              *ClusterConfig
+	latestCheckpoints   map[string]*CheckpointMeta // jobID → latest completed
+	checkpointsToAbort  []*CheckpointMeta          // in-flight checkpoints to abort
+	savepointsToFail    []*SavepointMeta           // in-flight savepoints to mark failed
 }
 
 // recoverFromStore reconstructs coordinator state from the metadata store.
@@ -27,9 +28,10 @@ type recoveredState struct {
 // and persisted to fence stale coordinators.
 func recoverFromStore(store MetadataStore, electionEpoch ...uint64) (*recoveredState, error) {
 	state := &recoveredState{
-		jobs:              make(map[string]*JobMeta),
-		workers:           make(map[string]*WorkerMeta),
-		latestCheckpoints: make(map[string]*CheckpointMeta),
+		queuedSavepointJobs: make(map[string]bool),
+		jobs:                make(map[string]*JobMeta),
+		workers:             make(map[string]*WorkerMeta),
+		latestCheckpoints:   make(map[string]*CheckpointMeta),
 	}
 
 	// 1. Recover jobs.
@@ -218,7 +220,10 @@ func recoverJobSavepoints(store MetadataStore, jobID string, state *recoveredSta
 			return false
 		}
 
-		if sp.Status == SavepointInProgress {
+		if sp.Queued && sp.Status == SavepointInProgress {
+			state.queuedSavepointJobs[jobID] = true
+		}
+		if sp.Status == SavepointInProgress && !sp.Queued {
 			sp.Status = SavepointFailed
 			state.savepointsToFail = append(state.savepointsToFail, &sp)
 		}

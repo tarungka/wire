@@ -51,6 +51,7 @@ type jobListResponse struct {
 
 // savepointResponse is the API representation of a savepoint.
 type savepointResponse struct {
+	Queued         bool   `json:"queued,omitempty"`
 	ID             string `json:"id"`
 	JobID          string `json:"job_id"`
 	Status         string `json:"status"`
@@ -178,6 +179,7 @@ func jobDetailFromMeta(j *JobMeta) jobDetailResponse {
 
 func savepointResponseFromMeta(sp *SavepointMeta) savepointResponse {
 	return savepointResponse{
+		Queued:         sp.Queued,
 		ID:             sp.ID,
 		JobID:          sp.JobID,
 		Status:         sp.Status.String(),

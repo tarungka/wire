@@ -56,3 +56,18 @@ jobs can be canceled; terminal jobs reject the transition.
 
 Cancellation without a savepoint does not create a new restore point. The
 savepoint-before-cancel workflow remains a WIP-15 implementation item.
+
+### Savepoints queued behind a checkpoint
+
+`wire savepoints trigger JOB_ID` returns `IN_PROGRESS` with `queued: true` if a
+checkpoint or earlier savepoint owns the job's snapshot boundary. Keep the
+returned savepoint ID and poll `wire savepoints get JOB_ID SAVEPOINT_ID`.
+The same record becomes active and then `COMPLETED` or `FAILED`; accepting the
+request does not mean its archive is ready.
+
+Queued requests are persisted, dispatched in arrival order, and take priority
+over new automatic checkpoints. Unstarted requests survive coordinator recovery;
+an active snapshot interrupted by recovery is still failed. Deleting a queued
+request cancels it. Once its snapshot starts, deletion waits for the decision.
+Canceling the job fails its remaining queued requests. These semantics apply to
+savepoint requests; the unfinished pause/resume workflow is tracked separately.

@@ -191,9 +191,15 @@ func (c *Coordinator) PauseJob(jobID string) (*JobMeta, *SavepointMeta, error) {
 		return nil, nil, ErrJobNotFound
 	}
 
-	sp, err := c.TriggerSavepoint(jobID)
+	id := generateSavepointID()
+	_, err := c.triggerCheckpoint(jobID, id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("triggering savepoint for pause: %w", err)
+	}
+
+	sp, err := c.GetSavepoint(jobID, id)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	if err := c.transitionJob(job, JobPaused); err != nil {

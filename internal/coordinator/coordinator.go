@@ -81,9 +81,10 @@ type Coordinator struct {
 	log      zerolog.Logger
 
 	// In-memory caches (write-through to store).
-	jobs              map[string]*JobMeta
-	workers           map[string]*WorkerMeta
-	activeCheckpoints map[string]CheckpointMeta
+	jobs                map[string]*JobMeta
+	workers             map[string]*WorkerMeta
+	activeCheckpoints   map[string]CheckpointMeta
+	queuedSavepointJobs map[string]bool
 
 	// activeJobNames maps a non-terminal job's name to its ID, kept in
 	// sync with c.jobs. Provides O(1) duplicate-name detection in
@@ -130,19 +131,20 @@ type Coordinator struct {
 func New(cfg CoordinatorConfig, store MetadataStore, election LeaderElection, log zerolog.Logger) *Coordinator {
 	cfg.resolve()
 	return &Coordinator{
-		state:          StateStandby,
-		nodeID:         cfg.NodeID,
-		config:         cfg,
-		store:          store,
-		election:       election,
-		log:            log.With().Str("component", "coordinator").Logger(),
-		jobs:           make(map[string]*JobMeta),
-		activeJobNames: make(map[string]string),
-		workers:        make(map[string]*WorkerMeta),
-		pendingCmds:    make(map[string][]rpc.WorkerCommand),
-		cmdStreams:     make(map[string]chan rpc.WorkerCommand),
-		taskStatuses:   make(map[string]rpc.TaskStatus),
-		schedulerKick:  make(chan struct{}, 1),
+		state:               StateStandby,
+		nodeID:              cfg.NodeID,
+		config:              cfg,
+		store:               store,
+		election:            election,
+		log:                 log.With().Str("component", "coordinator").Logger(),
+		jobs:                make(map[string]*JobMeta),
+		activeJobNames:      make(map[string]string),
+		workers:             make(map[string]*WorkerMeta),
+		pendingCmds:         make(map[string][]rpc.WorkerCommand),
+		queuedSavepointJobs: make(map[string]bool),
+		cmdStreams:          make(map[string]chan rpc.WorkerCommand),
+		taskStatuses:        make(map[string]rpc.TaskStatus),
+		schedulerKick:       make(chan struct{}, 1),
 	}
 }
 
@@ -212,6 +214,10 @@ func (c *Coordinator) recover() error {
 	defer c.mu.Unlock()
 
 	c.jobs = state.jobs
+	// All in-flight checkpoint decisions were aborted above. Do not retain
+	// grants cached by an earlier leadership term on this coordinator object.
+	c.activeCheckpoints = make(map[string]CheckpointMeta)
+	c.queuedSavepointJobs = state.queuedSavepointJobs
 	c.workers = state.workers
 	c.recoveryFenceUntil = time.Now().Add(c.config.WorkerTimeout)
 	// Rebuild the active-name index from the recovered jobs. Only
