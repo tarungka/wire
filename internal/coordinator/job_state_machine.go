@@ -58,41 +58,49 @@ func (c *Coordinator) transitionJob(job *JobMeta, to JobStatus) error {
 		return err
 	}
 
+	// Derive a candidate without publishing it. A failed fsync must leave
+	// status, budgets, timestamps and the name reservation retryable.
+	next := *job
 	if to == JobFailing {
-		c.resetStableRecoveryBudget(job, now)
+		c.resetStableRecoveryBudget(&next, now)
 	}
 	if to == JobRunning {
-		job.RescaleRollback = nil
-		job.RunningSince = now
-		job.ConsecutiveCheckpointFailures = 0
-		job.CheckpointOutcomes = nil
+		next.RescaleRollback = nil
+		next.RunningSince = now
+		next.ConsecutiveCheckpointFailures = 0
+		next.CheckpointOutcomes = nil
 	}
 	// Set StartedAt on first transition to RUNNING.
-	if to == JobRunning && job.StartedAt.IsZero() {
-		job.StartedAt = now
+	if to == JobRunning && next.StartedAt.IsZero() {
+		next.StartedAt = now
 	}
 
 	// Set FinishedAt on terminal states and release the name
 	// reservation so a future submission can reuse it.
 	if to.IsTerminal() {
-		job.FinishedAt = now
-		delete(c.activeJobNames, job.Name)
+		next.FinishedAt = now
 	}
 
 	// Increment RestartCount on FAILING → DEPLOYING (restart).
-	if job.Status == JobFailing && to == JobDeploying {
-		if !job.RescaleRequested {
-			job.RestartCount++
-			job.RecoveryAttempts++
+	if next.Status == JobFailing && to == JobDeploying {
+		if !next.RescaleRequested {
+			next.RestartCount++
+			next.RecoveryAttempts++
 		}
-		job.RescaleRequested = false
+		next.RescaleRequested = false
 	}
 
-	job.Status = to
-	job.UpdatedAt = now
+	next.Status = to
+	next.UpdatedAt = now
 
-	if err := c.persistJobLocked(job); err != nil {
+	if err := c.persistJobLocked(&next); err != nil {
 		return err
+	}
+
+	*job = next
+	c.jobs[job.ID] = job
+	if to.IsTerminal() {
+		delete(c.activeJobNames, job.Name)
 	}
 
 	// Record end-to-end job duration when the job reaches a terminal
