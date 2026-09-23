@@ -11,6 +11,12 @@ func validateGraphWindows(graph rpc.JobGraph) error {
 	operators := make(map[string]rpc.OperatorDescriptor)
 	for _, op := range graph.Operators {
 		operators[op.OperatorID] = op
+		if err := op.ValidateStateBackend(); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		}
+		if err := op.ValidateSideOutputs(); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		}
 		if op.Type == rpc.OperatorTypeWindow && op.ErrorPolicy != nil {
 			return fmt.Errorf("%w: window errors require task recovery, not record error policies", ErrInvalidConfig)
 		}
@@ -31,7 +37,7 @@ func validateGraphWindows(graph rpc.JobGraph) error {
 			continue
 		}
 		op, ok := operators[edge.SourceOperatorID]
-		if !ok || op.Type != rpc.OperatorTypeWindow || op.LateOutputTag != edge.SideOutput {
+		if !ok || !op.HasSideOutput(edge.SideOutput) {
 			return fmt.Errorf("%w: unknown side output %q on %q", ErrInvalidConfig, edge.SideOutput, edge.SourceOperatorID)
 		}
 	}

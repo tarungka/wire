@@ -14,6 +14,10 @@ type WatermarkOperator interface {
 }
 
 func processWatermark(cc *chainContext, timestamp int64) error {
+	if cc.watermarkSet && timestamp <= cc.lastWatermark {
+		return nil
+	}
+	cc.lastWatermark, cc.watermarkSet = timestamp, true
 	for index, link := range cc.links {
 		operator, ok := link.Operator.(WatermarkOperator)
 		if !ok {

@@ -45,6 +45,16 @@ func (ex *clusterExecutor) run(ctx context.Context, jobName string) (*JobResult,
 	// Encode the graph.
 	graph := ex.env.graph.toJobGraph(ex.env.parallelism)
 	graph.NumKeyGroups = ex.env.numKeyGroups
+	ex.env.configureGraphStateBackend(&graph)
+	restartPolicy, err := ex.env.restartPolicy()
+	if err != nil {
+		return nil, err
+	}
+	graph.RestartPolicy = restartPolicy
+	graph.CheckpointPolicy = ex.env.checkpointPolicy()
+	if err := graph.CheckpointPolicy.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	}
 	graphBytes, err := protocol.EncodeMsgPack(&graph)
 	if err != nil {
 		return nil, fmt.Errorf("sdk: encode job graph: %w", err)

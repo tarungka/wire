@@ -141,9 +141,5 @@ func TestStateBackendConfigValidation(t *testing.T) {
 			t.Fatalf("config %+v: %v", cfg, err)
 		}
 	}
-	env := New().SetMode(Cluster).SetStateBackend(NewHashMapStateBackend(1))
-	env.AddSource(&sliceSource{}).AddSink(&collectSink{})
-	if _, err := env.Execute(t.Context()); !errors.Is(err, ErrInvalidConfig) {
-		t.Fatalf("cluster ignored backend selection: %v", err)
-	}
+
 }

@@ -261,6 +261,8 @@ type SubmitJobResponse struct {
 
 // JobGraph describes the DAG of operators and edges.
 type JobGraph struct {
+	RestartPolicy    *RestartPolicy    `codec:"restart_policy,omitempty"`
+	CheckpointPolicy *CheckpointPolicy `codec:"checkpoint_policy,omitempty"`
 	// NumKeyGroups is fixed for the job lifetime; zero selects the default 128.
 	NumKeyGroups int                  `codec:"key_groups,omitempty"`
 	Operators    []OperatorDescriptor `codec:"ops"`
@@ -269,17 +271,19 @@ type JobGraph struct {
 
 // OperatorDescriptor describes a single operator in the job graph.
 type OperatorDescriptor struct {
-	Window        *WindowDefinition  `codec:"window,omitempty"`
-	LateOutputTag string             `codec:"late_output,omitempty"`
-	Watermark     *WatermarkConfig   `codec:"watermark,omitempty"`
-	DLQSink       *DLQSinkDescriptor `codec:"dlq,omitempty"`
-	ErrorPolicy   *ErrorPolicy       `codec:"error_policy,omitempty"`
-	OperatorID    string             `codec:"oid"`
-	Name          string             `codec:"n"`
-	Type          OperatorType       `codec:"t"`
-	Parallelism   int32              `codec:"p"`
-	ClassName     string             `codec:"cn,omitempty"`
-	Config        []byte             `codec:"cfg,omitempty"`
+	StateBackend   *StateBackendSpec  `codec:"state_backend,omitempty"`
+	SideOutputTags []string           `codec:"side_output_tags,omitempty"`
+	Window         *WindowDefinition  `codec:"window,omitempty"`
+	LateOutputTag  string             `codec:"late_output,omitempty"`
+	Watermark      *WatermarkConfig   `codec:"watermark,omitempty"`
+	DLQSink        *DLQSinkDescriptor `codec:"dlq,omitempty"`
+	ErrorPolicy    *ErrorPolicy       `codec:"error_policy,omitempty"`
+	OperatorID     string             `codec:"oid"`
+	Name           string             `codec:"n"`
+	Type           OperatorType       `codec:"t"`
+	Parallelism    int32              `codec:"p"`
+	ClassName      string             `codec:"cn,omitempty"`
+	Config         []byte             `codec:"cfg,omitempty"`
 }
 
 // EdgeDescriptor describes a connection between two operators.
@@ -326,6 +330,7 @@ type RescaleRestoreDescriptor struct {
 
 // OutputGroupDescriptor routes one logical edge over its physical streams.
 type OutputGroupDescriptor struct {
+	Broadcast  bool   `codec:"broadcast,omitempty"`
 	SideOutput string `codec:"side_output,omitempty"`
 	Streams    []int  `codec:"streams"`
 	KeyGroups  int    `codec:"key_groups,omitempty"`

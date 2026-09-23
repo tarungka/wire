@@ -9,6 +9,35 @@ import (
 	"github.com/tarungka/wire/internal/rpc"
 )
 
+func TestOrdinaryCheckpointBecomesFinalAfterSourceExhaustion(t *testing.T) {
+	c, store := newTestCoordinator(t)
+	c.config.CheckpointMinPause = time.Hour
+	c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning, LastCheckpointCompletion: time.Now()}
+	assignment := TaskAssignmentMap{JobID: "job", AttemptID: "attempt", Assignments: map[string]string{"source": "worker"}, Replicas: map[string]string{"source": "replica"}, TaskDescriptors: []rpc.TaskDescriptor{{TaskID: "source", OperatorChain: []rpc.OperatorDescriptor{{Type: rpc.OperatorTypeSource}}}}}
+	if err := store.Set(JobAssignmentsKey("job"), encode(t, assignment)); err != nil {
+		t.Fatal(err)
+	}
+	c.taskStatuses["source"] = rpc.TaskStatusFinishing
+	cp, err := c.TriggerCheckpoint("job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cp.Final {
+		t.Fatal("ordinary checkpoint would leave exhausted source parked")
+	}
+	commands := c.DrainCommands("worker")
+	if len(commands) != 1 {
+		t.Fatal(commands)
+	}
+	var request rpc.TriggerCheckpointRequest
+	if err := protocol.DecodeMsgPack(commands[0].Data, &request); err != nil {
+		t.Fatal(err)
+	}
+	if !request.Final {
+		t.Fatal("source was not sent a final boundary")
+	}
+}
+
 func TestFinalCheckpointWaitsForAllSourcesAndBypassesMinPause(t *testing.T) {
 	c, store := newTestCoordinator(t)
 	c.config.CheckpointMinPause = time.Hour

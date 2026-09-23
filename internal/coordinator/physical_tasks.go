@@ -52,10 +52,10 @@ func buildPhysicalTasks(jobID string, graph rpc.JobGraph, parallelism int) ([]rp
 		if source == target {
 			continue
 		}
-		if edge.SideOutput != "" && (operators[edge.SourceOperatorID].Type != rpc.OperatorTypeWindow || operators[edge.SourceOperatorID].LateOutputTag != edge.SideOutput) {
+		if edge.SideOutput != "" && !operators[edge.SourceOperatorID].HasSideOutput(edge.SideOutput) {
 			return nil, fmt.Errorf("unknown side output %q on %q", edge.SideOutput, edge.SourceOperatorID)
 		}
-		if edge.Shuffle != rpc.ShuffleStrategyForward && edge.Shuffle != rpc.ShuffleStrategyHash && edge.Shuffle != rpc.ShuffleStrategyRebalance {
+		if edge.Shuffle != rpc.ShuffleStrategyForward && edge.Shuffle != rpc.ShuffleStrategyHash && edge.Shuffle != rpc.ShuffleStrategyRebalance && edge.Shuffle != rpc.ShuffleStrategyBroadcast {
 			return nil, fmt.Errorf("unsupported shuffle strategy %v", edge.Shuffle)
 		}
 		if edge.KeySelector != "" {
@@ -70,7 +70,7 @@ func buildPhysicalTasks(jobID string, graph rpc.JobGraph, parallelism int) ([]rp
 			return nil, fmt.Errorf("forward edge %s→%s requires equal parallelism", edge.SourceOperatorID, edge.TargetOperatorID)
 		}
 		for si, src := range indexes[source] {
-			output := rpc.OutputGroupDescriptor{SideOutput: edge.SideOutput}
+			output := rpc.OutputGroupDescriptor{SideOutput: edge.SideOutput, Broadcast: edge.Shuffle == rpc.ShuffleStrategyBroadcast}
 			if edge.Shuffle == rpc.ShuffleStrategyHash {
 				output.KeyGroups = count
 			}

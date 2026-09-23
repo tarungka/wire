@@ -12,10 +12,10 @@ import (
 	"github.com/tarungka/wire/internal/engine"
 )
 
-// runWindowGraph preserves the graph's main/late edges instead of flattening
+// runGraph preserves the graph's main and side-output edges instead of flattening
 // topological order into one chain. One router owns each node's input channels;
 // all parent streams participate in its minimum-watermark calculation.
-func (ex *embeddedExecutor) runWindowGraph(ctx context.Context, sorted []*StreamNode, job string, start time.Time, log zerolog.Logger) (*JobResult, error) {
+func (ex *embeddedExecutor) runGraph(ctx context.Context, sorted []*StreamNode, job string, start time.Time, log zerolog.Logger) (*JobResult, error) {
 	type feed struct {
 		tag     string
 		channel chan engine.OutputMsg
@@ -25,8 +25,31 @@ func (ex *embeddedExecutor) runWindowGraph(ctx context.Context, sorted []*Stream
 	routes := make(map[int][]func(engine.Event, int) int)
 	outgoing := make(map[int][][]feed)
 	parallelism := make(map[int]int)
+	idleTimeouts := make(map[int]time.Duration)
+	inputTimeouts := make(map[int][]time.Duration)
 	for _, node := range sorted {
+		idle := time.Duration(0)
+		for _, edge := range ex.env.graph.upstream(node.ID) {
+			if idleTimeouts[edge.SourceID] > idle {
+				idle = idleTimeouts[edge.SourceID]
+			}
+		}
+		if idle == 0 {
+			idle = engine.DefaultIdleTimeout
+		}
+		if node.Type == NodeSource && node.Watermark != nil && node.Watermark.IdleTimeout > 0 {
+			idle = node.Watermark.IdleTimeout
+		}
+		idleTimeouts[node.ID] = idle
 		p := node.Parallelism
+		// A concrete connector is one instance. Parallel connector instances
+		// are constructed by factories, never by reopening a shared object.
+		if p == 0 && (node.Source != nil || node.Sink != nil) {
+			p = 1
+		}
+		if p > 1 && (node.Source != nil || node.Sink != nil) {
+			return nil, fmt.Errorf("sdk: parallel connectors require an instance factory")
+		}
 		if p <= 0 {
 			p = ex.env.parallelism
 		}
@@ -57,19 +80,22 @@ func (ex *embeddedExecutor) runWindowGraph(ctx context.Context, sorted []*Stream
 		if shuffle == ShuffleForward && parallelism[source.ID] != parallelism[target.ID] {
 			shuffle = ShuffleRebalance
 		}
-		if shuffle != ShuffleForward && shuffle != ShuffleHash && shuffle != ShuffleRebalance {
-			return nil, fmt.Errorf("sdk: unsupported window edge shuffle")
+		if shuffle != ShuffleForward && shuffle != ShuffleHash && shuffle != ShuffleRebalance && shuffle != ShuffleBroadcast {
+			return nil, fmt.Errorf("sdk: unsupported graph edge shuffle")
 		}
-		if edge.SideOutput != "" && source.LateOutputTag != edge.SideOutput {
-			return nil, fmt.Errorf("sdk: undeclared late output")
+		if edge.SideOutput != "" && !source.hasSideOutput(edge.SideOutput) {
+			return nil, fmt.Errorf("sdk: undeclared side output")
 		}
 		roundRobin := rebalanceRouter()
 		for i := 0; i < parallelism[source.ID]; i++ {
 			ch := make(chan engine.OutputMsg, engine.DefaultOutputBufferSize)
 			outgoing[source.ID][i] = append(outgoing[source.ID][i], feed{tag: edge.SideOutput, channel: ch})
 			incoming[target.ID] = append(incoming[target.ID], ch)
+			inputTimeouts[target.ID] = append(inputTimeouts[target.ID], idleTimeouts[source.ID])
 			route := roundRobin
 			switch shuffle {
+			case ShuffleBroadcast:
+				route = func(engine.Event, int) int { return -1 }
 			case ShuffleHash:
 				route = hashRouter()
 			case ShuffleForward:
@@ -80,36 +106,46 @@ func (ex *embeddedExecutor) runWindowGraph(ctx context.Context, sorted []*Stream
 	}
 	for _, node := range sorted {
 		if node.Type != NodeSource && len(incoming[node.ID]) == 0 {
-			return nil, fmt.Errorf("sdk: window graph node has no input")
+			return nil, fmt.Errorf("sdk: graph node has no input")
 		}
 		if node.Type == NodeSource && len(incoming[node.ID]) > 0 {
 			return nil, fmt.Errorf("sdk: source cannot accept graph inputs")
+		}
+	}
+	instances := make(map[int][]StreamNode)
+	for _, node := range sorted {
+		for i := 0; i < parallelism[node.ID]; i++ {
+			instance, err := instantiateNode(node, i, parallelism[node.ID])
+			if err != nil {
+				return nil, err
+			}
+			instances[node.ID] = append(instances[node.ID], instance)
 		}
 	}
 	group, gctx := errgroup.WithContext(ctx)
 	for _, node := range sorted {
 		channels := ios[node.ID]
 		if node.Type != NodeSource {
-			router := &partitionRouter{upstreams: incoming[node.ID], inputRoutes: routes[node.ID]}
+			router := &partitionRouter{upstreams: incoming[node.ID], inputRoutes: routes[node.ID], inputIdleTimeouts: inputTimeouts[node.ID]}
 			for i := range channels.inputChs {
 				router.downstreams = append(router.downstreams, channels.inputChs[i])
 				router.controlChs = append(router.controlChs, channels.controlChs[i])
 			}
 			group.Go(func() error { return router.run(gctx) })
 		}
-		execution := *node
-		if node.Type == NodeKeyBy {
-			execution.Type = NodeMap
-			execution.MapFn = func(event Event) (Event, error) {
-				key, err := node.KeyByFn(event)
-				if err != nil {
-					return Event{}, err
-				}
-				event.Key = bytes.Clone(key)
-				return event, nil
-			}
-		}
 		for i := 0; i < parallelism[node.ID]; i++ {
+			execution := instances[node.ID][i]
+			if node.Type == NodeKeyBy {
+				execution.Type = NodeMap
+				execution.MapFn = func(event Event) (Event, error) {
+					key, err := node.KeyByFn(event)
+					if err != nil {
+						return Event{}, err
+					}
+					event.Key = bytes.Clone(key)
+					return event, nil
+				}
+			}
 			group.Go(func() error {
 				return ex.runStageInstance(gctx, []*StreamNode{&execution}, i, node.Type == NodeSource, channels, log)
 			})

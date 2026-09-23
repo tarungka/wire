@@ -3,9 +3,38 @@ package engine
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
+
+func TestSourceTerminalWatermarkStopsPeriodicEmission(t *testing.T) {
+	queue := &sourceWatermarkQueue{}
+	events := make(chan Event, 3)
+	strategy := NewMonotonicTimestampsStrategy()
+	if err := dispatchSourceBatch(t.Context(), []Event{{EventTime: 7}}, strategy, events, queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.finish(t.Context(), events); err != nil {
+		t.Fatal(err)
+	}
+	last := int64(math.MinInt64)
+	if err := queue.emit(t.Context(), strategy, events, &last); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.finish(t.Context(), events); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatal("boundary emitted after terminal watermark")
+	}
+	if record := <-events; record.EventTime != 7 || record.watermark != nil {
+		t.Fatal("terminal watermark overtook data")
+	}
+	if terminal := <-events; terminal.watermark == nil || *terminal.watermark != math.MaxInt64 {
+		t.Fatal("missing terminal watermark")
+	}
+}
 
 type failingWatermarkStrategy struct{}
 

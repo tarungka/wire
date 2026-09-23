@@ -100,3 +100,10 @@ type OutputMsg struct {
 	Watermark  *protocol.WatermarkMsg         // Valid when Type == OutputWatermark.
 	End        *protocol.EndOfPartitionMsg    // Valid when Type == OutputEnd.
 }
+
+// WithSideOutput routes an operator's result to a named output, bypassing the
+// remaining operators in its main-output chain. The tag is consumed by routing.
+func WithSideOutput(event Event, tag string) Event { event.sideOutput = tag; return event }
+
+// SideOutputTag reports an operator result's routing tag before it is consumed.
+func (e Event) SideOutputTag() string { return e.sideOutput }

@@ -74,6 +74,9 @@ func (r *Registry) RegisterSource(name string, f SourceFactory) {
 
 // RegisterMap adds a map factory. Panics on duplicate name.
 func (r *Registry) RegisterMap(name string, f MapFactory) {
+	if name == "wire.identity" {
+		panic("worker: wire.identity is a reserved built-in operator")
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.maps[name]; exists {
@@ -107,6 +110,9 @@ func (r *Registry) RegisterSink(name string, f SinkFactory) {
 // handled by the "filter" factory type on maps (a filter is a map that
 // conditionally returns a zero event).
 func (r *Registry) Build(ctx context.Context, desc rpc.OperatorDescriptor, tc TaskContext) (engine.Operator, error) {
+	if desc.Type == rpc.OperatorTypeMap && desc.ClassName == "wire.identity" {
+		return identityOperator{}, nil
+	}
 	if desc.ClassName == "" {
 		return nil, fmt.Errorf("worker: operator %q has no ClassName (required for cluster mode)", desc.OperatorID)
 	}
@@ -164,7 +170,7 @@ func (r *Registry) Build(ctx context.Context, desc rpc.OperatorDescriptor, tc Ta
 		}
 		return op, nil
 
-	case rpc.OperatorTypeFlatMap:
+	case rpc.OperatorTypeFlatMap, rpc.OperatorTypeProcess:
 		f, ok := r.flatMaps[desc.ClassName]
 		if !ok {
 			return nil, fmt.Errorf("worker: unknown flatmap %q", desc.ClassName)
@@ -210,3 +216,18 @@ func RegisterFlatMap(name string, f FlatMapFactory) { defaultRegistry.RegisterFl
 
 // RegisterSink registers a sink factory in the default registry.
 func RegisterSink(name string, f SinkFactory) { defaultRegistry.RegisterSink(name, f) }
+
+// identityOperator is the built-in merge point for SDK unions.
+type identityOperator struct{}
+
+func (identityOperator) Open(context.Context) error        { return nil }
+func (identityOperator) Close() error                      { return nil }
+func (identityOperator) Checkpoint(uint64) ([]byte, error) { return nil, nil }
+func (identityOperator) Map(_ context.Context, event engine.Event) (engine.Event, error) {
+	return event, nil
+}
+
+// RegisterProcess registers a stateful flat-map operator. SDK ProcessOperator
+// implements both this data interface and snapshot/watermark restoration.
+func (r *Registry) RegisterProcess(name string, f FlatMapFactory) { r.RegisterFlatMap(name, f) }
+func RegisterProcess(name string, f FlatMapFactory)               { defaultRegistry.RegisterProcess(name, f) }

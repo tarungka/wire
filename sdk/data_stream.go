@@ -162,17 +162,34 @@ func (ds *DataStream) keyByWithName(selector KeySelector, name string) *KeyedStr
 
 // Union merges this stream with one or more other streams.
 func (ds *DataStream) Union(others ...*DataStream) *DataStream {
-	// All input streams feed into ds's node via forward edges.
 	for _, other := range others {
-		other.addEdge(ds.nodeID, ShuffleForward)
+		if other == nil || other.env != ds.env {
+			panic("sdk: union inputs must belong to the same environment")
+		}
 	}
-	return ds
+	// A union is a new identity operator, never an edge into an existing
+	// source or transform. Each input retains its own upstream computation.
+	id := ds.env.graph.addNode(&StreamNode{Type: NodeMap, ClassName: "wire.identity", MapFn: identityEvent})
+	ds.addEdge(id, ShuffleRebalance)
+	for _, other := range others {
+		other.addEdge(id, ShuffleRebalance)
+	}
+	return &DataStream{env: ds.env, nodeID: id}
 }
 
 // AssignTimestamps sets a custom timestamp extractor.
 func (ds *DataStream) AssignTimestamps(extractor TimestampExtractor) *DataStream {
-	ds.env.graph.nodes[ds.nodeID].TimestampExtractor = extractor
-	return ds
+	if extractor == nil {
+		panic("sdk: timestamp extractor must not be nil")
+	}
+	if ds.env.graph.nodes[ds.nodeID].Type == NodeSource {
+		ds.env.graph.nodes[ds.nodeID].TimestampExtractor = extractor
+		return ds
+	}
+	return ds.Map(func(event Event) (Event, error) {
+		event.EventTime = extractor(event)
+		return event, nil
+	})
 }
 
 // AddSink adds a terminal sink operator.
@@ -229,3 +246,5 @@ func autoName(g *StreamGraph, prefix string) string {
 		}
 	}
 }
+
+func identityEvent(event Event) (Event, error) { return event, nil }

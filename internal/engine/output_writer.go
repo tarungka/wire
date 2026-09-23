@@ -69,6 +69,7 @@ func runOutputRouter(ctx context.Context, streams []*transport.FrameStream, outp
 // OutputGroup isolates routing decisions for one graph edge. Data goes only to
 // matching tags; checkpoint/watermark/end fences still visit every stream.
 type OutputGroup struct {
+	Broadcast  bool
 	SideOutput string
 	Streams    []int
 	KeyGroups  int
@@ -79,6 +80,9 @@ func runGroupedOutputRouter(ctx context.Context, streams []*transport.FrameStrea
 	for _, group := range groups {
 		if len(group.Streams) == 0 && len(streams) > 0 {
 			return fmt.Errorf("empty output group")
+		}
+		if group.Broadcast && group.KeyGroups != 0 {
+			return fmt.Errorf("broadcast output cannot also use keyed routing")
 		}
 		if group.KeyGroups != 0 {
 			if err := (keygroup.Config{NumKeyGroups: group.KeyGroups, Parallelism: len(group.Streams)}).Validate(); err != nil {
@@ -146,6 +150,16 @@ func runGroupedOutputRouter(ctx context.Context, streams []*transport.FrameStrea
 				if message.Type == OutputData {
 					for gi, group := range groups {
 						if group.SideOutput != message.SideOutput || len(group.Streams) == 0 {
+							continue
+						}
+						if group.Broadcast {
+							for _, target := range group.Streams {
+								select {
+								case queues[target] <- work{message: message}:
+								case <-writerCtx.Done():
+									return writerCtx.Err()
+								}
+							}
 							continue
 						}
 						target := next[gi]

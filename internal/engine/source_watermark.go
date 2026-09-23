@@ -12,11 +12,17 @@ import (
 
 // sourceWatermarkQueue serializes record dispatch and periodic boundaries.
 // ReadBatch itself runs outside this lock so an idle source cannot stop ticks.
-type sourceWatermarkQueue struct{ mu sync.Mutex }
+type sourceWatermarkQueue struct {
+	mu       sync.Mutex
+	finished bool
+}
 
 func (q *sourceWatermarkQueue) emit(ctx context.Context, strategy WatermarkStrategy, events chan<- Event, timestamp *int64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if q.finished {
+		return nil
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -99,4 +105,22 @@ func RunSourceReaderWithWatermarks(ctx context.Context, source SourceOperator, s
 		return emitterErr
 	}
 	return err
+}
+
+// finish queues the terminal watermark after all source records, before the
+// final checkpoint snapshots timer/window output. No periodic boundary may
+// follow it, even if the emitter is already waiting for this lock.
+func (q *sourceWatermarkQueue) finish(ctx context.Context, events chan<- Event) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.finished {
+		return nil
+	}
+	select {
+	case events <- WatermarkEvent(math.MaxInt64):
+		q.finished = true
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

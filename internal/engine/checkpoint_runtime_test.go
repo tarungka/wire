@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -215,6 +216,13 @@ func TestSourceTaskReplicatesBoundaryAndContinues(t *testing.T) {
 			}
 			close(release)
 			msg, err := output.ReadMessage()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if terminal, ok := msg.(*protocol.WatermarkMsg); !ok || terminal.Timestamp != math.MaxInt64 {
+				t.Fatalf("terminal watermark: %v", msg)
+			}
+			msg, err = output.ReadMessage()
 			if err != nil {
 				t.Fatal(err)
 			}

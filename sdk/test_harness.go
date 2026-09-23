@@ -64,10 +64,14 @@ func (h *TestHarness) RunFilter(fn FilterFunc) ([]Event, error) {
 
 // RunProcess applies a ProcessFunc to all input events with a mock context.
 func (h *TestHarness) RunProcess(fn ProcessFunc) ([]Event, error) {
+	harness, err := NewProcessHarness(fn, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = harness.Close() }()
 	var results []Event
-	for _, e := range h.inputs {
-		ctx := NewMockProcessContext(e.Key)
-		out, err := fn(ctx, e)
+	for _, event := range h.inputs {
+		out, err := harness.Process(event)
 		if err != nil {
 			return nil, err
 		}

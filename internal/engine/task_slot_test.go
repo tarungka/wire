@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -900,11 +901,14 @@ func TestTaskSlot_BoundedOOOStrategy(t *testing.T) {
 		}
 	}
 
-	// Final watermark should be max(0, 20000-5000) = 15000.
-	if len(watermarks) > 0 {
-		last := watermarks[len(watermarks)-1]
-		if last > 15000 {
-			t.Errorf("final watermark too high: got %d, want <= 15000", last)
+	// Periodic watermarks obey out-of-orderness; bounded completion closes
+	// event time with a terminal watermark so pending windows/timers can fire.
+	if len(watermarks) == 0 || watermarks[len(watermarks)-1] != math.MaxInt64 {
+		t.Fatal("missing terminal watermark")
+	}
+	for _, watermark := range watermarks[:len(watermarks)-1] {
+		if watermark > 15000 {
+			t.Errorf("periodic watermark too high: %d", watermark)
 		}
 	}
 
