@@ -17,6 +17,7 @@ cmd/                     Single binary entry point (runs as coordinator or worke
   signals.go             Signal handling
 
 internal/
+  checkpointpolicy/      Shared checkpoint failure-budget validation
   cmd/                   Build metadata (version/commit/branch)
   config/                Config loading, validation, flag merging
   coordinator/           Control plane: job manager, scheduler, checkpoint
@@ -25,6 +26,9 @@ internal/
   engine/                Stream processing engine: operators, barriers,
                          checkpoint coordination, state backends, DLQ,
                          watermarks, windowing
+  errorpolicy/           Shared operator error-policy validation
+  jobcli/                Jobs, savepoints and cluster CLI commands
+  observability/         OpenTelemetry metrics and Prometheus endpoint
   keygroup/              Key-group assignment (state sharding primitive)
   logger/                zerolog wrappers
   protocol/              Wire protocol framing and message types (msgpack)

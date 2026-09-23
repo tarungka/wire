@@ -28,6 +28,17 @@ implementation evidence for current behavior.
 
 ## Remaining work
 
+- **P1 — HTTP security remains open.** Coordinator-worker RPC supports TLS/mTLS,
+  but the REST API serves plain HTTP and mutating routes only check leadership.
+  Authentication, authorization/RBAC and secret management are not implemented;
+  accepted `auth`/HTTP TLS fields do not enable them. Keep the API on a trusted
+  network or behind an authenticated TLS proxy until this gap is closed.
+- **Late-data side-output integration remains open on this branch.** Window
+  assignment, lateness and snapshot APIs exist, but named SDK/YAML late routing,
+  exported late metrics and durable window runtime integration are tracked by
+  [WIP-12](trds/WIP-12/README.md) and [PR #227](https://github.com/tarungka/wire/pull/227).
+  Do not treat that unmerged implementation as available in this docs PR.
+
 - Add a complete distributed application tutorial that registers named worker
   factories, submits a graph, and demonstrates checkpoint/replay. The embedded
   quick start and graph-envelope reference do not replace this tutorial.

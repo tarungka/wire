@@ -16,6 +16,7 @@ into the current runtime; setting them does not enable those features.
 
 | Field | Type | Default | CLI override |
 | --- | --- | --- | --- |
+| `max_frame_size` | uint32 | `16777216` | `--max-frame-size` |
 | `heartbeat.interval` | duration string | `5s` | — |
 | `heartbeat.timeout` | duration string | `30s` | — |
 | `heartbeat.max_failures` | int | `0` | — |

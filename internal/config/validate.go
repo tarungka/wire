@@ -13,6 +13,9 @@ import (
 // validation errors rather than failing on the first one.
 func (c *WireConfig) Validate() error {
 	var errs []error
+	if c.MaxFrameSize < 5 {
+		errs = append(errs, errors.New("max_frame_size must be at least 5 bytes (type and CRC header)"))
+	}
 	if c.Heartbeat.Interval.Duration <= 0 {
 		errs = append(errs, errors.New("heartbeat.interval must be positive"))
 	}

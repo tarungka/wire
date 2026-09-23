@@ -45,11 +45,13 @@ This produces the `wire` binary in the project root.
 | `--election-lock-path` | `data/coordinator/leader.lock` | File path for the filelock election backend |
 | `--config` | `.config/config.json` | Path to one or more config files (merged in order) |
 | `--debug` | `false` | Enable verbose debug logging |
-| `--max-frame-size` | `16777216` | Max wire protocol frame size in bytes |
+| `--metrics-enabled` | `true` | Expose the Prometheus metrics endpoint (both modes) |
+| `--metrics-addr` | `:9090` | Metrics listen address (both modes) |
+| `--version` | `false` | Print build/version information and exit |
 
 ### TLS Flags
 
-Node TLS flags configure coordinator-worker RPC connections (TLS 1.3 minimum). For mTLS, configure the coordinator certificate/key and CA with `--node-verify-client`, and give each worker a client certificate whose Common Name matches its worker ID. Workers verify the coordinator hostname or `--node-verify-server-name` override. These flags do not secure HTTP, data streams or checkpoint replica transfers; see [WIP-07's runtime contract](trds/WIP-07/runtime-contract.md#tls-and-identity).
+Node TLS flags configure coordinator-worker RPC connections (TLS 1.3 minimum). For mTLS, configure the coordinator certificate/key and CA with `--node-verify-client`, and give each worker a client certificate whose Common Name matches its worker ID. Workers verify the coordinator hostname. Override the expected name in a config file with `node_tls.verify_server_name`; there is no CLI flag for that field. These flags do not secure HTTP, data streams or checkpoint replica transfers; see [WIP-07's runtime contract](trds/WIP-07/runtime-contract.md#tls-and-identity).
 
 
 | Flag | Default | Description |
@@ -78,11 +80,22 @@ The metrics override avoids conflicting with the coordinator on the same host.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--mode` | | Must be `worker` |
+| `--mode` | `coordinator` | Set explicitly to `worker` |
 | `--coordinator-addr` | | Address of the coordinator's wire protocol listener |
 | `--worker-id` | hostname | Worker node ID |
 | `--task-slots` | `4` | Number of concurrent task slots |
+| `--worker-listen` | `:4003` | Worker data-plane listen address |
+| `--max-frame-size` | `16777216` | Maximum worker data-frame length in bytes (type, CRC and payload) |
 | `--debug` | `false` | Enable verbose debug logging |
+
+Workers also accept the shared `--config`, metrics, version and node TLS flags listed above.
+
+`--max-frame-size` (config: `max_frame_size`) applies to the worker data mux,
+including its framed session controls. It has no effect on coordinator RPC,
+RPC payload limits or checkpoint archive limits. Configure compatible limits on
+both workers; peers do not negotiate a smaller frame size. Values below the
+five-byte type/CRC minimum are rejected. Very small limits can prevent data
+session handshakes from fitting.
 
 ### Task Deployment Flow
 
@@ -120,8 +133,13 @@ embedded SDK example below.
 Instead of flags, you can use a YAML or JSON config file via `--config`:
 
 ```bash
-./wire --config .config/config.yaml
+./wire --config .config/node.example.yaml
 ```
+
+The checked-in [node example](../.config/node.example.yaml) uses the current node schema.
+The old `.config/config.yaml` and `.config/config.json` contain pre-rewrite
+connector pipelines; do not use them as node configuration examples. Unknown
+fields are currently ignored.
 
 See the generated [configuration reference](configuration-reference.md) for fields, defaults, and CLI mappings, and [configuration validation](configuration-validation.md) for runtime limits. Node configuration is separate from the [YAML pipeline format](../sdk/pipeline_yaml.md).
 
@@ -290,6 +308,8 @@ Response:
 ```json
 {
   "leader": {
+    "ready": true,
+    "leader_rpc_addr": "10.0.0.1:4002",
     "leader_id": "node-1",
     "leader_http_addr": ":4001",
     "leader_epoch": 1,
@@ -298,7 +318,8 @@ Response:
   "workers": [
     {
       "id": "worker-1",
-      "address": "10.0.0.2:4002",
+      "status": "ALIVE",
+      "address": "10.0.0.2:4003",
       "task_slots_total": 8,
       "task_slots_available": 4,
       "last_heartbeat": "2025-01-01T00:00:10Z",

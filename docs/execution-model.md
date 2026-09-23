@@ -40,9 +40,16 @@ A **Watermark(T)** is a control packet flowing through the stream that declares:
 *   **Function:** Watermarks trigger **Window Calculations** and expire timers.
 
 ### 2.3 Late Data
-If an event arrives with `Timestamp < CurrentWatermark`:
-*   **Default:** The event is dropped (or sent to a side-output "Dead Letter Queue").
-*   **Allowed Lateness:** Users can configure a grace period where late events trigger a window re-computation/update.
+An event with `Timestamp < CurrentWatermark` is late, but may still belong to
+an eligible window. The processor accepts it while the watermark is below that
+window's end plus allowed lateness and can emit an updated result. Zero lateness
+purges at window end; an open overlapping window may still accept the record.
+
+If all assigned windows have expired, the runtime drops the record by default.
+The low-level operator has a `Late` callback, but this branch has no named SDK/YAML
+late-output route. That integration remains in [WIP-12](trds/WIP-12/README.md).
+Error-policy DLQs are a separate feature and do not receive expired records
+automatically.
 
 ---
 
