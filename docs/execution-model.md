@@ -40,9 +40,17 @@ A **Watermark(T)** is a control packet flowing through the stream that declares:
 *   **Function:** Watermarks trigger **Window Calculations** and expire timers.
 
 ### 2.3 Late Data
-If an event arrives with `Timestamp < CurrentWatermark`:
-*   **Default:** The event is dropped (or sent to a side-output "Dead Letter Queue").
-*   **Allowed Lateness:** Users can configure a grace period where late events trigger a window re-computation/update.
+An event with `Timestamp < CurrentWatermark` is late. Window eligibility is
+separate: a window accepts it while `CurrentWatermark < WindowEnd + AllowedLateness`.
+Zero lateness purges at window end, but an overlapping window that is still open
+can accept the record. If every assigned window has expired, the original record
+is sent once to the configured named late stream or dropped with a metric.
+
+Configure retention per window with `AllowedLateness(30 * time.Second)` in the
+SDK or `allowed_lateness: "30s"` in YAML. Retained windows emit updated results
+with bounds and `IsUpdate=true`; prior results are not retracted. Named late
+streams are separate from error-policy DLQs. See [WIP-12's runtime contract](trds/WIP-12/runtime-contract.md)
+for side-output configuration, metrics, persistence and recovery.
 
 ---
 

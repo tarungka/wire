@@ -70,13 +70,15 @@ type StreamNode struct {
 
 	// Windowed stream config.
 	AllowedLateness int64 // millis
+	LateOutputTag   string
 }
 
 // StreamEdge connects two nodes in the graph.
 type StreamEdge struct {
-	SourceID int
-	TargetID int
-	Shuffle  ShuffleType
+	SideOutput string
+	SourceID   int
+	TargetID   int
+	Shuffle    ShuffleType
 }
 
 // StreamGraph is the internal DAG representation of a pipeline.
@@ -153,6 +155,11 @@ func (g *StreamGraph) validate() error {
 		}
 		if _, ok := node.Sink.(engine.TransactionalSink); ok && node.ErrorPolicy != nil && (node.ErrorPolicy.MaxRetries != 0 || (node.ErrorPolicy.OnExhausted != "" && node.ErrorPolicy.OnExhausted != "fail")) {
 			return fmt.Errorf("%w: transactional sink requires fail policy with no record retries", ErrInvalidConfig)
+		}
+		if node.Type == NodeWindow || node.Type == NodeReduce {
+			if _, err := windowDefinition(node); err != nil {
+				return err
+			}
 		}
 		if node.Watermark != nil {
 			if node.Type != NodeSource {

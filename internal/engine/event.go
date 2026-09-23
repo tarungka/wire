@@ -9,6 +9,7 @@ import (
 // Event is the internal representation of a data record flowing through the
 // operator chain.
 type Event struct {
+	sideOutput     string // Internal routing tag, consumed before network serialization.
 	inputActivity  *inputActivity
 	inputWatermark *inputWatermarkBoundary
 	watermark      *int64 // Internal ordered boundary; never exposed as a data record.
@@ -92,9 +93,10 @@ const (
 
 // OutputMsg carries messages from the operator chain to output writers.
 type OutputMsg struct {
-	Type      OutputType
-	Event     Event                          // Valid when Type == OutputData.
-	Barrier   *protocol.CheckpointBarrierMsg // Valid when Type == OutputBarrier.
-	Watermark *protocol.WatermarkMsg         // Valid when Type == OutputWatermark.
-	End       *protocol.EndOfPartitionMsg    // Valid when Type == OutputEnd.
+	SideOutput string // Empty selects the main output.
+	Type       OutputType
+	Event      Event                          // Valid when Type == OutputData.
+	Barrier    *protocol.CheckpointBarrierMsg // Valid when Type == OutputBarrier.
+	Watermark  *protocol.WatermarkMsg         // Valid when Type == OutputWatermark.
+	End        *protocol.EndOfPartitionMsg    // Valid when Type == OutputEnd.
 }

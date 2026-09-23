@@ -20,6 +20,7 @@ type partitionRouter struct {
 	downstreams       []chan<- engine.Event
 	controlChs        []chan<- engine.ControlMsg
 	routeFn           func(event engine.Event, numDown int) int
+	inputRoutes       []func(engine.Event, int) int
 	keySelector       KeySelector
 	idleTimeout       time.Duration
 	watermarkInterval time.Duration
@@ -160,7 +161,11 @@ func (r *partitionRouter) run(ctx context.Context) error {
 							}
 							msg.Event.Key = append([]byte(nil), key...)
 						}
-						target := r.routeFn(msg.Event, len(r.downstreams))
+						route := r.routeFn
+						if len(r.inputRoutes) > 0 {
+							route = r.inputRoutes[inputIndex]
+						}
+						target := route(msg.Event, len(r.downstreams))
 						downstreamMu[target].Lock()
 						defer downstreamMu[target].Unlock()
 						select {

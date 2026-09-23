@@ -32,17 +32,23 @@ func (g *StreamGraph) toJobGraph(defaultParallelism int) rpc.JobGraph {
 				}
 			}
 		}
+		var window *rpc.WindowDefinition
+		if node.Window != nil {
+			window, _ = windowDefinition(node)
+		}
 		parallelism[node.ID] = p
 		ops = append(ops, rpc.OperatorDescriptor{
-			OperatorID:  idStr(node.ID),
-			Watermark:   node.Watermark,
-			ErrorPolicy: node.ErrorPolicy,
-			DLQSink:     node.NamedDLQ,
-			Name:        node.Name,
-			Type:        nodeTypeToRPC(node.Type),
-			Parallelism: int32(p),
-			ClassName:   node.ClassName,
-			Config:      node.Config,
+			OperatorID:    idStr(node.ID),
+			Window:        window,
+			LateOutputTag: node.LateOutputTag,
+			Watermark:     node.Watermark,
+			ErrorPolicy:   node.ErrorPolicy,
+			DLQSink:       node.NamedDLQ,
+			Name:          node.Name,
+			Type:          nodeTypeToRPC(node.Type),
+			Parallelism:   int32(p),
+			ClassName:     node.ClassName,
+			Config:        node.Config,
 		})
 	}
 
@@ -63,6 +69,7 @@ func (g *StreamGraph) toJobGraph(defaultParallelism int) rpc.JobGraph {
 		}
 		edges = append(edges, rpc.EdgeDescriptor{
 			SourceOperatorID: idStr(edge.SourceID),
+			SideOutput:       edge.SideOutput,
 			TargetOperatorID: idStr(edge.TargetID),
 			Shuffle:          shuffle,
 		})

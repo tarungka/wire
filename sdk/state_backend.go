@@ -9,7 +9,7 @@ import (
 	"github.com/tarungka/wire/internal/engine"
 )
 
-// StateBackendConfig selects storage for each embedded Process instance.
+// StateBackendConfig selects storage for each embedded Process/window instance.
 // An explicit Pebble directory is retained across executions; an omitted one
 // uses a temporary directory removed when execution closes the operator.
 type StateBackendConfig struct {
@@ -33,7 +33,7 @@ func NewPebbleStateBackend(dataDir string) StateBackendConfig {
 	return StateBackendConfig{Type: "pebble", DataDir: dataDir}
 }
 
-// SetStateBackend selects the backend used by embedded keyed Process operators.
+// SetStateBackend selects the backend used by embedded keyed Process and window operators.
 // Cluster-mode backend selection is not supported yet and is rejected at Execute.
 func (env *StreamExecutionEnvironment) SetStateBackend(config StateBackendConfig) *StreamExecutionEnvironment {
 	env.stateBackend = config

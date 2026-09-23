@@ -127,3 +127,67 @@ func TestOutputWritersProgressIndependentlyAndJoinOnCancel(t *testing.T) {
 		t.Fatal("writers did not join after cancellation")
 	}
 }
+
+func TestGroupedRouterSeparatesLateDataAndFencesBothOutputs(t *testing.T) {
+	main, mainRead := newTestStreamPair(t)
+	late, lateRead := newTestStreamPair(t)
+	defer main.Close()
+	defer mainRead.Close()
+	defer late.Close()
+	defer lateRead.Close()
+	messages := make(chan OutputMsg, 6)
+	messages <- OutputMsg{Type: OutputData, Event: Event{Value: []byte("main")}}
+	messages <- OutputMsg{Type: OutputData, SideOutput: "late", Event: Event{Value: []byte("late")}}
+	messages <- OutputMsg{Type: OutputBarrier, Barrier: &protocol.CheckpointBarrierMsg{CheckpointID: 3, EpochID: 1}}
+	messages <- OutputMsg{Type: OutputWatermark, Watermark: &protocol.WatermarkMsg{Timestamp: 15}}
+	messages <- OutputMsg{Type: OutputData, SideOutput: "late", Event: Event{Value: []byte("later")}}
+	messages <- OutputMsg{Type: OutputEnd, End: &protocol.EndOfPartitionMsg{}}
+	close(messages)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	results := make(chan error, 2)
+	for i, reader := range []*transport.FrameStream{mainRead, lateRead} {
+		go func() {
+			var got []string
+			for {
+				msg, err := reader.ReadMessage()
+				if err != nil {
+					results <- err
+					return
+				}
+				switch m := msg.(type) {
+				case *protocol.DataRecordMsg:
+					got = append(got, string(m.Value))
+				case *protocol.CheckpointBarrierMsg:
+					got = append(got, "barrier")
+				case *protocol.WatermarkMsg:
+					got = append(got, "watermark")
+				case *protocol.EndOfPartitionMsg:
+					want := []string{"main", "barrier", "watermark"}
+					if i == 1 {
+						want = []string{"late", "barrier", "watermark", "later"}
+					}
+					if !reflect.DeepEqual(got, want) {
+						results <- fmt.Errorf("output %d: %v != %v", i, got, want)
+					} else {
+						results <- nil
+					}
+					return
+				}
+			}
+		}()
+	}
+	if err := runGroupedOutputRouter(ctx, []*transport.FrameStream{main, late}, messages, testLogger(), []OutputGroup{{Streams: []int{0}}, {SideOutput: "late", Streams: []int{1}}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}

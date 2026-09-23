@@ -266,6 +266,14 @@ func processEventFrom(cc *chainContext, event Event, links []ChainLink) error {
 	for _, link := range links {
 		var next []Event
 		for _, e := range events {
+			if e.sideOutput != "" {
+				tag := e.sideOutput
+				e.sideOutput = ""
+				if err := cc.sendOutput(OutputMsg{Type: OutputData, SideOutput: tag, Event: e}); err != nil {
+					return err
+				}
+				continue
+			}
 			switch o := link.Operator.(type) {
 			case MapOperator:
 				result, err := invokeMapWithRetry(cc, link, e, o)
@@ -292,7 +300,9 @@ func processEventFrom(cc *chainContext, event Event, links []ChainLink) error {
 
 	// Send surviving events to output.
 	for _, e := range events {
-		if err := cc.sendOutput(OutputMsg{Type: OutputData, Event: e}); err != nil {
+		tag := e.sideOutput
+		e.sideOutput = ""
+		if err := cc.sendOutput(OutputMsg{Type: OutputData, SideOutput: tag, Event: e}); err != nil {
 			return err
 		}
 	}

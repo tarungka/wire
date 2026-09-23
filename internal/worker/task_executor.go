@@ -67,6 +67,21 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 
 	// Validate every policy before invoking user factories.
 	for _, od := range desc.OperatorChain {
+		if od.Type == rpc.OperatorTypeWindow && od.ErrorPolicy != nil {
+			return fmt.Errorf("worker: window errors require task recovery, not record error policies")
+		}
+		if od.Window != nil {
+			if od.Type != rpc.OperatorTypeWindow {
+				return fmt.Errorf("worker: window configuration requires a window operator")
+			}
+			if err := od.Window.Validate(); err != nil {
+				return err
+			}
+		}
+		if od.LateOutputTag != "" && od.Type != rpc.OperatorTypeWindow {
+			return fmt.Errorf("worker: late output requires a window")
+		}
+
 		if od.ErrorPolicy != nil && od.ErrorPolicy.OnExhausted == "dlq" && od.DLQSink == nil {
 			return fmt.Errorf("worker: DLQ destination required for %q", od.OperatorID)
 		}
@@ -96,6 +111,28 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			}
 			sourceOp = so
 			continue
+		}
+		if od.Window != nil {
+			target, ok := op.(interface {
+				ConfigureWindow(string, int64, int64, int64, int64) error
+			})
+			if !ok {
+				return fmt.Errorf("worker: window %q cannot apply SDK configuration", od.OperatorID)
+			}
+			cfg := od.Window
+			if err := target.ConfigureWindow(cfg.Kind, cfg.Size, cfg.Slide, cfg.Gap, cfg.AllowedLateness); err != nil {
+				return err
+			}
+		}
+		if window, ok := op.(interface{ SetMetricIdentity(string, string) }); ok {
+			window.SetMetricIdentity(od.OperatorID, taskID)
+		}
+		if od.LateOutputTag != "" {
+			late, ok := op.(interface{ SetLateOutputTag(string) })
+			if !ok {
+				return fmt.Errorf("worker: operator %q cannot emit late output", od.OperatorID)
+			}
+			late.SetLateOutputTag(od.LateOutputTag)
 		}
 		operators = append(operators, op)
 		cfg, err := compileErrorPolicy(od.ErrorPolicy, od.OperatorID)
@@ -146,6 +183,9 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 	slot.TransactionRecovery = &engine.TransactionRecovery{DeploymentGeneration: desc.DeploymentGeneration, JobID: jobID, TaskID: taskID, EpochID: desc.EpochID, AttemptID: desc.AttemptID}
 	for _, upstream := range desc.Upstream {
 		slot.InputIdleTimeouts = append(slot.InputIdleTimeouts, upstream.IdleTimeout)
+	}
+	for _, group := range desc.OutputGroups {
+		slot.OutputGroups = append(slot.OutputGroups, engine.OutputGroup{SideOutput: group.SideOutput, Streams: group.Streams, KeyGroups: group.KeyGroups})
 	}
 	slot.OutputKeyGroups = desc.OutputKeyGroups
 	slot.TaskIndex = int(desc.SubtaskIndex)

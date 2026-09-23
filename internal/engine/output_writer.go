@@ -59,10 +59,41 @@ func runOutputRouter(ctx context.Context, streams []*transport.FrameStream, outp
 	if len(keyGroups) > 0 {
 		count = keyGroups[0]
 	}
-	if count != 0 {
-		if err := (keygroup.Config{NumKeyGroups: count, Parallelism: len(streams)}).Validate(); err != nil {
-			return fmt.Errorf("output key routing: %w", err)
+	groups := []OutputGroup{{KeyGroups: count}}
+	for i := range streams {
+		groups[0].Streams = append(groups[0].Streams, i)
+	}
+	return runGroupedOutputRouter(ctx, streams, outputCh, log, groups)
+}
+
+// OutputGroup isolates routing decisions for one graph edge. Data goes only to
+// matching tags; checkpoint/watermark/end fences still visit every stream.
+type OutputGroup struct {
+	SideOutput string
+	Streams    []int
+	KeyGroups  int
+}
+
+func runGroupedOutputRouter(ctx context.Context, streams []*transport.FrameStream, outputCh <-chan OutputMsg, log zerolog.Logger, groups []OutputGroup) error {
+	used := make(map[int]bool)
+	for _, group := range groups {
+		if len(group.Streams) == 0 && len(streams) > 0 {
+			return fmt.Errorf("empty output group")
 		}
+		if group.KeyGroups != 0 {
+			if err := (keygroup.Config{NumKeyGroups: group.KeyGroups, Parallelism: len(group.Streams)}).Validate(); err != nil {
+				return fmt.Errorf("output key routing: %w", err)
+			}
+		}
+		for _, index := range group.Streams {
+			if index < 0 || index >= len(streams) || used[index] {
+				return fmt.Errorf("invalid or repeated output stream %d", index)
+			}
+			used[index] = true
+		}
+	}
+	if len(used) != len(streams) {
+		return fmt.Errorf("ungrouped output stream")
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -100,7 +131,7 @@ func runOutputRouter(ctx context.Context, streams []*transport.FrameStream, outp
 		})
 	}
 	dispatch := func() error {
-		next := 0
+		next := make([]int, len(groups))
 		for {
 			select {
 			case <-writerCtx.Done():
@@ -113,16 +144,21 @@ func runOutputRouter(ctx context.Context, streams []*transport.FrameStream, outp
 					continue
 				}
 				if message.Type == OutputData {
-					target := next
-					if count != 0 {
-						target = keygroup.AssignedTask(keygroup.KeyGroup(message.Event.Key, count), count, len(queues))
+					for gi, group := range groups {
+						if group.SideOutput != message.SideOutput || len(group.Streams) == 0 {
+							continue
+						}
+						target := next[gi]
+						if group.KeyGroups != 0 {
+							target = keygroup.AssignedTask(keygroup.KeyGroup(message.Event.Key, group.KeyGroups), group.KeyGroups, len(group.Streams))
+						}
+						select {
+						case queues[group.Streams[target]] <- work{message: message}:
+						case <-writerCtx.Done():
+							return writerCtx.Err()
+						}
+						next[gi] = (next[gi] + 1) % len(group.Streams)
 					}
-					select {
-					case queues[target] <- work{message: message}:
-					case <-writerCtx.Done():
-						return writerCtx.Err()
-					}
-					next = (next + 1) % len(queues)
 					continue
 				}
 				completed := make(chan struct{}, len(queues))

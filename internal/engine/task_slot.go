@@ -41,6 +41,7 @@ type TaskSlot struct {
 	// OutputKeyGroups enables keyed routing over outputs ordered by target subtask.
 	// Zero retains round-robin routing.
 	OutputKeyGroups      int
+	OutputGroups         []OutputGroup
 	Operators            []Operator             // Fused operator chain.
 	Source               SourceOperator         // Non-nil for source tasks.
 	Strategy             WatermarkStrategy      // Resolved watermark strategy (source tasks only).
@@ -454,6 +455,9 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// control frames to every downstream stream. It also drains terminal chains.
 	g.Go(func() error {
 		defer taskGoroutineStarted(runCtx)()
+		if len(ts.OutputGroups) > 0 {
+			return runGroupedOutputRouter(outputCtx, ts.Outputs, outputCh, ts.log, ts.OutputGroups)
+		}
 		return runOutputRouter(outputCtx, ts.Outputs, outputCh, ts.log, ts.OutputKeyGroups)
 	})
 

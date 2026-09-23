@@ -38,7 +38,11 @@ func buildPhysicalTasks(jobID string, graph rpc.JobGraph, parallelism int) ([]rp
 			tasks = append(tasks, rpc.TaskDescriptor{TaskID: fmt.Sprintf("%s/%s/%d", jobID, primary, i), OperatorID: primary, SubtaskIndex: int32(i), Parallelism: int32(chain.Parallelism), NumKeyGroups: count, KeyGroup: rpc.KeyGroupRange{Start: int32(groups.Start), End: int32(groups.End) - 1}, OperatorChain: chain.Operators})
 		}
 	}
-	boundaryCount := make(map[int]int)
+	operators := make(map[string]rpc.OperatorDescriptor)
+	for _, op := range graph.Operators {
+		operators[op.OperatorID] = op
+	}
+
 	for _, edge := range graph.Edges {
 		// Omitted shuffle strategy in persisted legacy graphs means forward.
 		if edge.Shuffle == rpc.ShuffleStrategyUnknown {
@@ -48,9 +52,8 @@ func buildPhysicalTasks(jobID string, graph rpc.JobGraph, parallelism int) ([]rp
 		if source == target {
 			continue
 		}
-		boundaryCount[source]++
-		if boundaryCount[source] > 1 {
-			return nil, fmt.Errorf("multiple output edges require grouped routing")
+		if edge.SideOutput != "" && (operators[edge.SourceOperatorID].Type != rpc.OperatorTypeWindow || operators[edge.SourceOperatorID].LateOutputTag != edge.SideOutput) {
+			return nil, fmt.Errorf("unknown side output %q on %q", edge.SideOutput, edge.SourceOperatorID)
 		}
 		if edge.Shuffle != rpc.ShuffleStrategyForward && edge.Shuffle != rpc.ShuffleStrategyHash && edge.Shuffle != rpc.ShuffleStrategyRebalance {
 			return nil, fmt.Errorf("unsupported shuffle strategy %v", edge.Shuffle)
@@ -67,6 +70,10 @@ func buildPhysicalTasks(jobID string, graph rpc.JobGraph, parallelism int) ([]rp
 			return nil, fmt.Errorf("forward edge %s→%s requires equal parallelism", edge.SourceOperatorID, edge.TargetOperatorID)
 		}
 		for si, src := range indexes[source] {
+			output := rpc.OutputGroupDescriptor{SideOutput: edge.SideOutput}
+			if edge.Shuffle == rpc.ShuffleStrategyHash {
+				output.KeyGroups = count
+			}
 			for ti, dst := range indexes[target] {
 				if edge.Shuffle == rpc.ShuffleStrategyForward && si != ti {
 					continue
@@ -75,9 +82,11 @@ func buildPhysicalTasks(jobID string, graph rpc.JobGraph, parallelism int) ([]rp
 					return nil, fmt.Errorf("task %s exceeds stream partition limit", tasks[dst].TaskID)
 				}
 				partition := uint16(len(tasks[dst].Upstream))
+				output.Streams = append(output.Streams, len(tasks[src].Downstream))
 				tasks[src].Downstream = append(tasks[src].Downstream, rpc.DownstreamChannelInfo{TaskID: tasks[dst].TaskID, OperatorID: tasks[dst].OperatorID, SubtaskIndex: int32(ti), PartitionIndex: partition})
 				tasks[dst].Upstream = append(tasks[dst].Upstream, rpc.UpstreamChannelInfo{IdleTimeout: sourceIdleTimeout(tasks[src]), TaskID: tasks[src].TaskID, OperatorID: tasks[src].OperatorID, SubtaskIndex: int32(si), PartitionIndex: partition})
 			}
+			tasks[src].OutputGroups = append(tasks[src].OutputGroups, output)
 		}
 	}
 	return tasks, nil

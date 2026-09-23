@@ -41,3 +41,53 @@ func TestPhysicalTasksHashShuffleEndpoints(t *testing.T) {
 		}
 	}
 }
+
+func TestPhysicalWindowLateOutputGroups(t *testing.T) {
+	graph := rpc.JobGraph{Operators: []rpc.OperatorDescriptor{
+		{OperatorID: "source", Type: rpc.OperatorTypeSource},
+		{OperatorID: "window", Type: rpc.OperatorTypeWindow, LateOutputTag: "late"},
+		{OperatorID: "main", Type: rpc.OperatorTypeSink},
+		{OperatorID: "late", Type: rpc.OperatorTypeSink},
+	}, Edges: []rpc.EdgeDescriptor{
+		{SourceOperatorID: "source", TargetOperatorID: "window", Shuffle: rpc.ShuffleStrategyHash},
+		{SourceOperatorID: "window", TargetOperatorID: "main", Shuffle: rpc.ShuffleStrategyForward},
+		{SourceOperatorID: "window", TargetOperatorID: "late", SideOutput: "late", Shuffle: rpc.ShuffleStrategyHash},
+	}}
+	tasks, err := buildPhysicalTasks("job", graph, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows := 0
+	for _, task := range tasks {
+		if task.OperatorID != "window" {
+			continue
+		}
+		windows++
+		if len(task.OutputGroups) != 2 || len(task.Downstream) != 3 {
+			t.Fatalf("groups=%+v channels=%+v", task.OutputGroups, task.Downstream)
+		}
+		for _, group := range task.OutputGroups {
+			want := "main"
+			n := 1
+			if group.SideOutput == "late" {
+				want = "late"
+				n = 2
+			}
+			if len(group.Streams) != n {
+				t.Fatal("wrong partition count")
+			}
+			for _, index := range group.Streams {
+				if task.Downstream[index].OperatorID != want {
+					t.Fatal("tag routed to wrong operator")
+				}
+			}
+		}
+	}
+	if windows != 2 {
+		t.Fatal("window chain was fused across branches")
+	}
+	graph.Edges[2].SideOutput = "unknown"
+	if _, err = buildPhysicalTasks("job", graph, 2); err == nil {
+		t.Fatal("unknown side output accepted")
+	}
+}

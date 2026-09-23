@@ -26,6 +26,7 @@ type WindowFunc func(info WindowInfo, events []Event) ([]Event, error)
 
 // WindowInfo provides metadata about the window being processed.
 type WindowInfo struct {
-	Start int64 // Window start timestamp (millis).
-	End   int64 // Window end timestamp (millis).
+	IsUpdate bool  // True when a retained window is recomputed.
+	Start    int64 // Window start timestamp (millis).
+	End      int64 // Window end timestamp (millis).
 }
