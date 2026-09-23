@@ -1,7 +1,7 @@
 # WIP-12 acceptance evidence
 
 Implementation branch: `codex/wip-12-complete`, based on master `931d02e`.
-This completes the runtime scope left by [#193](https://github.com/tarungka/wire/pull/193).
+[Completion PR #227](https://github.com/tarungka/wire/pull/227) completes the runtime scope left by [#193](https://github.com/tarungka/wire/pull/193).
 See the [runtime contract](runtime-contract.md) for configuration, storage bounds,
 side-output delivery and upgrade requirements.
 
@@ -64,8 +64,8 @@ and storage/recovery behavior have additional tests listed above.
 
 ## Verification gates
 
-- Full `go test -race -timeout 5m ./...` passed after the deployment/recovery
-  increment; final pre-publication verification is recorded on the PR.
+- Final pre-publication `go test -race -timeout 5m ./...` passed, including
+  the worker integration suite (84.7 seconds).
 - `go build ./...` and `go vet ./...` passed.
 - CI-pinned `golangci-lint v2.5.0 run --timeout=5m` passed with zero issues.
 - GitHub CI is authoritative for remote checks; these local results do not

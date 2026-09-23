@@ -105,4 +105,6 @@ executed tests. The [runtime contract](runtime-contract.md) documents deployment
 configuration, resource bounds, upgrade ordering and replay visibility. Apply's
 WindowInfo.IsUpdate is asserted inside the callback as well as on result headers.
 The WIP and canon/index documentation now describe the implemented behavior.
-Final verification and PR publication are the remaining delivery gates.
+Final local race suite, build, vet and pinned lint passed.
+[PR #227](https://github.com/tarungka/wire/pull/227) is published from the personal
+account and ready for review. Remote check results remain authoritative on the PR.

@@ -26,6 +26,7 @@ The completion branch implements ordered Aggregate/Reduce/Apply execution,
 per-window SDK/YAML lateness, named late branches, attributed live metrics,
 atomic backend persistence and portable checkpoint recovery. It follows #193
 and is based on master `931d02e` (including WIP-10 and WIP-11).
+[Completion PR #227](https://github.com/tarungka/wire/pull/227) is ready for review.
 
 See the [runtime contract](runtime-contract.md) for supported configuration,
 resource bounds and compatibility, and [acceptance evidence](acceptance.md) for

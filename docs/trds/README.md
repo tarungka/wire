@@ -134,7 +134,7 @@ completion merged in [#188](https://github.com/tarungka/wire/pull/188).
 | [WIP-09](WIP-09/README.md) | [#200](https://github.com/tarungka/wire/pull/200) | Recovery fencing metadata validation |
 | [WIP-10](WIP-10/README.md) | [#224](https://github.com/tarungka/wire/pull/224) | Distributed transactional recovery and final checkpoints; follows #199 |
 | [WIP-11](WIP-11/README.md) | [#194](https://github.com/tarungka/wire/pull/194), [#225](https://github.com/tarungka/wire/pull/225) | Complete policies, YAML DLQ, live metrics and acceptance coverage |
-| [WIP-12](WIP-12/README.md) | [#193](https://github.com/tarungka/wire/pull/193) | Ordered windows, named late streams, metrics, durable state and recovery; [acceptance](WIP-12/acceptance.md) |
+| [WIP-12](WIP-12/README.md) | [#193](https://github.com/tarungka/wire/pull/193), [#227](https://github.com/tarungka/wire/pull/227) | Ordered windows, named late streams, metrics, durable state and recovery; [acceptance](WIP-12/acceptance.md) |
 | [WIP-13](WIP-13/README.md) | [#195](https://github.com/tarungka/wire/pull/195) | Configuration reference and substitution |
 | [WIP-14](WIP-14/README.md) | [#198](https://github.com/tarungka/wire/pull/198) | Ordered SDK window execution |
 | [WIP-15](WIP-15/README.md) | [#196](https://github.com/tarungka/wire/pull/196) | Job and savepoint CLI |
