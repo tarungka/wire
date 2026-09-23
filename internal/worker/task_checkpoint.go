@@ -155,16 +155,10 @@ func (w *Worker) handleCheckpointCommand(command rpc.WorkerCommand) (accepted bo
 		kind := engine.CtrlAbortCheckpoint
 		if command.Type == rpc.CommandTypeCommitCheckpoint {
 			kind = engine.CtrlCommitCheckpoint
-		} else {
-			// Roll back prepared sinks before releasing aligned records.
-			select {
-			case checkpoint.decisions <- engine.ControlMsg{Type: engine.CtrlAbortTransaction, CheckpointID: request.CheckpointID, EpochID: request.EpochID}:
-			default:
-				w.log.Error().Str("task_id", command.TaskID).Msg("checkpoint command mailbox exhausted")
-				handle.cancel()
-				return
-			}
 		}
+		// The chain owns transaction state. One abort control atomically
+		// rolls back only a matching prepared transaction, or retires an
+		// unprepared alignment while preserving its current writes.
 		select {
 		case checkpoint.decisions <- engine.ControlMsg{Type: kind, CheckpointID: request.CheckpointID, EpochID: request.EpochID}:
 			return

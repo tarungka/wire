@@ -570,6 +570,12 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		}
 
 	case CtrlAbortTransaction:
+		// A checkpoint can time out before this sink reaches its barrier.
+		// Its current transaction still contains valid records for the next
+		// checkpoint. Retire the failed alignment without rolling it back.
+		if ctrl.CheckpointID != 0 && !cc.transactionPrepared {
+			return handleControl(cc, ControlMsg{Type: CtrlAbortCheckpoint, CheckpointID: ctrl.CheckpointID, EpochID: ctrl.EpochID}, eofCount)
+		}
 		if ctrl.CheckpointID != 0 && (ctrl.EpochID < cc.lastAborted.epoch || (ctrl.EpochID == cc.lastAborted.epoch && ctrl.CheckpointID <= cc.lastAborted.id)) {
 			break
 		}

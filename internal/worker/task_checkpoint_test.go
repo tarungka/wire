@@ -28,7 +28,7 @@ func TestCheckpointCommandFencingAndAbortOrder(t *testing.T) {
 			t.Fatal("stale decision admitted")
 		}
 	}
-	for _, kind := range []engine.ControlType{engine.CtrlAbortTransaction, engine.CtrlAbortCheckpoint} {
+	for _, kind := range []engine.ControlType{engine.CtrlAbortCheckpoint} {
 		select {
 		case decision := <-runtime.decisions:
 			if decision.Type != kind || decision.CheckpointID != 7 || decision.EpochID != 5 {
@@ -37,6 +37,9 @@ func TestCheckpointCommandFencingAndAbortOrder(t *testing.T) {
 		default:
 			t.Fatal("missing abort decision")
 		}
+	}
+	if len(runtime.decisions) != 0 {
+		t.Fatal("checkpoint abort expanded into another transaction command")
 	}
 	if ctx.Err() != nil {
 		t.Fatal("valid abort cancelled task")
