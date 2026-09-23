@@ -97,6 +97,9 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			sourceOp = so
 			continue
 		}
+		if window, ok := op.(interface{ SetMetricIdentity(string, string) }); ok {
+			window.SetMetricIdentity(od.OperatorID, taskID)
+		}
 		operators = append(operators, op)
 		cfg, err := compileErrorPolicy(od.ErrorPolicy, od.OperatorID)
 		if err != nil {

@@ -383,6 +383,9 @@ func (ex *embeddedExecutor) runStageInstance(
 			if err != nil {
 				return err
 			}
+			if window, ok := op.(interface{ SetMetricIdentity(string, string) }); ok {
+				window.SetMetricIdentity(fmt.Sprintf("%s-%d", node.Name, node.ID), fmt.Sprintf("embedded/%d/%d", node.ID, instanceIdx))
+			}
 			operators = append(operators, op)
 		}
 		if len(operators) > before {

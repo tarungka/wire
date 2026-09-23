@@ -13,7 +13,7 @@ import (
 func compilePipelineTransform(node *StreamNode, op pipelineOperator, env *cel.Env) error {
 	allowed := map[string][]string{
 		"json-parse": {"target-field"}, "filter": {"expression"}, "map": {"expression"}, "flat-map": {"expression"}, "key-by": {"key-expression"},
-		"select": {"fields"}, "rename": {"mappings"}, "tumbling-window": {"size", "aggregation"}, "sliding-window": {"size", "slide", "aggregation"}, "session-window": {"gap", "aggregation"},
+		"select": {"fields"}, "rename": {"mappings"}, "tumbling-window": {"size", "aggregation", "allowed_lateness"}, "sliding-window": {"size", "slide", "aggregation", "allowed_lateness"}, "session-window": {"gap", "aggregation", "allowed_lateness"},
 	}
 	fields, ok := allowed[op.Type]
 	if !ok {
@@ -226,10 +226,21 @@ func compilePipelineTransform(node *StreamNode, op pipelineOperator, env *cel.En
 				return 0, err
 			}
 			value, err := time.ParseDuration(raw)
-			if err != nil || value <= 0 {
-				return 0, fmt.Errorf("%s must be a positive duration", name)
+			if err != nil || value <= 0 || value%time.Millisecond != 0 {
+				return 0, fmt.Errorf("%s must be a positive whole-millisecond duration", name)
 			}
 			return value, nil
+		}
+		if raw, exists := op.Config["allowed_lateness"]; exists {
+			text, ok := raw.(string)
+			if !ok {
+				return fmt.Errorf("allowed_lateness must be a duration string")
+			}
+			value, err := time.ParseDuration(text)
+			if err != nil || value < 0 || value%time.Millisecond != 0 {
+				return fmt.Errorf("allowed_lateness must be a nonnegative whole-millisecond duration")
+			}
+			node.AllowedLateness = value.Milliseconds()
 		}
 		aggregation, err := required("aggregation")
 		if err != nil {

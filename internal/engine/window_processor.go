@@ -37,6 +37,7 @@ type WindowResult struct {
 type WindowStats struct {
 	Late, Allowed, Dropped uint64
 	RetainedWindows        int
+	RetentionBytes         int64
 }
 
 type retainedWindow struct {
@@ -276,4 +277,25 @@ func (p *WindowProcessor) AdvanceWatermark(watermark int64) []WindowResult {
 	}
 	return results
 }
-func (p *WindowProcessor) Stats() WindowStats { p.mu.Lock(); defer p.mu.Unlock(); return p.stats }
+func (p *WindowProcessor) Stats() WindowStats {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	stats := p.stats
+	// Extra payload retained after the initial firing; excludes open windows,
+	// Go object overhead and backend disk/compaction amplification.
+	stats.RetentionBytes = 0
+	for _, windows := range p.windows {
+		for _, w := range windows {
+			if p.watermark >= w.End {
+				stats.RetentionBytes += int64(len(w.Key) + len(w.Accumulator))
+			}
+		}
+	}
+	return stats
+}
+
+func (p *WindowProcessor) counters() WindowStats {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stats
+}
