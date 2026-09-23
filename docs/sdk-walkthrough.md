@@ -164,3 +164,39 @@ Explicit deployed backend roots also isolate deployment attempts. A retry before
 the first checkpoint starts with empty managed state; a checkpointed retry imports
 its authorized snapshot into the new attempt. Retained roots can contain state
 from older attempts and require operator-managed disk retention.
+
+## Registering operators in an application worker
+
+Applications outside the Wire module can use `sdk.NewWorkerRegistry` and
+`sdk.RunWorker`; they do not need to import `internal/worker` or `internal/engine`.
+The [registered worker example](../sdk/examples/registered-worker/main.go) includes
+both worker registration and a matching named job submission. With a coordinator
+running on RPC `localhost:4002` and HTTP `localhost:4001`, run these in separate
+terminals:
+
+```sh
+go run ./sdk/examples/registered-worker -mode worker
+go run ./sdk/examples/registered-worker -mode submit
+```
+
+The worker prints `HELLO` and `WORLD`. This simple example uses one worker and no
+checkpoints. The earlier stateful example covers checkpoint recovery.
+
+Register source, sink, Map, FlatMap, Filter, KeyBy, Process and window classes
+before starting a worker. Each factory receives application-defined config bytes
+and `WorkerTaskContext`, including job, operator, subtask and attempt identities.
+Return a fresh, unopened connector or closure for each invocation. Named classes
+must be installed on every worker that can receive the job; submission does not
+ship Go code. Duplicate registrations and nil factories panic immediately.
+
+Process factories return `ProcessDefinition`; window factories return
+`WindowDefinition` with exactly one of Aggregator, Reduce or Apply. Window dimensions
+and lateness come from the submitted `Window(...).ApplyNamed(...)` graph. An
+explicit graph state backend overrides the factory's backend default. Persistent
+backend paths are scoped to the job, operator, instance and attempt.
+
+`RunWorker` joins task shutdown before returning, within `ShutdownTimeout`
+(default 30 seconds). Its context controls worker lifetime. For checkpoints,
+configure distinct retained `CheckpointDirectory` roots on at least two workers.
+`RPCTLSConfig` secures coordinator RPC only; this API does not imply HTTP,
+data-plane or replica TLS. Those broader security requirements remain in WIP-17.

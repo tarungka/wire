@@ -12,7 +12,7 @@ PRs are dependencies, not merged functionality.
 | Timestamp extraction and watermark strategy | `sdk/dag_execution_test.go`, watermark configuration tests, engine ordered terminal-watermark tests | Public API/reference review |
 | Keyed Value/List/Map state and TTL | `sdk/state_ttl_test.go`, `process_runtime_test.go`, hashmap/Pebble tests | None identified in these APIs |
 | Process context, timers and side outputs | Process harness and `TestMiniClusterRestoresOffsetsAndManagedState` | None identified in tested behavior |
-| Distributed keyed Process | `internal/worker/process_recovery_test.go`, named Process factory adapter | Review public registration instructions |
+| Distributed keyed Process | `internal/worker/process_recovery_test.go`, public WorkerRegistry/RunWorker integration test and external-module example compilation | Final acceptance review |
 | Checkpoint interval, timeout, minimum pause | SDK submission-envelope tests; coordinator persistence, trigger and timeout tests | None identified for these settings |
 | Maximum concurrent checkpoints API | Original proposal declares `SetMaxConcurrentCheckpoints`; runtime currently enforces one in-flight checkpoint, also required by WIP-05 acceptance | API/contract discrepancy remains open; do not silently ignore a setting |
 | Fixed/exponential/no-restart policies | RPC validation/delay tests, coordinator budget and persistence tests, real MiniCluster recovery | None identified for implemented policies |
