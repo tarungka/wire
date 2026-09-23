@@ -50,6 +50,11 @@ func Load(paths []string) (WireConfig, error) {
 		}
 	}
 
+	// Environment overrides are applied after files and before typed decoding.
+	if err := applyEnvironment(ko); err != nil {
+		return WireConfig{}, err
+	}
+
 	// 3. Unmarshal into WireConfig.
 	var cfg WireConfig
 	if err := ko.UnmarshalWithConf("", &cfg, unmarshalConf()); err != nil {
