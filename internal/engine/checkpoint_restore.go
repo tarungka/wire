@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 )
@@ -51,5 +52,62 @@ func (ts *TaskSlot) restoreCheckpoint() error {
 		}
 	}
 	ts.RestoredCheckpointID = snapshot.CheckpointID
+	return nil
+}
+
+// restoreSinkTransaction resolves the completed checkpoint's commit decision
+// before RUNNING, BeginTransaction or source/input processing. Restoration is
+// authorized only for a globally completed checkpoint, as selected by the
+// coordinator; a replica receipt alone is not a commit decision.
+func (ts *TaskSlot) restoreSinkTransaction(ctx context.Context) error {
+	snapshot := ts.RestoreCheckpoint
+	if snapshot == nil || !snapshot.SinkPrepared {
+		return nil
+	}
+	if len(ts.Operators) == 0 {
+		return fmt.Errorf("prepared sink checkpoint has no sink operator")
+	}
+	sink, ok := ts.Operators[len(ts.Operators)-1].(TransactionalSink)
+	if !ok {
+		return fmt.Errorf("prepared sink checkpoint requires a transactional sink")
+	}
+	if snapshot.SinkCommittedCheckpoint >= snapshot.CheckpointID {
+		return fmt.Errorf("prepared checkpoint has inconsistent committed boundary")
+	}
+	return commitTransaction(ctx, sink, snapshot.CheckpointID)
+}
+
+func (ts *TaskSlot) recoverSinkTransactions(ctx context.Context) error {
+	if ts.TransactionRecovery == nil || len(ts.Operators) == 0 {
+		return nil
+	}
+	operator := ts.Operators[len(ts.Operators)-1]
+	if _, ok := operator.(TransactionalSink); !ok {
+		return nil
+	}
+	if ts.CheckpointReplicator == nil {
+		return fmt.Errorf("distributed transactional sink requires checkpoint replication")
+	}
+	sink, ok := operator.(RecoverableTransactionalSink)
+	if !ok {
+		return fmt.Errorf("distributed transactional sink requires RecoverTransactions")
+	}
+	recovery := *ts.TransactionRecovery
+	if recovery.JobID == "" || recovery.TaskID != ts.TaskID || recovery.DeploymentGeneration == 0 || recovery.EpochID == 0 || recovery.AttemptID == "" {
+		return fmt.Errorf("transaction recovery requires fenced job/task identity")
+	}
+	if len(ts.RescaleState) > 0 || (ts.RestoredCheckpointID != 0 && ts.RestoreCheckpoint == nil) {
+		return fmt.Errorf("transactional rescale requires recoverable transaction handle mapping")
+	}
+	recovery.CompletedCheckpointID = 0
+	if ts.RestoreCheckpoint != nil {
+		if !ts.RestoreCheckpoint.SinkPrepared {
+			return fmt.Errorf("transactional restore requires a prepared sink checkpoint")
+		}
+		recovery.CompletedCheckpointID = ts.RestoreCheckpoint.CheckpointID
+	}
+	if err := invokeOperator(func() error { return sink.RecoverTransactions(ctx, recovery) }); err != nil {
+		return fmt.Errorf("transaction orphan recovery: %w", err)
+	}
 	return nil
 }

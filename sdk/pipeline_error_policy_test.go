@@ -172,6 +172,13 @@ func TestYAMLDLQSharedDestination(t *testing.T) {
 
 func TestYAMLDLQRejectsInvalidBindings(t *testing.T) {
 	for _, extra := range []string{
+		`  sinks:
+    - name: output
+      type: test-sink
+      input: input
+      error_handling:
+        on_exhausted: dlq
+`,
 		`  transforms:
     - name: transform
       type: json-parse
@@ -223,5 +230,24 @@ func TestYAMLDLQRejectsInvalidBindings(t *testing.T) {
 		if called {
 			t.Fatal("factory ran before binding validation")
 		}
+	}
+}
+
+func TestYAMLRejectsTransactionalDLQBeforeOpen(t *testing.T) {
+	sink := &sdkTransactionProbe{}
+	factories := pipelineFactories(nil, &collectSink{})
+	factories.Sinks["txn"] = func(map[string]any) (Sink, error) { return sink, nil }
+	_, err := ParsePipelineYAML([]byte(yamlPipelineHeader+`  sinks:
+    - name: output
+      type: test-sink
+      input: input
+      error_handling:
+        on_exhausted: dlq
+    - name: dead
+      type: txn
+      input: __dlq__
+`), factories)
+	if err == nil || sink.opened {
+		t.Fatalf("err=%v opened=%t", err, sink.opened)
 	}
 }

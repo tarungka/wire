@@ -48,14 +48,17 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		groups = keygroup.DefaultNumKeyGroups
 	}
 	tc := TaskContext{
-		NumKeyGroups: groups,
-		TaskID:       taskID,
-		JobID:        jobID,
-		OperatorID:   desc.OperatorID,
-		SubtaskIndex: desc.SubtaskIndex,
-		Parallelism:  desc.Parallelism,
-		KeyGroup:     desc.KeyGroup,
-		Log:          log,
+		DeploymentGeneration: desc.DeploymentGeneration,
+		EpochID:              desc.EpochID,
+		AttemptID:            desc.AttemptID,
+		NumKeyGroups:         groups,
+		TaskID:               taskID,
+		JobID:                jobID,
+		OperatorID:           desc.OperatorID,
+		SubtaskIndex:         desc.SubtaskIndex,
+		Parallelism:          desc.Parallelism,
+		KeyGroup:             desc.KeyGroup,
+		Log:                  log,
 	}
 
 	var sourceOp engine.SourceOperator
@@ -64,6 +67,9 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 
 	// Validate every policy before invoking user factories.
 	for _, od := range desc.OperatorChain {
+		if od.ErrorPolicy != nil && od.ErrorPolicy.OnExhausted == "dlq" && od.DLQSink == nil {
+			return fmt.Errorf("worker: DLQ destination required for %q", od.OperatorID)
+		}
 		if od.DLQSink != nil && (od.DLQSink.ClassName == "" || od.ErrorPolicy == nil || od.ErrorPolicy.OnExhausted != "dlq") {
 			return fmt.Errorf("worker: invalid DLQ configuration for %q", od.OperatorID)
 		}
@@ -105,7 +111,10 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			if !ok {
 				return fmt.Errorf("worker: DLQ factory returned %T", dlqOp)
 			}
-			destination := engine.OpenDLQDestination(ctx, sink, log.With().Str("operator", od.OperatorID).Logger())
+			destination, err := engine.OpenDLQDestination(ctx, sink, log.With().Str("operator", od.OperatorID).Logger())
+			if err != nil {
+				return err
+			}
 			defer destination.Close()
 			cfg.DLQWriter = destination.Write
 		}
@@ -134,6 +143,7 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 	}
 	slot := engine.NewTaskSlot(config, inputs, outputs, operators, sourceOp)
 	slot.TaskID = taskID
+	slot.TransactionRecovery = &engine.TransactionRecovery{DeploymentGeneration: desc.DeploymentGeneration, JobID: jobID, TaskID: taskID, EpochID: desc.EpochID, AttemptID: desc.AttemptID}
 	for _, upstream := range desc.Upstream {
 		slot.InputIdleTimeouts = append(slot.InputIdleTimeouts, upstream.IdleTimeout)
 	}
@@ -150,6 +160,7 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		slot.CheckpointDecisions = checkpoint.decisions
 		if sourceOp != nil && checkpoint.replicator != nil {
 			slot.CheckpointTriggers = checkpoint.triggers
+			slot.SourceExhausted = checkpoint.sourceExhausted
 		}
 	}
 	return slot.Run(ctx)

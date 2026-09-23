@@ -33,7 +33,7 @@ The worker must register that sink factory. Inline sinks are rejected in
 cluster mode; named sinks are rejected in embedded mode.
 
 DLQ sinks open before processing and close after execution. Open errors or panics
-disable delivery for that run; attempted deliveries log and count as drops.
+fail execution before processing begins.
 Cleanup is attempted even after a failed Open. Close errors and panics are logged
 without failing the main job. Connector factories still fail configuration when
 a requested destination cannot be constructed. Embedded parallel
@@ -43,7 +43,7 @@ synchronous and receive the execution context; sinks must honor cancellation.
 Each record contains `original_event` (base64 key/value/header bytes), `error`,
 `operator`, `timestamp`, and `retry_count`. No checkpoint transaction covers
 DLQ delivery. Sink write failures or panics log an error and drop the record;
-a missing DLQ also logs and drops. DLQ delivery is best effort: records can be
+a missing DLQ destination is rejected during YAML/SDK/worker validation. DLQ delivery is best effort: records can be
 lost when delivery fails and can be duplicated when a task replays input after
 recovery. The main stream's checkpoint guarantees do not extend to DLQ output.
 
@@ -52,6 +52,11 @@ fresh copy of the original key, value and headers, so a failed attempt cannot
 change a later retry or the DLQ envelope. This adds a payload copy per attempt
 when an error policy is active. Operator state and external writes are not
 rolled back; retryable operations must still tolerate repeated execution.
+Transactional main sinks require `on_exhausted: fail` and `max_retries: 0`:
+a Write may stage output before returning an error, so retry/drop/DLQ on that
+sink can duplicate or commit a failed record. Recover the whole transaction
+instead. Policies on upstream transformations remain supported. Transactional
+sinks cannot be used as DLQ destinations; the DLQ path has no commit protocol.
 Cancellation of the task bypasses Drop/DLQ handling and stops execution, including
 a blocked DLQ write when the sink honors its context. Sink adapters preserve the
 synchronous `Write` contract: a batch-capable sink can delegate Write to

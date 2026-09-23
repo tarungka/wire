@@ -42,6 +42,9 @@ func (ex *embeddedExecutor) run(ctx context.Context, jobName string) (*JobResult
 	// Topo-sort and check for shuffle boundaries.
 	sorted := graph.topoSort()
 	for _, node := range sorted {
+		if _, ok := node.Sink.(TransactionalSink); ok {
+			return nil, fmt.Errorf("sdk: transactional sink %q requires the cluster checkpoint runtime; embedded execution has no durable global checkpoint decisions", node.Name)
+		}
 		if node.NamedDLQ != nil {
 			return nil, fmt.Errorf("sdk: named DLQ sinks require cluster mode")
 		}
@@ -58,7 +61,10 @@ func (ex *embeddedExecutor) run(ctx context.Context, jobName string) (*JobResult
 				continue
 			}
 		}
-		destination := engine.OpenDLQDestination(ctx, node.DLQSink, log.With().Str("operator", node.Name).Logger())
+		destination, err := engine.OpenDLQDestination(ctx, node.DLQSink, log.With().Str("operator", node.Name).Logger())
+		if err != nil {
+			return nil, err
+		}
 		ex.dlq[node.ID] = destination
 		if sink, ok := node.DLQSink.(*sharedPipelineDLQSink); ok {
 			shared[sink] = destination
@@ -141,7 +147,7 @@ func (ex *embeddedExecutor) runLinearInstance(
 		case NodeFilter:
 			operators = append(operators, &filterAdapter{fn: node.FilterFn})
 		case NodeSink:
-			operators = append(operators, &sinkAdapter{sink: node.Sink})
+			operators = append(operators, adaptSink(node.Sink))
 		case NodeKeyBy, NodeWindow, NodeReduce, NodeProcess:
 			// These shouldn't appear in a linear pipeline.
 			return fmt.Errorf("sdk: unexpected node type %d in linear pipeline", node.Type)
@@ -366,7 +372,7 @@ func (ex *embeddedExecutor) runStageInstance(
 		case NodeFilter:
 			operators = append(operators, &filterAdapter{fn: node.FilterFn})
 		case NodeSink:
-			operators = append(operators, &sinkAdapter{sink: node.Sink})
+			operators = append(operators, adaptSink(node.Sink))
 		case NodeKeyBy:
 			// KeyBy is a shuffle boundary — no operator needed (routing handles it).
 		case NodeProcess:

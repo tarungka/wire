@@ -128,6 +128,10 @@ func (m *trackingErrorMetrics) IncErrorTotal(op string) {
 	m.errors[op]++
 	m.mu.Unlock()
 }
+func (m *trackingErrorMetrics) IncClassifiedErrorTotal(op string, _ ErrorClass) {
+	m.IncErrorTotal(op)
+}
+
 func (m *trackingErrorMetrics) IncRetryTotal(op string) {
 	m.mu.Lock()
 	m.retries[op]++

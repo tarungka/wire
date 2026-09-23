@@ -48,6 +48,12 @@ func TestMiniClusterErrorPolicyRouting(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			result, err := env.Execute(ctx)
+			if scenario == "missing-dlq" {
+				if err == nil || len(main.Events()) != 0 {
+					t.Fatal("missing DLQ must fail validation before processing")
+				}
+				return
+			}
 			if scenario == "fail" {
 				if err == nil || result == nil || result.Err == nil {
 					t.Fatal("default fail policy did not fail execution")
@@ -235,7 +241,14 @@ func TestMiniClusterDLQLifecycleFailures(t *testing.T) {
 				}).WithErrorHandler(ErrorHandler{OnExhausted: "dlq"}).WithDLQSink(dlq).AddSink(main)
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				if _, err := env.Execute(ctx); err != nil {
+				_, err := env.Execute(ctx)
+				if failOpen {
+					if err == nil || len(main.Events()) != 0 || dlq.opens != 1 || dlq.closes != 1 {
+						t.Fatalf("failed DLQ startup: err=%v main=%d opens=%d closes=%d", err, len(main.Events()), dlq.opens, dlq.closes)
+					}
+					return
+				}
+				if err != nil {
 					t.Fatal(err)
 				}
 				if len(main.Events()) != 1 || dlq.opens != 1 || dlq.closes != 1 {

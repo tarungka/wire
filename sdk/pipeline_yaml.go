@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/rpc"
 )
 
@@ -243,6 +244,9 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 		if err := op.ErrorHandling.compile(node); err != nil {
 			return nil, fmt.Errorf("%w: error handling for %q: %v", ErrInvalidConfig, op.Name, err)
 		}
+		if node.ErrorPolicy != nil && node.ErrorPolicy.OnExhausted == "dlq" && dlqName == "" {
+			return nil, fmt.Errorf("%w: DLQ destination required for %q", ErrInvalidConfig, op.Name)
+		}
 		nodes[op.Name] = node
 	}
 	var dlq Sink
@@ -251,6 +255,9 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 		destination, factoryErr := connectors.Sinks[op.Type](op.Config)
 		if factoryErr != nil || destination == nil {
 			return nil, fmt.Errorf("%w: DLQ connector %q: %v", ErrInvalidConfig, dlqName, factoryErr)
+		}
+		if _, ok := destination.(engine.TransactionalSink); ok {
+			return nil, fmt.Errorf("%w: transactional sinks cannot be used as DLQ destinations", ErrInvalidConfig)
 		}
 		dlq = &sharedPipelineDLQSink{sink: destination}
 	}

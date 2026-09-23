@@ -282,3 +282,19 @@ func buildChainLinks(operators []Operator, errorConfigs []ErrorHandlerConfig) []
 	}
 	return links
 }
+
+// ValidateTransactionalErrorPolicies rejects record-level recovery on a sink
+// that may have staged a write before returning an error. Replaying the whole
+// transaction is necessary; retrying or dropping one record is unsafe.
+func ValidateTransactionalErrorPolicies(operators []Operator, configs []ErrorHandlerConfig) error {
+	for i, op := range operators {
+		if _, ok := op.(TransactionalSink); !ok || i >= len(configs) {
+			continue
+		}
+		cfg := configs[i]
+		if cfg.MaxRetries != 0 || cfg.OnExhausted != FailJob {
+			return fmt.Errorf("transactional sink %q requires fail policy with no record retries", cfg.OperatorName)
+		}
+	}
+	return nil
+}

@@ -124,7 +124,7 @@ This alignment ensures the snapshot captures **exactly** the state of "All event
 *   **Internal State:** Always Exactly-Once (due to rollback).
 *   **Sink Output:**
     *   **Idempotent Sinks (KV Store):** Naturally Exactly-Once.
-    *   **Transactional Sinks:** Require "Two-Phase Commit" tied to the Checkpoint completion mechanism.
+    *   **Transactional Sinks:** Use checkpoint-driven two-phase commit. Preparation precedes snapshot capture and replication; a durable global decision authorizes idempotent commit. Recovery fences prior writers, resolves orphan transactions and finishes the selected commit before replay. Aborts require task recovery, and bounded sources coordinate a final checkpoint. See the [WIP-10 runtime contract](trds/WIP-10/runtime-contract.md) for the public SDK interface, connector obligations and runtime limits.
     *   **Standard Sinks:** At-Least-Once (may see duplicates after replay).
 
 

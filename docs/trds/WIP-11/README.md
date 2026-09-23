@@ -23,7 +23,7 @@
 
 ## Implementation Status — 2026-09-22
 
-WIP-11 is implemented on the completion branch based on master `b76fa56`, as a
+WIP-11 is implemented on the completion branch based on master `e190249`, as a
 [completion PR #225](https://github.com/tarungka/wire/pull/225), following
 [#194](https://github.com/tarungka/wire/pull/194). See the
 [acceptance record](acceptance.md) for requirement-by-requirement evidence and
@@ -32,7 +32,7 @@ WIP-11 is implemented on the completion branch based on master `b76fa56`, as a
 - Per-operator transient/poison/fatal policies support bounded fixed/exponential/no-delay retries, cancellation, panic recovery and fail/drop/DLQ outcomes in SDK and worker execution. Standard network/resource errors and explicit error markers are classified consistently.
 - Failed Map/FlatMap attempts cannot leak partial output. Retries and DLQ preserve original key/value/header bytes even when user code mutates an attempted input. Retry exhaustion retains the original error cause.
 - Strict YAML `error_handling` is validated before connector factories. The reserved `__dlq__` input selects one shared side-output destination without adding a normal data edge; ambiguous or recursive bindings are rejected.
-- DLQ is synchronous and best effort. Missing/full/failed destinations log and count drops; Open/Close failures and panics are isolated from the main job. DLQ writes receive the active chain context and never participate in checkpoint transactions.
+- DLQ is synchronous and best effort. Missing destinations are rejected during configuration; failed/full writes log and count drops. Open failures and panics fail startup; Close failures are logged. Transactional sinks are rejected as DLQ destinations, and main transactional sinks require fail-only policies without record retries. DLQ writes receive the active chain context and never participate in checkpoint transactions.
 - Error/retry/DLQ/drop counters use the configured OTel provider, with operator/error-class and distributed task attribution. Explicit no-op metrics remain supported.
 - All five named MiniCluster scenarios, all supported executable transformations, actual HTTP WriteBatch retries and cross-worker serialized policies are covered. The full repository race suite, build, vet and pinned CI lint pass. Core retry/classification/backoff/exhaustion functions have 100% statement coverage.
 
@@ -293,7 +293,7 @@ Retry state is ephemeral — held in memory during retry attempts. If the task c
 | 2 | DLQ sink itself fails | DLQ write failure logged. Original event dropped. DLQ is best-effort. | Lost DLQ record | Medium |
 | 3 | Retry delay > checkpoint interval | Retry still in progress when barrier arrives. Barrier waits for the current call and retry sequence. Backoff is bounded by retry count and max_delay; user calls and sink writes must honor cancellation. | Checkpoint delayed | Medium |
 | 4 | User function panics (not returns error) | Caught by `recover()`, wrapped as error, treated as poison message → DLQ | Event to DLQ | Medium |
-| 5 | Transient error becomes permanent | Reclassify immediately; poison errors use the configured exhausted action, fatal errors fail. A missing DLQ logs and drops. | Individual events lost | Medium |
+| 5 | Transient error becomes permanent | Reclassify immediately; poison errors use the configured exhausted action, fatal errors fail. A missing DLQ is rejected during configuration. | Individual events lost | Medium |
 
 ---
 

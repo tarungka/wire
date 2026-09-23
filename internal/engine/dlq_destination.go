@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/rs/zerolog"
 )
@@ -16,27 +17,25 @@ type DLQSink interface {
 
 // DLQDestination isolates lifecycle failures from the main operator chain.
 // Its owner opens it before processing and closes it after all writers finish.
-// A failed Open disables delivery for this run; each attempted delivery then
-// reaches the usual error handler's drop counter and log.
+// A failed Open fails startup, after closing any partially allocated resources.
 type DLQDestination struct {
-	sink    DLQSink
-	openErr error
-	log     zerolog.Logger
+	sink DLQSink
+	log  zerolog.Logger
 }
 
-func OpenDLQDestination(ctx context.Context, sink DLQSink, log zerolog.Logger) *DLQDestination {
-	destination := &DLQDestination{sink: sink, log: log}
-	destination.openErr = safeInvoke(func() error { return sink.Open(ctx) })
-	if destination.openErr != nil {
-		log.Error().Err(destination.openErr).Msg("DLQ sink failed to open; delivery disabled for this run")
+func OpenDLQDestination(ctx context.Context, sink DLQSink, log zerolog.Logger) (*DLQDestination, error) {
+	if _, ok := sink.(TransactionalSink); ok {
+		return nil, fmt.Errorf("transactional sinks cannot be used as DLQ destinations")
 	}
-	return destination
+	destination := &DLQDestination{sink: sink, log: log}
+	if err := safeInvoke(func() error { return sink.Open(ctx) }); err != nil {
+		destination.Close()
+		return nil, fmt.Errorf("DLQ sink open: %w", err)
+	}
+	return destination, nil
 }
 
 func (d *DLQDestination) Write(ctx context.Context, event DLQEvent) error {
-	if d.openErr != nil {
-		return d.openErr
-	}
 	data, err := MarshalDLQEvent(event)
 	if err != nil {
 		return err

@@ -43,7 +43,16 @@ func TestDLQLifecycleFailureIsolation(t *testing.T) {
 	for _, panics := range []bool{false, true} {
 		for _, openFailure := range []bool{false, true} {
 			sink := &failingLifecycleDLQ{openFailure: openFailure, closeFailure: true, panicFailure: panics}
-			destination := OpenDLQDestination(context.Background(), sink, testLogger())
+			destination, openErr := OpenDLQDestination(context.Background(), sink, testLogger())
+			if openFailure {
+				if openErr == nil || destination != nil || sink.opened != 1 || sink.closed != 1 || sink.writes != 0 {
+					t.Fatalf("failed startup: sink=%+v err=%v", sink, openErr)
+				}
+				continue
+			}
+			if openErr != nil {
+				t.Fatal(openErr)
+			}
 			metrics := newTrackingErrorMetrics()
 			cc := newTestChainContext(t, nil, metrics)
 			err := invokeWithRetry(cc, ChainLink{Config: ErrorHandlerConfig{OperatorName: "parse", OnExhausted: RouteToDLQ, DLQWriter: destination.Write}}, Event{}, func() error { return errors.New("bad record") })
@@ -54,11 +63,7 @@ func TestDLQLifecycleFailureIsolation(t *testing.T) {
 			if sink.opened != 1 || sink.closed != 1 {
 				t.Fatalf("wrong lifecycle: %+v", sink)
 			}
-			if openFailure {
-				if sink.writes != 0 || metrics.drops["parse"] != 1 || metrics.dlqs["parse"] != 0 {
-					t.Fatal("failed open counted as delivery")
-				}
-			} else if sink.writes != 1 || metrics.dlqs["parse"] != 1 || metrics.drops["parse"] != 0 {
+			if sink.writes != 1 || metrics.dlqs["parse"] != 1 || metrics.drops["parse"] != 0 {
 				t.Fatal("successful write not counted")
 			}
 		}

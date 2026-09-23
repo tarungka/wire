@@ -1,13 +1,16 @@
 package sdk
 
 import (
+	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/errorpolicy"
 	"github.com/tarungka/wire/internal/rpc"
 )
 
 // ErrorHandler configures retries for one operator. Delay fields use milliseconds.
-// OnExhausted accepts "fail" (default), "drop", or "dlq". A missing DLQ drops
-// exhausted records with an error log. Backoff accepts "none", "fixed", or
+// OnExhausted accepts "fail" (default), "drop", or "dlq". The "dlq" action
+// requires a destination before execution/submission. Transactional sinks require
+// "fail" with zero retries; record retries may stage duplicate writes.
+// Backoff accepts "none", "fixed", or
 // "exponential". Source read retries are not supported by this API.
 type ErrorHandler = rpc.ErrorPolicy
 
@@ -37,6 +40,9 @@ func (ds *DataStream) WithErrorHandler(policy ErrorHandler) *DataStream {
 func (ds *DataStream) WithDLQSink(sink Sink) *DataStream {
 	if sink == nil {
 		panic("sdk: nil DLQ sink")
+	}
+	if _, ok := sink.(engine.TransactionalSink); ok {
+		panic("sdk: transactional sinks cannot be used as DLQ destinations")
 	}
 	node := ds.env.graph.nodes[ds.nodeID]
 	if node.ErrorPolicy == nil || node.ErrorPolicy.OnExhausted != "dlq" {
