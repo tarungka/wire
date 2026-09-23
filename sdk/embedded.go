@@ -71,6 +71,11 @@ func (ex *embeddedExecutor) run(ctx context.Context, jobName string) (*JobResult
 		}
 		defer destination.Close()
 	}
+	for _, node := range sorted {
+		if node.Type == NodeWindow || node.Type == NodeReduce {
+			return ex.runWindowGraph(ctx, sorted, jobName, start, log)
+		}
+	}
 	hasShuffleBoundary := false
 	for _, edge := range graph.edges {
 		if edge.Shuffle == ShuffleHash || edge.Shuffle == ShuffleRebalance {
@@ -382,6 +387,9 @@ func (ex *embeddedExecutor) runStageInstance(
 			op, err := embeddedWindow(node)
 			if err != nil {
 				return err
+			}
+			if window, ok := op.(*engine.EventTimeWindowOperator); ok {
+				window.StateBackendFactory = func() (engine.StateBackend, func(), error) { return ex.env.stateBackend.open(node.ID, instanceIdx) }
 			}
 			if window, ok := op.(interface{ SetMetricIdentity(string, string) }); ok {
 				window.SetMetricIdentity(fmt.Sprintf("%s-%d", node.Name, node.ID), fmt.Sprintf("embedded/%d/%d", node.ID, instanceIdx))

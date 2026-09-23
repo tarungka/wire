@@ -269,19 +269,21 @@ type JobGraph struct {
 
 // OperatorDescriptor describes a single operator in the job graph.
 type OperatorDescriptor struct {
-	Watermark   *WatermarkConfig   `codec:"watermark,omitempty"`
-	DLQSink     *DLQSinkDescriptor `codec:"dlq,omitempty"`
-	ErrorPolicy *ErrorPolicy       `codec:"error_policy,omitempty"`
-	OperatorID  string             `codec:"oid"`
-	Name        string             `codec:"n"`
-	Type        OperatorType       `codec:"t"`
-	Parallelism int32              `codec:"p"`
-	ClassName   string             `codec:"cn,omitempty"`
-	Config      []byte             `codec:"cfg,omitempty"`
+	LateOutputTag string             `codec:"late_output,omitempty"`
+	Watermark     *WatermarkConfig   `codec:"watermark,omitempty"`
+	DLQSink       *DLQSinkDescriptor `codec:"dlq,omitempty"`
+	ErrorPolicy   *ErrorPolicy       `codec:"error_policy,omitempty"`
+	OperatorID    string             `codec:"oid"`
+	Name          string             `codec:"n"`
+	Type          OperatorType       `codec:"t"`
+	Parallelism   int32              `codec:"p"`
+	ClassName     string             `codec:"cn,omitempty"`
+	Config        []byte             `codec:"cfg,omitempty"`
 }
 
 // EdgeDescriptor describes a connection between two operators.
 type EdgeDescriptor struct {
+	SideOutput       string          `codec:"side_output,omitempty"`
 	SourceOperatorID string          `codec:"src"`
 	TargetOperatorID string          `codec:"tgt"`
 	Shuffle          ShuffleStrategy `codec:"sh"`
@@ -321,7 +323,15 @@ type RescaleRestoreDescriptor struct {
 	Parts        []RescaleStatePart `codec:"parts"`
 }
 
+// OutputGroupDescriptor routes one logical edge over its physical streams.
+type OutputGroupDescriptor struct {
+	SideOutput string `codec:"side_output,omitempty"`
+	Streams    []int  `codec:"streams"`
+	KeyGroups  int    `codec:"key_groups,omitempty"`
+}
+
 type TaskDescriptor struct {
+	OutputGroups             []OutputGroupDescriptor      `codec:"output_groups,omitempty"`
 	DeploymentGeneration     uint64                       `codec:"deployment_generation,omitempty"`
 	RestoreRescale           *RescaleRestoreDescriptor    `codec:"restore_rescale,omitempty"`
 	OutputKeyGroups          int                          `codec:"output_key_groups,omitempty"`

@@ -45,3 +45,29 @@ Acceptance must distinguish that existing limitation from window recovery proof.
   and affected-package lint pass.
 - Still required: named late streams and routing, Reduce/Apply, backend persistence
   and worker recovery acceptance, full requirement coverage and PR publication.
+
+### Runtime and routing increment
+
+- Reduce now uses an incremental checked accumulator; rejected reductions leave
+  state intact. Apply retains input records under a logical payload limit.
+  Window payloads default to a 64 MiB bound; window count remains bounded too.
+- Window state is cached in memory within those limits and atomically persisted
+  as per-key records plus watermark/config/stats metadata. Built-in Pebble and
+  hashmap backends support the atomic batches. Embedded windows use the selected
+  state backend; worker window factories can supply a backend factory, otherwise
+  Open creates private temporary Pebble state. Portable checkpoint bytes do not
+  depend on that local directory.
+- Actual Pebble reopen, exact purge deletion, portable restore/replay and atomic
+  backend-failure behavior pass for tumbling/sliding/session windows.
+- SDK OutputTag/GetSideOutput now preserve tagged graph edges. YAML late_output
+  names resolve to the producing window. Embedded window graphs retain branches
+  instead of flattening topological order. Worker task plans carry output groups;
+  data selects its group while barrier/watermark/end fences visit every stream.
+- All nine MiniCluster combinations of Aggregate/Reduce/Apply and three window
+  types pass initial result -> late update -> purge -> one original late record.
+  YAML execution and network grouped-fence tests pass. Full repository race
+  suite, build, vet and pinned lint passed for this increment.
+- Completion remains unproven: add named-window SDK deployment configuration,
+  real worker/coordinator late-output checkpoint/recovery acceptance, invalid
+  routing/configuration coverage, metric restore/purge integration and a full
+  requirements/coverage audit. Then update final docs and publish the PR.

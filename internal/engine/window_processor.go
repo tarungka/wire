@@ -25,6 +25,7 @@ type WindowConfig struct {
 	AllowedLateness  int64  // milliseconds after window end
 	AggregationID    string
 	MaxWindows       int
+	MaxStateBytes    int64 // Logical key/accumulator bytes; zero selects 64 MiB.
 }
 
 type WindowResult struct {
@@ -38,6 +39,7 @@ type WindowStats struct {
 	Late, Allowed, Dropped uint64
 	RetainedWindows        int
 	RetentionBytes         int64
+	StateBytes             int64
 }
 
 type retainedWindow struct {
@@ -58,6 +60,7 @@ type WindowProcessor struct {
 	watermark  int64
 	windows    map[string][]retainedWindow
 	stats      WindowStats
+	backend    BatchedStateBackend
 }
 
 func NewWindowProcessor(c WindowConfig, aggregator WindowAggregator) (*WindowProcessor, error) {
@@ -66,6 +69,12 @@ func NewWindowProcessor(c WindowConfig, aggregator WindowAggregator) (*WindowPro
 	}
 	if c.MaxWindows == 0 {
 		c.MaxWindows = 100000
+	}
+	if c.MaxStateBytes == 0 {
+		c.MaxStateBytes = 64 * 1024 * 1024
+	}
+	if c.MaxStateBytes < 0 {
+		return nil, fmt.Errorf("window: invalid state byte limit")
 	}
 	if c.MaxWindows < 1 {
 		return nil, fmt.Errorf("window: invalid state limit")
@@ -118,8 +127,12 @@ func cloneWindow(w retainedWindow) retainedWindow {
 	w.Accumulator = bytes.Clone(w.Accumulator)
 	return w
 }
-func (p *WindowProcessor) result(w retainedWindow, update bool) WindowResult {
-	return WindowResult{Key: bytes.Clone(w.Key), WindowStart: w.Start, WindowEnd: w.End, Value: bytes.Clone(p.aggregator.GetResult(bytes.Clone(w.Accumulator))), IsUpdate: update}
+func (p *WindowProcessor) result(w retainedWindow, update bool) (WindowResult, error) {
+	value, err := p.resultBytes(bytes.Clone(w.Accumulator))
+	if err != nil {
+		return WindowResult{}, err
+	}
+	return WindowResult{Key: bytes.Clone(w.Key), WindowStart: w.Start, WindowEnd: w.End, Value: bytes.Clone(value), IsUpdate: update}, nil
 }
 
 // Process returns updated results and whether all assigned windows were too
@@ -149,7 +162,10 @@ func (p *WindowProcessor) Process(event Event) (results []WindowResult, tooLate 
 				if w.Start <= merged.End && w.End >= merged.Start {
 					merged.Start = min(merged.Start, w.Start)
 					merged.End = max(merged.End, w.End)
-					merged.Accumulator = p.aggregator.Merge(merged.Accumulator, bytes.Clone(w.Accumulator))
+					merged.Accumulator, err = p.merge(merged.Accumulator, bytes.Clone(w.Accumulator))
+					if err != nil {
+						return nil, false, err
+					}
 					merged.Emitted = merged.Emitted || w.Emitted
 					changed = true
 				} else {
@@ -202,9 +218,16 @@ func (p *WindowProcessor) Process(event Event) (results []WindowResult, tooLate 
 		if window.Accumulator == nil {
 			window.Accumulator = p.aggregator.CreateAccumulator()
 		}
-		window.Accumulator = p.aggregator.Add(bytes.Clone(window.Accumulator), event)
+		window.Accumulator, err = p.add(bytes.Clone(window.Accumulator), event)
+		if err != nil {
+			return nil, false, err
+		}
 		if p.watermark >= window.End {
-			results = append(results, p.result(window, window.Emitted))
+			result, err := p.result(window, window.Emitted)
+			if err != nil {
+				return nil, false, err
+			}
+			results = append(results, result)
 			window.Fired = true
 			window.Emitted = true
 		}
@@ -219,63 +242,94 @@ func (p *WindowProcessor) Process(event Event) (results []WindowResult, tooLate 
 		next = existing
 	}
 	newCount := p.stats.RetainedWindows - len(existing) + len(next)
-	if newCount > p.config.MaxWindows {
+	newBytes := p.stats.StateBytes - windowPayloadBytes(existing) + windowPayloadBytes(next)
+	if newCount > p.config.MaxWindows || newBytes > p.config.MaxStateBytes {
 		return nil, false, ErrMemoryLimitExceeded
 	}
 	sort.Slice(next, func(i, j int) bool { return next[i].Start < next[j].Start })
-	if len(next) > 0 {
-		p.windows[key] = next
-	}
-	p.stats.RetainedWindows = newCount
+	stats := p.stats
+	stats.RetainedWindows = newCount
+	stats.StateBytes = newBytes
 	if event.EventTime < p.watermark {
-		p.stats.Late++
+		stats.Late++
 		if accepted > 0 {
-			p.stats.Allowed++
+			stats.Allowed++
 		}
 	}
 	tooLate = len(assigned) > 0 && accepted == 0
 	if tooLate {
-		p.stats.Dropped++
+		stats.Dropped++
 	}
+	if err = p.persist(p.watermark, stats, map[string][]retainedWindow{key: next}); err != nil {
+		return nil, false, err
+	}
+	if len(next) > 0 {
+		p.windows[key] = next
+	} else {
+		delete(p.windows, key)
+	}
+	p.stats = stats
 	return results, tooLate, nil
 }
 
-// AdvanceWatermark fires eligible windows and purges at end+allowedLateness.
-// A regressing watermark is ignored. Results are ordered by key then start.
+// AdvanceWatermark is the legacy convenience API. Runtime callers use
+// AdvanceWatermarkChecked to propagate user-function and state-backend errors.
 func (p *WindowProcessor) AdvanceWatermark(watermark int64) []WindowResult {
+	results, err := p.AdvanceWatermarkChecked(watermark)
+	if err != nil {
+		panic(err)
+	}
+	return results
+}
+
+// AdvanceWatermarkChecked fires eligible windows and purges at end+lateness.
+// All result computations succeed before any watermark/firing state changes.
+func (p *WindowProcessor) AdvanceWatermarkChecked(watermark int64) ([]WindowResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if watermark <= p.watermark {
-		return nil
+		return nil, nil
 	}
-	p.watermark = watermark
 	keys := make([]string, 0, len(p.windows))
 	for key := range p.windows {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	next := make(map[string][]retainedWindow, len(p.windows))
+	count := 0
+	stateBytes := int64(0)
 	var results []WindowResult
 	for _, key := range keys {
-		remaining := make([]retainedWindow, 0, len(p.windows[key]))
 		for _, w := range p.windows[key] {
 			if !w.Fired && watermark >= w.End {
-				results = append(results, p.result(w, w.Emitted))
-				w.Fired = true
-				w.Emitted = true
+				result, err := p.result(w, w.Emitted)
+				if err != nil {
+					return nil, err
+				}
+				results = append(results, result)
+				w.Fired, w.Emitted = true, true
 			}
 			if watermark < p.deadline(w.End) {
-				remaining = append(remaining, w)
-			} else {
-				p.stats.RetainedWindows--
+				next[key] = append(next[key], w)
+				count++
+				stateBytes += int64(len(w.Key) + len(w.Accumulator))
 			}
 		}
-		if len(remaining) == 0 {
-			delete(p.windows, key)
-		} else {
-			p.windows[key] = remaining
-		}
 	}
-	return results
+	stats := p.stats
+	stats.RetainedWindows = count
+	stats.StateBytes = stateBytes
+	updates := make(map[string][]retainedWindow, len(p.windows))
+	for key := range p.windows {
+		updates[key] = next[key]
+	}
+	if err := p.persist(watermark, stats, updates); err != nil {
+		return nil, err
+	}
+	p.windows = next
+	p.watermark = watermark
+	p.stats = stats
+	return results, nil
 }
 func (p *WindowProcessor) Stats() WindowStats {
 	p.mu.Lock()
@@ -298,4 +352,12 @@ func (p *WindowProcessor) counters() WindowStats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.stats
+}
+
+func windowPayloadBytes(windows []retainedWindow) int64 {
+	var total int64
+	for _, w := range windows {
+		total += int64(len(w.Key) + len(w.Accumulator))
+	}
+	return total
 }

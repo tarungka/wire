@@ -70,13 +70,15 @@ type StreamNode struct {
 
 	// Windowed stream config.
 	AllowedLateness int64 // millis
+	LateOutputTag   string
 }
 
 // StreamEdge connects two nodes in the graph.
 type StreamEdge struct {
-	SourceID int
-	TargetID int
-	Shuffle  ShuffleType
+	SideOutput string
+	SourceID   int
+	TargetID   int
+	Shuffle    ShuffleType
 }
 
 // StreamGraph is the internal DAG representation of a pipeline.

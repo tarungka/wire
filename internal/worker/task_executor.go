@@ -100,6 +100,13 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		if window, ok := op.(interface{ SetMetricIdentity(string, string) }); ok {
 			window.SetMetricIdentity(od.OperatorID, taskID)
 		}
+		if od.LateOutputTag != "" {
+			late, ok := op.(interface{ SetLateOutputTag(string) })
+			if !ok {
+				return fmt.Errorf("worker: operator %q cannot emit late output", od.OperatorID)
+			}
+			late.SetLateOutputTag(od.LateOutputTag)
+		}
 		operators = append(operators, op)
 		cfg, err := compileErrorPolicy(od.ErrorPolicy, od.OperatorID)
 		if err != nil {
@@ -149,6 +156,9 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 	slot.TransactionRecovery = &engine.TransactionRecovery{DeploymentGeneration: desc.DeploymentGeneration, JobID: jobID, TaskID: taskID, EpochID: desc.EpochID, AttemptID: desc.AttemptID}
 	for _, upstream := range desc.Upstream {
 		slot.InputIdleTimeouts = append(slot.InputIdleTimeouts, upstream.IdleTimeout)
+	}
+	for _, group := range desc.OutputGroups {
+		slot.OutputGroups = append(slot.OutputGroups, engine.OutputGroup{SideOutput: group.SideOutput, Streams: group.Streams, KeyGroups: group.KeyGroups})
 	}
 	slot.OutputKeyGroups = desc.OutputKeyGroups
 	slot.TaskIndex = int(desc.SubtaskIndex)

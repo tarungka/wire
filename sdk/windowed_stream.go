@@ -8,6 +8,7 @@ type WindowedStream struct {
 	nodeID          int
 	assigner        WindowAssigner
 	allowedLateness int64 // millis
+	lateOutputTag   string
 }
 
 // Aggregate applies an Aggregator to each window, returning a DataStream.
@@ -17,6 +18,7 @@ func (ws *WindowedStream) Aggregate(agg Aggregator) *DataStream {
 		Window:          ws.assigner,
 		Aggregator:      agg,
 		AllowedLateness: ws.allowedLateness,
+		LateOutputTag:   ws.lateOutputTag,
 	}
 	id := ws.env.graph.addNode(node)
 	ws.env.graph.addEdge(ws.nodeID, id, ShuffleForward)
@@ -30,6 +32,7 @@ func (ws *WindowedStream) Reduce(fn ReduceFunc) *DataStream {
 		ReduceFn:        fn,
 		Window:          ws.assigner,
 		AllowedLateness: ws.allowedLateness,
+		LateOutputTag:   ws.lateOutputTag,
 	}
 	id := ws.env.graph.addNode(node)
 	ws.env.graph.addEdge(ws.nodeID, id, ShuffleForward)
@@ -43,6 +46,7 @@ func (ws *WindowedStream) Apply(fn WindowFunc) *DataStream {
 		WindowFn:        fn,
 		Window:          ws.assigner,
 		AllowedLateness: ws.allowedLateness,
+		LateOutputTag:   ws.lateOutputTag,
 	}
 	id := ws.env.graph.addNode(node)
 	ws.env.graph.addEdge(ws.nodeID, id, ShuffleForward)

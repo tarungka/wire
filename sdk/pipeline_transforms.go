@@ -13,7 +13,7 @@ import (
 func compilePipelineTransform(node *StreamNode, op pipelineOperator, env *cel.Env) error {
 	allowed := map[string][]string{
 		"json-parse": {"target-field"}, "filter": {"expression"}, "map": {"expression"}, "flat-map": {"expression"}, "key-by": {"key-expression"},
-		"select": {"fields"}, "rename": {"mappings"}, "tumbling-window": {"size", "aggregation", "allowed_lateness"}, "sliding-window": {"size", "slide", "aggregation", "allowed_lateness"}, "session-window": {"gap", "aggregation", "allowed_lateness"},
+		"select": {"fields"}, "rename": {"mappings"}, "tumbling-window": {"size", "aggregation", "allowed_lateness", "late_output"}, "sliding-window": {"size", "slide", "aggregation", "allowed_lateness", "late_output"}, "session-window": {"gap", "aggregation", "allowed_lateness", "late_output"},
 	}
 	fields, ok := allowed[op.Type]
 	if !ok {
@@ -230,6 +230,13 @@ func compilePipelineTransform(node *StreamNode, op pipelineOperator, env *cel.En
 				return 0, fmt.Errorf("%s must be a positive whole-millisecond duration", name)
 			}
 			return value, nil
+		}
+		if raw, exists := op.Config["late_output"]; exists {
+			tag, ok := raw.(string)
+			if !ok || strings.TrimSpace(tag) == "" {
+				return fmt.Errorf("late_output requires a nonempty name")
+			}
+			node.LateOutputTag = tag
 		}
 		if raw, exists := op.Config["allowed_lateness"]; exists {
 			text, ok := raw.(string)

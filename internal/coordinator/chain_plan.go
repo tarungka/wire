@@ -45,7 +45,7 @@ func planPhysicalChains(graph rpc.JobGraph, defaultParallelism int) ([]physicalC
 		if edges := incoming[op.OperatorID]; len(edges) == 1 {
 			edge := edges[0]
 			parent, exists := membership[edge.SourceOperatorID]
-			if exists && edge.Shuffle == rpc.ShuffleStrategyForward && len(outgoing[edge.SourceOperatorID]) == 1 && chains[parent].Parallelism == p {
+			if exists && edge.SideOutput == "" && edge.Shuffle == rpc.ShuffleStrategyForward && len(outgoing[edge.SourceOperatorID]) == 1 && chains[parent].Parallelism == p {
 				chainIndex = parent
 			}
 		}

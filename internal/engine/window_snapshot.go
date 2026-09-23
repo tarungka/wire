@@ -54,6 +54,9 @@ func (p *WindowProcessor) Restore(data []byte) error {
 	if err := json.Unmarshal(body, &snapshot); err != nil {
 		return fmt.Errorf("%w: %v", ErrSnapshotCorrupt, err)
 	}
+	if snapshot.Config.MaxStateBytes == 0 {
+		snapshot.Config.MaxStateBytes = 64 * 1024 * 1024
+	}
 	if snapshot.Version != 1 || snapshot.Config != p.config || len(snapshot.Windows) > p.config.MaxWindows || snapshot.Stats.RetainedWindows != len(snapshot.Windows) {
 		return fmt.Errorf("%w: incompatible window snapshot", ErrSnapshotCorrupt)
 	}
@@ -94,6 +97,20 @@ func (p *WindowProcessor) Restore(data []byte) error {
 				}
 			}
 		}
+	}
+	snapshot.Stats.StateBytes = windowPayloadBytes(snapshot.Windows)
+	if snapshot.Stats.StateBytes > p.config.MaxStateBytes {
+		return fmt.Errorf("%w: state byte limit", ErrSnapshotCorrupt)
+	}
+	updates := make(map[string][]retainedWindow, len(windows)+len(p.windows))
+	for key := range p.windows {
+		updates[key] = nil
+	}
+	for key, value := range windows {
+		updates[key] = value
+	}
+	if err := p.persist(snapshot.Watermark, snapshot.Stats, updates); err != nil {
+		return err
 	}
 	p.windows = windows
 	p.watermark = snapshot.Watermark

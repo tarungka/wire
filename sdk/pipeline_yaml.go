@@ -63,6 +63,10 @@ type YAMLPipeline struct {
 
 func (p *YAMLPipeline) Graph() *StreamGraph { return p.env.graph }
 func (p *YAMLPipeline) Execute(ctx context.Context) (*JobResult, error) {
+	hasWindow := false
+	for _, node := range p.env.graph.nodes {
+		hasWindow = hasWindow || node.Type == NodeWindow || node.Type == NodeReduce
+	}
 	sources, sinks := 0, 0
 	outgoing := map[int]int{}
 	for _, edge := range p.env.graph.edges {
@@ -74,17 +78,19 @@ func (p *YAMLPipeline) Execute(ctx context.Context) (*JobResult, error) {
 			sources++
 		case NodeSink:
 			sinks++
-		case NodeKeyBy, NodeWindow, NodeReduce:
-			return nil, fmt.Errorf("%w: YAML execution of %q requires runtime integration", ErrInvalidConfig, node.Name)
+		case NodeKeyBy:
+			if !hasWindow {
+				return nil, fmt.Errorf("%w: YAML keyed execution requires a window", ErrInvalidConfig)
+			}
 		}
-		if outgoing[node.ID] > 1 {
+		if outgoing[node.ID] > 1 && !hasWindow {
 			return nil, fmt.Errorf("%w: YAML branching execution is not supported", ErrInvalidConfig)
 		}
 	}
 	if p.env.parallelism != 1 {
 		return nil, fmt.Errorf("%w: YAML parallel execution requires per-instance connector factories", ErrInvalidConfig)
 	}
-	if sources != 1 || sinks != 1 {
+	if sources != 1 || sinks < 1 || (!hasWindow && sinks != 1) {
 		return nil, fmt.Errorf("%w: YAML execution requires one source and sink", ErrInvalidConfig)
 	}
 	if p.env.checkpointInterval != 0 || p.env.restartStrategy.Type != RestartNone {
@@ -166,6 +172,33 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 			kinds[op.Name] = NodeMap
 		}
 	}
+	lateOutputs := map[string]string{}
+	for _, op := range definitions {
+		raw, exists := op.Config["late_output"]
+		if !exists {
+			continue
+		}
+		if op.Type != "tumbling-window" && op.Type != "sliding-window" && op.Type != "session-window" {
+			return nil, fmt.Errorf("%w: late_output requires a window", ErrInvalidConfig)
+		}
+		tag, ok := raw.(string)
+		if !ok || strings.TrimSpace(tag) == "" || tag == "__dlq__" {
+			return nil, fmt.Errorf("%w: invalid late output name", ErrInvalidConfig)
+		}
+		if _, exists := byName[tag]; exists {
+			return nil, fmt.Errorf("%w: late output collides with operator %q", ErrInvalidConfig, tag)
+		}
+		if _, exists := lateOutputs[tag]; exists {
+			return nil, fmt.Errorf("%w: duplicate late output %q", ErrInvalidConfig, tag)
+		}
+		lateOutputs[tag] = op.Name
+	}
+	inputName := func(input string) string {
+		if parent, ok := lateOutputs[input]; ok {
+			return parent
+		}
+		return input
+	}
 	var dlqName string
 	for _, op := range definitions {
 		if op.Input != "__dlq__" {
@@ -192,10 +225,10 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 		visited[name] = 1
 		op := byName[name]
 		if kinds[name] != NodeSource && name != dlqName {
-			if _, ok := byName[op.Input]; !ok || kinds[op.Input] == NodeSink {
+			if _, ok := byName[inputName(op.Input)]; !ok || kinds[inputName(op.Input)] == NodeSink {
 				return fmt.Errorf("%w: %q input %q is not a source or transform", ErrInvalidConfig, name, op.Input)
 			}
-			if err := visit(op.Input); err != nil {
+			if err := visit(inputName(op.Input)); err != nil {
 				return err
 			}
 		}
@@ -290,7 +323,11 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 			if node.Type == NodeKeyBy {
 				shuffle = ShuffleHash
 			}
-			env.graph.addEdge(nodes[op.Input].ID, node.ID, shuffle)
+			edge := StreamEdge{SourceID: nodes[inputName(op.Input)].ID, TargetID: node.ID, Shuffle: shuffle}
+			if _, ok := lateOutputs[op.Input]; ok {
+				edge.SideOutput = op.Input
+			}
+			env.graph.edges = append(env.graph.edges, edge)
 		}
 	}
 	if err = env.graph.validate(); err != nil {
