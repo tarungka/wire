@@ -56,7 +56,7 @@ func TestEmbeddedWatermarkClosesWindowAcrossShuffle(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := sink.Events()
-	if len(events) != 1 || events[0].EventTime != 10 || binary.BigEndian.Uint64(events[0].Value) != 2 {
+	if len(events) != 2 || events[0].EventTime != 10 || binary.BigEndian.Uint64(events[0].Value) != 2 || events[1].EventTime != 30 || binary.BigEndian.Uint64(events[1].Value) != 1 {
 		t.Fatalf("unexpected window results: %+v", events)
 	}
 }

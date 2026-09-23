@@ -24,6 +24,14 @@ func NewInputWatermarkTracker(numInputs int) *InputWatermarkTracker {
 	return newInputWatermarkTracker(numInputs, func() int64 { return time.Now().UnixNano() })
 }
 
+// NewInputWatermarkTrackerWithIdleTimeouts configures each input before routing
+// starts. Zero entries use the fallback passed to MinWatermark.
+func NewInputWatermarkTrackerWithIdleTimeouts(timeouts []time.Duration) *InputWatermarkTracker {
+	tracker := NewInputWatermarkTracker(len(timeouts))
+	tracker.idleTimeouts = append([]time.Duration(nil), timeouts...)
+	return tracker
+}
+
 func newInputWatermarkTracker(numInputs int, clock func() int64) *InputWatermarkTracker {
 	tracker := &InputWatermarkTracker{
 		watermarks:     make([]atomic.Int64, numInputs),

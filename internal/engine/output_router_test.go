@@ -191,3 +191,64 @@ func TestGroupedRouterSeparatesLateDataAndFencesBothOutputs(t *testing.T) {
 		}
 	}
 }
+
+func TestGroupedRouterBroadcastsRecordsBeforeFences(t *testing.T) {
+	first, firstRead := newTestStreamPair(t)
+	second, secondRead := newTestStreamPair(t)
+	defer first.Close()
+	defer firstRead.Close()
+	defer second.Close()
+	defer secondRead.Close()
+	messages := make(chan OutputMsg, 3)
+	messages <- OutputMsg{Type: OutputData, Event: Event{Value: []byte("record")}}
+	messages <- OutputMsg{Type: OutputBarrier, Barrier: &protocol.CheckpointBarrierMsg{CheckpointID: 7, EpochID: 1}}
+	messages <- OutputMsg{Type: OutputEnd, End: &protocol.EndOfPartitionMsg{}}
+	close(messages)
+	results := make(chan error, 2)
+	for _, reader := range []*transport.FrameStream{firstRead, secondRead} {
+		go func() {
+			for index := 0; index < 3; index++ {
+				message, err := reader.ReadMessage()
+				if err != nil {
+					results <- err
+					return
+				}
+				switch index {
+				case 0:
+					record, ok := message.(*protocol.DataRecordMsg)
+					if !ok || string(record.Value) != "record" {
+						results <- fmt.Errorf("missing broadcast record: %T", message)
+						return
+					}
+				case 1:
+					barrier, ok := message.(*protocol.CheckpointBarrierMsg)
+					if !ok || barrier.CheckpointID != 7 {
+						results <- fmt.Errorf("barrier overtook data: %T", message)
+						return
+					}
+				case 2:
+					if _, ok := message.(*protocol.EndOfPartitionMsg); !ok {
+						results <- fmt.Errorf("missing end: %T", message)
+						return
+					}
+				}
+			}
+			results <- nil
+		}()
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := runGroupedOutputRouter(ctx, []*transport.FrameStream{first, second}, messages, testLogger(), []OutputGroup{{Streams: []int{0, 1}, Broadcast: true}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}

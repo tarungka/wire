@@ -51,8 +51,12 @@ func TestToJobGraphBasic(t *testing.T) {
 
 	// Check edges.
 	for _, edge := range jg.Edges {
-		if edge.Shuffle != rpc.ShuffleStrategyForward {
-			t.Errorf("expected Forward shuffle, got %v", edge.Shuffle)
+		want := rpc.ShuffleStrategyForward
+		if edge.SourceOperatorID == "src" {
+			want = rpc.ShuffleStrategyRebalance
+		}
+		if edge.Shuffle != want {
+			t.Errorf("edge %s: expected %v, got %v", edge.SourceOperatorID, want, edge.Shuffle)
 		}
 	}
 }
@@ -133,6 +137,40 @@ func TestKeyByExplicitAndMixedInputParallelism(t *testing.T) {
 			if edge.Shuffle != want {
 				t.Fatalf("invalid pre-key routing: %+v", edge)
 			}
+		}
+	}
+}
+
+func TestNamedProcessPreservesSideOutputDeclarations(t *testing.T) {
+	env := New()
+	process := env.AddSourceNamed("source", "source", nil).KeyByNamed("keys", "selector", nil).ProcessNamed("process", "managed", []byte("config")).WithSideOutputs(NewOutputTag("audit"))
+	process.AddSinkNamed("main", "sink", nil)
+	process.GetSideOutput(NewOutputTag("audit")).AddSinkNamed("audit", "sink", nil)
+	if err := env.graph.validateForCluster(); err != nil {
+		t.Fatal(err)
+	}
+	graph := env.graph.toJobGraph(2)
+	found := false
+	for _, op := range graph.Operators {
+		if op.OperatorID == "process" {
+			found = true
+			if op.Type != rpc.OperatorTypeProcess || op.ClassName != "managed" || string(op.Config) != "config" || len(op.SideOutputTags) != 1 || op.SideOutputTags[0] != "audit" {
+				t.Fatalf("operator=%+v", op)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("Process disappeared from graph")
+	}
+}
+
+func TestExplicitOperatorParallelismRedistributesForwardEdges(t *testing.T) {
+	env := New().SetParallelism(4)
+	env.AddSourceNamed("source", "source", nil).SetParallelism(1).MapNamed("map", "map", nil).AddSinkNamed("sink", "sink", nil).SetParallelism(2)
+	graph := env.graph.toJobGraph(4)
+	for _, edge := range graph.Edges {
+		if edge.Shuffle != rpc.ShuffleStrategyRebalance {
+			t.Fatalf("unequal forward edge was not redistributed: %+v", edge)
 		}
 	}
 }

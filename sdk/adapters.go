@@ -62,7 +62,8 @@ func (a *filterAdapter) Map(_ context.Context, event Event) (Event, error) {
 
 // sourceAdapter wraps an sdk.Source to implement engine.SourceOperator.
 type sourceAdapter struct {
-	source Source
+	source    Source
+	timestamp TimestampExtractor
 }
 
 func (a *sourceAdapter) Open(ctx context.Context) error { return a.source.Open(ctx) }
@@ -74,7 +75,13 @@ func (a *sourceAdapter) Checkpoint(id uint64) ([]byte, error) {
 	return nil, nil
 }
 func (a *sourceAdapter) ReadBatch(ctx context.Context) ([]Event, error) {
-	return a.source.ReadBatch(ctx)
+	events, err := a.source.ReadBatch(ctx)
+	if err == nil && a.timestamp != nil {
+		for i := range events {
+			events[i].EventTime = a.timestamp(events[i])
+		}
+	}
+	return events, err
 }
 func (a *sourceAdapter) GenerateWatermark() int64 { return a.source.GenerateWatermark() }
 

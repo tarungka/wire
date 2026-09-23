@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"sync"
 	"testing"
@@ -18,20 +19,40 @@ func TestPartitionRouterForwardsMinimumAfterRecords(t *testing.T) {
 	first <- engine.OutputMsg{Type: engine.OutputData, Event: engine.Event{EventTime: 10, Value: []byte("record")}}
 	first <- engine.OutputMsg{Type: engine.OutputWatermark, Watermark: &protocol.WatermarkMsg{Timestamp: 100}}
 	second <- engine.OutputMsg{Type: engine.OutputWatermark, Watermark: &protocol.WatermarkMsg{Timestamp: 80}}
-	close(first)
-	close(second)
 	downstream := make(chan engine.Event, 4)
 	control := make(chan engine.ControlMsg, 1)
 	router := &partitionRouter{upstreams: []<-chan engine.OutputMsg{first, second}, downstreams: []chan<- engine.Event{downstream}, controlChs: []chan<- engine.ControlMsg{control}, routeFn: forwardRouter(0)}
-	if err := router.run(context.Background()); err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- router.run(ctx) }()
+	read := func() engine.Event {
+		select {
+		case event := <-downstream:
+			return event
+		case <-ctx.Done():
+			t.Fatal("no boundary")
+			return engine.Event{}
+		}
 	}
-	record, boundary := <-downstream, <-downstream
+	record, boundary := read(), read()
 	if string(record.Value) != "record" {
 		t.Fatal("watermark overtook record")
 	}
 	if !reflect.DeepEqual(boundary, engine.WatermarkEvent(80)) {
 		t.Fatalf("wrong minimum boundary: %+v", boundary)
+	}
+	close(first)
+	close(second)
+	var final engine.Event
+	for event := range downstream {
+		final = event
+	}
+	if !reflect.DeepEqual(final, engine.WatermarkEvent(math.MaxInt64)) {
+		t.Fatal("missing final watermark")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -221,7 +242,7 @@ func TestPartitionRouterAdvancingWatermarksDoNotBlockOtherPartitions(t *testing.
 				continue
 			}
 			found := false
-			for _, timestamp := range []int64{10, 20, 30} {
+			for _, timestamp := range []int64{10, 20, 30, 40, math.MaxInt64} {
 				if reflect.DeepEqual(event, engine.WatermarkEvent(timestamp)) {
 					if timestamp <= last {
 						t.Fatalf("partition %d regressed or duplicated watermark: %d after %d", partition, timestamp, last)
@@ -234,8 +255,34 @@ func TestPartitionRouterAdvancingWatermarksDoNotBlockOtherPartitions(t *testing.
 				t.Fatalf("unexpected boundary: %+v", event)
 			}
 		}
-		if last != 30 {
+		if last != math.MaxInt64 {
 			t.Fatalf("partition %d lost final coalesced watermark: %d", partition, last)
 		}
+	}
+}
+
+func TestPartitionRouterPreservesPerInputIdleTimeouts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	first, second := make(chan engine.OutputMsg), make(chan engine.OutputMsg, 1)
+	second <- engine.OutputMsg{Type: engine.OutputWatermark, Watermark: &protocol.WatermarkMsg{Timestamp: 100}}
+	downstream := make(chan engine.Event, 4)
+	router := &partitionRouter{upstreams: []<-chan engine.OutputMsg{first, second}, downstreams: []chan<- engine.Event{downstream}, routeFn: forwardRouter(0), inputIdleTimeouts: []time.Duration{time.Millisecond, time.Hour}, watermarkInterval: time.Millisecond}
+	done := make(chan error, 1)
+	go func() { done <- router.run(ctx) }()
+	select {
+	case event := <-downstream:
+		if !reflect.DeepEqual(event, engine.WatermarkEvent(100)) {
+			t.Fatal("unexpected watermark")
+		}
+	case <-ctx.Done():
+		t.Fatal("per-input timeout was lost")
+	}
+	close(first)
+	close(second)
+	for range downstream {
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

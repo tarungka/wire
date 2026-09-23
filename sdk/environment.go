@@ -153,6 +153,9 @@ func (env *StreamExecutionEnvironment) ExecuteWithName(ctx context.Context, jobN
 	}
 	switch env.mode {
 	case Embedded:
+		if err := env.graph.validateForEmbedded(); err != nil {
+			return nil, err
+		}
 		executor := &embeddedExecutor{env: env}
 		return executor.run(ctx, jobName)
 	case Cluster:

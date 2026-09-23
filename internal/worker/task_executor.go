@@ -67,6 +67,9 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 
 	// Validate every policy before invoking user factories.
 	for _, od := range desc.OperatorChain {
+		if err := od.ValidateSideOutputs(); err != nil {
+			return err
+		}
 		if od.Type == rpc.OperatorTypeWindow && od.ErrorPolicy != nil {
 			return fmt.Errorf("worker: window errors require task recovery, not record error policies")
 		}
@@ -97,6 +100,7 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 	}
 
 	for i, od := range desc.OperatorChain {
+		tc.OperatorID = od.OperatorID
 		op, err := te.reg.Build(ctx, od, tc)
 		if err != nil {
 			return fmt.Errorf("worker: task %q operator[%d] %q: %w", taskID, i, od.OperatorID, err)
@@ -133,6 +137,16 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 				return fmt.Errorf("worker: operator %q cannot emit late output", od.OperatorID)
 			}
 			late.SetLateOutputTag(od.LateOutputTag)
+		}
+		if identity, ok := op.(interface{ SetProcessIdentity(string, string, int) }); ok {
+			identity.SetProcessIdentity(jobID, od.OperatorID, int(desc.SubtaskIndex))
+		}
+		if len(od.SideOutputTags) > 0 {
+			target, ok := op.(interface{ SetSideOutputTags([]string) })
+			if !ok {
+				return fmt.Errorf("worker: Process %q cannot configure side outputs", od.OperatorID)
+			}
+			target.SetSideOutputTags(od.SideOutputTags)
 		}
 		operators = append(operators, op)
 		cfg, err := compileErrorPolicy(od.ErrorPolicy, od.OperatorID)
@@ -185,7 +199,7 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		slot.InputIdleTimeouts = append(slot.InputIdleTimeouts, upstream.IdleTimeout)
 	}
 	for _, group := range desc.OutputGroups {
-		slot.OutputGroups = append(slot.OutputGroups, engine.OutputGroup{SideOutput: group.SideOutput, Streams: group.Streams, KeyGroups: group.KeyGroups})
+		slot.OutputGroups = append(slot.OutputGroups, engine.OutputGroup{Broadcast: group.Broadcast, SideOutput: group.SideOutput, Streams: group.Streams, KeyGroups: group.KeyGroups})
 	}
 	slot.OutputKeyGroups = desc.OutputKeyGroups
 	slot.TaskIndex = int(desc.SubtaskIndex)

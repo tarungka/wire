@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,7 @@ type partitionRouter struct {
 	routeFn           func(event engine.Event, numDown int) int
 	inputRoutes       []func(engine.Event, int) int
 	keySelector       KeySelector
+	inputIdleTimeouts []time.Duration
 	idleTimeout       time.Duration
 	watermarkInterval time.Duration
 }
@@ -60,6 +62,12 @@ func (r *partitionRouter) run(ctx context.Context) error {
 	}()
 	g, gctx := errgroup.WithContext(ctx)
 	tracker := engine.NewInputWatermarkTracker(len(r.upstreams))
+	if len(r.inputIdleTimeouts) > 0 {
+		if len(r.inputIdleTimeouts) != len(r.upstreams) {
+			return fmt.Errorf("sdk: input idle timeout count mismatch")
+		}
+		tracker = engine.NewInputWatermarkTrackerWithIdleTimeouts(r.inputIdleTimeouts)
+	}
 	var watermarkMu sync.Mutex
 	downstreamMu := make([]sync.Mutex, len(r.downstreams))
 	lastWatermark := int64(math.MinInt64)
@@ -142,6 +150,10 @@ func (r *partitionRouter) run(ctx context.Context) error {
 					return gctx.Err()
 				case value, ok := <-upstream:
 					if !ok {
+						// No more records can precede this input's final boundary.
+						tracker.RecordActivity(inputIndex)
+						tracker.AdvanceWatermark(inputIndex, math.MaxInt64)
+						publishMinimum()
 						return nil
 					}
 					msg = value
@@ -166,14 +178,25 @@ func (r *partitionRouter) run(ctx context.Context) error {
 							route = r.inputRoutes[inputIndex]
 						}
 						target := route(msg.Event, len(r.downstreams))
-						downstreamMu[target].Lock()
-						defer downstreamMu[target].Unlock()
-						select {
-						case r.downstreams[target] <- msg.Event:
-							return nil
-						case <-gctx.Done():
-							return gctx.Err()
+						send := func(target int, event engine.Event) error {
+							downstreamMu[target].Lock()
+							defer downstreamMu[target].Unlock()
+							select {
+							case r.downstreams[target] <- event:
+								return nil
+							case <-gctx.Done():
+								return gctx.Err()
+							}
 						}
+						if target == -1 {
+							for destination := range r.downstreams {
+								if err := send(destination, cloneEvent(msg.Event)); err != nil {
+									return err
+								}
+							}
+							return nil
+						}
+						return send(target, msg.Event)
 					}(); err != nil {
 						return err
 					}

@@ -91,3 +91,33 @@ func TestPhysicalWindowLateOutputGroups(t *testing.T) {
 		t.Fatal("unknown side output accepted")
 	}
 }
+
+func TestPhysicalTasksBroadcastAndProcessOutputs(t *testing.T) {
+	graph := rpc.JobGraph{Operators: []rpc.OperatorDescriptor{
+		{OperatorID: "source", Type: rpc.OperatorTypeSource, Parallelism: 1},
+		{OperatorID: "process", Type: rpc.OperatorTypeProcess, Parallelism: 2, SideOutputTags: []string{"audit"}},
+		{OperatorID: "sink", Type: rpc.OperatorTypeSink, Parallelism: 2},
+	}, Edges: []rpc.EdgeDescriptor{
+		{SourceOperatorID: "source", TargetOperatorID: "process", Shuffle: rpc.ShuffleStrategyBroadcast},
+		{SourceOperatorID: "process", TargetOperatorID: "sink", Shuffle: rpc.ShuffleStrategyForward, SideOutput: "audit"},
+	}}
+	if err := validateGraphWindows(graph); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := buildPhysicalTasks("job", graph, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range tasks {
+		if task.OperatorID == "source" && (len(task.OutputGroups) != 1 || !task.OutputGroups[0].Broadcast || len(task.OutputGroups[0].Streams) != 2) {
+			t.Fatalf("broadcast=%+v", task)
+		}
+		if task.OperatorID == "process" && (len(task.OutputGroups) != 1 || task.OutputGroups[0].SideOutput != "audit") {
+			t.Fatalf("process=%+v", task)
+		}
+	}
+	graph.Operators[1].SideOutputTags = []string{"audit", "audit"}
+	if validateGraphWindows(graph) == nil {
+		t.Fatal("duplicate output tags accepted")
+	}
+}
