@@ -71,3 +71,28 @@ Acceptance must distinguish that existing limitation from window recovery proof.
   real worker/coordinator late-output checkpoint/recovery acceptance, invalid
   routing/configuration coverage, metric restore/purge integration and a full
   requirements/coverage audit. Then update final docs and publish the PR.
+
+### Deployment and recovery acceptance increment
+
+- Added SDK ApplyNamed for worker-registered window factories. Window dimensions
+  and allowed lateness travel separately from factory configuration; SDK msgpack
+  round-trip tests cover all three assigners and the named late edge. Worker
+  configuration preserves factory aggregation identity, limits and backend.
+- Coordinator submission and deployment reject malformed window definitions and
+  unresolved late edge tags. An already opened, processed or restored operator
+  cannot be reconfigured, even when its retained state is empty.
+- Real coordinator/two-worker checkpoint replication and recovery now cover all
+  three window types with separate main/late sinks. Each case checkpoints a fired
+  window, updates it, purges it, routes one original expired record, injects a
+  source failure, restores and replays. A second completed checkpoint verifies
+  both output branches participate. Ordinary sink replay is explicitly not an
+  exactly-once visibility claim. These tests passed with the race detector.
+- Runtime OTel collection covers zero and nonzero lateness for all three window
+  types, attributed counters, Pebble-backed retention, purge, close/unregister,
+  checkpoint restore and suppression of historical counter re-emission.
+- WindowProcessor and checked aggregator helpers now have 100% statement
+  coverage under the window unit suite, including callback failure atomicity,
+  timestamp extremes, saturated retention deadlines and 100 late updates.
+  This is the core late-detection/retention/purge target, not whole-package or
+  snapshot/storage coverage. Remaining work: final runtime/storage audit,
+  acceptance documentation, full final verification and completion PR.

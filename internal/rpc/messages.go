@@ -269,6 +269,7 @@ type JobGraph struct {
 
 // OperatorDescriptor describes a single operator in the job graph.
 type OperatorDescriptor struct {
+	Window        *WindowDefinition  `codec:"window,omitempty"`
 	LateOutputTag string             `codec:"late_output,omitempty"`
 	Watermark     *WatermarkConfig   `codec:"watermark,omitempty"`
 	DLQSink       *DLQSinkDescriptor `codec:"dlq,omitempty"`

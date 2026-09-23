@@ -67,6 +67,21 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 
 	// Validate every policy before invoking user factories.
 	for _, od := range desc.OperatorChain {
+		if od.Type == rpc.OperatorTypeWindow && od.ErrorPolicy != nil {
+			return fmt.Errorf("worker: window errors require task recovery, not record error policies")
+		}
+		if od.Window != nil {
+			if od.Type != rpc.OperatorTypeWindow {
+				return fmt.Errorf("worker: window configuration requires a window operator")
+			}
+			if err := od.Window.Validate(); err != nil {
+				return err
+			}
+		}
+		if od.LateOutputTag != "" && od.Type != rpc.OperatorTypeWindow {
+			return fmt.Errorf("worker: late output requires a window")
+		}
+
 		if od.ErrorPolicy != nil && od.ErrorPolicy.OnExhausted == "dlq" && od.DLQSink == nil {
 			return fmt.Errorf("worker: DLQ destination required for %q", od.OperatorID)
 		}
@@ -96,6 +111,18 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			}
 			sourceOp = so
 			continue
+		}
+		if od.Window != nil {
+			target, ok := op.(interface {
+				ConfigureWindow(string, int64, int64, int64, int64) error
+			})
+			if !ok {
+				return fmt.Errorf("worker: window %q cannot apply SDK configuration", od.OperatorID)
+			}
+			cfg := od.Window
+			if err := target.ConfigureWindow(cfg.Kind, cfg.Size, cfg.Slide, cfg.Gap, cfg.AllowedLateness); err != nil {
+				return err
+			}
 		}
 		if window, ok := op.(interface{ SetMetricIdentity(string, string) }); ok {
 			window.SetMetricIdentity(od.OperatorID, taskID)

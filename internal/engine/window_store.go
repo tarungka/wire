@@ -28,6 +28,14 @@ func (p *WindowProcessor) BindBackend(backend StateBackend) error {
 	}
 	data, err := store.Get(windowMetadataKey)
 	if errors.Is(err, ErrKeyNotFound) {
+		// Atomic publication means records cannot legitimately outlive their
+		// metadata. Never adopt a partially lost store as an empty window.
+		iterator := store.NewIterator(windowRecordsPrefix)
+		orphaned := iterator.Next()
+		iterator.Close()
+		if orphaned {
+			return fmt.Errorf("%w: window records without metadata", ErrSnapshotCorrupt)
+		}
 		p.backend = store
 		if err = p.persist(p.watermark, p.stats, p.windows); err != nil {
 			p.backend = nil

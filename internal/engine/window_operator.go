@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 
 	"github.com/tarungka/wire/internal/observability"
@@ -154,3 +155,19 @@ func (op *EventTimeWindowOperator) encode(ctx context.Context, results []WindowR
 
 // SetLateOutputTag selects a routed stream instead of the optional callback.
 func (op *EventTimeWindowOperator) SetLateOutputTag(tag string) { op.LateOutputTag = tag }
+
+// ConfigureWindow applies SDK dimensions before Open without changing the
+// factory's aggregation identity, state limits, encoder or backend choice.
+func (op *EventTimeWindowOperator) ConfigureWindow(kind string, size, slide, gap, lateness int64) error {
+	if op.backend != nil || op.processor.watermark != math.MinInt64 || op.processor.counters() != (WindowStats{}) {
+		return fmt.Errorf("window: configuration must precede Open/processing")
+	}
+	cfg := op.processor.config
+	cfg.Kind, cfg.Size, cfg.Slide, cfg.Gap, cfg.AllowedLateness = kind, size, slide, gap, lateness
+	processor, err := NewWindowProcessor(cfg, op.processor.aggregator)
+	if err != nil {
+		return err
+	}
+	op.processor = processor
+	return nil
+}

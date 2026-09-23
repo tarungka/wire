@@ -138,3 +138,18 @@ func TestWindowOperatorOpensConfiguredBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWindowBackendRejectsOrphanedRecords(t *testing.T) {
+	backend := NewHashMapStateBackend(0)
+	defer backend.Close()
+	if err := backend.Put(append(append([]byte(nil), windowRecordsPrefix...), []byte("k")...), []byte("orphaned")); err != nil {
+		t.Fatal(err)
+	}
+	p := newTestWindow(t, WindowConfig{Kind: "tumbling", Size: 10})
+	if err := p.BindBackend(backend); !errors.Is(err, ErrSnapshotCorrupt) {
+		t.Fatalf("accepted partially lost store: %v", err)
+	}
+	if _, err := backend.Get(windowMetadataKey); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("failed bind mutated store: %v", err)
+	}
+}

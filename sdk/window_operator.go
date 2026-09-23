@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tarungka/wire/internal/engine"
+	"github.com/tarungka/wire/internal/rpc"
 )
 
 func embeddedWindow(node *StreamNode) (engine.Operator, error) {
@@ -72,4 +73,20 @@ func embeddedWindow(node *StreamNode) (engine.Operator, error) {
 		}
 	}
 	return op, nil
+}
+
+func windowDefinition(node *StreamNode) (*rpc.WindowDefinition, error) {
+	if node.Window == nil {
+		return nil, fmt.Errorf("sdk: window assigner is required")
+	}
+	for _, duration := range []time.Duration{node.Window.Size(), node.Window.Slide(), node.Window.Gap()} {
+		if duration < 0 || duration%time.Millisecond != 0 {
+			return nil, fmt.Errorf("sdk: window dimensions require whole milliseconds")
+		}
+	}
+	definition := &rpc.WindowDefinition{Kind: node.Window.Type(), Size: node.Window.Size().Milliseconds(), Slide: node.Window.Slide().Milliseconds(), Gap: node.Window.Gap().Milliseconds(), AllowedLateness: node.AllowedLateness}
+	if err := definition.Validate(); err != nil {
+		return nil, err
+	}
+	return definition, nil
 }

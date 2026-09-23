@@ -77,3 +77,20 @@ func (ws *WindowedStream) AllowedLateness(value any) *WindowedStream {
 	ws.allowedLateness = millis
 	return ws
 }
+
+// ApplyNamed selects a worker.RegisterWindow factory in cluster mode. The
+// assigner and lateness are transmitted independently of the factory's config;
+// the returned window must implement ConfigureWindow (as EventTimeWindowOperator
+// does). Factory aggregation/encoder/backend choices are preserved.
+func (ws *WindowedStream) ApplyNamed(name, className string, config []byte) *DataStream {
+	if name == "" || className == "" {
+		panic("sdk: named window requires a name and factory class")
+	}
+	node := &StreamNode{Type: NodeWindow, Name: name, ClassName: className, Config: append([]byte(nil), config...), Window: ws.assigner, AllowedLateness: ws.allowedLateness, LateOutputTag: ws.lateOutputTag}
+	if _, err := windowDefinition(node); err != nil {
+		panic(err)
+	}
+	id := ws.env.graph.addNode(node)
+	ws.env.graph.addEdge(ws.nodeID, id, ShuffleForward)
+	return &DataStream{env: ws.env, nodeID: id}
+}

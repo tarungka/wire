@@ -11,6 +11,9 @@ func validateGraphKeyGroups(graph rpc.JobGraph, parallelism int) (int, error) {
 	if err := validateGraphWatermarks(graph); err != nil {
 		return 0, err
 	}
+	if err := validateGraphWindows(graph); err != nil {
+		return 0, err
+	}
 	count := graph.NumKeyGroups
 	if count == 0 {
 		count = keygroup.DefaultNumKeyGroups

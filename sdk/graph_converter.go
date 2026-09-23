@@ -32,9 +32,14 @@ func (g *StreamGraph) toJobGraph(defaultParallelism int) rpc.JobGraph {
 				}
 			}
 		}
+		var window *rpc.WindowDefinition
+		if node.Window != nil {
+			window, _ = windowDefinition(node)
+		}
 		parallelism[node.ID] = p
 		ops = append(ops, rpc.OperatorDescriptor{
 			OperatorID:    idStr(node.ID),
+			Window:        window,
 			LateOutputTag: node.LateOutputTag,
 			Watermark:     node.Watermark,
 			ErrorPolicy:   node.ErrorPolicy,
