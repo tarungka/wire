@@ -15,7 +15,7 @@ The existing PR is #197. Other merged TRDs will use linked follow-up PRs.
 | Brute-force protection (§6) | Bounded global authentication admission added (20 burst, 10 checks/second). Document operational behavior and test concurrent admission. |
 | Authentication logs (§7.3) | Successful identity and failed source/Basic username logging added. Add capture tests proving passwords and API keys never appear. |
 | Connector secret substitution (§3.7) | Implemented for structured JSON connector settings: submission-time snapshots, missing-variable rejection, reference-only metadata, recovery reconstruction and mTLS/capability-gated worker delivery. Live worker acceptance passes; complete recovery acceptance remains. |
-| Credential redaction (§3.7) | Pending: verify job API, persistence, recovery, errors, and logs cannot expose resolved secrets. |
+| Credential redaction (§3.7) | Implemented runtime diagnostic filters and reference-only persistence; authenticated HTTPS tests verify submission/list/detail/task projections omit configs and credentials. Complete recovery and broader diagnostic acceptance remain. |
 | Certificate/auth revocation (§4.2, §8.1) | Pending: restart/revocation integration tests and operational instructions. Rotation automation is explicitly out of scope. |
 | Encryption at rest strategy (§1.3) | Documented in [storage security](../../storage-security.md): all runtime storage surfaces, temporary files, backups, key rotation and operator acceptance checks. Actual encrypted-volume deployment remains an operator verification requirement. |
 | Flag/config documentation (§1.4) | Pending: cross-reference every existing security flag and supply tested example files and certificate commands. |
@@ -332,3 +332,24 @@ without eligible capacity, and trusted connector/logging responsibilities.
 Remaining security work includes the complete HTTP endpoint/credential/certificate
 acceptance matrix, API credential-field redaction, authentication coverage and
 end-to-end recovery/revocation verification. This is not full WIP-17 completion.
+
+### HTTPS inspection projection and authentication validation
+
+The job API already projects status/task metadata without exposing connector
+configuration. A new authenticated HTTPS test exercises submission, listing and
+inspection with nested literal credentials and an environment reference. It
+checks response text, encoded config/graph forms and configuration field names,
+while confirming non-sensitive task details remain present and stored graph
+bytes remain unchanged. No new config-bearing API surface was added.
+
+Authentication regression tests now cover duplicate/empty/oversized identities,
+duplicate and malformed API keys, conflicting credentials, excess users,
+unreadable/oversized/malformed files and unchanged handlers after failed policy
+installation. Audit tests verify raw peer attribution and rejection of spoofed
+X-Forwarded-For attribution.
+
+The race-enabled authentication test run reports 100% statement coverage for
+ConfigureAuth, allow, user, apiRoleAllowed and authenticate, and 97.2% for
+readAPIAuth. Its remaining uncovered statement is the dummy bcrypt generation
+error return. The explicit 100% target is therefore still open; these numbers
+also do not replace the full real-route authorization acceptance matrix.
