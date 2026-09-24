@@ -55,10 +55,14 @@ func (env *StreamExecutionEnvironment) runLocal(ctx context.Context, name string
 	var taskErrors []error
 	var workers []*worker.Worker
 	var transport *coordinator.TransportServer
+	var api *coordinator.HTTPServer
 	defer func() {
 		cancel()
 		for _, w := range workers {
 			_ = w.Shutdown(context.Background())
+		}
+		if api != nil {
+			_ = api.Shutdown(context.Background())
 		}
 		if transport != nil {
 			_ = transport.Shutdown(context.Background())
@@ -96,6 +100,9 @@ func (env *StreamExecutionEnvironment) runLocal(ctx context.Context, name string
 	}
 	slots = max(1, slots)
 	workerCount := max(2, (total+slots-1)/slots)
+	if env.miniCluster != nil {
+		workerCount = max(workerCount, env.miniCluster.config.NumWorkers)
+	}
 	for i := 0; i < workerCount; i++ {
 		dir := filepath.Join(root, fmt.Sprint(i))
 		for _, subdir := range []string{dir, filepath.Join(dir, "replica"), filepath.Join(dir, "staging")} {
@@ -132,6 +139,15 @@ func (env *StreamExecutionEnvironment) runLocal(ctx context.Context, name string
 	job, err := coord.SubmitJob(name, env.parallelism, data)
 	if err != nil {
 		return nil, err
+	}
+	if env.miniCluster != nil {
+		api = coordinator.NewHTTPServer(coord, "127.0.0.1:0", log)
+		if err := api.Listen(); err != nil {
+			return nil, err
+		}
+		launch(func() error { return api.Serve() })
+		unpublish := env.miniCluster.publishJob(MiniClusterJob{JobID: job.ID, CoordinatorURL: "http://" + api.Addr()})
+		defer unpublish()
 	}
 	result := &JobResult{JobID: job.ID}
 	err = wait(func() bool {

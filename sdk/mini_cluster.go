@@ -3,11 +3,15 @@ package sdk
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 )
 
 // MiniClusterConfig configures a MiniCluster for integration testing.
 type MiniClusterConfig struct {
+	// NumWorkers is a minimum worker count, allowing spare capacity for rescale
+	// tests. Zero provisions only the workers needed by the initial graph.
+	NumWorkers int
 	// NumTaskSlots sets each local worker's capacity and the environment's
 	// default parallelism. Workers are provisioned to fit the submitted graph,
 	// with at least two workers for independent checkpoint replicas.
@@ -21,6 +25,7 @@ type MiniCluster struct {
 	mu     sync.Mutex
 	closed bool
 	active map[*StreamExecutionEnvironment]context.CancelFunc
+	jobs   map[string]MiniClusterJob
 	joined sync.WaitGroup
 }
 
@@ -29,7 +34,7 @@ func NewMiniCluster(config MiniClusterConfig) *MiniCluster {
 	if config.NumTaskSlots <= 0 {
 		config.NumTaskSlots = 1
 	}
-	return &MiniCluster{config: config, active: make(map[*StreamExecutionEnvironment]context.CancelFunc)}
+	return &MiniCluster{config: config, active: make(map[*StreamExecutionEnvironment]context.CancelFunc), jobs: make(map[string]MiniClusterJob)}
 }
 
 // GetExecutionEnvironment returns a pre-configured StreamExecutionEnvironment
@@ -69,4 +74,31 @@ func (mc *MiniCluster) run(ctx context.Context, env *StreamExecutionEnvironment,
 	mc.mu.Unlock()
 	defer func() { cancel(); mc.mu.Lock(); delete(mc.active, env); mc.mu.Unlock(); mc.joined.Done() }()
 	return env.runLocal(ctx, name, mc.config.NumTaskSlots)
+}
+
+// MiniClusterJob identifies a running execution and its loopback HTTP control
+// API. The API is unauthenticated and exists only for the Execute invocation.
+type MiniClusterJob struct {
+	JobID          string
+	CoordinatorURL string
+}
+
+// Jobs returns a detached, ordered snapshot of active executions. A job may
+// finish after this call, so control requests must handle a closed endpoint.
+func (mc *MiniCluster) Jobs() []MiniClusterJob {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	jobs := make([]MiniClusterJob, 0, len(mc.jobs))
+	for _, job := range mc.jobs {
+		jobs = append(jobs, job)
+	}
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].JobID < jobs[j].JobID })
+	return jobs
+}
+
+func (mc *MiniCluster) publishJob(job MiniClusterJob) func() {
+	mc.mu.Lock()
+	mc.jobs[job.JobID] = job
+	mc.mu.Unlock()
+	return func() { mc.mu.Lock(); delete(mc.jobs, job.JobID); mc.mu.Unlock() }
 }

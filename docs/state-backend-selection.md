@@ -107,3 +107,17 @@ windows already purged by another partition. The progress is durable across
 later checkpoints. Older window readers reject version 2, so the worker upgrade
 requirement also applies to these snapshots. Ordinary legacy version-1 window
 snapshots remain readable; this version is separate from the backend blob format.
+
+## Controlling a MiniCluster test
+
+`MiniClusterConfig.NumWorkers` optionally reserves a minimum number of workers
+for scale-up tests. Each worker has `NumTaskSlots` slots; automatic provisioning
+still adds workers when the initial graph needs more. `cluster.Jobs()` returns
+active job IDs and `CoordinatorURL` values while `Execute` runs. Tests can use
+the normal savepoint, checkpoint, rescale and cancellation HTTP endpoints at
+that URL. A job may finish after listing, so handle endpoint closure normally.
+
+The control listener binds an ephemeral loopback port and has no authentication.
+It exists only for that MiniCluster execution and is closed during teardown;
+this is local test infrastructure, not a production control-plane configuration.
+See `TestMiniClusterManagedProcessRescale` for the complete runnable example.

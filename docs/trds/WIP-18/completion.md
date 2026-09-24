@@ -17,7 +17,7 @@ are not evidence that every requirement is implemented.
 | Memory limits and safeguards | Existing logical payload accounting and errors need full boundary/overflow/restore audit. Worker aggregate admission against available memory remains open. Runtime overhead and snapshot/iterator copies must be documented accurately. |
 | Checkpoint format and metadata | HashMap writes `WHSB`, version 1, length-prefixed entries and CRC32, and reads legacy unframed version-1 snapshots. Fixed byte fixtures verify upgrade compatibility and malformed-header rejection. Backend-tagged handles exist; backend mismatch, native Pebble semantics and durable manifest evidence remain in the final audit. |
 | Replication, restore and retention | Current worker archive transport and retention code exist from earlier WIPs. Prove both backends through actual completed-checkpoint recovery and cleanup; helper round trips alone are insufficient. |
-| Rescaling | Both backends pass real coordinator/two-worker savepoint rescale tests for 4→8, 8→4 and 4→3, including replicated fetch, assigned-key validation, replacement checkpoint and old-savepoint release. Backend restore rejects gaps, overlaps, mixed checkpoints, corruption and cancellation atomically. SDK managed Process now implements typed key-group restore, with shared HashMap/Pebble state/TTL/timer tests at the same sizes. Managed window redistribution now has operator-level parity tests for both backends, all three window kinds and all required sizes. MiniCluster end-to-end managed Process/window rescale acceptance remains. |
+| Rescaling | Both backends pass real coordinator/two-worker savepoint rescale tests for 4→8, 8→4 and 4→3, including replicated fetch, assigned-key validation, replacement checkpoint and old-savepoint release. Backend restore rejects gaps, overlaps, mixed checkpoints, corruption and cancellation atomically. SDK managed Process now implements typed key-group restore, with shared HashMap/Pebble state/TTL/timer tests at the same sizes. Managed window redistribution now has operator-level parity tests for both backends, all three window kinds and all required sizes. MiniCluster managed Process rescale now passes for both backends at all three sizes, including restored state, a replacement savepoint and deletion of the old savepoint. MiniCluster window rescale and actual worker-loss recovery remain. |
 | Contract/negative tests | Shared `TestStateBackendAcceptance` verifies every entry of a 10,000-entry restore, empty restore, 10 MiB value, binary key groups 0x0000–0x007F with ordered 0x0020 prefix selection, and checkpoint consistency during concurrent atomic updates/Get. Three runs pass under `-race` for both backends. Existing corruption, cross-backend rejection and memory-limit cases still need final requirement mapping. |
 | Comparative benchmarks | Implemented reproducible Put/Get/full-iterator and 1/64/256 MiB checkpoint benchmarks for both backends. [Local measurements and raw output](benchmarks.md) distinguish volatile writes from synchronized writes and serialization from native checkpoint hashing; proposal estimates are not guarantees. |
 | Documentation and upgrade behavior | Record current formats, defaults, resource boundaries and incompatibilities, link runtime guidance, then audit all original sections before marking Implemented. |
@@ -196,3 +196,28 @@ full MiniCluster rescale and worker-loss recovery acceptance are still separate.
 
 With window redistribution enabled, the full engine, worker and SDK suites
 pass under `-race`; engine lint reports zero issues.
+
+## MiniCluster managed Process acceptance
+
+MiniCluster exposes a detached list of active `MiniClusterJob` entries through
+`Jobs()`. Each entry identifies the job and its loopback HTTP coordinator API.
+Endpoints are removed on execution teardown. `NumWorkers` sets a minimum worker
+count so tests can reserve capacity for a later scale-up; zero retains automatic
+initial sizing. These APIs are for local integration testing, not deployment.
+
+`TestMiniClusterManagedProcessRescale` starts an SDK graph on real MiniCluster
+workers and replicas, waits for 32 distinct keys to reach the sink, takes a
+savepoint through HTTP, rescales Process and sink, and sends the same keys again.
+Each key must produce exactly count 1 then count 2. It then completes a replacement
+savepoint and deletes the old one. Both backends pass 4→8, 8→4 and 4→3 under
+`-race`. Sources stay at one instance and supply explicit test data between
+boundaries; this proves state redistribution, not external source replay.
+
+A post-control-API lifecycle sample (three iterations, Apple M4, alongside the
+SDK race suite) measured HashMap startup at 46.1 ms and Pebble at 103.3 ms.
+HashMap still met the local <100 ms target in that sample. Concurrent test load
+makes this unsuitable for comparison with the earlier standalone measurements;
+these observations remain workload/host-specific, not an SLA.
+
+The complete SDK suite passes with `-race`, including endpoint cleanup checks;
+SDK lint reports zero issues.
