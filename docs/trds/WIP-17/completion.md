@@ -61,3 +61,16 @@ and standby redirects retain HTTPS. Invalid auth configuration installs no parti
 policy, and configuration changes after Listen are rejected. This resolves the
 HA startup gap identified during stack integration; the other requirements above
 remain open.
+
+## Authenticated management CLI
+
+The management CLI now accepts private CA roots, optional HTTPS client
+certificate/key, Bearer key files, and Basic username/password files. Its shared
+internal API client requires HTTPS when credentials/TLS options are supplied,
+uses TLS 1.3 and hostname verification, binds requests to one origin, and refuses
+redirect following. It never retries mutations. Credential reads are bounded and
+errors do not include credential contents. Tests exercise trusted HTTPS with both
+authentication methods, CLI flag propagation, unchanged caller headers, foreign
+origin/Host rejection, redirect isolation, plaintext refusal and invalid files.
+SDK submission and worker discovery still need this client configuration wired
+through; this increment does not claim those paths are secured.

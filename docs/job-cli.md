@@ -224,3 +224,37 @@ the DELETE response does not mean physical space has already been reclaimed.
 Workers collect imported Pebble artifacts only after scanning retained checkpoint
 references while excluding concurrent publication. Corrupt retained metadata
 blocks collection and leaves cleanup pending for retry.
+
+## Authenticated HTTPS coordinators
+
+Management commands support these client options independently of node/server
+TLS flags:
+
+| Flag | Purpose |
+| --- | --- |
+| `--ca-cert` | PEM CA bundle used to verify the coordinator's HTTPS certificate |
+| `--client-cert`, `--client-key` | Optional HTTPS client certificate and key; supply both |
+| `--api-key-file` | One-line Bearer API key file |
+| `--username`, `--password-file` | Basic username and one-line password file; supply both |
+
+Choose Bearer or Basic authentication, not both. Protect credential files with
+appropriate filesystem permissions. A trailing text-file newline is removed;
+password spaces are preserved. Credentials are not accepted directly as flag
+values. Files must contain one nonempty line and be at most 16 KiB.
+
+```sh
+wire jobs list --coordinator https://coordinator.example:4001 \
+  --ca-cert /etc/wire/ca.crt --api-key-file /run/secrets/wire-api-key
+
+wire jobs get JOB_ID --coordinator https://coordinator.example:4001 \
+  --ca-cert /etc/wire/ca.crt --username reader \
+  --password-file /run/secrets/wire-password
+```
+
+Supplying credentials or TLS options requires an `https://` URL. System trust
+roots are used when `--ca-cert` is absent. Certificate hostname verification stays
+enabled and TLS 1.3 is required. The CLI never follows redirects or retries a
+mutation: use the reported leader address explicitly in a new invocation.
+Credentials are bound to the configured coordinator origin and are not forwarded
+to another host or downgraded to HTTP. These client options do not enable server
+authentication; configure `auth.file` on every coordinator separately.
