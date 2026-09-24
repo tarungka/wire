@@ -163,5 +163,8 @@ sequence. WatchLiveUpdates can opt in via AllowReplacement and advances its
 private baseline only on success; errors preserve the savepoint ID through
 OnReload. Savepoints remain retained. Changed-topology migration, concurrent
 external-edit reconciliation, CLI watch and replacement-specific lost-response
-or process-crash acceptance remain unfinished. The file-watcher opt-in itself
-still needs a full YAML file-to-worker migration acceptance test.
+or process-crash acceptance remain unfinished. TestYAMLFileReplacementThroughWorkers now covers the file-watcher opt-in with
+real workers and a fenced transactional sink. An invalid edit leaves status,
+deployment generation and source lifetime unchanged. A subsequent atomic CEL
+edit creates a savepoint, restores source offset 1, joins the old source and
+commits exactly v1:first followed by v2:second. Cancellation joins the watcher.
