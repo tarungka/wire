@@ -19,6 +19,21 @@ Central index for all Wire project documentation.
 | [usage.md](usage.md) | Getting started — building, running, HTTP API reference, and SDK quick start | Canon v1.0.0 |
 | [glossary.md](glossary.md) | Glossary of Wire-specific terms and definitions | Reference |
 
+## User-facing references
+
+- [Configuration reference](configuration-reference.md) and [validation](configuration-validation.md)
+- [Job-management CLI](job-cli.md) and [rescale safety](rescale-safety.md)
+- [HTTP API connector](../sdk/connectors/httpapi/README.md)
+- [YAML pipelines and execution limits](../sdk/pipeline_yaml.md)
+- [Error policies and DLQ](sdk/error_handling.md)
+- [Observability](observability.md)
+- [Documentation maintenance and remaining gaps](docs-todo.md)
+
+The Canon pages describe the current runtime at a high level. Feature-specific
+runtime contracts document detailed guarantees and limits. WIP proposal text,
+dated implementation snapshots, drafts, and archived documents may describe an
+earlier codebase or future scope.
+
 ## Conventions
 
 - **Status labels:** `Canon` = authoritative and stable, `Draft` = work-in-progress

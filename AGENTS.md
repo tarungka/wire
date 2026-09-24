@@ -17,6 +17,7 @@ cmd/                     Single binary entry point (runs as coordinator or worke
   signals.go             Signal handling
 
 internal/
+  checkpointpolicy/      Shared checkpoint failure-budget validation
   cmd/                   Build metadata (version/commit/branch)
   config/                Config loading, validation, flag merging
   coordinator/           Control plane: job manager, scheduler, checkpoint
@@ -25,6 +26,9 @@ internal/
   engine/                Stream processing engine: operators, barriers,
                          checkpoint coordination, state backends, DLQ,
                          watermarks, windowing
+  errorpolicy/           Shared operator error-policy validation
+  jobcli/                Jobs, savepoints and cluster CLI commands
+  observability/         OpenTelemetry metrics and Prometheus endpoint
   keygroup/              Key-group assignment (state sharding primitive)
   logger/                zerolog wrappers
   protocol/              Wire protocol framing and message types (msgpack)
@@ -43,11 +47,11 @@ docs/                    Canon design docs + WIP/TRD proposals
 
 - **`sdk.Source`** (`sdk/source.go`): `Open`, `ReadBatch`, `Close`, `GenerateWatermark`.
 - **`sdk.Sink`** (`sdk/sink.go`): `Open`, `Write`, `Close`.
-- No reference connector implementations ship yet. Design for reference connectors and a connector SDK is under [WIP-16](docs/trds/WIP-16/README.md).
+- HTTP API source/sink implementations ship in [`sdk/connectors/httpapi/`](sdk/connectors/httpapi/README.md). See their delivery/replay limits and [WIP-16](docs/trds/WIP-16/README.md) before relying on recovery guarantees.
 
 ## Configuration
 
-Wire loads a YAML/JSON config file (default: `.config/config.json`) and applies CLI flag overrides. See [`internal/config/`](internal/config/) for the types. A formal schema is being defined in [WIP-13](docs/trds/WIP-13/README.md).
+Wire loads a YAML/JSON config file (default: `.config/config.json`) and applies CLI flag overrides. See [`internal/config/`](internal/config/) for the types. Accepted fields and defaults are documented in the generated [configuration reference](docs/configuration-reference.md); [validation and runtime limits](docs/configuration-validation.md) distinguish accepted settings from enabled features.
 
 ## Build, run, test
 
@@ -65,13 +69,13 @@ Run modes (see [`docs/usage.md`](docs/usage.md) for the full flag reference):
 ./wire --mode coordinator --http-listen :4001 --listen :4002 \
        --election-backend noop --coordinator-data-dir data/coordinator
 
-./wire --mode worker --coordinator-addr localhost:4002 --task-slots 4
+./wire --mode worker --coordinator-addr localhost:4002 --task-slots 4 --metrics-addr :9091
 ```
 
 ## Making changes
 
 - **Bug fixes and small refactors:** open a PR directly.
-- **New subsystems, public interfaces, connectors, or changes to the execution model:** write a WIP under [`docs/trds/`](docs/trds/README.md) first. The WIP lifecycle is `Draft → In Review → Approved → Implemented`.
+- **New subsystems, public interfaces, connectors, or changes to the execution model:** write a WIP under [`docs/trds/`](docs/trds/README.md) first. The WIP lifecycle is `Draft → In Review → Approved → Partially Implemented → Implemented`.
 - **Stale or conflicting documentation:** see [`docs/docs-todo.md`](docs/docs-todo.md) for the tracked gap list.
 
 ## Canon doc map
@@ -91,9 +95,9 @@ Run modes (see [`docs/usage.md`](docs/usage.md) for the full flag reference):
 
 These are mentioned in some older notes but are not in the codebase today:
 
-- Built-in connectors (Kafka, MongoDB, Elasticsearch, Redis, S3, etc.) — deleted in the rewrite; reintroduction is scoped under [WIP-16](docs/trds/WIP-16/README.md).
+- Built-in connectors (Kafka, MongoDB, Elasticsearch, Redis, S3, etc.) — these connectors are absent; HTTP API is the current reference connector under [WIP-16](docs/trds/WIP-16/README.md).
 - Raft consensus — replaced with PebbleDB + pluggable leader election ([WIP-09](docs/trds/WIP-09/README.md)). Raft is kept as a deferred option (Phase D).
-- YAML pipeline DSL — proposed in [WIP-19](docs/trds/WIP-19/README.md); not yet implemented.
+- Full YAML pipeline deployment — parsing and restricted embedded execution exist; branching, keyed/window execution, parallelism above one, checkpoints/restarts, and CLI/cluster loading remain unsupported. See [`sdk/pipeline_yaml.md`](sdk/pipeline_yaml.md).
 - SQL interface, Web UI, Helm charts, Kubernetes operator — not on the near-term roadmap.
 
 When in doubt, trust the code under `internal/` over any older documentation.

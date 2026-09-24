@@ -22,6 +22,7 @@ import (
 
 // Config holds worker configuration.
 type Config struct {
+	MaxFrameSize uint32 // Zero keeps the transport default.
 	// TaskFailureObserver receives task errors before reporting them. It must not block.
 	// Local SDK execution uses it to preserve Go error identities across its RPC boundary.
 	TaskFailureObserver func(jobID, taskID string, err error)
@@ -176,6 +177,9 @@ func (w *Worker) Run(ctx context.Context) (retErr error) {
 		w.log.Info().Str("addr", addr).Msg("checkpoint replica listener started")
 	}
 	dataConfig := w.peerTransportConfig()
+	if w.cfg.MaxFrameSize != 0 {
+		dataConfig.MaxFrameSize = w.cfg.MaxFrameSize
+	}
 	dataConfig.TaskRegistrationTimeout = 5 * time.Second
 	dataConfig.NodeID = workerID
 	dataConfig.ListenAddr = w.cfg.ListenAddr
