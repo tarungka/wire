@@ -85,3 +85,35 @@ I/O. Implement `CheckpointedSource` only when you can explain the offset and
 replay contract; expose `BatchSink` when explicit batched delivery is supported.
 Use the HTTP tests as examples of exercising auth, cancellation, backpressure,
 retry identity, and end-to-end SDK lifecycle with local test servers.
+
+## Public cluster registration
+
+Applications using the public worker runtime can register the built-in classes:
+
+```go
+import (
+    "github.com/tarungka/wire/sdk"
+    "github.com/tarungka/wire/sdk/connectors/httpapi"
+    httpworker "github.com/tarungka/wire/sdk/connectors/httpapi/worker"
+)
+
+registry := sdk.NewWorkerRegistry()
+httpworker.Register(registry) // installs source and sink class "http-api"
+sourceConfig, err := httpworker.EncodeSourceConfig(httpapi.SourceConfig{
+    Address: "127.0.0.1:8080", AllowInsecure: true, // local development
+})
+if err != nil { return err }
+sinkConfig, err := httpworker.EncodeSinkConfig(httpapi.SinkConfig{
+    URL: "https://receiver.example/events",
+})
+if err != nil { return err }
+env.AddSourceNamed("ingress", "http-api", sourceConfig).
+    AddSinkNamed("delivery", "http-api", sinkConfig)
+```
+
+Pass the registry to `sdk.RunWorker` in each application worker. Config encoders
+validate without opening listeners or sending requests. They serialize sensitive
+configuration as supplied; do not treat this as secret-reference support. Source
+instances need distinct listen addresses when sharing a host. The HTTP replay and
+volatile acknowledgement limitations above still apply. Automatic batching and
+the full cluster lifecycle example remain tracked in WIP-16's completion audit.
