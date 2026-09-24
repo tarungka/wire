@@ -115,6 +115,9 @@ func (s *FileCheckpointStore) Put(ctx context.Context, jobID string, snapshot Ta
 	if err != nil {
 		return err
 	}
+	if err := checkpointNotDeleted(destination); err != nil {
+		return err
+	}
 	size := uint64(len(snapshot.Operators))*4 + uint64(len(snapshot.Source))
 	for _, data := range snapshot.Operators {
 		size += uint64(len(data))
@@ -170,6 +173,13 @@ func (s *FileCheckpointStore) Put(ctx context.Context, jobID string, snapshot Ta
 			return ErrCheckpointConflict
 		}
 	}
+	// A delete can race the link; never acknowledge resurrection after its fence.
+	if err := checkpointNotDeleted(destination); err != nil {
+		if errors.Is(err, ErrCheckpointDeleted) {
+			_ = os.Remove(destination)
+		}
+		return err
+	}
 	// Remove the staging link before syncing the directory so successful writes
 	// persist both publication and cleanup. The deferred remove covers failures.
 	if err := os.Remove(file.Name()); err != nil {
@@ -223,6 +233,9 @@ func (s *FileCheckpointStore) Get(ctx context.Context, jobID, taskID string, id,
 	}
 	path, err := s.path(jobID, taskID, id, epoch)
 	if err != nil {
+		return TaskCheckpoint{}, err
+	}
+	if err := checkpointNotDeleted(path); err != nil {
 		return TaskCheckpoint{}, err
 	}
 	payload, err := s.read(path)

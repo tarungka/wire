@@ -200,8 +200,21 @@ func TestClusterSavepointRescalesKeyGroups(t *testing.T) {
 				if string(current.Config) != string(graph) || current.RescaleCheckpoint != 0 || current.RescaleRollback != nil {
 					t.Fatalf("old topology not restored: %+v", current)
 				}
+				// Rollback releases the rescale pin, but this boundary still
+				// protects ordinary recovery until a newer checkpoint completes.
+				if err := coord.DeleteSavepoint(job.ID, sp.ID); err != coordinator.ErrSavepointInUse {
+					t.Fatalf("latest recovery boundary was not protected: %v", err)
+				}
+				next, err := coord.TriggerCheckpoint(job.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				waitFor(t, 10*time.Second, func() bool {
+					current, err := coord.GetJob(job.ID)
+					return err == nil && current.LatestCheckpoint == next.ID
+				})
 				if err := coord.DeleteSavepoint(job.ID, sp.ID); err != nil {
-					t.Fatalf("failed rescale still pins savepoint: %v", err)
+					t.Fatalf("newer checkpoint did not release rollback savepoint: %v", err)
 				}
 				return
 			}

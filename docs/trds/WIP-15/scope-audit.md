@@ -178,3 +178,14 @@ pause/rescale/upgrade references blocked deletion. Tests cover all nonterminal
 states, release after a newer checkpoint, and terminal jobs. This is a prerequisite
 for archive cleanup, not physical deletion itself: replica deletion delivery,
 durable retry/tombstones and imported artifact lifetime still require work.
+
+## Replica deletion foundation
+
+`FileCheckpointStore.Delete` durably records an identity-specific deletion marker
+before removing the inline snapshot and retained portable archive. Reads and late
+publications reject that marker, including after reopening the store. Tests cover
+idempotent deletion, unrelated epochs, concurrent publication, and deletion during
+a held archive upload. Shared content-addressed Pebble artifacts remain until
+reference-aware collection can establish that no checkpoint uses them. Coordinator
+authorization, durable deletion delivery/retry and artifact collection are still
+required before the HTTP delete operation can claim physical cleanup.

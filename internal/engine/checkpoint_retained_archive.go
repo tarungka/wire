@@ -18,6 +18,9 @@ func (s *FileCheckpointStore) ImportArchive(ctx context.Context, jobID, taskID s
 	if err != nil {
 		return err
 	}
+	if err := checkpointNotDeleted(destination); err != nil {
+		return err
+	}
 	if maxBytes <= 0 || maxBytes == math.MaxInt64 {
 		return errors.New("invalid checkpoint archive quota")
 	}
@@ -66,6 +69,12 @@ func (s *FileCheckpointStore) ImportArchive(ctx context.Context, jobID, taskID s
 			return ErrCheckpointConflict
 		}
 	}
+	if err := checkpointNotDeleted(destination[:len(destination)-len(".archive")]); err != nil {
+		if errors.Is(err, ErrCheckpointDeleted) {
+			_ = os.Remove(destination)
+		}
+		return err
+	}
 	if err = os.Remove(file.Name()); err != nil {
 		return err
 	}
@@ -85,6 +94,9 @@ func (s *FileCheckpointStore) OpenArchive(ctx context.Context, jobID, taskID str
 	}
 	name, err := s.path(jobID, taskID, id, epoch)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkpointNotDeleted(name); err != nil {
 		return nil, err
 	}
 	root, err := os.OpenRoot(s.root)
