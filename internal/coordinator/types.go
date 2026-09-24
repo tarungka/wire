@@ -143,25 +143,26 @@ type JobMeta struct {
 	LastCheckpointCompletion      time.Time             `codec:"last_checkpoint_completion,omitempty"`
 	CheckpointFailure             string                `codec:"checkpoint_failure,omitempty"`
 	// RescaleCheckpoint selects a completed savepoint for changed ownership.
-	RescaleRollback   *RescaleRollback `codec:"rescale_rollback,omitempty"`
-	RescaleFailure    string           `codec:"rescale_failure,omitempty"`
-	RescaleRequested  bool             `codec:"rescale_requested,omitempty"`
-	RecoveryAttempts  int              `codec:"recovery_attempts,omitempty"`
-	RunningSince      time.Time        `codec:"running_since,omitempty"`
-	RescaleCheckpoint uint64           `codec:"rescale_checkpoint,omitempty"`
-	ID                string           `codec:"id"`
-	Name              string           `codec:"name"`
-	Status            JobStatus        `codec:"status"`
-	Parallelism       int              `codec:"parallelism"`
-	ConfigHash        string           `codec:"config_hash"`
-	CreatedAt         time.Time        `codec:"created_at"`
-	UpdatedAt         time.Time        `codec:"updated_at"`
-	StartedAt         time.Time        `codec:"started_at,omitempty"`
-	FinishedAt        time.Time        `codec:"finished_at,omitempty"`
-	RestartCount      int              `codec:"restart_count,omitempty"`
-	LatestCheckpoint  uint64           `codec:"latest_checkpoint,omitempty"`
-	Config            []byte           `codec:"config,omitempty"`
-	SavepointPath     string           `codec:"savepoint_path,omitempty"`
+	RescaleRollback       *RescaleRollback `codec:"rescale_rollback,omitempty"`
+	RescaleFailure        string           `codec:"rescale_failure,omitempty"`
+	RescaleRequested      bool             `codec:"rescale_requested,omitempty"`
+	RecoveryAttempts      int              `codec:"recovery_attempts,omitempty"`
+	RunningSince          time.Time        `codec:"running_since,omitempty"`
+	ReplacementCheckpoint uint64           `codec:"replacement_checkpoint,omitempty"`
+	RescaleCheckpoint     uint64           `codec:"rescale_checkpoint,omitempty"`
+	ID                    string           `codec:"id"`
+	Name                  string           `codec:"name"`
+	Status                JobStatus        `codec:"status"`
+	Parallelism           int              `codec:"parallelism"`
+	ConfigHash            string           `codec:"config_hash"`
+	CreatedAt             time.Time        `codec:"created_at"`
+	UpdatedAt             time.Time        `codec:"updated_at"`
+	StartedAt             time.Time        `codec:"started_at,omitempty"`
+	FinishedAt            time.Time        `codec:"finished_at,omitempty"`
+	RestartCount          int              `codec:"restart_count,omitempty"`
+	LatestCheckpoint      uint64           `codec:"latest_checkpoint,omitempty"`
+	Config                []byte           `codec:"config,omitempty"`
+	SavepointPath         string           `codec:"savepoint_path,omitempty"`
 }
 
 // TaskAssignmentMap maps task IDs to the worker IDs they are assigned to.

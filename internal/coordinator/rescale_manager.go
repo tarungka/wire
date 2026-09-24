@@ -102,6 +102,7 @@ func (c *Coordinator) rescaleJob(jobID, savepointID string, parallelism int, ope
 	candidate.RescaleRollback = &RescaleRollback{Config: append([]byte(nil), job.Config...), Parallelism: job.Parallelism, Checkpoint: job.LatestCheckpoint}
 	candidate.Config = config
 	candidate.Parallelism = parallelism
+	candidate.ReplacementCheckpoint = 0
 	candidate.RescaleCheckpoint = sp.CheckpointID
 	candidate.RescaleRequested = true
 	c.resetStableRecoveryBudget(&candidate, time.Now())
@@ -123,6 +124,7 @@ func (c *Coordinator) rescaleJob(jobID, savepointID string, parallelism int, ope
 	job.RescaleRollback = candidate.RescaleRollback
 	job.Config = candidate.Config
 	job.Parallelism = candidate.Parallelism
+	job.ReplacementCheckpoint = candidate.ReplacementCheckpoint
 	job.RescaleCheckpoint = candidate.RescaleCheckpoint
 	job.RescaleRequested = candidate.RescaleRequested
 	job.RecoveryAttempts = candidate.RecoveryAttempts

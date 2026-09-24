@@ -96,14 +96,36 @@ func (c *Coordinator) rollbackFailedRescale(job *JobMeta) error {
 	next.Config = append([]byte(nil), old.Config...)
 	next.Parallelism = old.Parallelism
 	next.LatestCheckpoint = old.Checkpoint
+	var restoredSecrets jobSecretValues
+	if job.ReplacementCheckpoint != 0 {
+		var graph rpc.JobGraph
+		if err := protocol.DecodeMsgPack(old.Config, &graph); err != nil {
+			return err
+		}
+		var err error
+		restoredSecrets, err = resolveJobSecretReferences(graph)
+		if err != nil {
+			return err
+		}
+		defer func() { restoredSecrets.clear() }()
+		next.CheckpointPolicy, next.RestartPolicy = graph.CheckpointPolicy, graph.RestartPolicy
+	}
+	next.ReplacementCheckpoint = 0
 	next.RescaleCheckpoint = 0
 	next.RescaleRequested = false
 	next.RescaleFailure = "rescale deployment failed; restoring previous configuration"
+	if job.ReplacementCheckpoint != 0 {
+		next.RescaleFailure = "replacement deployment failed; restoring previous configuration"
+	}
 	next.RescaleRollback = nil
 	if err := c.persistJobLocked(&next); err != nil {
 		return err
 	}
 	*job = next
+	if restoredSecrets != nil {
+		c.installJobSecretsLocked(job.ID, restoredSecrets)
+		restoredSecrets = nil
+	}
 	c.jobs[job.ID] = job
 	return nil
 }

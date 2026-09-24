@@ -115,3 +115,16 @@ stops with migration-required without sending a lifecycle mutation. Broader
 coordinator runtime tests separately prove interval updates leave deployments
 unchanged. Full automatic migration/rollback and concurrent external-update
 reconciliation remain open.
+
+## In-place same-layout replacement primitive
+
+ReplaceJobFromSavepoint now validates a latest completed savepoint and unchanged
+physical layout before persisting a replacement under the existing job identity.
+The fenced restart path joins old tasks first. A dedicated checkpoint pin keeps
+full task snapshot restore (including opaque source offsets) separate from
+key-group redistribution. Failed placement/deployment uses existing rollback
+handling and restores original graph/policies and resolves its secret bindings.
+A regression verifies full restore descriptors and policy rollback alongside
+rescale tests. End-to-end replacement execution, API/controller integration,
+changed-topology migration and bounded recovery failure handling still require
+acceptance evidence. This primitive does not prove full reload completion.

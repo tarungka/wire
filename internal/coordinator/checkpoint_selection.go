@@ -111,6 +111,9 @@ func (c *Coordinator) selectRecoveryCheckpointLocked(job *JobMeta) (CheckpointMe
 		return cp, inventory, nil
 	}
 	pinnedID := job.RescaleCheckpoint
+	if job.ReplacementCheckpoint != 0 && job.ReplacementCheckpoint == job.LatestCheckpoint {
+		pinnedID = job.ReplacementCheckpoint
+	}
 	if job.PauseCheckpoint != 0 && job.PauseCheckpoint == job.LatestCheckpoint {
 		pinnedID = job.PauseCheckpoint
 	}
