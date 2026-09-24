@@ -209,3 +209,18 @@ Worker deployment does not consume this cache yet. Reconstruction after
 coordinator recovery and secure delivery/redaction remain required. Clearing
 owned byte slices is lifecycle hygiene, not a guarantee that Go runtime memory,
 environment strings or operating-system dumps contain no other copies.
+
+### Recovery reconstruction and isolated delivery copies
+
+Before publishing a recovered deployment, the scheduler reconstructs a missing
+runtime credential snapshot from the replacement coordinator's environment.
+Missing required references fail that job before assignments or deployment
+commands are published. Every coordinator eligible for leadership therefore
+needs the job's required environment variables; values cannot be recovered from
+metadata because only references are persisted.
+
+The resolved-task copy helper gives each task and named DLQ independent config
+buffers. Tests verify reconstruction, missing-variable failure, unchanged job
+metadata, and that clearing one delivery copy changes neither sibling tasks nor
+the runtime cache. The helper is not yet used to send credentials: authenticated
+connection binding and worker error redaction must be completed first.

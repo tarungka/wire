@@ -220,6 +220,21 @@ func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 		return
 	}
 
+	if err := c.ensureJobSecretsLocked(job); err != nil {
+		failing := job.Status == JobFailing
+		c.mu.Unlock()
+		c.log.Error().Err(err).Str("job_id", jobID).Msg("cannot resolve recovered job credentials")
+		if !failing {
+			if transitionErr := c.transitionJob(job, JobFailing); transitionErr != nil {
+				return
+			}
+		}
+		if transitionErr := c.transitionJob(job, JobFailed); transitionErr != nil {
+			c.log.Warn().Err(transitionErr).Str("job_id", jobID).Msg("cannot fail unresolved job")
+		}
+		return
+	}
+
 	if err := c.attachTaskAddressesLocked(assignments); err != nil {
 		c.mu.Unlock()
 		c.log.Error().Err(err).Str("job_id", jobID).Msg("cannot resolve task streams")
