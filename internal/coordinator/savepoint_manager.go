@@ -115,6 +115,12 @@ func (c *Coordinator) DeleteSavepoint(jobID, spID string) error {
 	if job := c.jobs[jobID]; job != nil && !job.Status.IsTerminal() && job.RescaleCheckpoint != 0 && job.RescaleCheckpoint == sp.CheckpointID && job.LatestCheckpoint == sp.CheckpointID {
 		return ErrSavepointInUse
 	}
+	for _, successor := range c.jobs {
+		ref := successor.RestoreSavepoint
+		if ref != nil && !successor.Status.IsTerminal() && ref.JobID == jobID && ref.SavepointID == spID {
+			return ErrSavepointInUse
+		}
+	}
 	if sp.Status == SavepointInProgress && !sp.Queued {
 		return ErrCheckpointInProgress
 	}

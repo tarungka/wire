@@ -208,7 +208,15 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 	}
 	slot := engine.NewTaskSlot(config, inputs, outputs, operators, sourceOp)
 	slot.TaskID = taskID
+	if desc.RestoreCheckpoint != nil && desc.RestoreCheckpoint.SourceJobID != "" {
+		slot.RestoreTaskID = desc.RestoreCheckpoint.SourceTaskID
+	}
 	slot.TransactionRecovery = &engine.TransactionRecovery{DeploymentGeneration: desc.DeploymentGeneration, JobID: jobID, TaskID: taskID, EpochID: desc.EpochID, AttemptID: desc.AttemptID}
+	if desc.TransactionJobID != "" && desc.TransactionTaskID != "" {
+		slot.TransactionRecovery.JobID = desc.TransactionJobID
+		slot.TransactionRecovery.TaskID = desc.TransactionTaskID
+		slot.TransactionTaskID = desc.TransactionTaskID
+	}
 	for _, upstream := range desc.Upstream {
 		slot.InputIdleTimeouts = append(slot.InputIdleTimeouts, upstream.IdleTimeout)
 	}

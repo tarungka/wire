@@ -216,12 +216,16 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 	}
 	if req.Status == rpc.TaskStatusFailed && req.Failure != nil && req.Failure.ErrorClass == "checkpoint_unavailable" {
 		if restore, ok := assignment.RestoreCheckpoints[req.TaskID]; ok {
-			raw, err := c.store.Get(CheckpointKey(req.JobID, restore.CheckpointID))
+			sourceJobID := req.JobID
+			if restore.SourceJobID != "" {
+				sourceJobID = restore.SourceJobID
+			}
+			raw, err := c.store.Get(CheckpointKey(sourceJobID, restore.CheckpointID))
 			var cp CheckpointMeta
 			if err == nil {
 				err = protocol.DecodeMsgPack(raw, &cp)
 			}
-			if err == nil && cp.JobID == req.JobID && cp.EpochID == restore.EpochID {
+			if err == nil && cp.JobID == sourceJobID && cp.EpochID == restore.EpochID {
 				cp.InvalidReason = req.Failure.ErrorMessage
 				raw, err = protocol.EncodeMsgPack(cp)
 				if err == nil {
@@ -240,7 +244,7 @@ func (c *Coordinator) HandleUpdateTaskStatus(_ context.Context, _ uint64, payloa
 					}
 					if err == nil {
 						err = c.store.WriteBatch([]KVPair{
-							{Key: CheckpointKey(req.JobID, cp.ID), Value: raw},
+							{Key: CheckpointKey(sourceJobID, cp.ID), Value: raw},
 							{Key: JobMetaKey(job.ID), Value: jobRaw},
 							{Key: JobAssignmentsKey(job.ID), Value: assignmentRaw},
 						})

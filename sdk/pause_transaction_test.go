@@ -10,13 +10,14 @@ import (
 // The ledger models an external transaction service that outlives worker task
 // instances. It fences writers and applies each checkpoint's commit once.
 type pauseTransactionLedger struct {
-	mu           sync.Mutex
-	generation   uint64
-	attempt      string
-	prepared     map[uint64][]string
-	committed    map[uint64]bool
-	visible      []string
-	loseResponse bool
+	jobID, taskID string
+	mu            sync.Mutex
+	generation    uint64
+	attempt       string
+	prepared      map[uint64][]string
+	committed     map[uint64]bool
+	visible       []string
+	loseResponse  bool
 }
 type pauseTransactionSink struct {
 	ledger    *pauseTransactionLedger
@@ -42,6 +43,10 @@ func (s *pauseTransactionSink) RecoverTransactions(_ context.Context, authority 
 	if authority.DeploymentGeneration < s.ledger.generation || (authority.DeploymentGeneration == s.ledger.generation && authority.AttemptID != s.ledger.attempt) {
 		return fmt.Errorf("stale transaction recovery")
 	}
+	if s.ledger.jobID != "" && (s.ledger.jobID != authority.JobID || s.ledger.taskID != authority.TaskID) {
+		return fmt.Errorf("transaction namespace changed across recovery")
+	}
+	s.ledger.jobID, s.ledger.taskID = authority.JobID, authority.TaskID
 	s.ledger.generation = authority.DeploymentGeneration
 	s.ledger.attempt = authority.AttemptID
 	s.authority = authority

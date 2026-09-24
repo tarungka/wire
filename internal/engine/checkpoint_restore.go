@@ -8,7 +8,11 @@ import (
 
 func (ts *TaskSlot) restoreCheckpoint() error {
 	snapshot := ts.RestoreCheckpoint
-	if snapshot.TaskID != ts.TaskID || snapshot.CheckpointID == 0 || snapshot.HasSource != (ts.Source != nil) || len(snapshot.Operators) != len(ts.Operators) {
+	expectedTaskID := ts.TaskID
+	if ts.RestoreTaskID != "" {
+		expectedTaskID = ts.RestoreTaskID
+	}
+	if snapshot.TaskID != expectedTaskID || snapshot.CheckpointID == 0 || snapshot.HasSource != (ts.Source != nil) || len(snapshot.Operators) != len(ts.Operators) {
 		return fmt.Errorf("restored checkpoint does not match task topology")
 	}
 	if err := snapshot.ValidateStateHandles(); err != nil {
@@ -93,7 +97,11 @@ func (ts *TaskSlot) recoverSinkTransactions(ctx context.Context) error {
 		return fmt.Errorf("distributed transactional sink requires RecoverTransactions")
 	}
 	recovery := *ts.TransactionRecovery
-	if recovery.JobID == "" || recovery.TaskID != ts.TaskID || recovery.DeploymentGeneration == 0 || recovery.EpochID == 0 || recovery.AttemptID == "" {
+	expectedTaskID := ts.TaskID
+	if ts.TransactionTaskID != "" {
+		expectedTaskID = ts.TransactionTaskID
+	}
+	if recovery.JobID == "" || recovery.TaskID != expectedTaskID || recovery.DeploymentGeneration == 0 || recovery.EpochID == 0 || recovery.AttemptID == "" {
 		return fmt.Errorf("transaction recovery requires fenced job/task identity")
 	}
 	if len(ts.RescaleState) > 0 || (ts.RestoredCheckpointID != 0 && ts.RestoreCheckpoint == nil) {

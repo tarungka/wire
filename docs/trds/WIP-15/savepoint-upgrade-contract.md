@@ -1,8 +1,10 @@
 # Cross-job savepoint restore implementation contract
 
-This document specifies the remaining implementation, not an available endpoint.
-The completion audit still gates WIP-15. The first implemented component is the
-physical-layout compatibility planner in `savepoint_restore_plan.go`.
+This document records the restore contract and remaining acceptance work.
+The coordinator submission method, archive transfer, transaction lineage and
+reference protection are implemented. HTTP/CLI exposure and the complete upgrade
+walkthrough are still pending; this is not yet an available management endpoint.
+The completion audit still gates WIP-15.
 
 ## Submission and compatibility
 
@@ -78,3 +80,26 @@ necessary for audit/fencing even after the archive pin can be released.
   coordinator recovery and a second upgrade in the same lineage.
 - Source savepoint remains protected before the successor's first checkpoint and
   can be deleted safely after reference release.
+
+## Current implementation evidence
+
+`SubmitJobFromSavepoint` validates the latest completed boundary of a stopped
+predecessor and atomically publishes the successor, source reference and succession
+record. Fault-injection and concurrent-submission tests verify all-or-nothing
+publication and one successor. Recovery retains the source pin. Checkpoint IDs
+start above the predecessor's high-water mark, including unsuccessful attempts.
+
+Fetch requests distinguish source archive IDs from target deployment IDs. The
+coordinator checks both the durable restore reference and the exact persisted
+task mapping. Denial tests cover stale attempts, wrong workers/jobs/tasks/epochs,
+missing pins, changed successors and invalid/deleted savepoints. The worker imports
+under the original archive identity, and the engine requires an explicit source
+mapping before applying it to a new runtime task.
+
+A live two-worker test creates a savepoint, cancels the old job, submits a new job
+with a replacement Process class, and restores source offset 1 and keyed count 1
+before emitting count 2. Its transactional variant loses a commit response and
+asserts each visible output appears once while preserving external job/task
+identity. This covers one upgrade through the coordinator API; repeated upgrades,
+HTTP/CLI workflow, additional crash points and deletion races remain acceptance
+work, not implied by those tests.

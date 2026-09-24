@@ -120,6 +120,9 @@ The [upgrade implementation contract](savepoint-upgrade-contract.md) records the
 archive identity, transaction lineage and reference-lifetime invariants still to
 implement. The direct physical-layout planner maps target tasks to original
 archive task IDs and rejects incompatible operator order/types, ownership,
-channels and replica inventories. Its tests are component evidence only: submission,
-fetch authorization, transaction succession and end-to-end upgrade are not yet
-implemented or claimed complete.
+channels and replica inventories. The coordinator now publishes successors atomically, authorizes source-to-target
+archive transfer, preserves transaction identity and pins the original savepoint.
+A real-worker upgrade restores offsets and keyed state while changing a Process
+class; a transactional variant covers a lost commit response. HTTP/CLI exposure,
+repeated upgrades, crash/deletion-race acceptance and the full walkthrough remain
+open. These checks do not establish complete upgrade acceptance.

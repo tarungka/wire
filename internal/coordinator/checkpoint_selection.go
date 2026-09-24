@@ -86,6 +86,30 @@ func checkpointInventory(store MetadataStore, cp CheckpointMeta) (map[string]eng
 // selectRecoveryCheckpointLocked chooses one boundary for the entire deployment.
 // An explicit rescale savepoint is never silently replaced with another boundary.
 func (c *Coordinator) selectRecoveryCheckpointLocked(job *JobMeta) (CheckpointMeta, map[string]engine.TaskMeta, error) {
+	if ref := job.RestoreSavepoint; ref != nil {
+		if job.LatestCheckpoint != ref.CheckpointID {
+			return CheckpointMeta{}, nil, fmt.Errorf("%w: restore reference differs from selected boundary", errNoValidCheckpoint)
+		}
+		raw, err := c.store.Get(CheckpointKey(ref.JobID, ref.CheckpointID))
+		if err != nil {
+			return CheckpointMeta{}, nil, err
+		}
+		var cp CheckpointMeta
+		if protocol.DecodeMsgPack(raw, &cp) != nil || cp.JobID != ref.JobID || cp.ID != ref.CheckpointID || cp.SavepointID != ref.SavepointID || cp.Status != CheckpointCompleted {
+			return CheckpointMeta{}, nil, errNoValidCheckpoint
+		}
+		inventory, err := checkpointInventory(c.store, cp)
+		if errors.Is(err, errCheckpointStoreRead) || errors.Is(err, engine.ErrUnsupportedSchemaVersion) {
+			return CheckpointMeta{}, nil, err
+		}
+		if err != nil {
+			return CheckpointMeta{}, nil, fmt.Errorf("%w: selected upgrade savepoint: %v", errNoValidCheckpoint, err)
+		}
+		if err := c.hydrateSavepointChannels(&cp); err != nil {
+			return CheckpointMeta{}, nil, err
+		}
+		return cp, inventory, nil
+	}
 	pinnedID := job.RescaleCheckpoint
 	if job.PauseCheckpoint != 0 && job.PauseCheckpoint == job.LatestCheckpoint {
 		pinnedID = job.PauseCheckpoint

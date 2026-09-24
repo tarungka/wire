@@ -302,6 +302,7 @@ type EdgeDescriptor struct {
 // is the full source→ops→sink chain. In later phases, it's the slice of
 // operators between two shuffle boundaries.
 type CheckpointRestoreDescriptor struct {
+	SourceJobID   string `codec:"source_job_id,omitempty"`
 	ArchiveSHA256 string `codec:"archive_sha256,omitempty"`
 	ArchiveSize   int64  `codec:"archive_size,omitempty"`
 	// SourceTaskID is set for rescaling; empty restores the receiving task itself.
@@ -337,6 +338,9 @@ type OutputGroupDescriptor struct {
 }
 
 type TaskDescriptor struct {
+	TransactionJobID  string `codec:"transaction_job_id,omitempty"`
+	TransactionTaskID string `codec:"transaction_task_id,omitempty"`
+
 	OutputGroups             []OutputGroupDescriptor      `codec:"output_groups,omitempty"`
 	DeploymentGeneration     uint64                       `codec:"deployment_generation,omitempty"`
 	RestoreRescale           *RescaleRestoreDescriptor    `codec:"restore_rescale,omitempty"`

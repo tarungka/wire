@@ -16,6 +16,8 @@ import (
 
 	"github.com/tarungka/wire/internal/coordinator"
 	"github.com/tarungka/wire/internal/jobcli"
+	"github.com/tarungka/wire/internal/protocol"
+	"github.com/tarungka/wire/internal/rpc"
 	"github.com/tarungka/wire/internal/worker"
 )
 
@@ -412,5 +414,131 @@ func TestCLINodeRemovalRecoversOnRemainingWorker(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("recovered job never stopped")
+	}
+}
+
+func TestSavepointUpgradeRestoresAcrossJobIdentities(t *testing.T) { testSavepointUpgrade(t, false) }
+func TestSavepointUpgradePreservesTransactionLineage(t *testing.T) { testSavepointUpgrade(t, true) }
+func testSavepointUpgrade(t *testing.T, transactional bool) {
+	release := make(chan struct{})
+	restored := make(chan uint64, 2)
+	var closed atomic.Int32
+	registry := NewWorkerRegistry()
+	registry.RegisterSource("replay", func(context.Context, []byte, WorkerTaskContext) (Source, error) {
+		return &pauseReplaySource{release: release, restored: restored, closed: &closed}, nil
+	})
+	registry.RegisterKeyBy("key", func(context.Context, []byte, WorkerTaskContext) (KeySelector, error) {
+		return func(e Event) ([]byte, error) { return e.Key, nil }, nil
+	})
+	for _, class := range []string{"count", "count-v2"} {
+		registry.RegisterProcess(class, func(context.Context, []byte, WorkerTaskContext) (ProcessDefinition, error) {
+			return ProcessDefinition{Process: func(ctx ProcessContext, e Event) ([]Event, error) {
+				state := ctx.GetState("count")
+				n, err := state.ValueInt64()
+				if err != nil {
+					return nil, err
+				}
+				if err := state.SetInt64(n + 1); err != nil {
+					return nil, err
+				}
+				e.Value = []byte(fmt.Sprintf("%s:%d", class, n+1))
+				return []Event{e}, nil
+			}}, nil
+		})
+	}
+	sink := &collectSink{}
+	ledger := &pauseTransactionLedger{prepared: map[uint64][]string{}, committed: map[uint64]bool{}, loseResponse: true}
+	registry.RegisterSink("collect", func(context.Context, []byte, WorkerTaskContext) (Sink, error) {
+		if transactional {
+			return &pauseTransactionSink{ledger: ledger, observed: sink}, nil
+		}
+		return sink, nil
+	})
+	ctx, coord, url := lifecycleCluster(t, registry)
+	env := New().SetMode(Cluster).SetCoordinator(url)
+	env.AddSourceNamed("source", "replay", nil).KeyByNamed("key", "key", nil).ProcessNamed("count", "count", nil).AddSinkNamed("sink", "collect", nil)
+	done := make(chan error, 1)
+	go func() { _, err := env.ExecuteWithName(ctx, "upgrade-before"); done <- err }()
+	var oldID string
+	lifecycleWait(t, ctx, func() bool {
+		jobs := coord.ListJobs(nil)
+		if len(jobs) != 1 || len(sink.Events()) != 1 {
+			return false
+		}
+		oldID = jobs[0].ID
+		return jobs[0].Status == coordinator.JobRunning
+	})
+	if _, _, err := coord.CancelJobWithSavepoint(oldID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("old job was not canceled")
+		}
+	case <-ctx.Done():
+		t.Fatal("old job failed to stop")
+	}
+	old, err := coord.GetJob(oldID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var graph rpc.JobGraph
+	if err := protocol.DecodeMsgPack(old.Config, &graph); err != nil {
+		t.Fatal(err)
+	}
+	for i := range graph.Operators {
+		if graph.Operators[i].ClassName == "count" {
+			graph.Operators[i].ClassName = "count-v2"
+		}
+	}
+	config, err := protocol.EncodeMsgPack(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := coord.SubmitJobFromSavepoint("upgrade-after", old.Parallelism, config, old.SavepointPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ID == old.ID {
+		t.Fatal("upgrade reused runtime job ID")
+	}
+	select {
+	case offset := <-restored:
+		if offset != 1 {
+			t.Fatalf("offset=%d", offset)
+		}
+	case <-ctx.Done():
+		t.Fatal("upgrade did not restore")
+	}
+	if err := coord.DeleteSavepoint(old.ID, old.PauseSavepointID); !errors.Is(err, coordinator.ErrSavepointInUse) {
+		t.Fatalf("source pin released too early: %v", err)
+	}
+	close(release)
+	lifecycleWait(t, ctx, func() bool {
+		job, err := coord.GetJob(next.ID)
+		if err == nil && job.Status == coordinator.JobFailed {
+			t.Fatalf("upgrade failed: %+v", job)
+		}
+		return err == nil && job.Status == coordinator.JobFinished
+	})
+	events := sink.Events()
+	if len(events) != 2 || string(events[0].Value) != "count:1" || string(events[1].Value) != "count-v2:2" {
+		t.Fatalf("upgrade offset/state/code: %+v", events)
+	}
+	if transactional {
+		ledger.mu.Lock()
+		visible := append([]string(nil), ledger.visible...)
+		ledger.mu.Unlock()
+		if fmt.Sprint(visible) != "[count:1 count-v2:2]" {
+			t.Fatalf("transaction output replayed or lost: %v", visible)
+		}
+	}
+	finished, err := coord.GetJob(next.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.LatestCheckpoint <= old.LatestCheckpoint || finished.RestoreSavepoint != nil || finished.DeploymentGeneration <= old.DeploymentGeneration {
+		t.Fatalf("upgrade did not advance fencing/boundary: %+v", finished)
 	}
 }

@@ -115,7 +115,7 @@ func (c *Coordinator) triggerCheckpointWithQueue(jobID, savepointID string, fina
 			return nil, fmt.Errorf("%w: task %s has no assigned replica", ErrCheckpointUnavailable, taskID)
 		}
 	}
-	var highest uint64
+	highest := job.CheckpointIDFloor
 	var scanErr error
 	err = c.store.PrefixScan([]byte(fmt.Sprintf("jobs/%s/checkpoints/", jobID)), func(key, value []byte) bool {
 		if bytes.Equal(key, LatestCheckpointKey(jobID)) || bytes.HasSuffix(key, []byte("/metadata.json")) {
@@ -478,6 +478,7 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 		}
 		next = *job
 		next.LatestCheckpoint = checkpoint.ID
+		next.RestoreSavepoint = nil
 		if checkpoint.SavepointID != "" && checkpoint.SavepointID == job.PauseSavepointID && job.Status == JobRunning {
 			next.Status = JobPausing
 			if job.CancelAfterSavepoint {

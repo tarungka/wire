@@ -102,7 +102,14 @@ func (w *Worker) fetchTaskCheckpoint(ctx context.Context, jobID, taskID string, 
 	if restore.SourceTaskID != "" {
 		sourceTaskID, targetTaskID = restore.SourceTaskID, taskID
 	}
-	request := rpc.FetchCheckpointRequest{RequireArchive: restore.ArchiveSHA256 != "", AttemptID: desc.AttemptID, WorkerID: w.cfg.WorkerID, DeploymentEpoch: desc.EpochID, JobID: jobID, TaskID: sourceTaskID, TargetTaskID: targetTaskID, CheckpointID: restore.CheckpointID, EpochID: restore.EpochID}
+	sourceJobID, targetJobID := jobID, ""
+	if restore.SourceJobID != "" {
+		if restore.SourceTaskID == "" {
+			return nil, fmt.Errorf("cross-job restore requires a source task")
+		}
+		sourceJobID, targetJobID = restore.SourceJobID, jobID
+	}
+	request := rpc.FetchCheckpointRequest{TargetJobID: targetJobID, RequireArchive: restore.ArchiveSHA256 != "", AttemptID: desc.AttemptID, WorkerID: w.cfg.WorkerID, DeploymentEpoch: desc.EpochID, JobID: sourceJobID, TaskID: sourceTaskID, TargetTaskID: targetTaskID, CheckpointID: restore.CheckpointID, EpochID: restore.EpochID}
 	if err := request.Validate(); err != nil {
 		return nil, err
 	}
@@ -143,10 +150,10 @@ func (w *Worker) fetchTaskCheckpoint(ctx context.Context, jobID, taskID string, 
 	if err != nil {
 		return nil, err
 	}
-	if err := store.ImportArchive(ctx, jobID, sourceTaskID, restore.CheckpointID, restore.EpochID, file, cfg.ArtifactRoot, rpc.MaxCheckpointTransferSize); err != nil {
+	if err := store.ImportArchive(ctx, sourceJobID, sourceTaskID, restore.CheckpointID, restore.EpochID, file, cfg.ArtifactRoot, rpc.MaxCheckpointTransferSize); err != nil {
 		return nil, err
 	}
-	snapshot, err := store.Get(ctx, jobID, sourceTaskID, restore.CheckpointID, restore.EpochID)
+	snapshot, err := store.Get(ctx, sourceJobID, sourceTaskID, restore.CheckpointID, restore.EpochID)
 	if err != nil {
 		return nil, err
 	}

@@ -69,3 +69,19 @@ func TestTaskRestoresBeforeProcessing(t *testing.T) {
 		t.Fatal("restored checkpoint ID not applied")
 	}
 }
+
+func TestCrossJobRestoreRequiresExplicitSourceIdentity(t *testing.T) {
+	for _, source := range []string{"", "other", "old-task"} {
+		t.Run(source, func(t *testing.T) {
+			probe := &checkpointRestoreProbe{opened: true}
+			slot := &TaskSlot{TaskID: "new-task", RestoreTaskID: source, Operators: []Operator{probe}, RestoreCheckpoint: &TaskCheckpoint{TaskID: "old-task", CheckpointID: 7, EpochID: 2, Operators: [][]byte{[]byte("state")}}}
+			err := slot.restoreCheckpoint()
+			if (err == nil) != (source == "old-task") {
+				t.Fatalf("source %q: %v", source, err)
+			}
+			if err == nil && (slot.TaskID != "new-task" || slot.RestoreCheckpoint.TaskID != "old-task" || probe.state != "state") {
+				t.Fatal("identity or state changed")
+			}
+		})
+	}
+}

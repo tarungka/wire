@@ -49,6 +49,8 @@ type TaskSlot struct {
 	Metrics              CheckpointMetrics      // Optional checkpoint metrics collector.
 	ErrorMetrics         ErrorMetrics           // Optional error handling metrics collector (WIP-11).
 	TaskIndex            int                    // Index of this task within the parallel subtasks.
+	TransactionTaskID    string                 // Stable external writer identity across job upgrades.
+	RestoreTaskID        string                 // Explicit source task identity for an authorized cross-job restore.
 	RestoredCheckpointID uint64                 // Globally completed snapshot used for recovery.
 	TaskID               string                 // Unique identifier for this task.
 	OnRunning            func()                 // Called after all operators open, before any records are read.

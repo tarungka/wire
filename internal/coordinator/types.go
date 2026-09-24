@@ -113,8 +113,21 @@ func (s CheckpointStatus) String() string {
 	}
 }
 
+// SavepointRestoreReference pins an original archive while a successor starts.
+type SavepointRestoreReference struct {
+	JobID        string `codec:"job_id"`
+	SavepointID  string `codec:"savepoint_id"`
+	CheckpointID uint64 `codec:"checkpoint_id"`
+}
+
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
+	TransactionJobID  string `codec:"transaction_job_id,omitempty"`
+	CheckpointIDFloor uint64 `codec:"checkpoint_id_floor,omitempty"`
+
+	RestoreSavepoint   *SavepointRestoreReference `codec:"restore_savepoint,omitempty"`
+	UpgradeSuccessorID string                     `codec:"upgrade_successor_id,omitempty"`
+
 	CancelAfterSavepoint          bool                  `codec:"cancel_after_savepoint,omitempty"`
 	PauseSavepointID              string                `codec:"pause_savepoint_id,omitempty"`
 	PauseCheckpoint               uint64                `codec:"pause_checkpoint,omitempty"`
