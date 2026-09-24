@@ -121,3 +121,11 @@ The control listener binds an ephemeral loopback port and has no authentication.
 It exists only for that MiniCluster execution and is closed during teardown;
 this is local test infrastructure, not a production control-plane configuration.
 See `TestMiniClusterManagedProcessRescale` for the complete runnable example.
+
+For recovery tests, `cluster.StopWorker(ctx, jobID, workerID)` stops a worker's
+in-process runtime and data/replica services while keeping its coordinator and
+other workers alive. Reserve enough workers/slots and keep the completed
+checkpoint's replicas available. This tests runtime loss and reassignment; it
+does not simulate an OS crash or guarantee recovery after the only checkpoint
+archive is lost. Unknown job/worker IDs return an error; stopped worker controls
+are removed with the execution.

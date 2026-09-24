@@ -103,6 +103,7 @@ func (env *StreamExecutionEnvironment) runLocal(ctx context.Context, name string
 	if env.miniCluster != nil {
 		workerCount = max(workerCount, env.miniCluster.config.NumWorkers)
 	}
+	workerStops := make(map[string]func(context.Context) error, workerCount)
 	for i := 0; i < workerCount; i++ {
 		dir := filepath.Join(root, fmt.Sprint(i))
 		for _, subdir := range []string{dir, filepath.Join(dir, "replica"), filepath.Join(dir, "staging")} {
@@ -124,7 +125,26 @@ func (env *StreamExecutionEnvironment) runLocal(ctx context.Context, name string
 			CheckpointReplica: &worker.CheckpointReplicaConfig{ListenAddr: "127.0.0.1:0", StoreRoot: filepath.Join(dir, "replica"), ArtifactRoot: dir, StagingRoot: filepath.Join(dir, "staging"), Concurrency: max(1, total)},
 		}, registry, log)
 		workers = append(workers, w)
-		launch(func() error { return w.Run(runCtx) })
+		workerCtx, stopWorker := context.WithCancel(runCtx)
+		finished := make(chan struct{})
+		workerStops[fmt.Sprintf("mini-worker-%d", i)] = func(ctx context.Context) error {
+			stopWorker()
+			select {
+			case <-finished:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		launch(func() error {
+			defer close(finished)
+			defer stopWorker()
+			err := w.Run(workerCtx)
+			if workerCtx.Err() != nil {
+				return nil
+			}
+			return err
+		})
 	}
 	if err := wait(func() bool { return len(coord.ListWorkers()) == workerCount }); err != nil {
 		return nil, err
@@ -146,7 +166,7 @@ func (env *StreamExecutionEnvironment) runLocal(ctx context.Context, name string
 			return nil, err
 		}
 		launch(func() error { return api.Serve() })
-		unpublish := env.miniCluster.publishJob(MiniClusterJob{JobID: job.ID, CoordinatorURL: "http://" + api.Addr()})
+		unpublish := env.miniCluster.publishJob(MiniClusterJob{JobID: job.ID, CoordinatorURL: "http://" + api.Addr()}, workerStops)
 		defer unpublish()
 	}
 	result := &JobResult{JobID: job.ID}

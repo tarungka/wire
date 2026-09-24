@@ -21,12 +21,13 @@ type MiniClusterConfig struct {
 // MiniCluster is a lightweight, in-process cluster for integration testing.
 // Each execution runs a local coordinator and workers with checkpoint replicas.
 type MiniCluster struct {
-	config MiniClusterConfig
-	mu     sync.Mutex
-	closed bool
-	active map[*StreamExecutionEnvironment]context.CancelFunc
-	jobs   map[string]MiniClusterJob
-	joined sync.WaitGroup
+	config      MiniClusterConfig
+	mu          sync.Mutex
+	closed      bool
+	active      map[*StreamExecutionEnvironment]context.CancelFunc
+	jobs        map[string]MiniClusterJob
+	workerStops map[string]map[string]func(context.Context) error
+	joined      sync.WaitGroup
 }
 
 // NewMiniCluster creates a new MiniCluster with the given configuration.
@@ -34,7 +35,7 @@ func NewMiniCluster(config MiniClusterConfig) *MiniCluster {
 	if config.NumTaskSlots <= 0 {
 		config.NumTaskSlots = 1
 	}
-	return &MiniCluster{config: config, active: make(map[*StreamExecutionEnvironment]context.CancelFunc), jobs: make(map[string]MiniClusterJob)}
+	return &MiniCluster{config: config, active: make(map[*StreamExecutionEnvironment]context.CancelFunc), jobs: make(map[string]MiniClusterJob), workerStops: make(map[string]map[string]func(context.Context) error)}
 }
 
 // GetExecutionEnvironment returns a pre-configured StreamExecutionEnvironment
@@ -96,9 +97,26 @@ func (mc *MiniCluster) Jobs() []MiniClusterJob {
 	return jobs
 }
 
-func (mc *MiniCluster) publishJob(job MiniClusterJob) func() {
+func (mc *MiniCluster) publishJob(job MiniClusterJob, stops map[string]func(context.Context) error) func() {
 	mc.mu.Lock()
 	mc.jobs[job.JobID] = job
+	mc.workerStops[job.JobID] = stops
 	mc.mu.Unlock()
-	return func() { mc.mu.Lock(); delete(mc.jobs, job.JobID); mc.mu.Unlock() }
+	return func() { mc.mu.Lock(); delete(mc.jobs, job.JobID); delete(mc.workerStops, job.JobID); mc.mu.Unlock() }
+}
+
+// StopWorker permanently stops one execution's in-process worker, including
+// its data and checkpoint-replica services. It leaves the coordinator and other
+// workers running for fault-recovery tests. It does not kill an OS process.
+func (mc *MiniCluster) StopWorker(ctx context.Context, jobID, workerID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	mc.mu.Lock()
+	stop := mc.workerStops[jobID][workerID]
+	mc.mu.Unlock()
+	if stop == nil {
+		return fmt.Errorf("sdk: unknown MiniCluster job or worker")
+	}
+	return stop(ctx)
 }

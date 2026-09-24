@@ -15,9 +15,10 @@ are not evidence that every requirement is implemented.
 | Node configuration, CLI and environment defaults | Node state settings, both CLI flags and environment names now resolve omitted managed-operator choices at submission and persist them. Tests cover node precedence, explicit SDK choices, validation and recovery stability. Full pipeline precedence remains below. |
 | Pipeline YAML and full selection precedence | Preserve the original pipeline field and SDK/CLI/pipeline/system/default ordering. Integration with WIP-19 remains required; not removed from scope. |
 | Memory limits and safeguards | Existing logical payload accounting and errors need full boundary/overflow/restore audit. Worker aggregate admission against available memory remains open. Runtime overhead and snapshot/iterator copies must be documented accurately. |
+| Memory observability | The proposal names `wire_state_backend_memory_bytes` with backend/task attribution. No matching runtime metric exists yet; implement and verify it before completion. |
 | Checkpoint format and metadata | HashMap writes `WHSB`, version 1, length-prefixed entries and CRC32, and reads legacy unframed version-1 snapshots. Fixed byte fixtures verify upgrade compatibility and malformed-header rejection. Backend-tagged handles exist; backend mismatch, native Pebble semantics and durable manifest evidence remain in the final audit. |
 | Replication, restore and retention | Current worker archive transport and retention code exist from earlier WIPs. Prove both backends through actual completed-checkpoint recovery and cleanup; helper round trips alone are insufficient. |
-| Rescaling | Both backends pass real coordinator/two-worker savepoint rescale tests for 4→8, 8→4 and 4→3, including replicated fetch, assigned-key validation, replacement checkpoint and old-savepoint release. Backend restore rejects gaps, overlaps, mixed checkpoints, corruption and cancellation atomically. SDK managed Process now implements typed key-group restore, with shared HashMap/Pebble state/TTL/timer tests at the same sizes. Managed window redistribution now has operator-level parity tests for both backends, all three window kinds and all required sizes. MiniCluster managed Process rescale now passes for both backends at all three sizes, including restored state, a replacement savepoint and deletion of the old savepoint. MiniCluster window rescale now also passes for both backends, all three window kinds and all three sizes. Actual worker-loss recovery acceptance remains. |
+| Rescaling | Both backends pass real coordinator/two-worker savepoint rescale tests for 4→8, 8→4 and 4→3, including replicated fetch, assigned-key validation, replacement checkpoint and old-savepoint release. Backend restore rejects gaps, overlaps, mixed checkpoints, corruption and cancellation atomically. SDK managed Process now implements typed key-group restore, with shared HashMap/Pebble state/TTL/timer tests at the same sizes. Managed window redistribution now has operator-level parity tests for both backends, all three window kinds and all required sizes. MiniCluster managed Process rescale now passes for both backends at all three sizes, including restored state, a replacement savepoint and deletion of the old savepoint. MiniCluster window rescale now also passes for both backends, all three window kinds and all three sizes. MiniCluster stopped-worker recovery passes for both managed backends with surviving replicas and checkpointed source offsets. Replica-loss cases remain part of the final durability audit. |
 | Contract/negative tests | Shared `TestStateBackendAcceptance` verifies every entry of a 10,000-entry restore, empty restore, 10 MiB value, binary key groups 0x0000–0x007F with ordered 0x0020 prefix selection, and checkpoint consistency during concurrent atomic updates/Get. Three runs pass under `-race` for both backends. Existing corruption, cross-backend rejection and memory-limit cases still need final requirement mapping. |
 | Comparative benchmarks | Implemented reproducible Put/Get/full-iterator and 1/64/256 MiB checkpoint benchmarks for both backends. [Local measurements and raw output](benchmarks.md) distinguish volatile writes from synchronized writes and serialization from native checkpoint hashing; proposal estimates are not guarantees. |
 | Documentation and upgrade behavior | Record current formats, defaults, resource boundaries and incompatibilities, link runtime guidance, then audit all original sections before marking Implemented. |
@@ -236,3 +237,29 @@ The full new matrix and existing MiniCluster Process rescale tests pass together
 under `-race`; SDK lint is clean. The source is deliberately controlled between
 boundaries, so this establishes window-state redistribution and completed
 checkpoint retention behavior, not real external-source replay or worker loss.
+
+## Recovery after an in-process worker stops
+
+`MiniCluster.StopWorker(ctx, jobID, workerID)` stops that worker's execution,
+data connections and replica services while leaving its coordinator and peers
+running. Worker Run errors remain fatal unless its own child context was
+explicitly cancelled. The method is idempotent for a still-listed stopped worker,
+waits for its runtime teardown (or caller cancellation), and does not kill an OS
+process. Execution teardown removes the worker-control entries.
+
+`TestMiniClusterBackendRecoveryAfterWorkerLoss` starts three workers, checkpoints
+32 keyed records and their source offset, stops a worker hosting managed state,
+then waits for replacement tasks on survivors. The new source must restore its
+saved offset before the second batch is released. Every key must emit count 1
+then count 2; a replacement savepoint must complete and release the original.
+HashMap and Pebble both pass under `-race`.
+
+The chosen worker's task replicas survive on other workers. The current single
+replica placement policy chooses the first eligible peer; this test deliberately
+does not kill a worker holding another task's only archive. It therefore does
+not claim tolerance of losing the last replica, arbitrary simultaneous worker
+loss, abrupt OS termination or a host/disk failure. Those boundaries must remain
+explicit in the final durability audit.
+
+The full SDK suite passes with `-race` after worker-stop integration, including
+the pre-existing offset recovery and shutdown tests; SDK lint is clean.

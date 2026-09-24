@@ -24,15 +24,18 @@
 
 The active follow-up audit is [completion.md](completion.md). MiniCluster now
 defaults managed Process/window state to HashMap with a 256 MiB logical payload
-limit per instance; explicit SDK selection still overrides it. The remaining
-original pipeline precedence, resource, recovery, rescale and benchmark requirements
-are tracked there. Node configuration/CLI defaults now resolve at submission and
+limit per instance; explicit SDK selection still overrides it. The audit tracks every original requirement. B-tree storage, format upgrades,
+comparative benchmarks and MiniCluster Process/window rescale are now covered.
+Pipeline precedence, aggregate resource admission and the final durability/metrics
+audit remain open. Node configuration/CLI defaults now resolve at submission and
 are persisted per job; see [backend selection](../../state-backend-selection.md).
 WIP-18 remains partially implemented.
 
 ## Historical implementation assessment — 2026-09-12
 
-Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
+Assessed against `master` at `0e78195`. This section records the historical implementation at that commit, not the
+current follow-up. Use the completion audit above for current status; the
+proposal below retains its original design context and targets.
 
 - **Implemented:** The HashMap backend, ordered iteration, memory accounting, snapshot/restore, and backend factory are implemented and tested. The engine factory now also opens a Pebble backend with owned reads, ordered prefix iterators, synchronized mutations, native checkpoints, and file-hash-validated restore into a separate database generation. Both backends pass the shared contract suite. Embedded keyed Process now uses the selected backend for Value/List/Map state, preserving values between events and isolating keys, names, operators, and parallel instances.
 - **Remaining:** Backend selection through system config/CLI, cluster state integration, checkpoint transport/retention, rescaling, and comparative benchmarks remain incomplete; coordinator Pebble metadata is separate. This proposal is not yet complete.
