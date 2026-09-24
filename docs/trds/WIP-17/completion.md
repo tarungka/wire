@@ -165,3 +165,16 @@ its replacement rejects the removed key and accepts the new key.
 These tests do not establish full HTTP-route coverage or complete WIP-17:
 connector secret resolution/redaction and the remaining security acceptance
 requirements still need implementation or verification.
+
+### Secret configuration parser groundwork
+
+`internal/secretconfig.Resolve` expands required `${VAR}` and optional
+`${VAR:-default}` references in JSON string values using an injected lookup.
+It preserves the original bytes, escapes substituted credentials as JSON,
+retains exact numeric values, rejects malformed references without echoing
+configuration, and never recursively expands credential contents. Tests also
+cover JSON-escaped reference markers and opaque configurations without references.
+
+This helper is not yet connected to submission, deployment or recovery. It does
+not establish secret-management completion: coordinator-owned resolution,
+reference-only persistence, secure worker delivery and redaction remain open.
