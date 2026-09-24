@@ -25,6 +25,11 @@ func (s *yamlReloadSource) ReadBatch(ctx context.Context) ([]Event, error) {
 }
 
 func TestYAMLFileReplacementThroughWorkers(t *testing.T) {
+	t.Run("same-layout", func(t *testing.T) { testYAMLFileReplacement(t, false) })
+	t.Run("insert-transform", func(t *testing.T) { testYAMLFileReplacement(t, true) })
+}
+
+func testYAMLFileReplacement(t *testing.T, insert bool) {
 	release := make(chan struct{})
 	restored := make(chan uint64, 4)
 	var closed atomic.Int32
@@ -122,7 +127,18 @@ spec:
 	if err != nil || after.Status != coordinator.JobRunning || after.DeploymentGeneration != before.DeploymentGeneration || closed.Load() != 0 {
 		t.Fatal("invalid edit disturbed running deployment")
 	}
-	write(strings.Replace(original, "v1:", "v2:", 1))
+	candidate := strings.Replace(original, "v1:", "v2:", 1)
+	expected := `"v2:second"`
+	if insert {
+		candidate = strings.Replace(candidate, "  sinks:", `    - name: extra
+      type: map
+      input: mapped
+      config: {expression: '"extra:" + value'}
+  sinks:`, 1)
+		candidate = strings.Replace(candidate, "type: output, input: mapped", "type: output, input: extra", 1)
+		expected = `"extra:v2:second"`
+	}
+	write(candidate)
 	waitApply(PipelineMigrationRequired)
 	result := <-reloaded
 	if result.SavepointID == "" || result.JobID != jobID || result.RolledBack {
@@ -154,7 +170,7 @@ spec:
 	}
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
-	if len(ledger.visible) != 2 || ledger.visible[0] != `"v1:first"` || ledger.visible[1] != `"v2:second"` {
+	if len(ledger.visible) != 2 || ledger.visible[0] != `"v1:first"` || ledger.visible[1] != expected {
 		t.Fatalf("committed output=%v", ledger.visible)
 	}
 }

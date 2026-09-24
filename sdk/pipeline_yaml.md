@@ -261,19 +261,20 @@ candidate graph to `POST /api/v1/jobs/{id}/replacement/validate` and checks the
 current physical layout without changing the job. Operator authorization is
 required. A successful response is advisory: it does not reserve the current
 job, prove archive health or certify application state serializers. Restore
-must still validate the actual savepoint. Changed topology/parallelism requires
-a migration implementation beyond this existing-layout check.
+must still validate the actual savepoint. Stateless insertion within existing chains is supported as described below.
+Changed task ownership/routes and parallelism still require further migration work.
 
 `current.WatchLiveUpdates(ctx, path, jobID, bindings, config)` connects stable
 file edits to confirmed live interval updates for an existing job. It rejects
 invalid YAML without changing the job, advances a private baseline after each
 successful response, and supports reverting the interval. Expression, connector,
 backend or topology edits return `ErrPipelineMigrationRequired` without stopping
-the job. The caller must supply the current definition and exclusively own job
+the job unless `AllowReplacement` is enabled. The caller must supply the current definition and exclusively own job
 configuration changes; independent external edits are not reconciled yet.
-This remains interval-only reload support, not full WIP-19 migration.
+The opt-in replacement path below supports a subset of migration edits; full
+WIP-19 migration remains incomplete.
 
-For same-layout replacements, `candidate.ReplaceFromSavepoint(ctx, jobID,
+For compatible replacements, `candidate.ReplaceFromSavepoint(ctx, jobID,
 savepointID)` calls `POST /api/v1/jobs/{id}/replacement`. The candidate preserves
 the job name and physical layout; the coordinator requires its latest completed
 savepoint and no active checkpoint. HTTP 202 means accepted for fenced teardown
@@ -281,10 +282,10 @@ and redeployment, not that the new code is running. Inspect job status and
 `rescale_failure` to detect rollback. The SDK sends one request and verifies the
 returned job identity; reconcile ambiguous responses before another mutation.
 Rollback restores the prior graph/policies, but restarting it still requires
-remaining recovery budget. This API does not itself watch files or support
-changed-topology migration.
+remaining recovery budget. This API does not itself watch files. Supported topology edits are limited
+to stateless insertion within existing task chains.
 
-`candidate.Reload(ctx, jobID)` orchestrates same-layout preflight, creation and
+`candidate.Reload(ctx, jobID)` orchestrates compatible-layout preflight, creation and
 completion of a savepoint, replacement acceptance, and status polling. It returns
 the savepoint ID even if a later step fails. `ErrPipelineReplacementRolledBack`
 means the previous configuration has been restored; its recovery may still be
@@ -321,8 +322,8 @@ retained savepoint ID. The watcher advances its baseline only on success and
 stops on rollback or uncertain requests. Savepoints are retained for explicit
 cleanup. Exclusive configuration ownership is still required; a periodic
 checkpoint that supersedes the savepoint can cause safe rejection and must be
-reconciled before another reload. Changed topology remains unsupported by this
-same-layout orchestration.
+reconciled before another reload. Changes beyond stateless chain insertion remain unsupported by this
+orchestration.
 
 ### CLI watch
 
@@ -356,3 +357,23 @@ overwriting it. Direct UpdateCheckpointInterval remains an unconditional
 explicit update. This precondition does not detect unrelated graph edits or
 an interval changed away and back, so it does not replace exclusive controller
 ownership for migration.
+
+### Inserting stateless transforms during reload
+
+Reload can now insert map, filter or flat-map transforms within an existing
+physical operator chain. It maps saved operator positions by their stable IDs
+and preserves all old operators in order. Source offsets remain separate, typed
+state-handle indexes are adjusted, and prepared sink state stays at the final
+sink position. Archive checksums and original checkpoint identities are verified
+before remapping; the stored archive is not rewritten. Fresh transforms receive
+empty state. All participating workers must support the new restore mapping.
+
+This is one supported topology edit, not general graph migration. The task
+identity, subtask count, key-group ownership and network routes must stay the
+same. Inserting before the operator that names a task, splitting/merging chains,
+changing shuffles, removing/reordering saved operators or introducing a stateful
+operator still fails preflight. Existing state serializers must remain compatible.
+Failure during restore/deployment retains the existing rollback and recovery
+budget behavior. The file-watcher acceptance test inserts a CEL map and verifies
+source offset 1 plus external transactional output exactly `v1:first` followed
+by `extra:v2:second`.

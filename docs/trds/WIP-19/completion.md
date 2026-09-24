@@ -14,10 +14,10 @@ SDK, connector, security and state integrations from WIP-13 through WIP-18.
 | Parallel/keyed/window execution | Instance-aware YAML factories now execute a three-partition CEL pipeline through embedded and local coordinator/worker runtimes. Private config copies, partition identity, factory errors and legacy guards have race tests. The 12-case `TestYAMLParallelKeyedWindowRuntime` matrix now verifies tumbling/sliding/session windows on HashMap/Pebble through embedded and checkpoint-configured worker execution. Every case combines three distinct original record keys under the CEL-selected key and verifies all accumulator contributions. Multiple-source/keyed-fan-out acceptance now passes with legacy factories, parallel instance factories and checkpoint-configured workers. Each branch receives every expected record once; selected keys remain in one partition. Recovery and mixed bounded/unbounded completion remain open. |
 | Checkpoint and restart | Configured policies reach local coordinator/worker execution with fresh-instance factories. `TestYAMLPeriodicCheckpointRecoversTransactionalOutput` completes a periodic checkpoint, fails a sink after staging new output, restores source offsets into fresh connectors, and verifies exactly one external commit of each expected result. Three race repetitions cover a CEL map and managed HashMap/Pebble windows. Mixed-source completion and broader external deployment/lifecycle acceptance remain open. |
 | File watching and validation | WatchPipelineFile detects stable content edits, validates the complete named-worker graph and invokes an application callback serially. Atomic replacement, invalid edits, reversion and fail-stop callback tests pass under race detection. Automatic migration callback and CLI watch integration remain required. |
-| Graceful switchover | Drain old execution and start the validated replacement without overlapping ownership. Not implemented. |
-| Topology changes | Savepoint-based migration and failure rollback. Not implemented. |
-| Configuration-only changes | Apply parallelism and checkpoint interval changes without job restart, as specified. Existing APIs alone do not prove this behavior. Not implemented. |
-| CLI and operations | Add executable pipeline submission/watch paths, examples and upgrade/security guidance. Audit all commands using the built binary. |
+| Graceful switchover | Fenced same-job replacement joins old tasks before restore/deployment; real-worker ordinary/transactional success, rollback and no-restart cases pass. Multi-process crash timing remains unverified. |
+| Topology changes | Savepoint restore supports stateless insertion within existing task chains, with YAML file-to-worker acceptance. Chain split/merge, route changes, stateful insertion/removal and redistribution remain incomplete. |
+| Configuration-only changes | Durable interval-only updates preserve deployment and use expected-interval conflict checks. Parallelism without job restart and full concurrent-edit reconciliation remain incomplete. |
+| CLI and operations | YAML submission and watch commands exist; stock worker HTTP/CEL execution and built-binary watch smoke pass. Full multi-process/security acceptance and precedence audit remain. |
 
 The historical Kafka/stdout example remains illustrative: it does not imply
 that those connectors are bundled. No requirement above is removed because
@@ -33,6 +33,12 @@ keeps its slot and output streams open indefinitely. Current multi-source
 acceptance uses finite sources; it does not prove independent branch completion.
 This must be resolved with correct treatment of finished tasks in later
 checkpoints, not by merely releasing EOF and omitting their restore state.
+
+## Implementation record
+
+The following entries record incremental implementation. Later entries supersede
+earlier descriptions of remaining work; the table above describes the current
+major gaps. Historical evidence does not certify later commits.
 
 ## Periodic checkpoint recovery evidence
 
@@ -261,3 +267,24 @@ live parallelism; those requirements remain open.
 The full SDK package passes under `-race` with this polling change (160.887s);
 pinned golangci-lint reports zero issues. This supersedes the earlier full-SDK
 evidence for this branch, without explaining the older intermittent failures.
+
+## Initial changed-topology migration: stateless chain insertion
+
+Replacement preflight and deployment can now preserve the task/route layout
+while inserting map/filter/flat-map operators within a chain. A coordinator plan
+matches stable old operator IDs in order and generates target-to-snapshot index
+mapping. Worker archive integrity checks run before an in-memory remap; source
+state, original checkpoint identity, typed handles and prepared sink state are
+preserved. Every old operator must be consumed exactly once. Removal, reorder,
+stateful insertion, changed ownership and network topology remain rejected.
+
+Engine tests verify typed-state index movement, source/sink preservation and
+invalid mappings without archive mutation. Six real-worker ordinary/transactional
+success/rollback/no-restart cases insert an extra map. The YAML file-watcher
+acceptance also inserts a CEL transform and commits the expected old/new output
+exactly once. This starts the topology-migration requirement; it does not complete
+split/merge, routing, redistribution, stateful changes or live parallelism.
+
+Insertion validation passed three SDK race repetitions (19.216s). Full affected
+package race suites passed: engine 103.901s, coordinator 43.536s, worker 117.039s,
+RPC 4.221s. Lint reports zero issues. The last full SDK run predates insertion.

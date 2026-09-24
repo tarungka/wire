@@ -55,6 +55,22 @@ func TestSameJobReplacementTransientStatusReads(t *testing.T) {
 	}
 }
 
+func TestReplacementInsertsStatelessOperator(t *testing.T) {
+	for _, transactional := range []bool{false, true} {
+		kind := "ordinary"
+		if transactional {
+			kind = "transactional"
+		}
+		t.Run(kind, func(t *testing.T) {
+			for _, scenario := range []string{"success", "rollback", "no-restart"} {
+				t.Run(scenario, func(t *testing.T) {
+					testSameJobReplacement(t, scenario != "success", scenario != "no-restart", transactional, "insert")
+				})
+			}
+		})
+	}
+}
+
 func TestSameJobReplacementLostCommitResponse(t *testing.T) {
 	for _, boundary := range []string{"savepoint", "replacement-final"} {
 		t.Run(boundary, func(t *testing.T) {
@@ -86,6 +102,9 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, re
 			return func(e Event) (Event, error) { e.Value = append([]byte(version+":"), e.Value...); return e, nil }, nil
 		})
 	}
+	registry.RegisterMap("extra", func(context.Context, []byte, WorkerTaskContext) (MapFunc, error) {
+		return func(e Event) (Event, error) { e.Value = append([]byte("extra:"), e.Value...); return e, nil }, nil
+	})
 	output := &collectSink{}
 	ledger := &pauseTransactionLedger{prepared: map[uint64][]string{}, committed: map[uint64]bool{}, loseResponse: responseLoss == "savepoint"}
 	t.Cleanup(func() {
@@ -126,7 +145,11 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, re
 	if recovery {
 		candidateEnv.SetRestartStrategy(FixedDelay(3, 0))
 	}
-	candidateEnv.AddSourceNamed("source", "replay", nil).MapNamed("map", "v2", nil).AddSinkNamed("sink", "output", nil)
+	candidateStream := candidateEnv.AddSourceNamed("source", "replay", nil).MapNamed("map", "v2", nil)
+	if responseLoss == "insert" {
+		candidateStream = candidateStream.MapNamed("extra", "extra", nil)
+	}
+	candidateStream.AddSinkNamed("sink", "output", nil)
 	if responseLoss == "http" || responseLoss == "savepoint-http" || responseLoss == "poll" {
 		target, err := url.Parse(endpoint)
 		if err != nil {
@@ -282,6 +305,9 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, re
 		}
 	}
 	expected := "v2:second"
+	if responseLoss == "insert" {
+		expected = "extra:v2:second"
+	}
 	if fail {
 		expected = "v1:second"
 	}

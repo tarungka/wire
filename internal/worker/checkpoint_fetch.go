@@ -157,6 +157,30 @@ func (w *Worker) fetchTaskCheckpoint(ctx context.Context, jobID, taskID string, 
 	if err != nil {
 		return nil, err
 	}
+	if restore.OperatorRestoreIndexes != nil {
+		var operators []rpc.OperatorDescriptor
+		for _, operator := range desc.OperatorChain {
+			if operator.Type != rpc.OperatorTypeSource {
+				operators = append(operators, operator)
+			}
+		}
+		if len(operators) != len(restore.OperatorRestoreIndexes) {
+			return nil, fmt.Errorf("checkpoint mapping does not match target operator chain")
+		}
+		for index, source := range restore.OperatorRestoreIndexes {
+			if source == -1 {
+				switch operators[index].Type {
+				case rpc.OperatorTypeMap, rpc.OperatorTypeFilter, rpc.OperatorTypeFlatMap:
+				default:
+					return nil, fmt.Errorf("checkpoint mapping initializes a stateful operator")
+				}
+			}
+		}
+		snapshot, err = engine.RemapCheckpointOperators(snapshot, restore.OperatorRestoreIndexes)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &snapshot, nil
 }
 

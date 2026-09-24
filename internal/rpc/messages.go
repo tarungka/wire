@@ -305,9 +305,12 @@ type EdgeDescriptor struct {
 // is the full source→ops→sink chain. In later phases, it's the slice of
 // operators between two shuffle boundaries.
 type CheckpointRestoreDescriptor struct {
-	SourceJobID   string `codec:"source_job_id,omitempty"`
-	ArchiveSHA256 string `codec:"archive_sha256,omitempty"`
-	ArchiveSize   int64  `codec:"archive_size,omitempty"`
+	// OperatorRestoreIndexes maps target operator positions to the original snapshot;
+	// -1 initializes a new stateless transform. Nil preserves the original layout.
+	OperatorRestoreIndexes []int  `codec:"operator_restore_indexes,omitempty"`
+	SourceJobID            string `codec:"source_job_id,omitempty"`
+	ArchiveSHA256          string `codec:"archive_sha256,omitempty"`
+	ArchiveSize            int64  `codec:"archive_size,omitempty"`
 	// SourceTaskID is set for rescaling; empty restores the receiving task itself.
 	SourceTaskID   string `codec:"source_task_id,omitempty"`
 	CheckpointID   uint64 `codec:"cid"`

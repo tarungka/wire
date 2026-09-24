@@ -8,7 +8,7 @@ import (
 	"github.com/tarungka/wire/internal/rpc"
 )
 
-// ReplaceJobFromSavepoint installs a same-layout replacement in the existing
+// ReplaceJobFromSavepoint installs a compatible-layout replacement in the existing
 // job identity. Old tasks are fenced and joined by the normal restart path.
 // Failed placement/deployment restores the old graph through rollback handling.
 func (c *Coordinator) ReplaceJobFromSavepoint(jobID, savepointID string, parallelism int, config []byte) (*JobMeta, error) {
@@ -84,7 +84,7 @@ func (c *Coordinator) replaceJobFromSavepoint(jobID, savepointID string, paralle
 	if len(sources) == 0 {
 		return nil, fmt.Errorf("%w: empty replacement layout", ErrInvalidConfig)
 	}
-	if _, err := planTaskLayoutRestore(sources[0].NumKeyGroups, sources, targets); err != nil {
+	if _, err := planTaskLayoutRestoreMode(sources[0].NumKeyGroups, sources, targets, true); err != nil {
 		return nil, err
 	}
 	if err := c.attachCheckpointRestoreLocked(&next, map[string][]rpc.TaskDescriptor{"validation": targets}); err != nil {

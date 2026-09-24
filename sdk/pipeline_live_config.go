@@ -102,7 +102,7 @@ func (p *YAMLPipeline) ValidateReplacement(ctx context.Context, jobID string) er
 	return nil
 }
 
-// ReplaceFromSavepoint requests same-layout replacement under an existing job
+// ReplaceFromSavepoint requests compatible-layout replacement under an existing job
 // identity. A nil error means accepted, not finished. Inspect job status and
 // rescale_failure to distinguish deployment success from rollback. Mutations
 // are never retried; after an uncertain response reconcile before resubmitting.

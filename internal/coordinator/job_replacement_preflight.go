@@ -43,6 +43,6 @@ func (c *Coordinator) ValidateReplacementLayout(jobID string, parallelism int, c
 	if len(sources) == 0 {
 		return fmt.Errorf("%w: empty source layout", ErrInvalidConfig)
 	}
-	_, err = planTaskLayoutRestore(sources[0].NumKeyGroups, sources, targets)
+	_, err = planTaskLayoutRestoreMode(sources[0].NumKeyGroups, sources, targets, true)
 	return err
 }

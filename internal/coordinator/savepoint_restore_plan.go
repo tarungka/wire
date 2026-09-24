@@ -37,6 +37,10 @@ func planSavepointTaskRestore(cp CheckpointMeta, targets []rpc.TaskDescriptor) (
 // planTaskLayoutRestore checks structural restore compatibility without claiming
 // that a savepoint exists or that application state serializers are compatible.
 func planTaskLayoutRestore(numKeyGroups int, descriptors, targets []rpc.TaskDescriptor) (map[string]string, error) {
+	return planTaskLayoutRestoreMode(numKeyGroups, descriptors, targets, false)
+}
+
+func planTaskLayoutRestoreMode(numKeyGroups int, descriptors, targets []rpc.TaskDescriptor, insertions bool) (map[string]string, error) {
 	invalid := func(reason string) (map[string]string, error) {
 		return nil, fmt.Errorf("%w: savepoint incompatible with job graph: %s", ErrInvalidConfig, reason)
 	}
@@ -82,16 +86,22 @@ func planTaskLayoutRestore(numKeyGroups int, descriptors, targets []rpc.TaskDesc
 		if err != nil || source.KeyGroup.Start != int32(groups[source.SubtaskIndex].Start) || source.KeyGroup.End != int32(groups[source.SubtaskIndex].End)-1 {
 			return invalid("invalid saved ownership")
 		}
-		if len(source.OperatorChain) == 0 || len(source.OperatorChain) != len(target.OperatorChain) {
-			return invalid("operator chain layout differs")
-		}
-		for i, old := range source.OperatorChain {
-			next := target.OperatorChain[i]
-			if (old.Type == rpc.OperatorTypeProcess || old.Type == rpc.OperatorTypeWindow) && stateBackendKind(old.StateBackend) != stateBackendKind(next.StateBackend) {
-				return invalid(fmt.Sprintf("state backend mismatch: checkpoint uses %q, job configured with %q", stateBackendKind(old.StateBackend), stateBackendKind(next.StateBackend)))
+		if insertions {
+			if _, err := replacementChainIndexes(source.OperatorChain, target.OperatorChain); err != nil {
+				return nil, err
 			}
-			if old.OperatorID == "" || old.OperatorID != next.OperatorID || old.Type != next.Type {
-				return invalid("operator chain identity or order differs")
+		} else {
+			if len(source.OperatorChain) == 0 || len(source.OperatorChain) != len(target.OperatorChain) {
+				return invalid("operator chain layout differs")
+			}
+			for i, old := range source.OperatorChain {
+				next := target.OperatorChain[i]
+				if (old.Type == rpc.OperatorTypeProcess || old.Type == rpc.OperatorTypeWindow) && stateBackendKind(old.StateBackend) != stateBackendKind(next.StateBackend) {
+					return invalid(fmt.Sprintf("state backend mismatch: checkpoint uses %q, job configured with %q", stateBackendKind(old.StateBackend), stateBackendKind(next.StateBackend)))
+				}
+				if old.OperatorID == "" || old.OperatorID != next.OperatorID || old.Type != next.Type {
+					return invalid("operator chain identity or order differs")
+				}
 			}
 		}
 		if !sameSavepointRoutes(source, target) {
