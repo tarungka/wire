@@ -11,7 +11,7 @@ The existing PR is #197. Other merged TRDs will use linked follow-up PRs.
 | Inter-node mutual TLS | Coordinator/worker RPC TLS exists. Verify identities, invalid/expired certificates, secure data-plane transport, and the documented trust boundaries. |
 | Authentication file (§3.4, §4.1) | Startup loader added: JSON, unique users/keys, roles, one credential, bcrypt cost >=10, bounded file/user count. Expand negative tests and verify all schema constraints. |
 | Basic and Bearer authentication (§3.5) | Runtime middleware added; authentication failures return 401. Verify certificate+auth combinations through an actual HTTPS server. |
-| Endpoint RBAC (§3.6) | Admin/operator/viewer matrix tested in middleware. Verify every actual registered endpoint, including redirects, escaped paths, metrics, and probes. |
+| Endpoint RBAC (§3.6) | Authenticated HTTPS acceptance covers every registered coordinator route, all roles, HEAD variants, public probes, escaped paths and canonical redirects; the test enforces route-inventory coverage. Separate metrics-listener acceptance remains. |
 | Brute-force protection (§6) | Bounded global authentication admission added (20 burst, 10 checks/second). Document operational behavior and test concurrent admission. |
 | Authentication logs (§7.3) | Successful identity and failed source/Basic username logging added. Add capture tests proving passwords and API keys never appear. |
 | Connector secret substitution (§3.7) | Implemented for structured JSON connector settings: submission-time snapshots, missing-variable rejection, reference-only metadata, recovery reconstruction and mTLS/capability-gated worker delivery. Live worker acceptance passes; complete recovery acceptance remains. |
@@ -353,3 +353,19 @@ ConfigureAuth, allow, user, apiRoleAllowed and authenticate, and 97.2% for
 readAPIAuth. Its remaining uncovered statement is the dummy bcrypt generation
 error return. The explicit 100% target is therefore still open; these numbers
 also do not replace the full real-route authorization acceptance matrix.
+
+### Real HTTPS endpoint authorization matrix
+
+`TestHTTPSRolesCoverRegisteredRoutes` exercises every coordinator route registered
+in `http.go` over HTTPS for anonymous, viewer, operator and admin callers. It also
+checks HEAD variants of GET routes, public probes, operator-only savepoint reads,
+checkpoint inspection and admin-only node deletion. An AST-derived inventory
+comparison fails if a registered route lacks an explicit authorization case.
+Authorized requests retain the actual endpoint's normal validation/not-found
+behavior; rejected requests return 401 or 403 before the endpoint runs.
+
+Additional cases cover escaped savepoint/cluster paths, encoded slashes and a
+canonical-path redirect followed by another authorization check. These tests and
+the live HA authentication/takeover test pass with the race detector; coordinator
+lint is clean. The separate metrics listener and remaining certificate/auth
+combinations still need their own acceptance evidence.
