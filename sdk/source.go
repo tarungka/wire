@@ -11,7 +11,9 @@ type Source interface {
 	// Close releases resources held by the source.
 	Close() error
 	// GenerateWatermark returns the current watermark timestamp (millis).
-	// Must be safe for concurrent use.
+	// Deprecated: runtime watermarks use SetWatermarkStrategy, defaulting to
+	// bounded out-of-orderness with a five-second tolerance. This method remains
+	// in the interface for source compatibility and is not called by execution.
 	GenerateWatermark() int64
 }
 
@@ -22,4 +24,12 @@ type CheckpointedSource interface {
 	Source
 	Checkpoint(checkpointID uint64) ([]byte, error)
 	RestoreOffset(ctx context.Context, offset []byte) error
+}
+
+// PreOpenCheckpointedSource opts into restoration before Open. The method must
+// only load offsets; resource acquisition belongs in Open. The runtime calls this
+// instead of RestoreOffset on recovery, before exposing an ingress listener.
+type PreOpenCheckpointedSource interface {
+	CheckpointedSource
+	RestoreOffsetBeforeOpen(context.Context, []byte) error
 }

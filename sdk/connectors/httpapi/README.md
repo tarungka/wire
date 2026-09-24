@@ -85,3 +85,56 @@ I/O. Implement `CheckpointedSource` only when you can explain the offset and
 replay contract; expose `BatchSink` when explicit batched delivery is supported.
 Use the HTTP tests as examples of exercising auth, cancellation, backpressure,
 retry identity, and end-to-end SDK lifecycle with local test servers.
+
+## Public cluster registration
+
+Applications using the public worker runtime can register the built-in classes:
+
+```go
+import (
+    "github.com/tarungka/wire/sdk"
+    "github.com/tarungka/wire/sdk/connectors/httpapi"
+    httpworker "github.com/tarungka/wire/sdk/connectors/httpapi/worker"
+)
+
+registry := sdk.NewWorkerRegistry()
+httpworker.Register(registry) // installs source and sink class "http-api"
+sourceConfig, err := httpworker.EncodeSourceConfig(httpapi.SourceConfig{
+    Address: "127.0.0.1:8080", AllowInsecure: true, // local development
+})
+if err != nil { return err }
+sinkConfig, err := httpworker.EncodeSinkConfig(httpapi.SinkConfig{
+    URL: "https://receiver.example/events",
+})
+if err != nil { return err }
+env.AddSourceNamed("ingress", "http-api", sourceConfig).
+    AddSinkNamed("delivery", "http-api", sinkConfig)
+```
+
+Pass the registry to `sdk.RunWorker` in each application worker. Config encoders
+validate without opening listeners or sending requests. They serialize sensitive
+configuration as supplied; do not treat this as secret-reference support. Source
+instances need distinct listen addresses when sharing a host. The HTTP replay and
+volatile acknowledgement limitations above still apply. Automatic batching and
+the full cluster lifecycle example remain tracked in WIP-16's completion audit.
+
+The source implements `sdk.PreOpenCheckpointedSource`: restored sequence state is
+loaded before the listener opens. Ordinary checkpointed connectors continue to
+restore after Open unless they explicitly opt into the pre-open contract. This
+ordering prevents accepting requests with a reset sequence during startup; it
+does not add durable ingress or automatic sender replay.
+
+While idle, HTTP source reads yield a non-nil empty batch every 100ms so pending
+checkpoint/savepoint requests can run without another ingress request. This is
+not end of input; the listener remains active.
+
+The runtime uses `WriteBatch` for sinks with the default fail-on-error policy,
+coalescing up to 100 queued records and flushing before checkpoints, watermarks,
+end-of-input or an idle wait. `BatchSize` caps each HTTP request; sparse streams
+can produce smaller requests. Configured record-level retry/DLQ/drop policies use
+single-record `Write` to preserve precise error attribution. Connector HTTP
+retries still apply within each request. Partial external delivery remains
+possible if a later request fails; receivers need replay-safe handling.
+
+For custom connector lifecycle, replay and transactional contracts, see the
+[connector development guide](../../../docs/connector-development.md).

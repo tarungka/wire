@@ -1,6 +1,10 @@
 package engine
 
-import "time"
+import (
+	"time"
+
+	"github.com/tarungka/wire/internal/observability"
+)
 
 // CheckpointMetrics abstracts checkpoint-related metrics collection.
 // Implementations may bridge to Prometheus or other systems.
@@ -19,4 +23,15 @@ func (noopCheckpointMetrics) ObserveAlignmentTime(_ time.Duration) {}
 // NoopCheckpointMetrics returns a CheckpointMetrics that discards all observations.
 func NoopCheckpointMetrics() CheckpointMetrics {
 	return noopCheckpointMetrics{}
+}
+
+type telemetryCheckpointMetrics struct{ alignment func(time.Duration) }
+
+// Timeout decisions are counted by the distributed coordinator, once per job
+// checkpoint. Engine callbacks must not mix task events into that counter.
+// Custom CheckpointMetrics implementations can still observe local timeouts.
+func (m telemetryCheckpointMetrics) IncTimeoutTotal()                     {}
+func (m telemetryCheckpointMetrics) ObserveAlignmentTime(d time.Duration) { m.alignment(d) }
+func newTelemetryCheckpointMetrics(taskID string) CheckpointMetrics {
+	return telemetryCheckpointMetrics{alignment: observability.CheckpointAlignmentRecorder(taskID)}
 }

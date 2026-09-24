@@ -3,6 +3,12 @@ package coordinator
 import "errors"
 
 var (
+	// ErrHARequiresStoreFactory rejects elected startup with a preopened store.
+	ErrHARequiresStoreFactory = errors.New("coordinator: elected startup requires HAService with a metadata store factory")
+
+	ErrCheckpointUnavailable = errors.New("coordinator: checkpoint replica unavailable")
+	ErrSavepointInUse        = errors.New("coordinator: savepoint is required for rescale recovery")
+	ErrCheckpointInProgress  = errors.New("coordinator: checkpoint already in progress")
 	// ErrStaleEpoch indicates the worker's epoch is newer than the coordinator's,
 	// meaning the coordinator is stale and should not be serving.
 	ErrStaleEpoch = errors.New("coordinator: stale epoch")
@@ -56,3 +62,5 @@ var (
 	// ErrJobExists indicates a job with the same name already exists and is active.
 	ErrJobExists = errors.New("coordinator: job already exists")
 )
+
+var ErrCheckpointMinPause = errors.New("checkpoint minimum pause has not elapsed")

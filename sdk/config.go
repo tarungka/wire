@@ -13,6 +13,9 @@ const (
 )
 
 // RestartStrategy configures how the pipeline recovers from failures.
+// MaxAttempts counts recovery redeployments over the job lifetime, excluding
+// the initial deployment and requested rescales. Delay applies before the first
+// retry as well. Recovery requires replayable sources for correct results.
 type RestartStrategy struct {
 	Type              RestartStrategyType
 	MaxAttempts       int

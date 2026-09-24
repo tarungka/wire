@@ -65,24 +65,24 @@ All 25 proposals, initially audited against `master` at `0e78195` on 2026-09-12 
 
 | WIP | Title | Status |
 |-----|-------|--------|
-| [WIP-01](WIP-01/README.md) | Wire Protocol & Serialization Format | Partially Implemented |
-| [WIP-02](WIP-02/README.md) | Goroutine & Concurrency Model | Partially Implemented |
-| [WIP-03](WIP-03/README.md) | Key Group Assignment & State Sharding | Partially Implemented |
-| [WIP-04](WIP-04/README.md) | Watermark Generation Algorithm | Partially Implemented |
-| [WIP-05](WIP-05/README.md) | Barrier Alignment Timeout & Failure Handling | Partially Implemented |
-| [WIP-06](WIP-06/README.md) | Checkpoint Metadata Schema | Partially Implemented |
+| [WIP-01](WIP-01/README.md) | Wire Protocol & Serialization Format | Implemented (CRC latency check explicitly waived; see WIP) |
+| [WIP-02](WIP-02/README.md) | Goroutine & Concurrency Model | Implemented |
+| [WIP-03](WIP-03/README.md) | Key Group Assignment & State Sharding | Implemented |
+| [WIP-04](WIP-04/README.md) | Watermark Generation Algorithm | Implemented |
+| [WIP-05](WIP-05/README.md) | Barrier Alignment Timeout & Failure Handling | Implemented |
+| [WIP-06](WIP-06/README.md) | Checkpoint Metadata Schema | Implemented |
 | [WIP-18](WIP-18/README.md) | Multiple State Backends | Partially Implemented |
 
 ### Runtime Infrastructure
 
 | WIP | Title | Status |
 |-----|-------|--------|
-| [WIP-07](WIP-07/README.md) | RPC Interface Specification | Partially Implemented |
-| [WIP-08](WIP-08/README.md) | Heartbeat & Health Monitoring | Partially Implemented |
-| [WIP-09](WIP-09/README.md) | Coordinator High Availability | Partially Implemented |
-| [WIP-10](WIP-10/README.md) | Two-Phase Commit for Transactional Sinks | Partially Implemented |
-| [WIP-11](WIP-11/README.md) | Error Handling & Dead Letter Queues | Partially Implemented |
-| [WIP-12](WIP-12/README.md) | Late Data & Allowed Lateness | Partially Implemented |
+| [WIP-07](WIP-07/README.md) | RPC Interface Specification | Implemented |
+| [WIP-08](WIP-08/README.md) | Heartbeat & Health Monitoring | Implemented |
+| [WIP-09](WIP-09/README.md) | Coordinator High Availability | Implemented |
+| [WIP-10](WIP-10/README.md) | Two-Phase Commit for Transactional Sinks | Implemented |
+| [WIP-11](WIP-11/README.md) | Error Handling & Dead Letter Queues | Implemented |
+| [WIP-12](WIP-12/README.md) | Late Data & Allowed Lateness | Implemented |
 | [WIP-20](WIP-20/README.md) | Task Execution Engine | Implemented |
 
 ### User-Facing Layer
@@ -123,18 +123,18 @@ completion merged in [#188](https://github.com/tarungka/wire/pull/188).
 
 | WIP | Individual PR | Scope of this increment |
 | --- | --- | --- |
-| [WIP-01](WIP-01/README.md) | [#208](https://github.com/tarungka/wire/pull/208) | Frame write validation |
-| [WIP-02](WIP-02/README.md) | [#207](https://github.com/tarungka/wire/pull/207) | Barrier checkpoint and epoch identity |
-| [WIP-03](WIP-03/README.md) | [#206](https://github.com/tarungka/wire/pull/206) | Validated, linear-time rescale mapping |
+| [WIP-01](WIP-01/README.md) | [#210](https://github.com/tarungka/wire/pull/210), follows #208 | Full scope; CRC latency check explicitly waived |
+| [WIP-02](WIP-02/README.md) | [#211](https://github.com/tarungka/wire/pull/211), follows #207/#149 | Concurrency runtime, checkpoint replication and recovery; validated in PR, review/merge pending |
+| [WIP-03](WIP-03/README.md) | [#212](https://github.com/tarungka/wire/pull/212) | Distributed keyed routing and savepoint state redistribution; follows #150 and #206 |
 | [WIP-04](WIP-04/README.md) | [#205](https://github.com/tarungka/wire/pull/205) | Startup idle timeout |
 | [WIP-05](WIP-05/README.md) | [#204](https://github.com/tarungka/wire/pull/204) | Abort cleanup at failure thresholds |
 | [WIP-06](WIP-06/README.md) | [#203](https://github.com/tarungka/wire/pull/203) | Checkpoint manifest validation |
 | [WIP-07](WIP-07/README.md) | [#202](https://github.com/tarungka/wire/pull/202) | Concurrent RPC session shutdown |
 | [WIP-08](WIP-08/README.md) | [#201](https://github.com/tarungka/wire/pull/201) | Live-worker placement |
 | [WIP-09](WIP-09/README.md) | [#200](https://github.com/tarungka/wire/pull/200) | Recovery fencing metadata validation |
-| [WIP-10](WIP-10/README.md) | [#199](https://github.com/tarungka/wire/pull/199) | Local transaction boundaries |
-| [WIP-11](WIP-11/README.md) | [#194](https://github.com/tarungka/wire/pull/194) | Runtime error policies and DLQ sinks |
-| [WIP-12](WIP-12/README.md) | [#193](https://github.com/tarungka/wire/pull/193) | Window lateness and snapshots |
+| [WIP-10](WIP-10/README.md) | [#224](https://github.com/tarungka/wire/pull/224) | Distributed transactional recovery and final checkpoints; follows #199 |
+| [WIP-11](WIP-11/README.md) | [#194](https://github.com/tarungka/wire/pull/194), [#225](https://github.com/tarungka/wire/pull/225) | Complete policies, YAML DLQ, live metrics and acceptance coverage |
+| [WIP-12](WIP-12/README.md) | [#193](https://github.com/tarungka/wire/pull/193), [#227](https://github.com/tarungka/wire/pull/227) | Ordered windows, named late streams, metrics, durable state and recovery; [acceptance](WIP-12/acceptance.md) |
 | [WIP-13](WIP-13/README.md) | [#195](https://github.com/tarungka/wire/pull/195) | Configuration reference and substitution |
 | [WIP-14](WIP-14/README.md) | [#198](https://github.com/tarungka/wire/pull/198) | Ordered SDK window execution |
 | [WIP-15](WIP-15/README.md) | [#196](https://github.com/tarungka/wire/pull/196) | Job and savepoint CLI |

@@ -128,6 +128,10 @@ func (m *trackingErrorMetrics) IncErrorTotal(op string) {
 	m.errors[op]++
 	m.mu.Unlock()
 }
+func (m *trackingErrorMetrics) IncClassifiedErrorTotal(op string, _ ErrorClass) {
+	m.IncErrorTotal(op)
+}
+
 func (m *trackingErrorMetrics) IncRetryTotal(op string) {
 	m.mu.Lock()
 	m.retries[op]++
@@ -497,6 +501,7 @@ func TestHandleExhausted_DLQChannelFull(t *testing.T) {
 	metrics := newTrackingErrorMetrics()
 
 	err := handleExhausted(
+		context.Background(),
 		ErrorHandlerConfig{OperatorName: "op", OnExhausted: RouteToDLQ},
 		Event{},
 		errors.New("fail"),
@@ -525,7 +530,7 @@ func TestHandleExhausted_DLQOverflow_MetricsAccuracy(t *testing.T) {
 
 	// Send 5 events to the DLQ — only 2 should enqueue, 3 should overflow.
 	for i := 0; i < 5; i++ {
-		err := handleExhausted(cfg, Event{Key: []byte{byte(i)}}, errors.New("fail"), 0, dlqCh, metrics, testLogger())
+		err := handleExhausted(context.Background(), cfg, Event{Key: []byte{byte(i)}}, errors.New("fail"), 0, dlqCh, metrics, testLogger())
 		if err != nil {
 			t.Fatalf("event %d: expected nil, got %v", i, err)
 		}
@@ -572,7 +577,7 @@ func TestHandleExhausted_UnavailableDLQCountsDrop(t *testing.T) {
 			ch <- DLQEvent{}
 		}
 		metrics := newTrackingErrorMetrics()
-		err := handleExhausted(ErrorHandlerConfig{OperatorName: "parse", OnExhausted: RouteToDLQ}, Event{}, errors.New("bad record"), 0, ch, metrics, testLogger())
+		err := handleExhausted(context.Background(), ErrorHandlerConfig{OperatorName: "parse", OnExhausted: RouteToDLQ}, Event{}, errors.New("bad record"), 0, ch, metrics, testLogger())
 		if err != nil || metrics.get(metrics.drops, "parse") != 1 || metrics.get(metrics.dlqs, "parse") != 0 {
 			t.Fatalf("unavailable DLQ full=%t: err=%v drops=%v", full, err, metrics.drops)
 		}
@@ -582,13 +587,13 @@ func TestHandleExhausted_UnavailableDLQCountsDrop(t *testing.T) {
 func TestHandleExhausted_DLQWriterFailureAndPanic(t *testing.T) {
 	for _, panics := range []bool{false, true} {
 		metrics := newTrackingErrorMetrics()
-		cfg := ErrorHandlerConfig{OperatorName: "parse", OnExhausted: RouteToDLQ, DLQWriter: func(DLQEvent) error {
+		cfg := ErrorHandlerConfig{OperatorName: "parse", OnExhausted: RouteToDLQ, DLQWriter: func(context.Context, DLQEvent) error {
 			if panics {
 				panic("sink failed")
 			}
 			return errors.New("sink failed")
 		}}
-		if err := handleExhausted(cfg, Event{}, errors.New("bad record"), 0, nil, metrics, testLogger()); err != nil {
+		if err := handleExhausted(context.Background(), cfg, Event{}, errors.New("bad record"), 0, nil, metrics, testLogger()); err != nil {
 			t.Fatal(err)
 		}
 		if metrics.get(metrics.drops, "parse") != 1 || metrics.get(metrics.dlqs, "parse") != 0 {

@@ -12,11 +12,13 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	_ "go.uber.org/automaxprocs" // Apply Linux CPU quotas before starting task goroutines.
 	"golang.org/x/sync/errgroup"
 
 	"github.com/tarungka/wire/internal/cmd"
 	"github.com/tarungka/wire/internal/config"
 	"github.com/tarungka/wire/internal/coordinator"
+	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/jobcli"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/observability"
@@ -150,18 +152,22 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 		}
 	}
 
-	// Create metadata store (PebbleDB).
-	store, err := coordinator.NewPebbleStore(wireCfg.Node.DataDir)
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to open coordinator metadata store")
-	}
-	defer func() { _ = store.Close() }()
-
 	// Create leader election backend.
 	var election coordinator.LeaderElection
 	switch wireCfg.Election.Backend {
 	case "filelock":
-		election = coordinator.NewFileLockElection(wireCfg.Election.LockPath, wireCfg.HTTP.Addr)
+		httpAddr := wireCfg.HTTP.AdvAddr
+		if httpAddr == "" {
+			httpAddr = wireCfg.HTTP.Addr
+		}
+		election = coordinator.NewFileLockElection(wireCfg.Election.LockPath, httpAddr)
+	case "kubernetes":
+		cfg := wireCfg.Election.Kubernetes
+		backend, err := coordinator.NewKubernetesLeaseElection(coordinator.KubernetesLeaseConfig{APIServer: cfg.APIServer, Namespace: cfg.Namespace, LeaseName: cfg.LeaseName, TokenFile: cfg.TokenFile, CAFile: cfg.CAFile, LeaseDuration: cfg.LeaseDuration.Duration, RenewDeadline: cfg.RenewDeadline.Duration, RetryPeriod: cfg.RetryPeriod.Duration})
+		if err != nil {
+			return err
+		}
+		election = backend
 	case "noop", "":
 		// Single-node mode: no election needed.
 	default:
@@ -170,10 +176,36 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 
 	// Create coordinator.
 	coordCfg := coordinator.CoordinatorConfig{
-		DataDir:    wireCfg.Node.DataDir,
-		NodeID:     nodeID,
-		ListenAddr: wireCfg.HTTP.Addr,
+		WorkerTimeout:                    wireCfg.Heartbeat.Timeout.Duration,
+		HeartbeatInterval:                wireCfg.Heartbeat.Interval.Duration,
+		CheckpointTimeout:                wireCfg.Checkpoint.Timeout.Duration,
+		CheckpointMinPause:               wireCfg.Checkpoint.MinPause.Duration,
+		CheckpointMaxConsecutiveFailures: wireCfg.Checkpoint.MaxConsecutiveFailures,
+		CheckpointTolerableFailureRate:   wireCfg.Checkpoint.TolerableFailureRate,
+		DataDir:                          wireCfg.Node.DataDir,
+		NodeID:                           nodeID,
+		ListenAddr:                       wireCfg.HTTP.Addr,
+		RPCAdvertiseAddr:                 wireCfg.Node.RPCAdvertiseAddr,
+		HTTPAdvertiseAddr:                wireCfg.HTTP.AdvAddr,
 	}
+	if coordCfg.RPCAdvertiseAddr == "" {
+		coordCfg.RPCAdvertiseAddr = wireCfg.Listen
+	}
+	rpcTLS, err := coordinatorRPCTLS(wireCfg.NodeTLS)
+	if err != nil {
+		return err
+	}
+	if election != nil {
+		service := coordinator.NewHAService(coordCfg, wireCfg.Listen, election, func() (coordinator.MetadataStore, error) {
+			return coordinator.NewPebbleStore(wireCfg.Node.DataDir)
+		}, rpcTLS, log.Logger)
+		return service.Run(ctx)
+	}
+	store, err := coordinator.NewPebbleStore(wireCfg.Node.DataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
 	coord := coordinator.New(coordCfg, store, election, log.Logger)
 
 	// Load configured HTTPS credentials before starting any server.
@@ -191,15 +223,7 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 	}
 
 	// Create transport server for worker RPC connections.
-	var nodeTLS *tls.Config
-	if wireCfg.NodeTLS.Cert != "" || wireCfg.NodeTLS.Key != "" || wireCfg.NodeTLS.VerifyClient || wireCfg.NodeTLS.CACert != "" {
-		var err error
-		nodeTLS, err = transport.LoadTLSConfig(wireCfg.NodeTLS.Cert, wireCfg.NodeTLS.Key, wireCfg.NodeTLS.VerifyClient, wireCfg.NodeTLS.CACert)
-		if err != nil {
-			return fmt.Errorf("node TLS: %w", err)
-		}
-	}
-	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger, nodeTLS)
+	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger, rpcTLS)
 
 	// Start everything in an errgroup.
 	g, gCtx := errgroup.WithContext(ctx)
@@ -233,21 +257,37 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 }
 
 func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger) error {
-	var nodeTLS *tls.Config
-	if wireCfg.NodeTLS.Cert != "" || wireCfg.NodeTLS.Key != "" || wireCfg.NodeTLS.CACert != "" || wireCfg.NodeTLS.VerifyServerName != "" {
-		var err error
-		nodeTLS, err = transport.NewTLSClientConfig(wireCfg.NodeTLS.Cert, wireCfg.NodeTLS.Key, wireCfg.NodeTLS.CACert)
-		if err != nil {
-			return fmt.Errorf("worker TLS: %w", err)
-		}
-		nodeTLS.ServerName = wireCfg.NodeTLS.VerifyServerName
+	taskConfig := engine.DefaultTaskSlotConfig()
+	taskConfig.Checkpoint.Timeout = wireCfg.Checkpoint.Timeout.Duration
+	taskConfig.Checkpoint.MinPause = wireCfg.Checkpoint.MinPause.Duration
+	taskConfig.Checkpoint.TolerableFailureRate = wireCfg.Checkpoint.TolerableFailureRate
+	taskConfig.Checkpoint.MaxConsecutiveFailures = wireCfg.Checkpoint.MaxConsecutiveFailures
+	taskConfig.InputBufferSize = wireCfg.TaskSlot.InputBufferSize
+	taskConfig.OutputBufferSize = wireCfg.TaskSlot.OutputBufferSize
+	taskConfig.AlignmentBufferSize = wireCfg.TaskSlot.AlignmentBufferSize
+	taskConfig.CheckpointUploadConcurrency = wireCfg.TaskSlot.CheckpointUploadConcurrency
+	taskConfig.DrainTimeout = wireCfg.TaskSlot.DrainTimeout.Duration
+	var replicaConfig *worker.CheckpointReplicaConfig
+	if cfg := wireCfg.Worker.CheckpointReplica; cfg.ListenAddr != "" {
+		replicaConfig = &worker.CheckpointReplicaConfig{ListenAddr: cfg.ListenAddr, AdvertiseAddr: cfg.AdvertiseAddr, StoreRoot: cfg.StoreRoot, ArtifactRoot: cfg.ArtifactRoot, StagingRoot: cfg.StagingRoot, Concurrency: cfg.Concurrency}
+	}
+	rpcTLS, err := workerRPCTLS(wireCfg.NodeTLS)
+	if err != nil {
+		return err
 	}
 	w := worker.New(worker.Config{
-		TLSConfig:       nodeTLS,
-		WorkerID:        wireCfg.Worker.WorkerID,
-		CoordinatorAddr: wireCfg.Worker.CoordinatorAddr,
-		ListenAddr:      wireCfg.Worker.ListenAddr,
-		TaskSlots:       wireCfg.Worker.TaskSlots,
+		EpochPath:            wireCfg.Worker.EpochPath,
+		CoordinatorSeeds:     wireCfg.Worker.CoordinatorSeeds,
+		HeartbeatInterval:    wireCfg.Heartbeat.Interval.Duration,
+		HeartbeatTimeout:     wireCfg.Heartbeat.Timeout.Duration,
+		HeartbeatMaxFailures: wireCfg.Heartbeat.MaxFailures,
+		RPCTLSConfig:         rpcTLS,
+		CheckpointReplica:    replicaConfig,
+		TaskSlot:             &taskConfig,
+		WorkerID:             wireCfg.Worker.WorkerID,
+		CoordinatorAddr:      wireCfg.Worker.CoordinatorAddr,
+		ListenAddr:           wireCfg.Worker.ListenAddr,
+		TaskSlots:            wireCfg.Worker.TaskSlots,
 	}, log.Logger)
 
 	g, gCtx := errgroup.WithContext(ctx)

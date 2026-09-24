@@ -39,7 +39,7 @@ These topics are completely absent — no doc covers them.
 
 6. **Security** — The technical doc has empty headings for "Data Encryption" and "Secret Management" with questions but no answers. mTLS, auth, RBAC — all absent.
 
-7. **Error Handling & Dead Letter Queue** — No documented strategy for handling processing errors, poison messages, or routing failed events. The Gemini research recommended first-class DLQ; nothing was captured.
+7. **Error Handling & Dead Letter Queue — resolved by WIP-11.** [Go/YAML usage](sdk/error_handling.md) covers retry classification, exhausted actions, best-effort DLQ delivery and metrics. [Acceptance evidence](trds/WIP-11/acceptance.md) records runtime and integration verification.
 
 8. **Job Lifecycle** — No documentation on how jobs are submitted, started, paused, canceled, or upgraded. No REST API spec.
 
@@ -53,7 +53,7 @@ These topics are mentioned but lack enough detail to code from.
 
 11. **Coordinator HA** — ~~The coordinator is "lightweight and generally stateless (relying on an external metadata store or leader election for HA)" — but which metadata store? What leader election? Raft is in go.mod but not in the docs.~~ **Resolved (WIP-09).** WIP-09 defines a phased HA strategy: Phase A (PebbleDB persistence), Phase B (pluggable leader election), Phase C (fencing tokens), Phase D (embedded Raft, deferred).
 
-12. **Two-Phase Commit for Sinks** — execution-model.md says exactly-once requires "transactional or idempotent" sinks but never defines the 2PC protocol, pre-commit/commit hooks, or how it integrates with checkpointing.
+12. **Two-Phase Commit for Sinks** — **Resolved (WIP-10).** The [runtime contract](trds/WIP-10/runtime-contract.md) defines preparation, durable decisions, recovery fencing, orphan cleanup and final checkpoints; [acceptance](trds/WIP-10/acceptance.md) records distributed and process-kill tests.
 
 13. **Barrier Alignment Timeout** — What happens if a barrier never arrives on one input? The docs describe the happy path but not the failure case. Does the checkpoint timeout? Is the job killed?
 
@@ -69,7 +69,7 @@ These topics are mentioned but lack enough detail to code from.
 
 19. **Broadcast State** — Listed as a state type in state-backend.md ("Configuration data sent to all parallel instances") but no API, no update mechanism, no consistency guarantees.
 
-20. **Late Data / Allowed Lateness** — Mentioned as "configurable grace period" but no configuration syntax, no units, no per-operator scoping, no side-output mechanism.
+20. **Late Data / Allowed Lateness — resolved by WIP-12.** The [runtime contract](trds/WIP-12/runtime-contract.md) specifies SDK/YAML units, per-window retention, named late streams, update identity, backend bounds and metrics. [Acceptance evidence](trds/WIP-12/acceptance.md) covers embedded and distributed recovery.
 
 ### Category 3: The Technical Documentation Is Essentially Empty
 
@@ -103,12 +103,12 @@ This file is labeled Draft v0.1.0 but is functionally an outline, not documentat
 | **P1** | RPC interface spec | Can't implement coordinator-worker communication |
 | **P1** | Wire protocol / serialization | Can't implement inter-node data transport |
 | **P1** | ~~Coordinator HA~~ Addressed (WIP-09) | ~~Can't run Wire in production~~ Phased HA strategy documented |
-| **P1** | 2PC for transactional sinks | Can't deliver exactly-once to external systems |
+| **Resolved** | 2PC for transactional sinks | WIP-10 distributed protocol and acceptance complete; connector compliance remains required |
 | **P1** | Security (mTLS, auth) | Can't run Wire in production |
 | **P2** | Barrier alignment timeout | Edge case but affects correctness |
 | **P2** | Watermark generation algorithm | Affects correctness |
 | **P2** | Key Group assignment | Affects rescaling correctness |
-| **P2** | Error handling / DLQ | Affects operability |
+| **Resolved** | Error handling / DLQ | WIP-11 usage and acceptance documented |
 | **P2** | Late data side outputs | Feature completeness |
 | **P3** | Glossary | Developer onboarding |
 | **P3** | Goroutine model details | Performance tuning |

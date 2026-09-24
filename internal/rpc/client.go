@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand/v2"
+	"net"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +23,8 @@ import (
 // Client opens Yamux streams to send RPC requests and read responses.
 type Client struct {
 	session   *yamux.Session
+	openGate  chan struct{}
+	openOnce  sync.Once
 	cfg       Config
 	nextReqID atomic.Uint64
 	log       zerolog.Logger
@@ -29,8 +34,9 @@ type Client struct {
 func NewClient(session *yamux.Session, cfg Config) *Client {
 	return &Client{
 		session: session,
-		cfg:     cfg,
-		log:     logger.GetLogger("rpc-client"),
+
+		cfg: cfg,
+		log: logger.GetLogger("rpc-client"),
 	}
 }
 
@@ -42,10 +48,23 @@ func (c *Client) nextRequestID() uint64 {
 // Call performs a single RPC call. It opens a new Yamux stream, sends the request,
 // reads the response, and closes the stream. The response is decoded into the
 // provided response pointer. If the server returns an RPCError, it is returned.
-func (c *Client) Call(ctx context.Context, method MethodID, request any, response any) error {
-	stream, err := c.session.OpenStream()
+func (c *Client) Call(ctx context.Context, method MethodID, request any, response any) (callErr error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.cfg.methodTimeout(method))
+		defer cancel()
+	}
+	defer func() {
+		if callErr != nil && ctx.Err() != nil {
+			callErr = errors.Join(callErr, ctx.Err())
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				callErr = errors.Join(callErr, ErrRPCTimeout)
+			}
+		}
+	}()
+	stream, err := c.openStreamContext(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrRPCClosed, err)
+		return fmt.Errorf("%w: %w", ErrRPCClosed, err)
 	}
 	defer func() { _ = stream.Close() }()
 
@@ -58,6 +77,8 @@ func (c *Client) Call(ctx context.Context, method MethodID, request any, respons
 	if err := stream.SetDeadline(deadline); err != nil {
 		return fmt.Errorf("set deadline: %w", err)
 	}
+	stopClose := context.AfterFunc(ctx, func() { _ = stream.SetDeadline(time.Now()); _ = stream.Close() })
+	defer stopClose()
 
 	reqID := c.nextRequestID()
 
@@ -77,7 +98,11 @@ func (c *Client) Call(ctx context.Context, method MethodID, request any, respons
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			return fmt.Errorf("%w: %v", ErrRPCTimeout, err)
 		}
-		return fmt.Errorf("%w: %v", ErrRPCClosed, err)
+		return fmt.Errorf("%w: %w", ErrRPCClosed, err)
+	}
+
+	if respFrame.RequestID != reqID || (respFrame.MethodID != method && respFrame.MethodID != MethodError) {
+		return fmt.Errorf("%w: response does not match request", ErrRPCDecodeFailed)
 	}
 
 	// Check for error response.
@@ -110,11 +135,14 @@ func (c *Client) Call(ctx context.Context, method MethodID, request any, respons
 // Errors received during reading are surfaced via StreamFrame.Err and
 // terminate the channel. The caller MUST drain or call cancel().
 func (c *Client) CallStream(ctx context.Context, method MethodID, request any) (<-chan StreamFrame, func(), error) {
-	stream, err := c.session.OpenStream()
+	stream, err := c.openStreamContext(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrRPCClosed, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrRPCClosed, err)
 	}
 
+	streamCtx, cancel := context.WithCancel(ctx)
+	stopClose := context.AfterFunc(streamCtx, func() { _ = stream.SetDeadline(time.Now()); _ = stream.Close() })
+	cleanup := func() { cancel(); stopClose(); _ = stream.SetDeadline(time.Now()); _ = stream.Close() }
 	reqID := c.nextRequestID()
 	c.log.Debug().
 		Str("method", MethodName(method)).
@@ -122,14 +150,14 @@ func (c *Client) CallStream(ctx context.Context, method MethodID, request any) (
 		Msg("opening stream RPC")
 
 	if err := EncodeRPCRequest(stream, method, reqID, request); err != nil {
-		_ = stream.Close()
+		cleanup()
 		return nil, nil, err
 	}
 
 	out := make(chan StreamFrame, 16)
-	streamCtx, cancel := context.WithCancel(ctx)
 
 	go func() {
+		defer cleanup()
 		defer close(out)
 		for {
 			frame, readErr := ReadRPCFrame(stream, c.cfg.MaxPayloadSize)
@@ -142,13 +170,26 @@ func (c *Client) CallStream(ctx context.Context, method MethodID, request any) (
 				}
 				return
 			}
+			if frame.RequestID != reqID || (frame.MethodID != method && frame.MethodID != MethodError) {
+				select {
+				case out <- StreamFrame{Err: fmt.Errorf("%w: response does not match request", ErrRPCDecodeFailed)}:
+				case <-streamCtx.Done():
+				}
+				return
+			}
 			if frame.MethodID == MethodError {
 				var rpcErr RPCError
 				if decErr := protocol.DecodeMsgPack(frame.Payload, &rpcErr); decErr != nil {
-					out <- StreamFrame{Err: fmt.Errorf("%w: %v", ErrRPCDecodeFailed, decErr)}
+					select {
+					case out <- StreamFrame{Err: fmt.Errorf("%w: %v", ErrRPCDecodeFailed, decErr)}:
+					case <-streamCtx.Done():
+					}
 					return
 				}
-				out <- StreamFrame{Err: &rpcErr}
+				select {
+				case out <- StreamFrame{Err: &rpcErr}:
+				case <-streamCtx.Done():
+				}
 				return
 			}
 			select {
@@ -159,10 +200,6 @@ func (c *Client) CallStream(ctx context.Context, method MethodID, request any) (
 		}
 	}()
 
-	cleanup := func() {
-		cancel()
-		_ = stream.Close()
-	}
 	return out, cleanup, nil
 }
 
@@ -178,16 +215,25 @@ type StreamFrame struct {
 // Only retryable errors are retried.
 func (c *Client) CallWithRetry(ctx context.Context, method MethodID, request any, response any, maxRetries int) error {
 	var lastErr error
+	maxRetries = max(0, maxRetries)
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt <= max(0, maxRetries); attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		lastErr = c.Call(ctx, method, request, response)
 		if lastErr == nil {
 			return nil
 		}
 
 		// Check if error is retryable.
-		rpcErr, ok := lastErr.(*RPCError)
-		if !ok || !rpcErr.Retryable {
+		var rpcErr *RPCError
+		retryable := errors.As(lastErr, &rpcErr) && rpcErr.Retryable
+		var networkError net.Error
+		if safeToRetry(method, request) && (errors.Is(lastErr, ErrRPCTimeout) || errors.Is(lastErr, ErrRPCClosed) || errors.Is(lastErr, io.EOF) || (errors.As(lastErr, &networkError) && networkError.Timeout())) {
+			retryable = true
+		}
+		if !retryable {
 			return lastErr
 		}
 
@@ -203,8 +249,8 @@ func (c *Client) CallWithRetry(ctx context.Context, method MethodID, request any
 		))
 
 		// Use RetryAfterMs from server if provided.
-		if rpcErr.RetryAfterMs > 0 {
-			backoff = time.Duration(rpcErr.RetryAfterMs) * time.Millisecond
+		if rpcErr != nil && rpcErr.RetryAfterMs > 0 {
+			backoff = time.Duration(min(rpcErr.RetryAfterMs, 5000)) * time.Millisecond
 		}
 
 		// Add jitter: ±25% of computed backoff.
@@ -239,7 +285,7 @@ func (c *Client) SubmitJob(ctx context.Context, req *SubmitJobRequest) (*SubmitJ
 // UpdateTaskStatus sends an UpdateTaskStatus RPC.
 func (c *Client) UpdateTaskStatus(ctx context.Context, req *UpdateTaskStatusRequest) (*UpdateTaskStatusResponse, error) {
 	var resp UpdateTaskStatusResponse
-	if err := c.Call(ctx, MethodUpdateTaskStatus, req, &resp); err != nil {
+	if err := c.CallWithRetry(ctx, MethodUpdateTaskStatus, req, &resp, c.cfg.MaxRetries); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -257,7 +303,7 @@ func (c *Client) TriggerCheckpoint(ctx context.Context, req *TriggerCheckpointRe
 // AcknowledgeCheckpoint sends an AcknowledgeCheckpoint RPC.
 func (c *Client) AcknowledgeCheckpoint(ctx context.Context, req *AcknowledgeCheckpointRequest) (*AcknowledgeCheckpointResponse, error) {
 	var resp AcknowledgeCheckpointResponse
-	if err := c.Call(ctx, MethodAcknowledgeCheckpoint, req, &resp); err != nil {
+	if err := c.CallWithRetry(ctx, MethodAcknowledgeCheckpoint, req, &resp, c.cfg.MaxRetries); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -288,4 +334,21 @@ func (c *Client) RegisterWorker(ctx context.Context, req *RegisterWorkerRequest)
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// Only requests carrying stable operation identities can retry ambiguous
+// transport failures. Registration is intentionally excluded: it reconciles
+// worker state and must not be replayed on a different session implicitly.
+func safeToRetry(method MethodID, request any) bool {
+	switch method {
+	case MethodUpdateTaskStatus, MethodAcknowledgeCheckpoint, MethodTriggerCheckpoint, MethodHeartbeat:
+		return true
+	case MethodSubmitJob:
+		req, ok := request.(*SubmitJobRequest)
+		return ok && req.AttemptID != "" && req.ReservationID != ""
+	case MethodRequestTaskSlots:
+		req, ok := request.(*RequestTaskSlotsRequest)
+		return ok && (req.RequiredSlots == 0 || req.ReservationID != "")
+	}
+	return false
 }

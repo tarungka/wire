@@ -19,6 +19,7 @@ import (
 // embeddedExecutor runs pipelines in-process.
 type embeddedExecutor struct {
 	env *StreamExecutionEnvironment
+	dlq map[int]*engine.DLQDestination
 }
 
 // stageIO holds the channels for a single pipeline stage's parallel instances.
@@ -33,38 +34,43 @@ func (ex *embeddedExecutor) run(ctx context.Context, jobName string) (*JobResult
 	log := logger.GetLogger("embedded")
 
 	graph := ex.env.graph
-	parallelism := ex.env.parallelism
-	if parallelism <= 0 {
-		parallelism = 1
-	}
 
 	// Topo-sort and check for shuffle boundaries.
 	sorted := graph.topoSort()
 	for _, node := range sorted {
+		if _, ok := node.Sink.(TransactionalSink); ok {
+			return nil, fmt.Errorf("sdk: transactional sink %q requires the cluster checkpoint runtime; embedded execution has no durable global checkpoint decisions", node.Name)
+		}
 		if node.NamedDLQ != nil {
 			return nil, fmt.Errorf("sdk: named DLQ sinks require cluster mode")
 		}
 	}
+	ex.dlq = make(map[int]*engine.DLQDestination)
+	shared := make(map[*sharedPipelineDLQSink]*engine.DLQDestination)
 	for _, node := range sorted {
-		if node.DLQSink != nil {
-			if err := node.DLQSink.Open(ctx); err != nil {
-				return nil, fmt.Errorf("sdk: open DLQ for %q: %w", node.Name, err)
+		if node.DLQSink == nil {
+			continue
+		}
+		if sink, ok := node.DLQSink.(*sharedPipelineDLQSink); ok {
+			if destination := shared[sink]; destination != nil {
+				ex.dlq[node.ID] = destination
+				continue
 			}
-			defer node.DLQSink.Close()
 		}
-	}
-	hasShuffleBoundary := false
-	for _, edge := range graph.edges {
-		if edge.Shuffle == ShuffleHash || edge.Shuffle == ShuffleRebalance {
-			hasShuffleBoundary = true
-			break
+		destination, err := engine.OpenDLQDestination(ctx, node.DLQSink, log.With().Str("operator", node.Name).Logger())
+		if err != nil {
+			return nil, err
 		}
+		ex.dlq[node.ID] = destination
+		if sink, ok := node.DLQSink.(*sharedPipelineDLQSink); ok {
+			shared[sink] = destination
+		}
+		defer destination.Close()
 	}
-
-	if !hasShuffleBoundary {
-		return ex.runLinear(ctx, sorted, parallelism, jobName, start, log)
+	if ex.env.parallelism == 1 && graph.canFuseLinear() {
+		return ex.runLinear(ctx, sorted, 1, jobName, start, log)
 	}
-	return ex.runWithShuffle(ctx, sorted, parallelism, jobName, start, log)
+	return ex.runGraph(ctx, sorted, jobName, start, log)
 }
 
 // runLinear fuses the entire pipeline into a single operator chain per parallel
@@ -120,7 +126,7 @@ func (ex *embeddedExecutor) runLinearInstance(
 		before := len(operators)
 		switch node.Type {
 		case NodeSource:
-			sa := &sourceAdapter{source: node.Source}
+			sa := adaptSource(node.Source, node.TimestampExtractor)
 			sourceOp = sa
 		case NodeMap:
 			operators = append(operators, &mapAdapter{fn: node.MapFn})
@@ -129,7 +135,7 @@ func (ex *embeddedExecutor) runLinearInstance(
 		case NodeFilter:
 			operators = append(operators, &filterAdapter{fn: node.FilterFn})
 		case NodeSink:
-			operators = append(operators, &sinkAdapter{sink: node.Sink})
+			operators = append(operators, adaptSink(node.Sink))
 		case NodeKeyBy, NodeWindow, NodeReduce, NodeProcess:
 			// These shouldn't appear in a linear pipeline.
 			return fmt.Errorf("sdk: unexpected node type %d in linear pipeline", node.Type)
@@ -139,15 +145,8 @@ func (ex *embeddedExecutor) runLinearInstance(
 			if err != nil {
 				return err
 			}
-			if node.DLQSink != nil {
-				sink := node.DLQSink
-				cfg.DLQWriter = func(e engine.DLQEvent) error {
-					data, err := engine.MarshalDLQEvent(e)
-					if err != nil {
-						return err
-					}
-					return sink.Write(ctx, Event{Key: e.OriginalEvent.Key, Value: data, EventTime: e.Timestamp})
-				}
+			if destination := ex.dlq[node.ID]; destination != nil {
+				cfg.DLQWriter = destination.Write
 			}
 			errorConfigs = append(errorConfigs, cfg)
 		}
@@ -169,14 +168,15 @@ func (ex *embeddedExecutor) runLinearInstance(
 
 	aligner := engine.NewBarrierAligner(1, engine.DefaultAlignmentBufferSize)
 	metrics := engine.NoopCheckpointMetrics()
-	errMetrics := engine.NoopErrorMetrics()
+	errMetrics := engine.NewTelemetryErrorMetrics("")
 	chainLog := log.With().Int("instance", instanceIdx).Logger()
 
 	ig, igctx := errgroup.WithContext(runCtx)
 
+	strategy, interval := embeddedWatermark(sorted)
 	// Source reader goroutine.
 	ig.Go(func() error {
-		return engine.RunSourceReader(igctx, sourceOp, nil, eventCh, controlCh, chainLog)
+		return engine.RunSourceReaderWithWatermarks(igctx, sourceOp, strategy, eventCh, controlCh, interval, chainLog)
 	})
 
 	// Operator chain goroutine.
@@ -209,121 +209,6 @@ func (ex *embeddedExecutor) runLinearInstance(
 	return err
 }
 
-// runWithShuffle splits the pipeline into stages at shuffle boundaries and
-// connects them via partition routers.
-func (ex *embeddedExecutor) runWithShuffle(
-	ctx context.Context,
-	sorted []*StreamNode,
-	parallelism int,
-	jobName string,
-	start time.Time,
-	log zerolog.Logger,
-) (*JobResult, error) {
-	graph := ex.env.graph
-
-	// Split into stages at shuffle boundaries.
-	stages := ex.splitStages(sorted, graph)
-
-	g, gctx := errgroup.WithContext(ctx)
-
-	// Build inter-stage channels. Each stage (except the last) produces to
-	// output channels that a router reads from.
-
-	stageIOs := make([]stageIO, len(stages))
-	for s := range stages {
-		p := parallelism
-		stageIOs[s] = stageIO{
-			inputChs:   make([]chan engine.Event, p),
-			controlChs: make([]chan engine.ControlMsg, p),
-			outputChs:  make([]chan engine.OutputMsg, p),
-		}
-		for i := 0; i < p; i++ {
-			stageIOs[s].inputChs[i] = make(chan engine.Event, engine.DefaultInputBufferSize)
-			stageIOs[s].controlChs[i] = make(chan engine.ControlMsg, 8)
-			stageIOs[s].outputChs[i] = make(chan engine.OutputMsg, engine.DefaultOutputBufferSize)
-		}
-	}
-
-	// Launch each stage.
-	for s, stage := range stages {
-		s, stage := s, stage
-		isFirst := (s == 0)
-		isLast := (s == len(stages)-1)
-
-		for i := 0; i < parallelism; i++ {
-			idx := i
-			g.Go(func() error {
-				return ex.runStageInstance(gctx, stage, idx, isFirst, stageIOs[s], log)
-			})
-		}
-
-		// Launch router between this stage and the next (if not last).
-		if !isLast {
-			nextIO := stageIOs[s+1]
-			// Determine shuffle type from the edge connecting stages.
-			shuffleType := ex.findShuffleBetween(stage, stages[s+1], graph)
-
-			var routeFn func(engine.Event, int) int
-			switch shuffleType {
-			case ShuffleHash:
-				routeFn = hashRouter()
-			case ShuffleRebalance:
-				routeFn = rebalanceRouter()
-			default:
-				routeFn = rebalanceRouter() // Default to round-robin.
-			}
-
-			// Collect upstream output channels and downstream input/control channels.
-			upstreams := make([]<-chan engine.OutputMsg, parallelism)
-			for i := 0; i < parallelism; i++ {
-				upstreams[i] = stageIOs[s].outputChs[i]
-			}
-			downstreams := make([]chan<- engine.Event, parallelism)
-			downCtrlChs := make([]chan<- engine.ControlMsg, parallelism)
-			for i := 0; i < parallelism; i++ {
-				downstreams[i] = nextIO.inputChs[i]
-				downCtrlChs[i] = nextIO.controlChs[i]
-			}
-
-			router := &partitionRouter{
-				upstreams:   upstreams,
-				downstreams: downstreams,
-				controlChs:  downCtrlChs,
-				routeFn:     routeFn,
-			}
-			if stages[s+1][0].Type == NodeKeyBy {
-				router.keySelector = stages[s+1][0].KeyByFn
-			}
-			g.Go(func() error { return router.run(gctx) })
-		}
-
-		// For the last stage, drain output channels.
-		if isLast {
-			for i := 0; i < parallelism; i++ {
-				outCh := stageIOs[s].outputChs[i]
-				g.Go(func() error {
-					for range outCh {
-					}
-					return nil
-				})
-			}
-		}
-	}
-
-	err := g.Wait()
-	if err == context.Canceled {
-		err = nil
-	}
-
-	return &JobResult{
-		JobID: jobName,
-		Err:   err,
-		Metrics: JobMetrics{
-			Duration: time.Since(start),
-		},
-	}, err
-}
-
 // runStageInstance runs a single parallel instance of a pipeline stage.
 func (ex *embeddedExecutor) runStageInstance(
 	ctx context.Context,
@@ -345,7 +230,7 @@ func (ex *embeddedExecutor) runStageInstance(
 		switch node.Type {
 		case NodeSource:
 			if isSourceStage {
-				sourceOp = &sourceAdapter{source: node.Source}
+				sourceOp = adaptSource(node.Source, node.TimestampExtractor)
 			}
 		case NodeMap:
 			operators = append(operators, &mapAdapter{fn: node.MapFn})
@@ -354,29 +239,32 @@ func (ex *embeddedExecutor) runStageInstance(
 		case NodeFilter:
 			operators = append(operators, &filterAdapter{fn: node.FilterFn})
 		case NodeSink:
-			operators = append(operators, &sinkAdapter{sink: node.Sink})
+			operators = append(operators, adaptSink(node.Sink))
 		case NodeKeyBy:
 			// KeyBy is a shuffle boundary — no operator needed (routing handles it).
 		case NodeProcess:
 			// For embedded mode, Process wraps to a FlatMapOperator.
-			operators = append(operators, &processAdapter{fn: node.ProcessFn, config: ex.env.stateBackend, nodeID: node.ID, instance: instanceIdx})
+			operators = append(operators, &processAdapter{fn: node.ProcessFn, onTimer: node.TimerFn, sideTags: node.SideOutputTags, config: ex.env.stateBackend, nodeID: node.ID, instance: instanceIdx})
 		case NodeWindow, NodeReduce:
-			// Window/Reduce not yet implemented in embedded mode.
+			op, err := embeddedWindow(node)
+			if err != nil {
+				return err
+			}
+			if window, ok := op.(*engine.EventTimeWindowOperator); ok {
+				window.StateBackendFactory = func() (engine.StateBackend, func(), error) { return ex.env.stateBackend.open(node.ID, instanceIdx) }
+			}
+			if window, ok := op.(interface{ SetMetricIdentity(string, string) }); ok {
+				window.SetMetricIdentity(fmt.Sprintf("%s-%d", node.Name, node.ID), fmt.Sprintf("embedded/%d/%d", node.ID, instanceIdx))
+			}
+			operators = append(operators, op)
 		}
 		if len(operators) > before {
 			cfg, err := errorpolicy.Compile(node.ErrorPolicy, node.Name)
 			if err != nil {
 				return err
 			}
-			if node.DLQSink != nil {
-				sink := node.DLQSink
-				cfg.DLQWriter = func(e engine.DLQEvent) error {
-					data, err := engine.MarshalDLQEvent(e)
-					if err != nil {
-						return err
-					}
-					return sink.Write(ctx, Event{Key: e.OriginalEvent.Key, Value: data, EventTime: e.Timestamp})
-				}
+			if destination := ex.dlq[node.ID]; destination != nil {
+				cfg.DLQWriter = destination.Write
 			}
 			errorConfigs = append(errorConfigs, cfg)
 		}
@@ -395,14 +283,15 @@ func (ex *embeddedExecutor) runStageInstance(
 
 	aligner := engine.NewBarrierAligner(1, engine.DefaultAlignmentBufferSize)
 	metrics := engine.NoopCheckpointMetrics()
-	errMetrics := engine.NoopErrorMetrics()
+	errMetrics := engine.NewTelemetryErrorMetrics("")
 	chainLog := log.With().Int("instance", instanceIdx).Logger()
 
 	ig, igctx := errgroup.WithContext(runCtx)
 
+	strategy, interval := embeddedWatermark(stage)
 	if isSourceStage && sourceOp != nil {
 		ig.Go(func() error {
-			return engine.RunSourceReader(igctx, sourceOp, nil, eventCh, controlCh, chainLog)
+			return engine.RunSourceReaderWithWatermarks(igctx, sourceOp, strategy, eventCh, controlCh, interval, chainLog)
 		})
 	}
 
@@ -428,7 +317,12 @@ func (ex *embeddedExecutor) runStageInstance(
 
 // processAdapter wraps a ProcessFunc to implement engine.FlatMapOperator.
 type processAdapter struct {
+	backendFactory   func() (engine.StateBackend, func(), error)
+	clock            func() time.Time
 	fn               ProcessFunc
+	onTimer          TimerFunc
+	watermark        int64
+	sideTags         []string
 	config           StateBackendConfig
 	nodeID, instance int
 	backend          engine.StateBackend
@@ -437,7 +331,20 @@ type processAdapter struct {
 
 func (a *processAdapter) Open(_ context.Context) error {
 	var err error
-	a.backend, a.cleanup, err = a.config.open(a.nodeID, a.instance)
+	if a.backendFactory != nil {
+		a.backend, a.cleanup, err = a.backendFactory()
+	} else {
+		a.backend, a.cleanup, err = a.config.open(a.nodeID, a.instance)
+	}
+	if err == nil {
+		if a.cleanup == nil {
+			a.cleanup = func() {}
+		}
+		err = a.loadWatermark()
+		if err != nil {
+			_ = a.Close()
+		}
+	}
 	return err
 }
 func (a *processAdapter) Close() error {
@@ -450,17 +357,51 @@ func (a *processAdapter) Close() error {
 	return err
 }
 func (a *processAdapter) Checkpoint(id uint64) ([]byte, error) {
-	handle, err := a.backend.Checkpoint(id)
+	handle, err := a.CheckpointState(id)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(handle)
 }
-func (a *processAdapter) FlatMap(_ context.Context, event engine.Event, emit func(engine.Event)) error {
-	pctx := &backendProcessContext{key: append([]byte(nil), event.Key...), backend: a.backend}
+
+func (a *processAdapter) CheckpointState(id uint64) (engine.SnapshotHandle, error) {
+	if a.backend == nil {
+		return engine.SnapshotHandle{}, engine.ErrBackendClosed
+	}
+	return a.backend.Checkpoint(id)
+}
+
+func (a *processAdapter) RestoreState(handle engine.SnapshotHandle) error {
+	if a.backend == nil {
+		return engine.ErrBackendClosed
+	}
+	if err := a.backend.Restore(handle); err != nil {
+		return err
+	}
+	return a.loadWatermark()
+}
+func (a *processAdapter) FlatMap(ctx context.Context, event engine.Event, emit func(engine.Event)) error {
+	original := a.backend
+	transaction := newInvocationState(original)
+	a.backend = transaction
+	defer func() { a.backend = original }()
+	pctx := a.processContext(event.Key, event.EventTime)
 	results, err := a.fn(pctx, event)
 	if err = errors.Join(err, pctx.err); err != nil {
 		return err
+	}
+	if pctx.hasDueTimer {
+		timers, err := a.fireDueTimers(ctx)
+		if err != nil {
+			return err
+		}
+		results = append(results, timers...)
+	}
+	if err := transaction.commit(); err != nil {
+		return err
+	}
+	for _, e := range pctx.sideEvents {
+		emit(e)
 	}
 	for _, e := range results {
 		emit(e)
@@ -470,54 +411,4 @@ func (a *processAdapter) FlatMap(_ context.Context, event engine.Event, emit fun
 
 // Compile-time check.
 var _ engine.FlatMapOperator = (*processAdapter)(nil)
-
-// splitStages splits the sorted nodes into stages, breaking at shuffle boundaries.
-func (ex *embeddedExecutor) splitStages(sorted []*StreamNode, graph *StreamGraph) [][]*StreamNode {
-	if len(sorted) == 0 {
-		return nil
-	}
-
-	// Build set of node IDs that start a new stage (targets of shuffle edges).
-	shuffleTargets := make(map[int]bool)
-	for _, edge := range graph.edges {
-		if edge.Shuffle == ShuffleHash || edge.Shuffle == ShuffleRebalance {
-			shuffleTargets[edge.TargetID] = true
-		}
-	}
-
-	var stages [][]*StreamNode
-	var current []*StreamNode
-
-	for _, node := range sorted {
-		if shuffleTargets[node.ID] && len(current) > 0 {
-			stages = append(stages, current)
-			current = nil
-		}
-		current = append(current, node)
-	}
-	if len(current) > 0 {
-		stages = append(stages, current)
-	}
-
-	return stages
-}
-
-// findShuffleBetween finds the shuffle type on the edge connecting two stages.
-func (ex *embeddedExecutor) findShuffleBetween(stage1, stage2 []*StreamNode, graph *StreamGraph) ShuffleType {
-	// Build sets of node IDs in each stage.
-	s1 := make(map[int]bool)
-	s2 := make(map[int]bool)
-	for _, n := range stage1 {
-		s1[n.ID] = true
-	}
-	for _, n := range stage2 {
-		s2[n.ID] = true
-	}
-
-	for _, edge := range graph.edges {
-		if s1[edge.SourceID] && s2[edge.TargetID] {
-			return edge.Shuffle
-		}
-	}
-	return ShuffleForward
-}
+var _ engine.StateHandleOperator = (*processAdapter)(nil)

@@ -4,14 +4,19 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/tarungka/wire/internal/keygroup"
 )
 
 // StreamExecutionEnvironment is the entry point for building and executing
 // streaming pipelines. It holds configuration and the logical stream graph.
 type StreamExecutionEnvironment struct {
+	miniCluster        *MiniCluster
 	parallelism        int
+	numKeyGroups       int
 	checkpointInterval time.Duration
 	checkpointTimeout  time.Duration
+	checkpointMinPause time.Duration
 	restartStrategy    RestartStrategy
 	mode               ExecutionMode
 	coordinatorURL     string
@@ -25,6 +30,7 @@ type StreamExecutionEnvironment struct {
 func New() *StreamExecutionEnvironment {
 	return &StreamExecutionEnvironment{
 		parallelism:       1,
+		numKeyGroups:      keygroup.DefaultNumKeyGroups,
 		checkpointTimeout: 10 * time.Minute,
 		restartStrategy:   NoRestart(),
 		mode:              Embedded,
@@ -36,6 +42,28 @@ func New() *StreamExecutionEnvironment {
 func (env *StreamExecutionEnvironment) SetParallelism(p int) *StreamExecutionEnvironment {
 	env.parallelism = p
 	return env
+}
+
+// SetKeyGroups sets the fixed number of key groups for this job. The count
+// must be a power of two in [1, 32768] and at least each operator's parallelism.
+// Invalid settings are rejected by Execute before submission.
+func (env *StreamExecutionEnvironment) SetKeyGroups(count int) *StreamExecutionEnvironment {
+	env.numKeyGroups = count
+	return env
+}
+
+func (env *StreamExecutionEnvironment) validateKeyGroups() error {
+	if err := (keygroup.Config{NumKeyGroups: env.numKeyGroups, Parallelism: env.parallelism}).Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	}
+	for _, node := range env.graph.nodes {
+		if node.Parallelism > 0 {
+			if err := (keygroup.Config{NumKeyGroups: env.numKeyGroups, Parallelism: node.Parallelism}).Validate(); err != nil {
+				return fmt.Errorf("%w: operator %q: %v", ErrInvalidConfig, node.Name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // SetCheckpointInterval enables periodic checkpointing at the given interval.
@@ -115,14 +143,30 @@ func (env *StreamExecutionEnvironment) ExecuteWithName(ctx context.Context, jobN
 		return nil, err
 	}
 
+	if err := env.validateKeyGroups(); err != nil {
+		return nil, err
+	}
+
+	if err := env.checkpointPolicy().Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	}
+	if _, err := env.restartPolicy(); err != nil {
+		return nil, err
+	}
 	if err := env.stateBackend.validate(); err != nil {
 		return nil, err
 	}
-	if env.mode == Cluster && env.stateBackendSet {
-		return nil, fmt.Errorf("%w: cluster state backend selection is not supported", ErrInvalidConfig)
-	}
 	switch env.mode {
 	case Embedded:
+		if err := env.graph.validateForEmbedded(); err != nil {
+			return nil, err
+		}
+		if env.miniCluster != nil {
+			return env.miniCluster.run(ctx, env, jobName)
+		}
+		if env.checkpointInterval > 0 || env.restartStrategy.Type != RestartNone {
+			return env.runLocal(ctx, jobName, env.parallelism)
+		}
 		executor := &embeddedExecutor{env: env}
 		return executor.run(ctx, jobName)
 	case Cluster:
@@ -149,3 +193,6 @@ type JobMetrics struct {
 	RecordsOut int64
 	Duration   time.Duration
 }
+
+// NewStreamExecutionEnvironment is the descriptive alias for New.
+func NewStreamExecutionEnvironment() *StreamExecutionEnvironment { return New() }

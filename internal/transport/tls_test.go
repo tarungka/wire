@@ -335,12 +335,13 @@ func TestTLS_AllMessageTypes(t *testing.T) {
 		t.Fatalf("ReceiveHandshake: %v", err)
 	}
 
-	// Send all message types (except Handshake which was already sent).
+	exerciseBackpressure(t, cs, ss)
+
+	// Send all data message types after session negotiation and control traffic.
 	messages := []any{
 		&protocol.DataRecordMsg{Key: []byte("k"), Value: []byte("v"), EventTime: 1},
 		&protocol.CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1000},
 		&protocol.WatermarkMsg{Timestamp: 500, SourceID: "s-0"},
-		&protocol.BackpressureMsg{StreamID: 1, State: protocol.BackpressurePause},
 		&protocol.EndOfPartitionMsg{SourceID: "s", Reason: protocol.EndReasonExhausted},
 	}
 
@@ -354,7 +355,6 @@ func TestTLS_AllMessageTypes(t *testing.T) {
 		protocol.MsgTypeDataRecord,
 		protocol.MsgTypeCheckpointBarrier,
 		protocol.MsgTypeWatermark,
-		protocol.MsgTypeBackpressure,
 		protocol.MsgTypeEndOfPartition,
 	}
 

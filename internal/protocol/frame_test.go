@@ -38,10 +38,10 @@ func TestWriteReadFrame_Roundtrip(t *testing.T) {
 	}{
 		{
 			name:    "Handshake",
-			msgType: MsgTypeHandshake,
-			msg:     &HandshakeMsg{ProtocolVersion: 1, MinVersion: 1, Features: FeatureCRC32C},
+			msgType: MsgTypeSessionHandshake,
+			msg:     &SessionHandshakeMsg{ProtocolVersion: 1, MinVersion: 1, Features: FeatureCRC32C},
 			check: func(t *testing.T, decoded any) {
-				m := decoded.(*HandshakeMsg)
+				m := decoded.(*SessionHandshakeMsg)
 				if m.ProtocolVersion != 1 || m.MinVersion != 1 || m.Features != FeatureCRC32C {
 					t.Errorf("Handshake mismatch: %+v", m)
 				}
@@ -254,7 +254,20 @@ func TestCRC32C_Validation(t *testing.T) {
 
 	// Manually compute CRC over MsgType + Payload.
 	payload := data[9:]
-	crcManual := computeCRC32C(MsgTypeDataRecord, payload)
+	// Independent bitwise reflected Castagnoli recurrence: no production
+	// checksum helper, table, or hardware dispatch is reused here.
+	crcManual := ^uint32(0)
+	for _, value := range append([]byte{MsgTypeDataRecord}, payload...) {
+		crcManual ^= uint32(value)
+		for bit := 0; bit < 8; bit++ {
+			if crcManual&1 != 0 {
+				crcManual = (crcManual >> 1) ^ 0x82f63b78
+			} else {
+				crcManual >>= 1
+			}
+		}
+	}
+	crcManual = ^crcManual
 
 	if crcInFrame != crcManual {
 		t.Errorf("CRC mismatch: frame=0x%08X manual=0x%08X", crcInFrame, crcManual)
@@ -324,7 +337,7 @@ func TestDecodePayload_AllTypes(t *testing.T) {
 		msgType uint8
 		msg     any
 	}{
-		{"Handshake", MsgTypeHandshake, &HandshakeMsg{ProtocolVersion: 1, MinVersion: 1}},
+		{"Handshake", MsgTypeSessionHandshake, &SessionHandshakeMsg{ProtocolVersion: 1, MinVersion: 1}},
 		{"DataRecord", MsgTypeDataRecord, &DataRecordMsg{Value: []byte("v"), EventTime: 1}},
 		{"CheckpointBarrier", MsgTypeCheckpointBarrier, &CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1}},
 		{"Watermark", MsgTypeWatermark, &WatermarkMsg{Timestamp: 1, SourceID: "s"}},
@@ -357,7 +370,7 @@ func TestMultipleFrames_Sequential(t *testing.T) {
 		msgType uint8
 		msg     any
 	}{
-		{MsgTypeHandshake, &HandshakeMsg{ProtocolVersion: 1, MinVersion: 1}},
+		{MsgTypeSessionHandshake, &SessionHandshakeMsg{ProtocolVersion: 1, MinVersion: 1}},
 		{MsgTypeDataRecord, &DataRecordMsg{Value: []byte("v1"), EventTime: 1}},
 		{MsgTypeDataRecord, &DataRecordMsg{Value: []byte("v2"), EventTime: 2}},
 		{MsgTypeWatermark, &WatermarkMsg{Timestamp: 2, SourceID: "s"}},
@@ -412,14 +425,14 @@ func TestEmptyPayload(t *testing.T) {
 
 func TestEncodeAndWriteFrame(t *testing.T) {
 	messages := []any{
-		&HandshakeMsg{ProtocolVersion: 1, MinVersion: 1},
+		&SessionHandshakeMsg{ProtocolVersion: 1, MinVersion: 1},
 		&DataRecordMsg{Value: []byte("v"), EventTime: 1},
 		&CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1},
 		&WatermarkMsg{Timestamp: 1, SourceID: "s"},
 		&EndOfPartitionMsg{SourceID: "s", Reason: 0},
 		&BackpressureMsg{StreamID: 1, State: 0},
 		// Non-pointer variants.
-		HandshakeMsg{ProtocolVersion: 2, MinVersion: 1},
+		SessionHandshakeMsg{ProtocolVersion: 2, MinVersion: 1},
 		DataRecordMsg{Value: []byte("v2"), EventTime: 2},
 	}
 
@@ -564,7 +577,7 @@ func TestEncodeAndWriteFrame_AllValueTypes(t *testing.T) {
 	// Ensure all non-pointer (value) type variants are correctly mapped
 	// in the EncodeAndWriteFrame type switch.
 	msgs := []any{
-		HandshakeMsg{ProtocolVersion: 1, MinVersion: 1},
+		SessionHandshakeMsg{ProtocolVersion: 1, MinVersion: 1},
 		DataRecordMsg{Value: []byte("v"), EventTime: 1},
 		CheckpointBarrierMsg{CheckpointID: 1, EpochID: 1, Timestamp: 1},
 		WatermarkMsg{Timestamp: 1, SourceID: "s"},

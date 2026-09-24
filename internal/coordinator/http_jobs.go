@@ -3,7 +3,12 @@ package coordinator
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
+	"strconv"
+
+	"github.com/tarungka/wire/internal/protocol"
+	"github.com/tarungka/wire/internal/rpc"
 )
 
 // submitJobRequest is the JSON body for POST /api/v1/jobs.
@@ -14,6 +19,7 @@ import (
 //     bytes, then parsed by the scheduler to produce task descriptors.
 //   - Config: arbitrary opaque bytes (legacy path; ignored by the scheduler).
 type submitJobRequest struct {
+	Savepoint   string `json:"savepoint,omitempty"`
 	Name        string `json:"name"`
 	Parallelism int    `json:"parallelism"`
 	Config      string `json:"config,omitempty"`
@@ -23,11 +29,21 @@ type submitJobRequest struct {
 func (s *HTTPServer) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<20) // 4 MiB limit
 	var req submitJobRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
 		return
 	}
 
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "expected one JSON object")
+		return
+	}
+	if req.Config != "" && req.GraphBytes != "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "provide graph_bytes or config, not both")
+		return
+	}
 	var configBytes []byte
 	switch {
 	case req.GraphBytes != "":
@@ -36,12 +52,27 @@ func (s *HTTPServer) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "graph_bytes is not valid base64")
 			return
 		}
+		var graph rpc.JobGraph
+		if err := protocol.DecodeMsgPack(decoded, &graph); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "graph_bytes is not a valid job graph")
+			return
+		}
+		if _, err := validateGraphKeyGroups(graph, req.Parallelism); err != nil {
+			writeJobError(w, err)
+			return
+		}
 		configBytes = decoded
 	case req.Config != "":
 		configBytes = []byte(req.Config)
 	}
 
-	job, err := s.coord.SubmitJob(req.Name, req.Parallelism, configBytes)
+	var job *JobMeta
+	var err error
+	if req.Savepoint != "" {
+		job, err = s.coord.SubmitJobFromSavepoint(req.Name, req.Parallelism, configBytes, req.Savepoint)
+	} else {
+		job, err = s.coord.SubmitJob(req.Name, req.Parallelism, configBytes)
+	}
 	if err != nil {
 		writeJobError(w, err)
 		return
@@ -75,16 +106,37 @@ func (s *HTTPServer) handleListJobs(w http.ResponseWriter, r *http.Request) {
 
 func (s *HTTPServer) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("job_id")
-	job, err := s.coord.GetJob(jobID)
+	detail, err := s.coord.jobInspection(jobID)
 	if err != nil {
 		writeJobError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, jobDetailFromMeta(job))
+	writeJSON(w, http.StatusOK, detail)
 }
 
 func (s *HTTPServer) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("job_id")
+	if values, ok := r.URL.Query()["savepoint"]; ok {
+		if len(values) != 1 {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "savepoint must be a single boolean")
+			return
+		}
+		requested, err := strconv.ParseBool(values[0])
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "savepoint must be a boolean")
+			return
+		}
+		if requested {
+			job, sp, err := s.coord.CancelJobWithSavepoint(jobID)
+			if err != nil {
+				writeJobError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, pauseJobResponse{Job: jobDetailFromMeta(job), Savepoint: savepointResponseFromMeta(sp)})
+			return
+		}
+	}
+
 	job, err := s.coord.CancelJob(jobID)
 	if err != nil {
 		writeJobError(w, err)
@@ -100,7 +152,7 @@ func (s *HTTPServer) handlePauseJob(w http.ResponseWriter, r *http.Request) {
 		writeJobError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, pauseJobResponse{
+	writeJSON(w, http.StatusAccepted, pauseJobResponse{
 		Job:       jobDetailFromMeta(job),
 		Savepoint: savepointResponseFromMeta(sp),
 	})

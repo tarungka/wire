@@ -22,17 +22,23 @@ const (
 
 // Config holds transport-level configuration.
 type Config struct {
-	ListenAddr             string
-	TLSConfig              *tls.Config
-	MaxFrameSize           uint32
-	HandshakeTimeout       time.Duration
-	DialTimeout            time.Duration
-	KeepAliveInterval      time.Duration
-	ConnectionWriteTimeout time.Duration
-	MaxStreamWindowSize    uint32
-	LocalProtocolVersion   uint16
-	LocalMinVersion        uint16
-	LocalFeatures          uint32
+	// TaskRegistrationTimeout bounds waiting for a worker deployment to register
+	// an incoming target. Zero rejects unknown targets immediately.
+	TaskRegistrationTimeout time.Duration
+	sessionListenPort       uint16 // Set from the bound Mux listener for negotiation.
+	NodeID                  string
+	ListenAddr              string
+	TLSConfig               *tls.Config
+	MaxFrameSize            uint32
+	HandshakeTimeout        time.Duration
+	FrameReadTimeout        time.Duration
+	DialTimeout             time.Duration
+	KeepAliveInterval       time.Duration
+	ConnectionWriteTimeout  time.Duration
+	MaxStreamWindowSize     uint32
+	LocalProtocolVersion    uint16
+	LocalMinVersion         uint16
+	LocalFeatures           uint32
 }
 
 // DefaultConfig returns a Config populated with default values.
@@ -41,6 +47,7 @@ func DefaultConfig() Config {
 		ListenAddr:             ":4002",
 		MaxFrameSize:           16 * 1024 * 1024,
 		HandshakeTimeout:       DefaultHandshakeTimeout,
+		FrameReadTimeout:       DefaultConnectionWriteTimeout,
 		DialTimeout:            DefaultDialTimeout,
 		KeepAliveInterval:      DefaultKeepAliveInterval,
 		ConnectionWriteTimeout: DefaultConnectionWriteTimeout,

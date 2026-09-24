@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"math"
 	"sync/atomic"
 	"time"
 )
@@ -9,8 +10,11 @@ import (
 // multi-input operators. It computes the minimum watermark across all
 // non-idle inputs for watermark propagation.
 type InputWatermarkTracker struct {
-	watermarks     []atomic.Int64 // per-input current watermark (millis)
-	lastActivityNs []atomic.Int64 // per-input last activity time (UnixNano)
+	idleTimeouts   []time.Duration // Optional per-input overrides; immutable after startup.
+	ordered        bool            // TaskSlot applies watermark updates on the operator goroutine.
+	watermarks     []atomic.Int64  // per-input current watermark (millis)
+	lastActivityNs []atomic.Int64  // per-input last activity time (UnixNano)
+	pending        []atomic.Int64  // Records read but not yet processed, including alignment buffers.
 	numInputs      int
 	clock          func() int64 // returns UnixNano; injectable for testing
 }
@@ -20,10 +24,19 @@ func NewInputWatermarkTracker(numInputs int) *InputWatermarkTracker {
 	return newInputWatermarkTracker(numInputs, func() int64 { return time.Now().UnixNano() })
 }
 
+// NewInputWatermarkTrackerWithIdleTimeouts configures each input before routing
+// starts. Zero entries use the fallback passed to MinWatermark.
+func NewInputWatermarkTrackerWithIdleTimeouts(timeouts []time.Duration) *InputWatermarkTracker {
+	tracker := NewInputWatermarkTracker(len(timeouts))
+	tracker.idleTimeouts = append([]time.Duration(nil), timeouts...)
+	return tracker
+}
+
 func newInputWatermarkTracker(numInputs int, clock func() int64) *InputWatermarkTracker {
 	tracker := &InputWatermarkTracker{
 		watermarks:     make([]atomic.Int64, numInputs),
 		lastActivityNs: make([]atomic.Int64, numInputs),
+		pending:        make([]atomic.Int64, numInputs),
 		numInputs:      numInputs,
 		clock:          clock,
 	}
@@ -31,6 +44,7 @@ func newInputWatermarkTracker(numInputs int, clock func() int64) *InputWatermark
 	now := clock()
 	for i := range tracker.lastActivityNs {
 		tracker.lastActivityNs[i].Store(now)
+		tracker.watermarks[i].Store(math.MinInt64)
 	}
 	return tracker
 }
@@ -55,19 +69,41 @@ func (t *InputWatermarkTracker) RecordActivity(inputIndex int) {
 	t.lastActivityNs[inputIndex].Store(t.clock())
 }
 
+// RecordQueued marks a record as pending so capacity waits cannot make its
+// input appear idle. Every call must be paired with RecordProcessed.
+func (t *InputWatermarkTracker) RecordQueued(input int) { t.recordQueued(input) }
+
+// RecordProcessed releases a pending record and starts its input's idle timer.
+func (t *InputWatermarkTracker) RecordProcessed(input int) { t.recordProcessed(input) }
+
+func (t *InputWatermarkTracker) recordQueued(input int) {
+	t.pending[input].Add(1)
+	t.RecordActivity(input)
+}
+
+func (t *InputWatermarkTracker) recordProcessed(input int) {
+	// Start the idle timeout after processing catches up, not while a slow
+	// operator or checkpoint alignment is holding this input's records.
+	t.RecordActivity(input)
+	t.pending[input].Add(-1)
+}
+
 // MinWatermark returns the minimum watermark across all non-idle inputs.
 // An input is considered idle if no activity has been recorded within
 // idleTimeout. If all inputs are idle, returns (0, true).
 func (t *InputWatermarkTracker) MinWatermark(idleTimeout time.Duration) (int64, bool) {
 	now := t.clock()
-	idleThresholdNs := idleTimeout.Nanoseconds()
 
 	var minWM int64
 	found := false
 
 	for i := 0; i < t.numInputs; i++ {
+		timeout := idleTimeout
+		if i < len(t.idleTimeouts) && t.idleTimeouts[i] != 0 {
+			timeout = t.idleTimeouts[i]
+		}
 		lastActivity := t.lastActivityNs[i].Load()
-		if idleTimeout > 0 && (now-lastActivity) >= idleThresholdNs {
+		if t.pending[i].Load() == 0 && timeout > 0 && (now-lastActivity) >= timeout.Nanoseconds() {
 			continue // idle, skip
 		}
 

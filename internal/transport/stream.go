@@ -1,10 +1,11 @@
 package transport
 
 import (
+	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"sync"
 	"time"
 
@@ -24,102 +25,150 @@ type NegotiatedParams struct {
 // FrameStream provides high-level stream operations with handshake,
 // error counting, and protocol validation on top of a Yamux stream.
 type FrameStream struct {
-	mu                   sync.Mutex
-	raw                  *yamux.Stream
-	cfg                  Config
-	negotiated           *NegotiatedParams
-	consecutiveCRCErrors int
-	consecutiveDecErrors int
-	lastWatermarks       map[string]int64 // per-SourceID watermark tracking
-	ended                bool
-	log                  zerolog.Logger
+	mu                      sync.Mutex
+	writeGate               chan struct{}
+	readMu                  sync.Mutex
+	readOffset              uint64
+	reportMu                sync.Mutex
+	reportedPause           bool
+	closeOnce               sync.Once
+	done                    chan struct{}
+	resume                  chan struct{}
+	session                 *Session
+	sender                  bool
+	managedSender           bool
+	senderReadDone          chan struct{}
+	senderMessage           any
+	senderError             error
+	senderReadDelivered     bool
+	failure                 error
+	header                  *protocol.StreamHeaderMsg
+	raw                     *yamux.Stream
+	cfg                     Config
+	negotiated              *NegotiatedParams
+	consecutiveCRCErrors    int
+	consecutiveDecErrors    int
+	lastWatermarks          map[string]int64 // per-SourceID watermark tracking
+	ended                   bool
+	lastCompletedCheckpoint uint64
+	checkpointCompletion    func() uint64
+	log                     zerolog.Logger
 }
 
 // NewFrameStream wraps a Yamux stream into a FrameStream.
 func NewFrameStream(raw *yamux.Stream, cfg Config) *FrameStream {
 	return &FrameStream{
-		raw: raw,
-		cfg: cfg,
-		log: logger.GetLogger("stream").With().Uint32("stream_id", raw.StreamID()).Logger(),
+		raw:       raw,
+		done:      make(chan struct{}),
+		writeGate: make(chan struct{}, 1),
+		cfg:       cfg,
+		log:       logger.GetLogger("stream").With().Uint32("stream_id", raw.StreamID()).Logger(),
 	}
 }
 
-// SendHandshake writes a Handshake frame with the local version and features.
-func (fs *FrameStream) SendHandshake() error {
-	msg := &protocol.HandshakeMsg{
-		ProtocolVersion: fs.cfg.LocalProtocolVersion,
-		MinVersion:      fs.cfg.LocalMinVersion,
-		Features:        fs.cfg.LocalFeatures,
-	}
-	return protocol.WriteFrame(fs.raw, protocol.MsgTypeHandshake, msg)
-}
-
-// ReceiveHandshake reads and validates the first frame on a stream.
-// It sets a read deadline for the handshake timeout.
-// On incompatible version, it sends EndOfPartition(Error) and returns ErrVersionIncompatible.
+// ReceiveHandshake returns the already-negotiated session parameters.
+// Deprecated: Mux validates negotiation and routing before publishing streams.
 func (fs *FrameStream) ReceiveHandshake() (*NegotiatedParams, error) {
-	// Set read deadline for handshake.
-	_ = fs.raw.SetReadDeadline(time.Now().Add(fs.cfg.HandshakeTimeout))
-	defer func() { _ = fs.raw.SetReadDeadline(time.Time{}) }() // Clear deadline after handshake.
-
-	frame, err := protocol.ReadFrame(fs.raw, fs.cfg.MaxFrameSize)
-	if err != nil {
-		var ne net.Error
-		if errors.As(err, &ne) && ne.Timeout() {
-			return nil, fmt.Errorf("%w: %v", protocol.ErrHandshakeTimeout, err)
-		}
-		return nil, fmt.Errorf("transport: handshake read failed: %w", err)
-	}
-
-	if frame.MsgType != protocol.MsgTypeHandshake {
-		return nil, protocol.ErrHandshakeExpected
-	}
-
-	decoded, err := protocol.DecodePayload(frame)
-	if err != nil {
-		return nil, err
-	}
-
-	hs := decoded.(*protocol.HandshakeMsg)
-
-	// Check version compatibility per WIP-01 Section 3.8.
-	if hs.ProtocolVersion < fs.cfg.LocalMinVersion || fs.cfg.LocalProtocolVersion < hs.MinVersion {
-		// Send EndOfPartition with Error reason before closing.
-		eop := &protocol.EndOfPartitionMsg{
-			SourceID: protocol.HandshakeSourceID,
-			Reason:   protocol.EndReasonError,
-		}
-		_ = protocol.WriteFrame(fs.raw, protocol.MsgTypeEndOfPartition, eop)
-		return nil, protocol.ErrVersionIncompatible
-	}
-
-	// Negotiate effective version and features.
-	effectiveVersion := hs.ProtocolVersion
-	if fs.cfg.LocalProtocolVersion < effectiveVersion {
-		effectiveVersion = fs.cfg.LocalProtocolVersion
-	}
-	features := hs.Features & fs.cfg.LocalFeatures
-
-	params := &NegotiatedParams{
-		EffectiveVersion: effectiveVersion,
-		Features:         features,
-	}
 	fs.mu.Lock()
-	fs.negotiated = params
-	fs.mu.Unlock()
-
-	return params, nil
+	defer fs.mu.Unlock()
+	if fs.negotiated == nil {
+		return nil, fmt.Errorf("transport: session has not been negotiated")
+	}
+	params := *fs.negotiated
+	return &params, nil
 }
 
 // WriteMessage encodes and writes a message to the stream.
 func (fs *FrameStream) WriteMessage(msg any) error {
-	fs.mu.Lock()
-	ended := fs.ended
-	fs.mu.Unlock()
-	if ended {
-		return fmt.Errorf("transport: stream ended, cannot write")
+	return fs.WriteMessageContext(context.Background(), msg)
+}
+
+// WriteMessageContext bounds both application pauses and transport-window
+// writes. TaskSlot supplies a separate drain context on successful completion.
+func (fs *FrameStream) WriteMessageContext(ctx context.Context, msg any) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-fs.done:
+		return fs.closedError()
+	case fs.writeGate <- struct{}{}:
 	}
-	return protocol.EncodeAndWriteFrame(fs.raw, msg)
+	defer func() { <-fs.writeGate }()
+	select {
+	case <-fs.done:
+		return fs.closedError()
+	default:
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for {
+		fs.mu.Lock()
+		ended, resume := fs.ended, fs.resume
+		fs.mu.Unlock()
+		if ended {
+			return fs.closedError()
+		}
+		if resume == nil {
+			break
+		}
+		select {
+		case <-resume:
+		case <-fs.senderReadDone:
+			_ = fs.Close()
+			return fmt.Errorf("transport: paused sender lost downstream: %w", io.ErrUnexpectedEOF)
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-fs.done:
+			return fs.closedError()
+		case <-fs.session.yamux.CloseChan():
+			return fmt.Errorf("transport: session closed")
+		}
+	}
+	if fs.header != nil {
+		if !fs.sender {
+			return fmt.Errorf("transport: data stream is receive-only")
+		}
+		switch msg.(type) {
+		case *protocol.DataRecordMsg, protocol.DataRecordMsg, *protocol.CheckpointBarrierMsg, protocol.CheckpointBarrierMsg, *protocol.WatermarkMsg, protocol.WatermarkMsg, *protocol.EndOfPartitionMsg, protocol.EndOfPartitionMsg:
+		default:
+			return fmt.Errorf("transport: message is not permitted on a data stream")
+		}
+	}
+	// Receiver window exhaustion is backpressure, not a connection failure.
+	// Only the caller's deadline bounds this wait; Yamux separately bounds
+	// writes to the underlying connection with ConnectionWriteTimeout.
+	until, _ := ctx.Deadline()
+	_ = fs.raw.SetWriteDeadline(until)
+	callbackDone := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { _ = fs.raw.SetWriteDeadline(time.Now()); close(callbackDone) })
+	defer func() {
+		if !stop() {
+			<-callbackDone
+		}
+		_ = fs.raw.SetWriteDeadline(time.Time{})
+	}()
+	if err := protocol.EncodeAndWriteFrameLimit(fs.raw, msg, fs.cfg.MaxFrameSize); err != nil {
+		_ = fs.Close()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		fs.mu.Lock()
+		failure := fs.failure
+		fs.mu.Unlock()
+		if failure != nil {
+			return errors.Join(failure, err)
+		}
+		return err
+	}
+	switch msg.(type) {
+	case *protocol.EndOfPartitionMsg, protocol.EndOfPartitionMsg:
+		fs.mu.Lock()
+		fs.ended = true
+		fs.mu.Unlock()
+		return fs.Close()
+	}
+	return nil
 }
 
 // ReadMessage reads the next frame from the stream and returns the decoded message.
@@ -127,6 +176,20 @@ func (fs *FrameStream) WriteMessage(msg any) error {
 // and end-of-partition detection per WIP-01 Section 6.
 // After EndOfPartition has been delivered, subsequent calls return io.EOF.
 func (fs *FrameStream) ReadMessage() (any, error) {
+	if fs.managedSender {
+		return fs.readSenderResult()
+	}
+	return fs.readMessage(true)
+}
+
+func (fs *FrameStream) readMessage(closeOnEOF bool) (any, error) {
+	fs.readMu.Lock()
+	defer fs.readMu.Unlock()
+	select {
+	case <-fs.done:
+		return nil, io.EOF
+	default:
+	}
 	// Fast path: if stream already ended, return EOF immediately
 	// instead of spinning in a read loop.
 	fs.mu.Lock()
@@ -137,28 +200,44 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 	}
 
 	for {
-		frame, err := protocol.ReadFrame(fs.raw, fs.cfg.MaxFrameSize)
+		offset := fs.readOffset
+		frame, err := fs.readFrame()
 		if err != nil {
 			if err == protocol.ErrCRCMismatch {
 				fs.mu.Lock()
 				fs.consecutiveCRCErrors++
+				fs.consecutiveDecErrors = 0
 				shouldClose := fs.consecutiveCRCErrors >= MaxConsecutiveCRCErrors
 				fs.mu.Unlock()
 				if shouldClose {
 					fs.log.Error().Msg("closing stream: too many consecutive CRC errors")
-					_ = fs.raw.Close()
+					_ = fs.Close()
 					return nil, fmt.Errorf("transport: stream closed after %d consecutive CRC errors", MaxConsecutiveCRCErrors)
 				}
-				fs.log.Warn().Err(err).Msg("CRC mismatch, dropping frame")
+				fs.log.Warn().Err(err).Uint64("frame_offset", offset).
+					Uint32("received_crc", frame.ReceivedCRC).Uint32("computed_crc", frame.ComputedCRC).
+					Str("frame_prefix_hex", hex.EncodeToString(frame.CorruptPrefix)).Msg("CRC mismatch, dropping frame")
 				continue
+			}
+			if errors.Is(err, protocol.ErrFrameTooLarge) || errors.Is(err, protocol.ErrFrameTooSmall) {
+				fs.log.Warn().Err(err).Str("remote_addr", fs.raw.RemoteAddr().String()).Uint32("frame_length", frame.Length).Uint64("frame_offset", offset).Msg("invalid frame length")
+			}
+			if closeOnEOF || !errors.Is(err, io.EOF) {
+				_ = fs.Close()
 			}
 			return nil, err
 		}
 
+		fs.mu.Lock()
+		fs.consecutiveCRCErrors = 0
+		fs.mu.Unlock()
 		// Decode payload.
 		decoded, err := protocol.DecodePayload(frame)
 		if err != nil {
 			if errors.Is(err, protocol.ErrUnknownMsgType) {
+				fs.mu.Lock()
+				fs.consecutiveDecErrors = 0
+				fs.mu.Unlock()
 				fs.log.Warn().Uint8("msg_type", frame.MsgType).Msg("unknown message type, skipping frame")
 				continue
 			}
@@ -168,11 +247,24 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 			fs.mu.Unlock()
 			if shouldClose {
 				fs.log.Error().Msg("closing stream: too many consecutive decode errors")
-				_ = fs.raw.Close()
+				_ = fs.Close()
 				return nil, fmt.Errorf("transport: stream closed after %d consecutive decode errors", MaxConsecutiveDecodeErrors)
 			}
-			fs.log.Warn().Err(err).Msg("decode error, dropping frame")
+			fs.log.Warn().Err(err).Uint64("frame_offset", offset).
+				Str("payload_prefix_hex", hex.EncodeToString(frame.Payload[:min(len(frame.Payload), 64)])).Msg("decode error, dropping frame")
 			continue
+		}
+
+		if fs.header != nil {
+			valid := frame.MsgType >= protocol.MsgTypeDataRecord && frame.MsgType <= protocol.MsgTypeEndOfPartition
+			if fs.sender {
+				eop, ok := decoded.(*protocol.EndOfPartitionMsg)
+				valid = ok && eop.Reason == protocol.EndReasonError
+			}
+			if !valid {
+				_ = fs.Close()
+				return nil, fmt.Errorf("transport: invalid data-stream message %s", protocol.MsgTypeName(frame.MsgType))
+			}
 		}
 
 		// Reset error counters on success.
@@ -188,6 +280,11 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 		if alreadyEnded {
 			fs.log.Warn().Str("type", protocol.MsgTypeName(frame.MsgType)).Msg("frame after EndOfPartition, dropping")
 			return nil, io.EOF
+		}
+
+		if barrier, ok := decoded.(*protocol.CheckpointBarrierMsg); ok && fs.IsCheckpointCompleted(barrier.CheckpointID) {
+			fs.log.Debug().Uint64("checkpoint_id", barrier.CheckpointID).Msg("completed checkpoint barrier, dropping replay")
+			continue
 		}
 
 		// Watermark monotonicity check (per-SourceID).
@@ -214,7 +311,11 @@ func (fs *FrameStream) ReadMessage() (any, error) {
 		if _, ok := decoded.(*protocol.EndOfPartitionMsg); ok {
 			fs.mu.Lock()
 			fs.ended = true
+			if fs.managedSender {
+				fs.failure = fmt.Errorf("%w: %s", ErrTargetTaskRejected, fs.header.TargetTaskID)
+			}
 			fs.mu.Unlock()
+			_ = fs.Close()
 		}
 
 		return decoded, nil
@@ -228,5 +329,17 @@ func (fs *FrameStream) StreamID() uint32 {
 
 // Close closes the underlying Yamux stream.
 func (fs *FrameStream) Close() error {
-	return fs.raw.Close()
+	var err error
+	fs.closeOnce.Do(func() {
+		close(fs.done)
+		// Yamux Close is a half-close; interrupt a local blocked read explicitly.
+		_ = fs.raw.SetReadDeadline(time.Now())
+		if fs.session != nil && fs.sender {
+			fs.session.mu.Lock()
+			delete(fs.session.outputs, fs.StreamID())
+			fs.session.mu.Unlock()
+		}
+		err = fs.raw.Close()
+	})
+	return err
 }

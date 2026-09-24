@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/tarungka/wire/internal/engine"
 )
@@ -12,9 +13,16 @@ import (
 // State APIs have no error return. Preserve the first storage error and fail
 // the Process invocation before emitting its results instead of losing it.
 type backendProcessContext struct {
-	key     []byte
-	backend engine.StateBackend
-	err     error
+	registeredTimers     [][]byte
+	hasDueTimer          bool
+	clock                func() time.Time
+	eventTime, watermark int64
+	timersEnabled        bool
+	sideTags             map[string]bool
+	sideEvents           []Event
+	key                  []byte
+	backend              engine.StateBackend
+	err                  error
 }
 
 func (c *backendProcessContext) Key() []byte { return append([]byte(nil), c.key...) }
@@ -66,21 +74,23 @@ func (c *backendProcessContext) GetMapState(name string) MapState {
 }
 
 type backendValueState struct {
+	ttl     time.Duration
 	context *backendProcessContext
 	key     []byte
 }
 
-func (s *backendValueState) Get() []byte      { return s.context.get(s.key) }
-func (s *backendValueState) Set(value []byte) { s.context.put(s.key, value) }
-func (s *backendValueState) Clear()           { s.context.remove(s.key) }
+func (s *backendValueState) Get() []byte      { return s.context.getState(s.key) }
+func (s *backendValueState) Set(value []byte) { s.context.putState(s.key, value, s.ttl) }
+func (s *backendValueState) Clear()           { s.context.removeState(s.key) }
 
 type backendListState struct {
+	ttl     time.Duration
 	context *backendProcessContext
 	key     []byte
 }
 
 func (s *backendListState) Get() [][]byte {
-	data := s.context.get(s.key)
+	data := s.context.getState(s.key)
 	if data == nil {
 		return nil
 	}
@@ -92,11 +102,12 @@ func (s *backendListState) Add(value []byte) {
 	values := append(s.Get(), value)
 	data, err := json.Marshal(values)
 	s.context.fail(err)
-	s.context.put(s.key, data)
+	s.context.putState(s.key, data, s.ttl)
 }
-func (s *backendListState) Clear() { s.context.remove(s.key) }
+func (s *backendListState) Clear() { s.context.removeState(s.key) }
 
 type backendMapState struct {
+	ttl     time.Duration
 	context *backendProcessContext
 	prefix  []byte
 }
@@ -104,9 +115,9 @@ type backendMapState struct {
 func (s *backendMapState) key(key string) []byte {
 	return append(append([]byte(nil), s.prefix...), key...)
 }
-func (s *backendMapState) Get(key string) []byte        { return s.context.get(s.key(key)) }
-func (s *backendMapState) Put(key string, value []byte) { s.context.put(s.key(key), value) }
-func (s *backendMapState) Delete(key string)            { s.context.remove(s.key(key)) }
+func (s *backendMapState) Get(key string) []byte        { return s.context.getState(s.key(key)) }
+func (s *backendMapState) Put(key string, value []byte) { s.context.putState(s.key(key), value, s.ttl) }
+func (s *backendMapState) Delete(key string)            { s.context.removeState(s.key(key)) }
 func (s *backendMapState) Keys() []string {
 	if s.context.err != nil {
 		return nil
@@ -115,7 +126,10 @@ func (s *backendMapState) Keys() []string {
 	defer it.Close()
 	var keys []string
 	for it.Next() {
-		keys = append(keys, string(it.Key()[len(s.prefix):]))
+		key := string(it.Key()[len(s.prefix):])
+		if !s.context.stateExpired(s.key(key)) {
+			keys = append(keys, key)
+		}
 	}
 	return keys
 }

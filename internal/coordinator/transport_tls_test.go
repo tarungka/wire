@@ -34,7 +34,7 @@ func TestWorkerRegistersOverTLS(t *testing.T) {
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- srv.Serve(ctx) }()
 	defer func() { cancel(); _ = srv.Shutdown(context.Background()); <-serverDone }()
-	w := worker.New(worker.Config{WorkerID: "tls-worker", CoordinatorAddr: srv.Addr(), TaskSlots: 1, TLSConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}}, zerolog.Nop())
+	w := worker.New(worker.Config{WorkerID: "tls-worker", CoordinatorAddr: srv.Addr(), TaskSlots: 1, RPCTLSConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}}, zerolog.Nop())
 	done := make(chan error, 1)
 	go func() { done <- w.Run(ctx) }()
 	defer func() { cancel(); _ = w.Shutdown(context.Background()); <-done }()

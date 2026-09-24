@@ -81,3 +81,17 @@ Critical alerts for production:
 | **Coordinator Crash** | Workers lose heartbeat. Workers self-terminate. | External Supervisor (K8s/Systemd) restarts Coordinator. Workers rejoin. |
 | **Slow Sink** | Backpressure fills TCP buffers. Source slows down. | Scaling up Sink or increasing parallelism. |
 | **Corrupt State** | Checksum fail on Pebble load. | Manual intervention: Restore from older Checkpoint. |
+
+## Heartbeat health and worker loss
+
+Configure `heartbeat.interval`, `heartbeat.timeout`, and `heartbeat.max_failures` on both node modes (defaults: `5s`, `30s`, `0`). Zero failures uses the elapsed timeout only; a positive count can stop a worker earlier after consecutive failed attempts. Keep coordinator and worker timeout settings consistent, including during rolling upgrades.
+
+A closed coordinator session initiates prompt re-registration. If contact cannot be restored before the timeout, the worker stops admission and old tasks, closes transports and exits nonzero for its supervisor. Coordinator health checks run independently of job placement and restore affected jobs from their permitted checkpoints using the existing restart budget. Cluster status shows worker `ALIVE`/`LOST`; monitor `wire_workers_alive`, `wire_workers_lost_total`, `wire_heartbeat_latency_ms` and `wire_heartbeat_failures_total`.
+
+Heartbeat resource samples are host measurements, collected asynchronously, and are not exposed on the public cluster API. Liveness and samples are not persisted. See the [complete heartbeat contract](trds/WIP-08/runtime-contract.md) for timing, payload measurement definitions, failover and compatibility.
+
+## Coordinator high availability
+
+Elected CLI modes open metadata only after election and isolate each leadership term. Same-host file-lock and Kubernetes Lease configurations, storage fencing requirements, advertised endpoints, worker discovery and backup limitations are specified in the [WIP-09 runtime contract](trds/WIP-09/runtime-contract.md). Kubernetes HA requires a shared authoritative metadata directory with exclusive, fenced storage access; see the [deployment and RBAC contract](trds/WIP-09/kubernetes.md). Do not use copied snapshots or independent local directories for automatic failover.
+
+HA workers require a durable, per-worker `worker.epoch_path` and can discover coordinators through `worker.coordinator_seeds`. Preserve that file across process restarts. `/healthz` reports standby process health; a followed readiness redirect does not mean the local node is the leader.

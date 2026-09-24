@@ -11,6 +11,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/tarungka/wire/internal/logger"
+	"github.com/tarungka/wire/internal/observability"
 	"github.com/tarungka/wire/internal/transport"
 )
 
@@ -18,19 +19,43 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
-	Config       TaskSlotConfig
-	Inputs       []*transport.FrameStream // Upstream input streams.
-	Outputs      []*transport.FrameStream // Downstream output streams.
-	Operators    []Operator               // Fused operator chain.
-	Source       SourceOperator           // Non-nil for source tasks.
-	Strategy     WatermarkStrategy        // Resolved watermark strategy (source tasks only).
-	Coordinator  *CheckpointCoordinator   // Optional checkpoint coordinator (WIP-05).
-	Metrics      CheckpointMetrics        // Optional checkpoint metrics collector.
-	ErrorMetrics ErrorMetrics             // Optional error handling metrics collector (WIP-11).
-	TaskIndex    int                      // Index of this task within the parallel subtasks.
-	TaskID       string                   // Unique identifier for this task.
-	OnRunning    func()                   // Called after all operators open, before any records are read.
-	log          zerolog.Logger
+	sourceRestoredBeforeOpen bool
+	// SourceExhausted parks a bounded source until its final global checkpoint.
+	SourceExhausted func(context.Context) error
+	// TransactionRecovery supplies distributed writer identity; completed boundary
+	// is derived from RestoreCheckpoint rather than trusted from this field.
+	TransactionRecovery *TransactionRecovery
+	InputIdleTimeouts   []time.Duration
+	RestoreCheckpoint   *TaskCheckpoint
+	RescaleState        []OperatorRescaleState
+	// CheckpointReport delivers checkpoint ID, epoch, and upload error to an
+	// external coordinator. It must honor cancellation. Nil means report acceptance,
+	// not global commit; commit and abort arrive through CheckpointDecisions.
+	CheckpointReport func(context.Context, uint64, uint64, error) error
+	// The caller owns this bounded channel and fences decisions to the execution.
+	CheckpointDecisions  <-chan ControlMsg
+	CheckpointTriggers   <-chan CheckpointTrigger // Optional source-only checkpoint commands.
+	CheckpointReplicator CheckpointReplicator     // Requires Coordinator or CheckpointReport.
+	Config               TaskSlotConfig
+	Inputs               []*transport.FrameStream // Upstream input streams.
+	Outputs              []*transport.FrameStream // Downstream output streams.
+	// OutputKeyGroups enables keyed routing over outputs ordered by target subtask.
+	// Zero retains round-robin routing.
+	OutputKeyGroups      int
+	OutputGroups         []OutputGroup
+	Operators            []Operator             // Fused operator chain.
+	Source               SourceOperator         // Non-nil for source tasks.
+	Strategy             WatermarkStrategy      // Resolved watermark strategy (source tasks only).
+	Coordinator          *CheckpointCoordinator // Optional checkpoint coordinator (WIP-05).
+	Metrics              CheckpointMetrics      // Optional checkpoint metrics collector.
+	ErrorMetrics         ErrorMetrics           // Optional error handling metrics collector (WIP-11).
+	TaskIndex            int                    // Index of this task within the parallel subtasks.
+	TransactionTaskID    string                 // Stable external writer identity across job upgrades.
+	RestoreTaskID        string                 // Explicit source task identity for an authorized cross-job restore.
+	RestoredCheckpointID uint64                 // Globally completed snapshot used for recovery.
+	TaskID               string                 // Unique identifier for this task.
+	OnRunning            func()                 // Called after all operators open, before any records are read.
+	log                  zerolog.Logger
 }
 
 // NewTaskSlot creates a new TaskSlot with the given configuration.
@@ -48,6 +73,29 @@ func NewTaskSlot(cfg TaskSlotConfig, inputs []*transport.FrameStream, outputs []
 // Run executes the task slot. It launches all goroutines via errgroup and
 // blocks until completion or failure.
 func (ts *TaskSlot) Run(ctx context.Context) error {
+	if ts.CheckpointTriggers != nil && (ts.Source == nil || ts.CheckpointReplicator == nil) {
+		return errors.New("source checkpoint triggers require a source and checkpoint replicator")
+	}
+	if ts.CheckpointReplicator != nil && ts.Coordinator == nil && ts.CheckpointReport == nil {
+		return errors.New("checkpoint replication requires a coordinator")
+	}
+	if ts.Coordinator != nil && ts.CheckpointReport != nil {
+		return errors.New("checkpoint reporting must select one coordinator")
+	}
+	if ts.Config.CheckpointUploadConcurrency < 0 {
+		return errors.New("checkpoint upload concurrency must not be negative")
+	}
+
+	if err := ValidateTransactionalErrorPolicies(ts.Operators, ts.Config.ErrorConfigs); err != nil {
+		return err
+	}
+
+	ts.sourceRestoredBeforeOpen = false
+	if ts.RestoreCheckpoint != nil {
+		if err := ts.restoreSourceBeforeOpen(ctx); err != nil {
+			return err
+		}
+	}
 	// Initialize synchronously so workers report RUNNING only after every
 	// operator, including the source, has opened successfully.
 	operators := make([]Operator, 0, len(ts.Operators)+1)
@@ -60,6 +108,25 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		return err
 	}
 	defer closeOperators()
+	if ts.RestoreCheckpoint != nil && len(ts.RescaleState) > 0 {
+		return errors.New("task cannot combine ordinary and rescaled restoration")
+	}
+	if len(ts.RescaleState) > 0 {
+		if err := ts.restoreRescaledOperators(ctx); err != nil {
+			return err
+		}
+	}
+	if ts.RestoreCheckpoint != nil {
+		if err := ts.restoreCheckpoint(); err != nil {
+			return err
+		}
+	}
+	if err := ts.recoverSinkTransactions(ctx); err != nil {
+		return err
+	}
+	if err := ts.restoreSinkTransaction(ctx); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -69,10 +136,89 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 
 	// Create a cancellable context so we can shut everything down when
 	// the operator chain finishes (whether success or failure).
-	runCtx, runCancel := context.WithCancel(ctx)
+	runCtx, runCancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer runCancel()
+	var goroutines atomic.Int64
+	runCtx = context.WithValue(runCtx, taskGoroutineKey{}, &goroutines)
+	unregisterGoroutines, err := observability.ObserveTaskGoroutines(ts.TaskID, goroutines.Load)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unregisterGoroutines() }()
 
 	g, gctx := errgroup.WithContext(runCtx)
+	var checkpoint *chainCheckpointState
+	if ts.CheckpointReplicator != nil {
+		concurrency := ts.Config.CheckpointUploadConcurrency
+		if concurrency == 0 {
+			concurrency = 1
+		}
+		uploader, err := newCheckpointUploader(gctx, concurrency, ts.CheckpointReplicator)
+		if err != nil {
+			return err
+		}
+		if ts.Config.Checkpoint.Timeout > 0 {
+			uploader.timeout = ts.Config.Checkpoint.Timeout
+		}
+		defer uploader.Close()
+		checkpoint = &chainCheckpointState{uploader: uploader, taskID: ts.TaskID, pending: make(map[checkpointIdentity]bool), notify: func(ctx context.Context, r checkpointUploadResult) error {
+			if ts.CheckpointReport != nil {
+				return ts.CheckpointReport(ctx, r.CheckpointID, r.EpochID, r.Err)
+			}
+			if r.Err != nil {
+				return ts.Coordinator.FailCheckpoint(ctx, r.CheckpointID, r.EpochID, r.Err)
+			}
+			return ts.Coordinator.AckReplicatedCheckpoint(ctx, ts.TaskIndex, r.CheckpointID, r.EpochID)
+		}}
+	}
+	intakeCtx, stopIntake := context.WithCancel(gctx)
+	defer stopIntake()
+	normalizeIntake := func(err error) error {
+		if errors.Is(err, context.Canceled) && intakeCtx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	// A successful chain cancels input readers, but queued output still needs
+	// to drain through downstream backpressure. External cancellation and real
+	// failures interrupt paused writers; external cancellation allows bounded draining.
+	outputCtx, cancelOutput := context.WithCancel(context.WithoutCancel(runCtx))
+	defer cancelOutput()
+	drainTimeout := ts.Config.DrainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = DefaultDrainTimeout
+	}
+	// External cancellation stops intake; processing and output get one shared
+	// drain budget. Real task failures still cancel the processing group.
+	var drainMu sync.Mutex
+	var drainTimer *time.Timer
+	drainStarted := make(chan struct{})
+	stopDrain := context.AfterFunc(ctx, func() {
+		defer taskGoroutineStarted(runCtx)()
+		defer close(drainStarted)
+		stopIntake()
+		drainMu.Lock()
+		drainTimer = time.AfterFunc(drainTimeout, func() { defer taskGoroutineStarted(runCtx)(); runCancel(); cancelOutput() })
+		drainMu.Unlock()
+	})
+	defer func() {
+		if !stopDrain() {
+			<-drainStarted
+		}
+		drainMu.Lock()
+		if drainTimer != nil {
+			drainTimer.Stop()
+		}
+		drainMu.Unlock()
+	}()
+	var chainSucceeded atomic.Bool
+	stopOutput := context.AfterFunc(gctx, func() {
+		defer taskGoroutineStarted(runCtx)()
+		if !chainSucceeded.Load() {
+			cancelOutput()
+		}
+	})
+	defer stopOutput()
 
 	numInputs := len(ts.Inputs)
 	if ts.Source != nil {
@@ -81,20 +227,67 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 
 	// Create channels.
 	eventCh := make(chan Event, ts.Config.InputBufferSize)
-	controlCh := make(chan ControlMsg, numInputs*2+4) // barrier + EoP per input, +4 for 2PC control messages (CtrlCommitCheckpoint, CtrlAbortTransaction).
+	controlCh := make(chan ControlMsg, max(16, numInputs*2+4)) // barrier + EoP per input, +4 for 2PC control messages (CtrlCommitCheckpoint, CtrlAbortTransaction).
 	outputCh := make(chan OutputMsg, ts.Config.OutputBufferSize)
-
-	// Create barrier aligner.
+	recordBackpressure, err := observability.TaskBackpressureRecorder(ts.TaskID)
+	if err != nil {
+		return err
+	}
+	chainCtx := context.WithValue(gctx, taskBackpressureKey{}, recordBackpressure)
 	aligner := NewBarrierAligner(numInputs, ts.Config.AlignmentBufferSize)
+	unregisterChannels, err := observability.ObserveTaskChannels(ts.TaskID, func() (int, int) {
+		return len(eventCh), len(outputCh)
+	}, aligner.BufferedBytes)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := unregisterChannels(); err != nil {
+			ts.log.Warn().Err(err).Msg("unregister task channel metrics")
+		}
+	}()
+	if checkpoint != nil && ts.Coordinator != nil {
+		if err := ts.Coordinator.BindTaskControl(ts.TaskIndex, controlCh); err != nil {
+			return err
+		}
+	}
+	if ts.CheckpointDecisions != nil {
+		g.Go(func() error {
+			defer taskGoroutineStarted(gctx)()
+			for {
+				select {
+				case <-gctx.Done():
+					return nil
+				case decision, ok := <-ts.CheckpointDecisions:
+					if !ok {
+						return nil
+					}
+					if decision.Type != CtrlCommitCheckpoint && decision.Type != CtrlAbortCheckpoint && decision.Type != CtrlAbortTransaction {
+						return errors.New("invalid external checkpoint decision")
+					}
+					select {
+					case controlCh <- decision:
+					case <-gctx.Done():
+						return nil
+					}
+				}
+			}
+		})
+	}
 
 	// Track output channel producers so we can close outputCh when all are done.
 	var producerWg sync.WaitGroup
+	var inputWg sync.WaitGroup
 
+	var helperWg sync.WaitGroup
+	helperWg.Add(2)
 	// Close input streams when context is cancelled to unblock blocking I/O
 	// in input readers. Output streams are left open so the output writer can
 	// drain remaining messages (like the final EndOfPartition).
 	go func() {
-		<-gctx.Done()
+		defer taskGoroutineStarted(runCtx)()
+		defer helperWg.Done()
+		<-intakeCtx.Done()
 		for _, s := range ts.Inputs {
 			_ = s.Close()
 		}
@@ -103,33 +296,53 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// For source tasks, resolve strategy and launch source reader.
 	if ts.Source != nil {
 		strategy := ts.resolveStrategy()
+		watermarkQueue := &sourceWatermarkQueue{}
+		watermarkCtx, stopWatermarks := context.WithCancel(intakeCtx)
+		defer stopWatermarks()
+		sourceCheckpoints := &sourceCheckpointInput{onExhausted: ts.SourceExhausted, stopWatermarks: stopWatermarks, watermarks: watermarkQueue, requests: ts.CheckpointTriggers, source: ts.Source, aligner: aligner, control: controlCh}
 
+		inputWg.Add(1)
 		g.Go(func() error {
-			return invokeOperator(func() error {
-				return runSourceReader(gctx, ts.Source, strategy, eventCh, controlCh, ts.log.With().Str("component", "source_reader").Logger())
-			})
+			defer taskGoroutineStarted(runCtx)()
+			defer inputWg.Done()
+			return normalizeIntake(invokeOperator(func() error {
+				return runSourceReaderWithContexts(intakeCtx, gctx, ts.Source, strategy, eventCh, controlCh, ts.log.With().Str("component", "source_reader").Logger(), sourceCheckpoints)
+			}))
 		})
 
 		// Launch watermark emitter for source tasks.
 		emitInterval := ts.resolveEmitInterval()
 		producerWg.Add(1)
 		g.Go(func() error {
+			defer taskGoroutineStarted(runCtx)()
 			defer producerWg.Done()
-			return invokeOperator(func() error {
-				return runWatermarkEmitter(gctx, strategy, outputCh, emitInterval,
-					ts.log.With().Str("component", "watermark_emitter").Logger())
-			})
+			return normalizeIntake(invokeOperator(func() error {
+				err := watermarkQueue.run(watermarkCtx, strategy, eventCh, emitInterval)
+				if errors.Is(err, context.Canceled) && watermarkCtx.Err() != nil {
+					return nil
+				}
+				return err
+			}))
 		})
 	} else if numInputs > 0 {
 		// Create per-input watermark tracker (only for non-source tasks).
 		tracker := NewInputWatermarkTracker(numInputs)
+		tracker.ordered = true
+		tracker.idleTimeouts = append([]time.Duration(nil), ts.InputIdleTimeouts...)
 
 		// Launch input readers (one per upstream stream).
 		for i, stream := range ts.Inputs {
 			i, stream := i, stream
+			stream.MarkCheckpointCompleted(ts.RestoredCheckpointID)
+			if ts.Coordinator != nil {
+				stream.SetCheckpointCompletionReader(ts.Coordinator.LastCompletedCheckpoint)
+			}
+			inputWg.Add(1)
 			g.Go(func() error {
-				return runInputReader(gctx, i, stream, eventCh, controlCh, aligner, tracker,
-					ts.log.With().Int("input", i).Logger())
+				defer taskGoroutineStarted(runCtx)()
+				defer inputWg.Done()
+				return runInputReaderWithContexts(intakeCtx, gctx, i, stream, eventCh, controlCh, aligner, tracker,
+					ts.log.With().Int("input", i).Logger(), stream.ReportBufferUsage)
 			})
 		}
 
@@ -144,32 +357,45 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		}
 		producerWg.Add(1)
 		g.Go(func() error {
+			defer taskGoroutineStarted(runCtx)()
 			defer producerWg.Done()
-			return runWatermarkPropagator(gctx, tracker, outputCh, emitInterval, idleTimeout,
-				ts.log.With().Str("component", "watermark_propagator").Logger())
+			return normalizeIntake(runOrderedWatermarkPropagator(intakeCtx, tracker, eventCh, emitInterval, idleTimeout))
 		})
 	}
+
+	// Stop alignment before waiting for intake: a full side buffer may be
+	// holding a reader. Final shutdown is queued only after dispatch completes.
+	helperWg.Add(1)
+	go func() {
+		defer taskGoroutineStarted(runCtx)()
+		defer helperWg.Done()
+		select {
+		case <-ctx.Done():
+		case <-gctx.Done():
+			return
+		}
+		select {
+		case controlCh <- ControlMsg{Type: CtrlDrainInputs}:
+		case <-gctx.Done():
+			return
+		}
+		inputWg.Wait()
+		select {
+		case controlCh <- ControlMsg{Type: CtrlShutdown}:
+		case <-gctx.Done():
+		}
+	}()
 
 	// Resolve checkpoint metrics.
 	metrics := ts.Metrics
 	if metrics == nil {
-		metrics = NoopCheckpointMetrics()
+		metrics = newTelemetryCheckpointMetrics(ts.TaskID)
 	}
 
 	// Resolve error metrics.
 	errMetrics := ts.ErrorMetrics
 	if errMetrics == nil {
-		errMetrics = NoopErrorMetrics()
-	}
-
-	// Create DLQ channel if error configs are configured.
-	var dlqCh chan DLQEvent
-	if ts.Config.ErrorConfigs != nil {
-		bufSize := ts.Config.DLQBufferSize
-		if bufSize <= 0 {
-			bufSize = DefaultDLQBufferSize
-		}
-		dlqCh = make(chan DLQEvent, bufSize)
+		errMetrics = NewTelemetryErrorMetrics(ts.TaskID)
 	}
 
 	// Detect if the last operator is a TransactionalSink.
@@ -195,22 +421,8 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	// Launch checkpoint coordinator if configured.
 	if ts.Coordinator != nil {
 		g.Go(func() error {
+			defer taskGoroutineStarted(runCtx)()
 			return ts.Coordinator.Run(gctx)
-		})
-	}
-
-	// Launch DLQ drain goroutine if DLQ is configured.
-	if dlqCh != nil {
-		dlqLog := ts.log.With().Str("component", "dlq").Logger()
-		g.Go(func() error {
-			for dlqEvent := range dlqCh {
-				dlqLog.Error().
-					Str("operator", dlqEvent.OperatorName).
-					Str("error", dlqEvent.Error).
-					Int("retries", dlqEvent.RetryCount).
-					Msg("event routed to DLQ")
-			}
-			return nil
 		})
 	}
 
@@ -228,44 +440,38 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 	var chainErr atomic.Pointer[error]
 	producerWg.Add(1)
 	g.Go(func() error {
+		defer taskGoroutineStarted(runCtx)()
 		defer producerWg.Done()
 		defer runCancel() // Signal all goroutines to stop when chain exits.
-		if dlqCh != nil {
-			defer close(dlqCh)
-		}
-		err := runOpenedOperatorChain(gctx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, dlqCh, errMetrics)
+		err := runOpenedOperatorChain(chainCtx, ts.Operators, eventCh, controlCh, outputCh, aligner, numInputs, metrics, ts.log.With().Str("component", "operator_chain").Logger(), txnSink, ackFn, ts.Config.ErrorConfigs, nil, errMetrics, ts.RestoredCheckpointID, checkpoint)
 		if err != nil {
 			chainErr.Store(&err)
+		} else {
+			chainSucceeded.Store(true)
 		}
 		return err
 	})
 
 	// Goroutine to close outputCh when all producers are done.
 	go func() {
+		defer taskGoroutineStarted(runCtx)()
+		defer helperWg.Done()
 		producerWg.Wait()
 		close(outputCh)
 	}()
 
-	// Launch output writers (one per downstream stream).
-	for i, stream := range ts.Outputs {
-		i, stream := i, stream
-		g.Go(func() error {
-			return runOutputWriter(gctx, stream, outputCh,
-				ts.log.With().Int("output", i).Logger())
-		})
-	}
-
-	// Terminal chains have no network output writer. Drain forwarded events
-	// and control messages so pipelines larger than the buffer can finish.
-	if len(ts.Outputs) == 0 {
-		g.Go(func() error {
-			for range outputCh {
-			}
-			return nil
-		})
-	}
+	// A single dispatcher preserves record/control ordering and broadcasts
+	// control frames to every downstream stream. It also drains terminal chains.
+	g.Go(func() error {
+		defer taskGoroutineStarted(runCtx)()
+		if len(ts.OutputGroups) > 0 {
+			return runGroupedOutputRouter(outputCtx, ts.Outputs, outputCh, ts.log, ts.OutputGroups)
+		}
+		return runOutputRouter(outputCtx, ts.Outputs, outputCh, ts.log, ts.OutputKeyGroups)
+	})
 
 	err = g.Wait()
+	helperWg.Wait()
 	// Prefer the chain's error over errgroup's verdict — but only when
 	// it's a real chain-side error (e.g. ErrOperatorPanic), not a
 	// context.Canceled produced because a peer goroutine errored first
@@ -287,7 +493,7 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 }
 
 // resolveStrategy creates the appropriate WatermarkStrategy based on config.
-// Falls back to legacySourceStrategy wrapping Source.GenerateWatermark().
+// Unconfigured sources use bounded out-of-orderness with the default tolerance.
 func (ts *TaskSlot) resolveStrategy() WatermarkStrategy {
 	if ts.Strategy != nil {
 		return ts.Strategy
@@ -305,8 +511,7 @@ func (ts *TaskSlot) resolveStrategy() WatermarkStrategy {
 	case StrategyIngestionTime:
 		return NewIngestionTimeStrategy()
 	default:
-		// Legacy: wrap the source's GenerateWatermark() method.
-		return newLegacySourceStrategy(ts.Source)
+		return NewBoundedOutOfOrdernessStrategy(DefaultMaxOOO)
 	}
 }
 
@@ -326,17 +531,46 @@ func (ts *TaskSlot) resolveEmitInterval() time.Duration {
 // the eventCh. For source tasks, this replaces the input readers.
 // If a WatermarkStrategy is provided, ObserveEventTime is called for each event.
 func runSourceReader(ctx context.Context, source SourceOperator, strategy WatermarkStrategy, eventCh chan<- Event, controlCh chan<- ControlMsg, log zerolog.Logger) error {
+	return runSourceReaderWithContexts(ctx, ctx, source, strategy, eventCh, controlCh, log)
+}
+
+// Stop fetching when intake is cancelled, but drain an already-fetched batch
+// using the processing context. A source must honor its ReadBatch context.
+func runSourceReaderWithContexts(intakeCtx, ctx context.Context, source SourceOperator, strategy WatermarkStrategy, eventCh chan<- Event, controlCh chan<- ControlMsg, log zerolog.Logger, checkpoints ...*sourceCheckpointInput) error {
 	for {
-		batch, err := source.ReadBatch(ctx)
+		if err := intakeCtx.Err(); err != nil {
+			return err
+		}
+		if len(checkpoints) > 0 {
+			if err := checkpoints[0].atBoundary(intakeCtx, ctx); err != nil {
+				return err
+			}
+		}
+		batch, err := source.ReadBatch(intakeCtx)
 		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
+			if intakeCtx.Err() != nil {
+				return intakeCtx.Err()
 			}
 			log.Error().Err(err).Msg("source read batch error")
 			return err
 		}
 
 		if batch == nil {
+			if strategy != nil {
+				queue := &sourceWatermarkQueue{}
+				if len(checkpoints) > 0 && checkpoints[0].watermarks != nil {
+					queue = checkpoints[0].watermarks
+				}
+				if err := queue.finish(ctx, eventCh); err != nil {
+					return err
+				}
+			}
+			// Keep the source available for a final global checkpoint before EOP.
+			if len(checkpoints) > 0 {
+				if err := checkpoints[0].finish(intakeCtx, ctx); err != nil {
+					return err
+				}
+			}
 			// End of source input.
 			ctrl := ControlMsg{
 				Type:       CtrlEndOfPartition,
@@ -350,15 +584,12 @@ func runSourceReader(ctx context.Context, source SourceOperator, strategy Waterm
 			return nil
 		}
 
-		for _, event := range batch {
-			if strategy != nil {
-				strategy.ObserveEventTime(event.EventTime)
-			}
-			select {
-			case eventCh <- event:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+		var queue *sourceWatermarkQueue
+		if len(checkpoints) > 0 {
+			queue = checkpoints[0].watermarks
+		}
+		if err := dispatchSourceBatch(ctx, batch, strategy, eventCh, queue); err != nil {
+			return err
 		}
 	}
 }

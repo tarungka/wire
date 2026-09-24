@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/tarungka/wire/internal/engine"
 )
@@ -62,10 +63,12 @@ func (a *filterAdapter) Map(_ context.Context, event Event) (Event, error) {
 
 // sourceAdapter wraps an sdk.Source to implement engine.SourceOperator.
 type sourceAdapter struct {
-	source Source
+	ctx       context.Context
+	source    Source
+	timestamp TimestampExtractor
 }
 
-func (a *sourceAdapter) Open(ctx context.Context) error { return a.source.Open(ctx) }
+func (a *sourceAdapter) Open(ctx context.Context) error { a.ctx = ctx; return a.source.Open(ctx) }
 func (a *sourceAdapter) Close() error                   { return a.source.Close() }
 func (a *sourceAdapter) Checkpoint(id uint64) ([]byte, error) {
 	if source, ok := a.source.(CheckpointedSource); ok {
@@ -74,9 +77,25 @@ func (a *sourceAdapter) Checkpoint(id uint64) ([]byte, error) {
 	return nil, nil
 }
 func (a *sourceAdapter) ReadBatch(ctx context.Context) ([]Event, error) {
-	return a.source.ReadBatch(ctx)
+	events, err := a.source.ReadBatch(ctx)
+	if err == nil && a.timestamp != nil {
+		for i := range events {
+			events[i].EventTime = a.timestamp(events[i])
+		}
+	}
+	return events, err
 }
 func (a *sourceAdapter) GenerateWatermark() int64 { return a.source.GenerateWatermark() }
+
+func (a *sourceAdapter) RestoreCheckpoint(data []byte) error {
+	if source, ok := a.source.(CheckpointedSource); ok {
+		return source.RestoreOffset(a.ctx, append([]byte(nil), data...))
+	}
+	if len(data) != 0 {
+		return fmt.Errorf("source cannot restore nonempty checkpoint offsets")
+	}
+	return nil
+}
 
 // sinkAdapter wraps an sdk.Sink to implement engine.SinkOperator.
 type sinkAdapter struct {
@@ -96,3 +115,41 @@ var (
 	_ engine.SourceOperator  = (*sourceAdapter)(nil)
 	_ engine.SinkOperator    = (*sinkAdapter)(nil)
 )
+
+// adaptSink preserves the transaction and restoration methods instead of
+// wrapping them in the ordinary sink's stateless checkpoint implementation.
+func adaptSink(sink Sink) engine.SinkOperator {
+	if transactional, ok := sink.(TransactionalSink); ok {
+		return transactional
+	}
+	if batch, ok := sink.(BatchSink); ok {
+		return &batchSinkAdapter{sinkAdapter: &sinkAdapter{sink: sink}, batch: batch}
+	}
+	return &sinkAdapter{sink: sink}
+}
+
+func adaptSource(source Source, timestamp TimestampExtractor) engine.SourceOperator {
+	adapter := &sourceAdapter{source: source, timestamp: timestamp}
+	if pre, ok := source.(PreOpenCheckpointedSource); ok {
+		return &preOpenSourceAdapter{sourceAdapter: adapter, restore: pre.RestoreOffsetBeforeOpen}
+	}
+	return adapter
+}
+
+type preOpenSourceAdapter struct {
+	*sourceAdapter
+	restore func(context.Context, []byte) error
+}
+
+func (a *preOpenSourceAdapter) RestoreOffsetBeforeOpen(ctx context.Context, data []byte) error {
+	return a.restore(ctx, append([]byte(nil), data...))
+}
+
+type batchSinkAdapter struct {
+	*sinkAdapter
+	batch BatchSink
+}
+
+func (a *batchSinkAdapter) WriteBatch(ctx context.Context, events []Event) error {
+	return a.batch.WriteBatch(ctx, events)
+}

@@ -12,7 +12,12 @@ import (
 // data events from that input are side-buffered until barriers arrive on all
 // inputs. Once aligned, buffered events are drained in input order.
 type BarrierAligner struct {
+	retiredID      uint64
+	retiredEpoch   uint64
 	mu             sync.Mutex
+	changed        chan struct{}
+	draining       bool
+	bufferedBytes  int64
 	numInputs      int
 	maxBufferSize  int
 	activeID       uint64          // 0 = no active alignment.
@@ -26,6 +31,7 @@ type BarrierAligner struct {
 func NewBarrierAligner(numInputs, maxBufferSize int) *BarrierAligner {
 	return &BarrierAligner{
 		numInputs:     numInputs,
+		changed:       make(chan struct{}),
 		maxBufferSize: maxBufferSize,
 		arrived:       make(map[int]bool),
 		sideBuffers:   make(map[int][]Event),
@@ -39,7 +45,7 @@ func (ba *BarrierAligner) OnBarrier(inputIndex int, checkpointID, epochID uint64
 	ba.mu.Lock()
 	defer ba.mu.Unlock()
 
-	if inputIndex < 0 || inputIndex >= ba.numInputs || checkpointID == 0 {
+	if ba.isRetiredLocked(checkpointID, epochID) || ba.draining || inputIndex < 0 || inputIndex >= ba.numInputs || checkpointID == 0 {
 		return false
 	}
 	if ba.activeID != 0 && (ba.activeID != checkpointID || ba.activeEpoch != epochID) {
@@ -84,6 +90,7 @@ func (ba *BarrierAligner) BufferEvent(ctx context.Context, inputIndex int, event
 	}
 
 	ba.sideBuffers[inputIndex] = append(buf, event)
+	ba.bufferedBytes += eventPayloadBytes(event)
 	return nil
 }
 
@@ -109,10 +116,13 @@ func (ba *BarrierAligner) DrainAll(checkpointID uint64) []Event {
 	for i := 0; i < ba.numInputs; i++ {
 		buf := ba.sideBuffers[i]
 		all = append(all, buf...)
-		// Reset length, keep capacity.
+		// Release payload references while retaining event slot capacity.
+		clear(buf)
 		ba.sideBuffers[i] = buf[:0]
 	}
 
+	ba.bufferedBytes = 0
+	ba.signalChangeLocked()
 	return all
 }
 
@@ -132,8 +142,11 @@ func (ba *BarrierAligner) Reset(checkpointID uint64) {
 	ba.arrived = make(map[int]bool)
 	// Keep sideBuffers allocated but empty.
 	for i := range ba.sideBuffers {
+		clear(ba.sideBuffers[i])
 		ba.sideBuffers[i] = ba.sideBuffers[i][:0]
 	}
+	ba.bufferedBytes = 0
+	ba.signalChangeLocked()
 }
 
 // ActiveCheckpointID returns the currently active checkpoint ID (0 if none).
@@ -167,4 +180,164 @@ func (ba *BarrierAligner) BufferedEventCount() int {
 		count += len(buf)
 	}
 	return count
+}
+
+func (ba *BarrierAligner) signalChangeLocked() {
+	close(ba.changed)
+	ba.changed = make(chan struct{})
+}
+
+// BufferAlignedEvent atomically decides whether an event belongs in the side
+// buffer. A full buffer waits for draining/reset instead of busy-spinning.
+func (ba *BarrierAligner) BufferAlignedEvent(ctx context.Context, input int, event Event) (bool, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		ba.mu.Lock()
+		if ba.activeID == 0 || !ba.arrived[input] {
+			ba.mu.Unlock()
+			return false, nil
+		}
+		if len(ba.sideBuffers[input]) < ba.maxBufferSize {
+			ba.sideBuffers[input] = append(ba.sideBuffers[input], event)
+			ba.bufferedBytes += eventPayloadBytes(event)
+			ba.mu.Unlock()
+			return true, nil
+		}
+		changed := ba.changed
+		ba.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+// FinishAlignment transfers the buffered epoch and resets alignment under one
+// lock, so a reader cannot append between a separate DrainAll and Reset.
+func (ba *BarrierAligner) FinishAlignment(checkpointID uint64) []Event {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	if ba.activeID != checkpointID {
+		return nil
+	}
+	ba.retireLocked(ba.activeID, ba.activeEpoch)
+	var events []Event
+	for i := 0; i < ba.numInputs; i++ {
+		events = append(events, ba.sideBuffers[i]...)
+		clear(ba.sideBuffers[i])
+		ba.sideBuffers[i] = ba.sideBuffers[i][:0]
+	}
+	ba.activeID = 0
+	ba.activeEpoch = 0
+	ba.alignStartTime = time.Time{}
+	ba.arrived = make(map[int]bool)
+	ba.bufferedBytes = 0
+	ba.signalChangeLocked()
+	return events
+}
+
+// WaitForPriorAlignment prevents a fast input's next barrier from being silently
+// discarded while the operator chain is still finishing its previous barrier.
+func (ba *BarrierAligner) WaitForPriorAlignment(ctx context.Context, input int, checkpointID uint64) error {
+	for {
+		ba.mu.Lock()
+		if ba.activeID == 0 || ba.activeID >= checkpointID {
+			ba.mu.Unlock()
+			return nil
+		}
+		if !ba.arrived[input] {
+			active := ba.activeID
+			ba.mu.Unlock()
+			return fmt.Errorf("input %d skipped active checkpoint %d before %d", input, active, checkpointID)
+		}
+		changed := ba.changed
+		ba.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+// BeginDrain stops future alignment and releases buffered records. Only the
+// operator chain calls this, after consuming pre-barrier queued input.
+func (ba *BarrierAligner) BeginDrain() []Event {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	ba.draining = true
+	var events []Event
+	for i := 0; i < ba.numInputs; i++ {
+		events = append(events, ba.sideBuffers[i]...)
+		ba.sideBuffers[i] = nil
+	}
+	ba.activeID = 0
+	ba.activeEpoch = 0
+	ba.arrived = make(map[int]bool)
+	ba.alignStartTime = time.Time{}
+	ba.bufferedBytes = 0
+	ba.signalChangeLocked()
+	return events
+}
+
+// BufferedBytes returns logical retained event payload bytes: key, value,
+// timestamp (8 bytes), and header names/values. It excludes Go allocation and
+// container overhead. Transferred events are no longer owned by the aligner.
+func (ba *BarrierAligner) BufferedBytes() int64 {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	return ba.bufferedBytes
+}
+
+func eventPayloadBytes(event Event) int64 {
+	size := int64(len(event.Key)) + int64(len(event.Value)) + 8
+	for key, value := range event.Headers {
+		size += int64(len(key)) + int64(len(value))
+	}
+	return size
+}
+
+// Retirement is a high-water mark: the coordinator permits only one in-flight
+// checkpoint per job, so retiring N also fences all earlier identities.
+func (ba *BarrierAligner) isRetiredLocked(id, epoch uint64) bool {
+	return epoch < ba.retiredEpoch || (epoch == ba.retiredEpoch && id <= ba.retiredID)
+}
+
+func (ba *BarrierAligner) retireLocked(id, epoch uint64) {
+	if id != 0 && !ba.isRetiredLocked(id, epoch) {
+		ba.retiredID, ba.retiredEpoch = id, epoch
+	}
+}
+
+// AbortAlignment fences delayed barriers even if the abort arrives before the
+// first barrier. Only the matching active identity releases buffered records.
+func (ba *BarrierAligner) AbortAlignment(id, epoch uint64) []Event {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	ba.retireLocked(id, epoch)
+	if ba.activeID != id || ba.activeEpoch != epoch {
+		return nil
+	}
+	var events []Event
+	for i := 0; i < ba.numInputs; i++ {
+		events = append(events, ba.sideBuffers[i]...)
+		clear(ba.sideBuffers[i])
+		ba.sideBuffers[i] = ba.sideBuffers[i][:0]
+	}
+	ba.activeID, ba.activeEpoch = 0, 0
+	ba.alignStartTime = time.Time{}
+	ba.arrived = make(map[int]bool)
+	ba.bufferedBytes = 0
+	ba.signalChangeLocked()
+	return events
+}
+
+// IsRetired reports whether a checkpoint has already completed or been aborted.
+func (ba *BarrierAligner) IsRetired(id, epoch uint64) bool {
+	ba.mu.Lock()
+	defer ba.mu.Unlock()
+	return ba.isRetiredLocked(id, epoch)
 }

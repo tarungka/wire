@@ -3,6 +3,7 @@ package coordinator
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -18,36 +19,32 @@ func generateSavepointID() string {
 	return "sp-" + hex.EncodeToString(b)
 }
 
-// TriggerSavepoint creates a new in-progress savepoint for a running job.
+// TriggerSavepoint starts a savepoint or durably queues it behind the current
+// checkpoint. Queued requests retain their IDs across coordinator recovery.
 func (c *Coordinator) TriggerSavepoint(jobID string) (*SavepointMeta, error) {
-	if !c.IsReady() {
+	id := generateSavepointID()
+	if _, err := c.triggerCheckpoint(jobID, id); err == nil {
+		return c.GetSavepoint(jobID, id)
+	} else if !errors.Is(err, ErrCheckpointInProgress) {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.readyLocked() {
 		return nil, ErrNotLeader
 	}
-
-	c.mu.RLock()
-	job, ok := c.jobs[jobID]
-	c.mu.RUnlock()
-	if !ok {
+	job := c.jobs[jobID]
+	if job == nil {
 		return nil, ErrJobNotFound
 	}
-
 	if job.Status != JobRunning {
 		return nil, ErrJobNotRunning
 	}
-
-	sp := &SavepointMeta{
-		ID:          generateSavepointID(),
-		JobID:       jobID,
-		Status:      SavepointInProgress,
-		TriggerTime: time.Now().UTC(),
-	}
-
+	sp := &SavepointMeta{ID: id, JobID: jobID, Status: SavepointInProgress, Queued: true, TriggerTime: time.Now().UTC()}
 	if err := c.persistSavepoint(sp); err != nil {
 		return nil, err
 	}
-
-	c.log.Info().Str("job_id", jobID).Str("savepoint_id", sp.ID).Msg("savepoint triggered")
-	// TODO: inject checkpoint barriers via RPC
+	c.queuedSavepointJobs[jobID] = true
 	return sp, nil
 }
 
@@ -65,6 +62,9 @@ func (c *Coordinator) GetSavepoint(jobID, spID string) (*SavepointMeta, error) {
 	if err := protocol.DecodeMsgPack(data, &sp); err != nil {
 		return nil, fmt.Errorf("decoding savepoint %s/%s: %w", jobID, spID, err)
 	}
+	if sp.Deleted {
+		return nil, ErrSavepointNotFound
+	}
 	return &sp, nil
 }
 
@@ -78,6 +78,9 @@ func (c *Coordinator) ListSavepoints(jobID string) ([]*SavepointMeta, error) {
 		if err := protocol.DecodeMsgPack(value, &sp); err != nil {
 			decodeErr = fmt.Errorf("decoding savepoint %q: %w", string(key), err)
 			return false
+		}
+		if sp.Deleted {
+			return true
 		}
 		result = append(result, &sp)
 		return true
@@ -93,7 +96,9 @@ func (c *Coordinator) ListSavepoints(jobID string) ([]*SavepointMeta, error) {
 
 // DeleteSavepoint removes a savepoint from the store.
 func (c *Coordinator) DeleteSavepoint(jobID, spID string) error {
-	if !c.IsReady() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.readyLocked() {
 		return ErrNotLeader
 	}
 
@@ -106,7 +111,36 @@ func (c *Coordinator) DeleteSavepoint(jobID, spID string) error {
 		return ErrSavepointNotFound
 	}
 
-	if err := c.store.Delete(SavepointKey(jobID, spID)); err != nil {
+	var sp SavepointMeta
+	if err := protocol.DecodeMsgPack(data, &sp); err != nil {
+		return err
+	}
+	if sp.Deleted {
+		return ErrSavepointNotFound
+	}
+	// A savepoint is also a normal recovery boundary. Physical cleanup must
+	// not remove the latest selected boundary of an active job, even when it
+	// was requested directly rather than by pause/rescale.
+	if job := c.jobs[jobID]; job != nil && !job.Status.IsTerminal() && sp.CheckpointID != 0 && job.LatestCheckpoint == sp.CheckpointID {
+		return ErrSavepointInUse
+	}
+	if job := c.jobs[jobID]; job != nil && !job.Status.IsTerminal() && (job.PauseSavepointID == sp.ID || (job.PauseCheckpoint != 0 && job.PauseCheckpoint == sp.CheckpointID)) {
+		return ErrSavepointInUse
+	}
+	if job := c.jobs[jobID]; job != nil && !job.Status.IsTerminal() && job.RescaleCheckpoint != 0 && job.RescaleCheckpoint == sp.CheckpointID && job.LatestCheckpoint == sp.CheckpointID {
+		return ErrSavepointInUse
+	}
+	for _, successor := range c.jobs {
+		ref := successor.RestoreSavepoint
+		if ref != nil && !successor.Status.IsTerminal() && ref.JobID == jobID && ref.SavepointID == spID {
+			return ErrSavepointInUse
+		}
+	}
+	if sp.Status == SavepointInProgress && !sp.Queued {
+		return ErrCheckpointInProgress
+	}
+
+	if err := c.persistSavepointDeletionLocked(sp); err != nil {
 		return fmt.Errorf("deleting savepoint %s/%s: %w", jobID, spID, err)
 	}
 

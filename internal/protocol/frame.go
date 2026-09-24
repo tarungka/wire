@@ -24,6 +24,17 @@ const (
 // Go automatically selects hardware acceleration (SSE4.2/ARM CRC) when available.
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
+// The first CRC byte is one of 256 fixed message discriminators. Precompute
+// its state once, avoiding a separate checksum call and escaping byte slice
+// for every frame. The payload still uses Go's hardware-accelerated Update.
+var crc32cTypeSeeds = func() [256]uint32 {
+	var seeds [256]uint32
+	for i := range seeds {
+		seeds[i] = crc32.Update(0, crc32cTable, []byte{byte(i)})
+	}
+	return seeds
+}()
+
 // framePool reuses frame body buffers to reduce GC pressure at high throughput.
 var framePool = sync.Pool{
 	New: func() any {
@@ -35,15 +46,19 @@ var framePool = sync.Pool{
 // computeCRC32C computes the CRC32C checksum over MsgType || Payload.
 // Uses crc32.Update to avoid hash.Hash32 allocation per call.
 func computeCRC32C(msgType byte, payload []byte) uint32 {
-	crc := crc32.Update(0, crc32cTable, []byte{msgType})
-	crc = crc32.Update(crc, crc32cTable, payload)
-	return crc
+	return crc32.Update(crc32cTypeSeeds[msgType], crc32cTable, payload)
 }
 
 // Frame represents a decoded wire protocol frame.
 type Frame struct {
-	MsgType uint8
-	Payload []byte // Raw msgpack bytes, post-CRC verification.
+	// Length is the reported wire length, excluding its four-byte prefix.
+	Length uint32
+	// Corruption diagnostics are populated only when CRC validation fails.
+	ReceivedCRC   uint32
+	ComputedCRC   uint32
+	CorruptPrefix []byte // At most 64 bytes of the frame body, copied before reuse.
+	MsgType       uint8
+	Payload       []byte // Raw msgpack bytes, post-CRC verification.
 }
 
 // ReadFrame reads a single frame from the reader.
@@ -58,10 +73,10 @@ func ReadFrame(r io.Reader, maxFrameSize uint32) (Frame, error) {
 
 	// 2. Validate length.
 	if frameLen < MinFrameLength {
-		return Frame{}, ErrFrameTooSmall
+		return Frame{Length: frameLen}, ErrFrameTooSmall
 	}
 	if frameLen > maxFrameSize {
-		return Frame{}, ErrFrameTooLarge
+		return Frame{Length: frameLen}, ErrFrameTooLarge
 	}
 
 	// 3. Read the frame body using a pooled buffer to reduce GC pressure.
@@ -75,8 +90,10 @@ func ReadFrame(r io.Reader, maxFrameSize uint32) (Frame, error) {
 
 	if _, err := io.ReadFull(r, buf); err != nil {
 		// Return buffer to pool on error.
-		*bufp = buf
-		framePool.Put(bufp)
+		if cap(buf) <= 1024*1024 {
+			*bufp = buf
+			framePool.Put(bufp)
+		}
 		return Frame{}, err
 	}
 
@@ -84,19 +101,24 @@ func ReadFrame(r io.Reader, maxFrameSize uint32) (Frame, error) {
 	msgType := buf[0]
 	crcReceived := binary.BigEndian.Uint32(buf[1:5])
 
-	// 5. Copy payload out so the pooled buffer can be returned.
-	payload := make([]byte, len(buf[5:]))
-	copy(payload, buf[5:])
-	*bufp = buf
-	framePool.Put(bufp)
-
-	// 6. Verify CRC32C over MsgType || Payload.
-	crcComputed := computeCRC32C(msgType, payload)
+	// Verify before allocating the decoded payload. Corrupt frames must not
+	// cause a second allocation of the sender-controlled frame length.
+	crcComputed := computeCRC32C(msgType, buf[5:])
 	if crcReceived != crcComputed {
-		return Frame{}, ErrCRCMismatch
+		diagnostic := Frame{Length: frameLen, MsgType: msgType, ReceivedCRC: crcReceived, ComputedCRC: crcComputed, CorruptPrefix: append([]byte(nil), buf[:min(len(buf), 64)]...)}
+		if cap(buf) <= 1024*1024 {
+			*bufp = buf
+			framePool.Put(bufp)
+		}
+		return diagnostic, ErrCRCMismatch
+	}
+	payload := append([]byte(nil), buf[5:]...)
+	if cap(buf) <= 1024*1024 {
+		*bufp = buf
+		framePool.Put(bufp)
 	}
 
-	return Frame{MsgType: msgType, Payload: payload}, nil
+	return Frame{Length: frameLen, MsgType: msgType, Payload: payload}, nil
 }
 
 // WriteFrame encodes a message and writes a complete frame to the writer.
@@ -146,44 +168,56 @@ func WriteFrameRaw(w io.Writer, msgType uint8, payload []byte) error {
 // DecodePayload decodes the raw payload of a Frame into the appropriate message struct.
 func DecodePayload(f Frame) (any, error) {
 	switch f.MsgType {
-	case MsgTypeHandshake:
-		var msg HandshakeMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+	case MsgTypeSessionDrain:
+		var msg SessionDrainMsg
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
+			return nil, err
+		}
+		return &msg, nil
+	case MsgTypeStreamHeader:
+		var msg StreamHeaderMsg
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
+			return nil, err
+		}
+		return &msg, nil
+	case MsgTypeSessionHandshake:
+		var msg SessionHandshakeMsg
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
 
 	case MsgTypeDataRecord:
 		var msg DataRecordMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
 
 	case MsgTypeCheckpointBarrier:
 		var msg CheckpointBarrierMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
 
 	case MsgTypeWatermark:
 		var msg WatermarkMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
 
 	case MsgTypeEndOfPartition:
 		var msg EndOfPartitionMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
 
 	case MsgTypeBackpressure:
 		var msg BackpressureMsg
-		if err := DecodeMsgPack(f.Payload, &msg); err != nil {
+		if err := decodeFramePayload(f.Payload, &msg); err != nil {
 			return nil, err
 		}
 		return &msg, nil
@@ -195,12 +229,22 @@ func DecodePayload(f Frame) (any, error) {
 
 // EncodeAndWriteFrame determines the MsgType from the concrete message type and writes the frame.
 func EncodeAndWriteFrame(w io.Writer, msg any) error {
+	return EncodeAndWriteFrameLimit(w, msg, DefaultMaxFrameSize)
+}
+
+// EncodeAndWriteFrameLimit rejects oversized messages before writing any bytes.
+// maxFrameSize counts the type, CRC and payload, excluding the length prefix.
+func EncodeAndWriteFrameLimit(w io.Writer, msg any, maxFrameSize uint32) error {
 	var msgType uint8
 	switch msg.(type) {
-	case *HandshakeMsg:
-		msgType = MsgTypeHandshake
-	case HandshakeMsg:
-		msgType = MsgTypeHandshake
+	case *SessionDrainMsg, SessionDrainMsg:
+		msgType = MsgTypeSessionDrain
+	case *StreamHeaderMsg, StreamHeaderMsg:
+		msgType = MsgTypeStreamHeader
+	case *SessionHandshakeMsg:
+		msgType = MsgTypeSessionHandshake
+	case SessionHandshakeMsg:
+		msgType = MsgTypeSessionHandshake
 	case *DataRecordMsg:
 		msgType = MsgTypeDataRecord
 	case DataRecordMsg:
@@ -224,5 +268,24 @@ func EncodeAndWriteFrame(w io.Writer, msg any) error {
 	default:
 		return fmt.Errorf("%w: unsupported type %T", ErrEncodePayload, msg)
 	}
-	return WriteFrame(w, msgType, msg)
+	if maxFrameSize < MinFrameLength {
+		return ErrFrameTooLarge
+	}
+	encoded, err := encodeMsgPackPrefix(msg, maxFrameSize-MinFrameLength, HeaderSize)
+	if err != nil {
+		return err
+	}
+	payload := encoded[HeaderSize:]
+	if len(payload) == 1 && payload[0] == 0xc0 {
+		return fmt.Errorf("%w: nil message", ErrEncodePayload)
+	}
+	binary.BigEndian.PutUint32(encoded[:4], uint32(len(payload))+MinFrameLength)
+	encoded[4] = msgType
+	binary.BigEndian.PutUint32(encoded[5:9], computeCRC32C(msgType, payload))
+	if n, err := w.Write(encoded); err != nil {
+		return err
+	} else if n != len(encoded) {
+		return io.ErrShortWrite
+	}
+	return nil
 }

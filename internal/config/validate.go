@@ -3,13 +3,55 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
+	"net"
 	"os"
+	"time"
 )
 
 // Validate checks the WireConfig for semantic errors. It collects all
 // validation errors rather than failing on the first one.
 func (c *WireConfig) Validate() error {
 	var errs []error
+	if c.Heartbeat.Interval.Duration <= 0 {
+		errs = append(errs, errors.New("heartbeat.interval must be positive"))
+	}
+	if c.Heartbeat.Timeout.Duration <= c.Heartbeat.Interval.Duration {
+		errs = append(errs, errors.New("heartbeat.timeout must be greater than heartbeat.interval"))
+	}
+	if c.Heartbeat.MaxFailures < 0 {
+		errs = append(errs, errors.New("heartbeat.max_failures must be nonnegative"))
+	}
+	if c.Checkpoint.MinPause.Duration < 0 {
+		errs = append(errs, errors.New("checkpoint.min_pause must be nonnegative"))
+	}
+	if rate := c.Checkpoint.TolerableFailureRate; math.IsNaN(rate) || math.IsInf(rate, 0) || rate < 0 || rate > 1 {
+		errs = append(errs, errors.New("checkpoint.tolerable_failure_rate must be between 0 and 1"))
+	}
+	if c.Checkpoint.MaxConsecutiveFailures < 0 {
+		errs = append(errs, fmt.Errorf("checkpoint.max_consecutive_failures must be nonnegative"))
+	}
+	if c.Checkpoint.Timeout.Duration <= 0 {
+		errs = append(errs, fmt.Errorf("checkpoint.timeout must be positive"))
+	}
+	if replica := c.Worker.CheckpointReplica; replica.ListenAddr != "" {
+		if replica.Concurrency < 1 {
+			errs = append(errs, fmt.Errorf("worker.checkpoint_replica.concurrency must be positive"))
+		}
+		for name, path := range map[string]string{"store_root": replica.StoreRoot, "artifact_root": replica.ArtifactRoot, "staging_root": replica.StagingRoot} {
+			if path == "" {
+				errs = append(errs, fmt.Errorf("worker.checkpoint_replica.%s is required", name))
+			}
+		}
+	}
+	for name, value := range map[string]int{"input_buffer_size": c.TaskSlot.InputBufferSize, "output_buffer_size": c.TaskSlot.OutputBufferSize, "alignment_buffer_size": c.TaskSlot.AlignmentBufferSize, "checkpoint_upload_concurrency": c.TaskSlot.CheckpointUploadConcurrency} {
+		if value < 0 {
+			errs = append(errs, fmt.Errorf("task_slot.%s must be >= 0", name))
+		}
+	}
+	if c.TaskSlot.DrainTimeout.Duration < 0 {
+		errs = append(errs, errors.New("task_slot.drain_timeout must be >= 0"))
+	}
 
 	// Mode validation.
 	switch c.Mode {
@@ -21,8 +63,11 @@ func (c *WireConfig) Validate() error {
 
 	// Worker-specific validation.
 	if c.Mode == "worker" {
-		if c.Worker.CoordinatorAddr == "" {
-			errs = append(errs, fmt.Errorf("worker.coordinator_addr is required in worker mode"))
+		if c.Worker.CoordinatorAddr == "" && len(c.Worker.CoordinatorSeeds) == 0 {
+			errs = append(errs, fmt.Errorf("worker.coordinator_addr or worker.coordinator_seeds is required in worker mode"))
+		}
+		if len(c.Worker.CoordinatorSeeds) > 0 && c.Worker.EpochPath == "" {
+			errs = append(errs, errors.New("worker.epoch_path is required for HA discovery"))
 		}
 		if c.Worker.TaskSlots <= 0 {
 			errs = append(errs, fmt.Errorf("worker.task_slots must be > 0, got %d", c.Worker.TaskSlots))
@@ -64,13 +109,27 @@ func (c *WireConfig) Validate() error {
 
 	// Election backend.
 	switch c.Election.Backend {
-	case "noop", "filelock", "":
+	case "noop", "filelock", "kubernetes", "":
 		// valid
 	default:
-		errs = append(errs, fmt.Errorf("election.backend must be \"noop\", \"filelock\", or \"\", got %q",
+		errs = append(errs, fmt.Errorf("election.backend must be \"noop\", \"filelock\", \"kubernetes\", or \"\", got %q",
 			c.Election.Backend))
 	}
 
+	if c.Election.Backend == "kubernetes" {
+		lease := c.Election.Kubernetes
+		if lease.RetryPeriod.Duration <= 0 || lease.RenewDeadline.Duration <= lease.RetryPeriod.Duration || lease.LeaseDuration.Duration <= lease.RenewDeadline.Duration || lease.LeaseDuration.Duration%time.Second != 0 || lease.LeaseDuration.Duration/time.Second > 2147483647 {
+			errs = append(errs, errors.New("election.kubernetes requires whole-second lease_duration > renew_deadline > positive retry_period"))
+		}
+		if c.Mode != "worker" {
+			for name, addr := range map[string]string{"http.adv_addr": c.HTTP.AdvAddr, "node.rpc_advertise_addr": c.Node.RPCAdvertiseAddr} {
+				host, _, err := net.SplitHostPort(addr)
+				if err != nil || host == "" || host == "0.0.0.0" || host == "::" {
+					errs = append(errs, fmt.Errorf("%s must be a routable host:port for Kubernetes HA", name))
+				}
+			}
+		}
+	}
 	if len(errs) == 0 {
 		return nil
 	}

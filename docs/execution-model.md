@@ -40,9 +40,17 @@ A **Watermark(T)** is a control packet flowing through the stream that declares:
 *   **Function:** Watermarks trigger **Window Calculations** and expire timers.
 
 ### 2.3 Late Data
-If an event arrives with `Timestamp < CurrentWatermark`:
-*   **Default:** The event is dropped (or sent to a side-output "Dead Letter Queue").
-*   **Allowed Lateness:** Users can configure a grace period where late events trigger a window re-computation/update.
+An event with `Timestamp < CurrentWatermark` is late. Window eligibility is
+separate: a window accepts it while `CurrentWatermark < WindowEnd + AllowedLateness`.
+Zero lateness purges at window end, but an overlapping window that is still open
+can accept the record. If every assigned window has expired, the original record
+is sent once to the configured named late stream or dropped with a metric.
+
+Configure retention per window with `AllowedLateness(30 * time.Second)` in the
+SDK or `allowed_lateness: "30s"` in YAML. Retained windows emit updated results
+with bounds and `IsUpdate=true`; prior results are not retracted. Named late
+streams are separate from error-policy DLQs. See [WIP-12's runtime contract](trds/WIP-12/runtime-contract.md)
+for side-output configuration, metrics, persistence and recovery.
 
 ---
 
@@ -124,5 +132,23 @@ This alignment ensures the snapshot captures **exactly** the state of "All event
 *   **Internal State:** Always Exactly-Once (due to rollback).
 *   **Sink Output:**
     *   **Idempotent Sinks (KV Store):** Naturally Exactly-Once.
-    *   **Transactional Sinks:** Require "Two-Phase Commit" tied to the Checkpoint completion mechanism.
+    *   **Transactional Sinks:** Use checkpoint-driven two-phase commit. Preparation precedes snapshot capture and replication; a durable global decision authorizes idempotent commit. Recovery fences prior writers, resolves orphan transactions and finishes the selected commit before replay. Aborts require task recovery, and bounded sources coordinate a final checkpoint. See the [WIP-10 runtime contract](trds/WIP-10/runtime-contract.md) for the public SDK interface, connector obligations and runtime limits.
     *   **Standard Sinks:** At-Least-Once (may see duplicates after replay).
+
+
+## 7. Operator Errors and Dead Letter Queues
+
+The default operator error policy fails the task. Per-operator policies can
+retry transient failures with bounded backoff, drop a failed record, or send its
+original payload and error metadata to a configured DLQ sink. Poison errors and
+processing panics skip retries; fatal resource/state errors fail immediately.
+A retry blocks progress of that operator chain, including checkpoint barriers,
+until the call succeeds, exhausts its policy or is cancelled. User calls must
+honor cancellation; a backoff cap cannot bound an uncooperative user function.
+
+Only successful attempts publish normal output. Retryable state mutations and
+external side effects must tolerate repeated execution. DLQ writes are
+synchronous, cancellable and best effort: missing/failed destinations log and
+count drops, and replay can duplicate DLQ records. DLQ delivery does not
+participate in checkpoint transactions. See [error-policy usage](sdk/error_handling.md)
+and [WIP-11 acceptance](trds/WIP-11/acceptance.md).

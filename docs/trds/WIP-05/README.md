@@ -6,11 +6,11 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-09-12`
+> **Last Updated:** `2026-09-14`
 
 ### Revision History
 
@@ -20,13 +20,13 @@
 
 ---
 
-## Implementation Status — 2026-09-12
+## Implementation Status — 2026-09-14
 
-Assessed against `master` at `bb58acd`, with the timeout cleanup changes in this PR. This section records current implementation; the proposal below retains its original design context and targets.
+Implemented on top of the distributed checkpoint path and the cleanup fixes in [#152](https://github.com/tarungka/wire/pull/152) and [#204](https://github.com/tarungka/wire/pull/204).
 
-- **Implemented:** Engine-level barrier alignment, checkpoint timeout/abort handling, failure tracking, and metrics primitives are implemented. Reaching either failure threshold now sends transaction-abort notifications before checkpoint-abort notifications, clears checkpoint tracking, and then returns the terminal failure. If cancellation interrupts notification delivery, the returned error preserves both the threshold failure and cancellation.
-- **Remaining:** Wire the cluster checkpoint trigger/ACK/abort path through workers and validate distributed timeout and recovery behavior. Local control-channel delivery is cancellation-aware but is not a durable abort acknowledgement; shutdown during delivery can still require transaction recovery.
-- **Evidence:** [barrier.go](../../../internal/engine/barrier.go), [checkpoint_coordinator.go](../../../internal/engine/checkpoint_coordinator.go), [worker.go](../../../internal/worker/worker.go).
+The coordinator persists timeout decisions and failure budgets, enforces minimum pause and configured failure thresholds, and queues abort commands before recovery cancellation. Operators release alignment buffers in record order, fence delayed barriers (including the same epoch), cancel pending uploads, and handle repeated transaction aborts idempotently. Default telemetry records all three alignment-health instruments.
+
+See [acceptance evidence and operational limits](acceptance.md) for the implementation mapping, distributed tests, and the distinction between a durable coordinator decision and task-side cleanup.
 
 ---
 
@@ -115,8 +115,8 @@ sequenceDiagram
 
 **Component 1:** Checkpoint Coordinator Timer
 * **Responsibility:** Track per-checkpoint timeout. If not all ACKs received within timeout, abort the checkpoint.
-* **Technology:** Go `time.Timer` in Coordinator
-* **Interactions:** Started on `TriggerCheckpoint(N)`. Canceled on completion. Fires `AbortCheckpoint(N)` on expiry.
+* **Technology:** Coordinator maintenance loop (currently every 2 seconds)
+* **Interactions:** Records the trigger time durably; maintenance aborts an incomplete checkpoint after its timeout. Completed checkpoints are excluded.
 
 **Component 2:** Operator Alignment State
 * **Responsibility:** Track which inputs have received Barrier N. Buffer post-barrier data on aligned inputs. Release buffers on abort.
@@ -128,9 +128,9 @@ sequenceDiagram
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `checkpoint.timeout` | `10m` | Max time for a checkpoint to complete |
-| `checkpoint.min_pause` | `0s` | Minimum gap between checkpoint completions |
-| `checkpoint.max_consecutive_failures` | `0` | Consecutive timeouts before job failure (0 = unlimited) |
-| `checkpoint.tolerable_failure_rate` | `0` | Fraction of checkpoints allowed to fail (0 = no tolerance) |
+| `checkpoint.min_pause` | `0s` | Minimum delay after completion before another checkpoint trigger; savepoints exempt |
+| `checkpoint.max_consecutive_failures` | `0` | Consecutive checkpoint failures before job enters FAILING (0 = unlimited) |
+| `checkpoint.tolerable_failure_rate` | `0` | Failure fraction in the last 100 terminal checkpoints, enforced after 100 samples; savepoints excluded (0 = disabled) |
 
 ---
 
@@ -160,7 +160,7 @@ Sent from Coordinator to all tasks when a checkpoint times out. Tasks must:
 
 ## 4. Data Model & Storage
 
-No new persistent storage. Alignment state is ephemeral (in-memory buffers).
+Alignment buffers and retired barrier identities are task-local. Existing coordinator checkpoint and job metadata persist abort decisions, attempt/failure counters, the consecutive failure count, last completion time, and the latest checkpoint failure reason; no new storage service is required.
 
 ---
 
@@ -183,11 +183,11 @@ No new persistent storage. Alignment state is ephemeral (in-memory buffers).
 
 | # | Scenario | Handling | Impact | Severity |
 | -- | -- | -- | -- | -- |
-| 1 | One input permanently stalled (dead upstream) | Consecutive timeouts exceed threshold → job enters FAILING | Job restart | High |
-| 2 | Network partition delays barrier delivery | Timeout fires. On reconnect, delayed barrier is ignored (wrong epoch). Next checkpoint succeeds. | One lost checkpoint | Medium |
+| 1 | One input permanently stalled (dead upstream) | Consecutive failures reach threshold → job enters FAILING | Job restart | High |
+| 2 | Network partition delays barrier delivery | Timeout fires. On reconnect, delayed barrier is ignored by checkpoint ID and epoch, including a retired checkpoint in the current epoch). Next checkpoint succeeds. | One lost checkpoint | Medium |
 | 3 | Operator has 10 inputs, 9 aligned, 1 missing | All 9 inputs' buffered data released on timeout. Significant memory pressure during alignment. | Memory spike | Medium |
 | 4 | Checkpoint timeout set too low (< alignment time) | Every checkpoint times out. No progress. | Wasted resources | High |
-| 5 | AbortCheckpoint arrives after operator already completed snapshot | Operator ignores abort (already forwarded barrier). Coordinator still counts as timed out. | No data impact | Low |
+| 5 | AbortCheckpoint arrives after operator already completed snapshot | Operator cancels pending upload/prepared transaction and retires the identity; it cannot retract a forwarded barrier. Downstream tasks receive the same fenced abort. | No data impact | Low |
 
 ---
 
@@ -202,7 +202,7 @@ No additional security considerations beyond existing RPC authentication (WIP-17
 | Test Type | Scope | Tools | Coverage Target |
 | -- | -- | -- | -- |
 | Unit Tests | Coordinator timeout logic, operator alignment state machine | Go `testing` | 100% of timeout/abort paths |
-| Integration Tests | Stall one input, verify timeout + recovery | MiniCluster + toxiproxy | Happy path + timeout + consecutive failure |
+| Integration Tests | Stall one input, verify timeout + recovery | Two-worker cluster with a source withholding its barrier | Happy path + timeout + consecutive failure |
 
 ### 8.1 Key Test Scenarios
 

@@ -1,6 +1,9 @@
 package coordinator
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
 func (s *HTTPServer) handleClusterStatus(w http.ResponseWriter, _ *http.Request) {
 	info, isSelf, err := s.coord.GetLeaderInfo()
@@ -10,6 +13,8 @@ func (s *HTTPServer) handleClusterStatus(w http.ResponseWriter, _ *http.Request)
 	}
 
 	leader := &leaderResponse{
+		Ready:          isSelf && s.coord.IsReady(),
+		LeaderRPCAddr:  info.RPCAddress,
 		LeaderID:       info.NodeID,
 		LeaderHTTPAddr: info.Address,
 		LeaderEpoch:    info.Epoch,
@@ -19,7 +24,15 @@ func (s *HTTPServer) handleClusterStatus(w http.ResponseWriter, _ *http.Request)
 	wms := s.coord.ListWorkers()
 	workers := make([]nodeResponse, 0, len(wms))
 	for _, w := range wms {
+		status := "ALIVE"
+		if w.Lost || w.LastHeartbeat.IsZero() || time.Since(w.LastHeartbeat) >= s.coord.config.WorkerTimeout {
+			status = "LOST"
+		}
+		if w.Removed {
+			status = "REMOVED"
+		}
 		workers = append(workers, nodeResponse{
+			Status:             status,
 			ID:                 w.ID,
 			Address:            w.Address,
 			TaskSlotsTotal:     w.TaskSlotsTotal,
@@ -47,8 +60,6 @@ func (s *HTTPServer) handleRemoveNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to remove node from store")
 		return
 	}
-
-	// TODO: reschedule tasks from the removed worker
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "node_id": nodeID})
 }

@@ -8,14 +8,18 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/engine"
+	"github.com/tarungka/wire/internal/keygroup"
 	"github.com/tarungka/wire/internal/rpc"
+	"github.com/tarungka/wire/internal/transport"
 )
 
 // taskExecutor instantiates operators from a TaskDescriptor and runs them
 // through the shared TaskSlot runtime. Operators are resolved by name from
 // the worker registry rather than inline SDK function values.
 type taskExecutor struct {
-	reg *Registry
+	taskConfig *engine.TaskSlotConfig
+	reg        *Registry
+	data       *transport.Mux
 }
 
 func newTaskExecutor(reg *Registry) *taskExecutor {
@@ -24,8 +28,8 @@ func newTaskExecutor(reg *Registry) *taskExecutor {
 
 // run builds the operator chain described by desc.OperatorChain, wires
 // channels, and drives execution until ctx is cancelled or the source ends.
-// Phase 1: single-input linear pipeline, no shuffle, no state, no checkpoints.
-func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor, log zerolog.Logger, onRunning func()) (retErr error) {
+// Explicit upstream/downstream descriptors connect separate worker tasks.
+func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor, log zerolog.Logger, onRunning func(), checkpoints ...*taskCheckpointRuntime) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = &engine.OperatorPanicError{Value: r, Stack: string(debug.Stack())}
@@ -35,14 +39,26 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		return fmt.Errorf("worker: task %q has empty OperatorChain", taskID)
 	}
 
+	watermark, err := taskWatermarkConfig(desc.OperatorChain)
+	if err != nil {
+		return err
+	}
+	groups := desc.NumKeyGroups
+	if groups == 0 {
+		groups = keygroup.DefaultNumKeyGroups
+	}
 	tc := TaskContext{
-		TaskID:       taskID,
-		JobID:        jobID,
-		OperatorID:   desc.OperatorID,
-		SubtaskIndex: desc.SubtaskIndex,
-		Parallelism:  desc.Parallelism,
-		KeyGroup:     desc.KeyGroup,
-		Log:          log,
+		DeploymentGeneration: desc.DeploymentGeneration,
+		EpochID:              desc.EpochID,
+		AttemptID:            desc.AttemptID,
+		NumKeyGroups:         groups,
+		TaskID:               taskID,
+		JobID:                jobID,
+		OperatorID:           desc.OperatorID,
+		SubtaskIndex:         desc.SubtaskIndex,
+		Parallelism:          desc.Parallelism,
+		KeyGroup:             desc.KeyGroup,
+		Log:                  log,
 	}
 
 	var sourceOp engine.SourceOperator
@@ -51,6 +67,30 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 
 	// Validate every policy before invoking user factories.
 	for _, od := range desc.OperatorChain {
+		if err := od.ValidateSideOutputs(); err != nil {
+			return err
+		}
+		if od.Type == rpc.OperatorTypeWindow && od.ErrorPolicy != nil {
+			return fmt.Errorf("worker: window errors require task recovery, not record error policies")
+		}
+		if od.Window != nil {
+			if od.Type != rpc.OperatorTypeWindow {
+				return fmt.Errorf("worker: window configuration requires a window operator")
+			}
+			if err := od.Window.Validate(); err != nil {
+				return err
+			}
+		}
+		if od.LateOutputTag != "" && od.Type != rpc.OperatorTypeWindow {
+			return fmt.Errorf("worker: late output requires a window")
+		}
+
+		if od.ErrorPolicy != nil && od.ErrorPolicy.OnExhausted == "dlq" && od.DLQSink == nil {
+			return fmt.Errorf("worker: DLQ destination required for %q", od.OperatorID)
+		}
+		if err := od.ValidateStateBackend(); err != nil {
+			return err
+		}
 		if od.DLQSink != nil && (od.DLQSink.ClassName == "" || od.ErrorPolicy == nil || od.ErrorPolicy.OnExhausted != "dlq") {
 			return fmt.Errorf("worker: invalid DLQ configuration for %q", od.OperatorID)
 		}
@@ -63,6 +103,7 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 	}
 
 	for i, od := range desc.OperatorChain {
+		tc.OperatorID = od.OperatorID
 		op, err := te.reg.Build(ctx, od, tc)
 		if err != nil {
 			return fmt.Errorf("worker: task %q operator[%d] %q: %w", taskID, i, od.OperatorID, err)
@@ -78,6 +119,49 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			sourceOp = so
 			continue
 		}
+		if od.StateBackend != nil {
+			target, ok := op.(interface {
+				SetStateBackendFactory(func() (engine.StateBackend, func(), error))
+			})
+			if !ok {
+				return fmt.Errorf("worker: operator %q cannot configure state backend", od.OperatorID)
+			}
+			s := od.StateBackend
+			cfg := engine.StateBackendConfig{Type: engine.StateBackendType(s.Type), PebbleDataDir: s.DataDir, HashMapMemLimit: s.MaxMemoryBytes, PebbleMaxCompactionConcurrency: s.MaxCompactionConcurrency}
+			target.SetStateBackendFactory(engine.ScopedStateBackendFactory(cfg, jobID, od.OperatorID, desc.AttemptID, int(desc.SubtaskIndex)))
+		}
+		if od.Window != nil {
+			target, ok := op.(interface {
+				ConfigureWindow(string, int64, int64, int64, int64) error
+			})
+			if !ok {
+				return fmt.Errorf("worker: window %q cannot apply SDK configuration", od.OperatorID)
+			}
+			cfg := od.Window
+			if err := target.ConfigureWindow(cfg.Kind, cfg.Size, cfg.Slide, cfg.Gap, cfg.AllowedLateness); err != nil {
+				return err
+			}
+		}
+		if window, ok := op.(interface{ SetMetricIdentity(string, string) }); ok {
+			window.SetMetricIdentity(od.OperatorID, taskID)
+		}
+		if od.LateOutputTag != "" {
+			late, ok := op.(interface{ SetLateOutputTag(string) })
+			if !ok {
+				return fmt.Errorf("worker: operator %q cannot emit late output", od.OperatorID)
+			}
+			late.SetLateOutputTag(od.LateOutputTag)
+		}
+		if identity, ok := op.(interface{ SetProcessIdentity(string, string, int) }); ok {
+			identity.SetProcessIdentity(jobID, od.OperatorID, int(desc.SubtaskIndex))
+		}
+		if len(od.SideOutputTags) > 0 {
+			target, ok := op.(interface{ SetSideOutputTags([]string) })
+			if !ok {
+				return fmt.Errorf("worker: Process %q cannot configure side outputs", od.OperatorID)
+			}
+			target.SetSideOutputTags(od.SideOutputTags)
+		}
 		operators = append(operators, op)
 		cfg, err := compileErrorPolicy(od.ErrorPolicy, od.OperatorID)
 		if err != nil {
@@ -92,30 +176,68 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			if !ok {
 				return fmt.Errorf("worker: DLQ factory returned %T", dlqOp)
 			}
-			if err := sink.Open(ctx); err != nil {
-				return fmt.Errorf("worker: open DLQ: %w", err)
+			destination, err := engine.OpenDLQDestination(ctx, sink, log.With().Str("operator", od.OperatorID).Logger())
+			if err != nil {
+				return err
 			}
-			defer sink.Close()
-			cfg.DLQWriter = func(e engine.DLQEvent) error {
-				data, err := engine.MarshalDLQEvent(e)
-				if err != nil {
-					return err
-				}
-				return sink.Write(ctx, engine.Event{Key: e.OriginalEvent.Key, Value: data, EventTime: e.Timestamp})
-			}
+			defer destination.Close()
+			cfg.DLQWriter = destination.Write
 		}
 		errorConfigs = append(errorConfigs, cfg)
 	}
 
-	if sourceOp == nil {
+	if sourceOp == nil && len(desc.Upstream) == 0 {
 		return fmt.Errorf("worker: task %q has no source in OperatorChain", taskID)
 	}
 
+	if sourceOp != nil && len(desc.Upstream) > 0 {
+		return fmt.Errorf("worker: task cannot combine a local source with network inputs")
+	}
+	inputs, outputs, cleanup, err := connectTaskStreams(ctx, te.data, jobID, taskID, desc)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	config := engine.DefaultTaskSlotConfig()
+	if te.taskConfig != nil {
+		config = *te.taskConfig
+	}
 	config.ErrorConfigs = errorConfigs
-	slot := engine.NewTaskSlot(config, nil, nil, operators, sourceOp)
+	if watermark != nil {
+		config.Watermark = *watermark
+	}
+	slot := engine.NewTaskSlot(config, inputs, outputs, operators, sourceOp)
 	slot.TaskID = taskID
+	if desc.RestoreCheckpoint != nil && desc.RestoreCheckpoint.SourceJobID != "" {
+		slot.RestoreTaskID = desc.RestoreCheckpoint.SourceTaskID
+	}
+	slot.TransactionRecovery = &engine.TransactionRecovery{DeploymentGeneration: desc.DeploymentGeneration, JobID: jobID, TaskID: taskID, EpochID: desc.EpochID, AttemptID: desc.AttemptID}
+	if desc.TransactionJobID != "" && desc.TransactionTaskID != "" {
+		slot.TransactionRecovery.JobID = desc.TransactionJobID
+		slot.TransactionRecovery.TaskID = desc.TransactionTaskID
+		slot.TransactionTaskID = desc.TransactionTaskID
+	}
+	for _, upstream := range desc.Upstream {
+		slot.InputIdleTimeouts = append(slot.InputIdleTimeouts, upstream.IdleTimeout)
+	}
+	for _, group := range desc.OutputGroups {
+		slot.OutputGroups = append(slot.OutputGroups, engine.OutputGroup{Broadcast: group.Broadcast, SideOutput: group.SideOutput, Streams: group.Streams, KeyGroups: group.KeyGroups})
+	}
+	slot.OutputKeyGroups = desc.OutputKeyGroups
 	slot.TaskIndex = int(desc.SubtaskIndex)
 	slot.OnRunning = onRunning
+	if len(checkpoints) > 0 && checkpoints[0] != nil {
+		checkpoint := checkpoints[0]
+		slot.RestoreCheckpoint = checkpoint.restore
+		slot.RescaleState = checkpoint.rescale
+		slot.RestoredCheckpointID = checkpoint.restoredID
+		slot.CheckpointReplicator = checkpoint.replicator
+		slot.CheckpointReport = checkpoint.report
+		slot.CheckpointDecisions = checkpoint.decisions
+		if sourceOp != nil && checkpoint.replicator != nil {
+			slot.CheckpointTriggers = checkpoint.triggers
+			slot.SourceExhausted = checkpoint.sourceExhausted
+		}
+	}
 	return slot.Run(ctx)
 }

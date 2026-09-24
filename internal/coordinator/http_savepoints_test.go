@@ -12,6 +12,7 @@ func TestHTTP_TriggerSavepoint(t *testing.T) {
 	srv := startTestHTTPServer(t, c)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
+	installSavepointAssignment(t, c, job.ID)
 	if err := c.transitionJob(job, JobDeploying); err != nil {
 		t.Fatalf("transitionJob to deploying: %v", err)
 	}
@@ -46,6 +47,7 @@ func TestHTTP_ListSavepoints(t *testing.T) {
 	srv := startTestHTTPServer(t, c)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
+	installSavepointAssignment(t, c, job.ID)
 	if err := c.transitionJob(job, JobDeploying); err != nil {
 		t.Fatalf("transitionJob to deploying: %v", err)
 	}
@@ -56,6 +58,7 @@ func TestHTTP_ListSavepoints(t *testing.T) {
 	if _, err := c.TriggerSavepoint(job.ID); err != nil {
 		t.Fatalf("TriggerSavepoint: %v", err)
 	}
+	abortPendingSavepoint(t, c, job.ID)
 	if _, err := c.TriggerSavepoint(job.ID); err != nil {
 		t.Fatalf("TriggerSavepoint: %v", err)
 	}
@@ -86,6 +89,7 @@ func TestHTTP_GetSavepoint(t *testing.T) {
 	srv := startTestHTTPServer(t, c)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
+	installSavepointAssignment(t, c, job.ID)
 	if err := c.transitionJob(job, JobDeploying); err != nil {
 		t.Fatalf("transitionJob to deploying: %v", err)
 	}
@@ -122,6 +126,7 @@ func TestHTTP_DeleteSavepoint(t *testing.T) {
 	srv := startTestHTTPServer(t, c)
 
 	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
+	installSavepointAssignment(t, c, job.ID)
 	if err := c.transitionJob(job, JobDeploying); err != nil {
 		t.Fatalf("transitionJob to deploying: %v", err)
 	}
@@ -133,6 +138,8 @@ func TestHTTP_DeleteSavepoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TriggerSavepoint: %v", err)
 	}
+
+	abortPendingSavepoint(t, c, job.ID)
 
 	req, _ := http.NewRequest(http.MethodDelete,
 		fmt.Sprintf("http://%s/api/v1/jobs/%s/savepoints/%s", srv.Addr(), job.ID, sp.ID), nil)

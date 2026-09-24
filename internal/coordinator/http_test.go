@@ -93,6 +93,7 @@ func TestHTTP_Readyz_StandbyRedirect(t *testing.T) {
 		NodeID:     "standby-node",
 		ListenAddr: ":4002",
 	}, store, election, zerolog.Nop())
+	c.epoch = 42
 	// Don't run the coordinator — leave it in STANDBY so IsReady() returns false.
 
 	srv := startTestHTTPServer(t, c)
@@ -122,6 +123,9 @@ func TestHTTP_Readyz_StandbyRedirect(t *testing.T) {
 		t.Fatalf("expected Location http://leader-host:4001/readyz, got %s", loc)
 	}
 
+	if epoch := resp.Header.Get("X-Wire-Leader-Epoch"); epoch != "42" {
+		t.Fatalf("expected leader epoch 42, got %q", epoch)
+	}
 	leaderID := resp.Header.Get("X-Wire-Leader-Id")
 	if leaderID != "leader-node" {
 		t.Fatalf("expected X-Wire-Leader-Id leader-node, got %s", leaderID)

@@ -1,5 +1,7 @@
 package rpc
 
+import "time"
+
 // ---------- Enums ----------
 
 // TaskStatus represents the lifecycle state of a task.
@@ -178,12 +180,15 @@ func (r RestartStrategyType) String() string {
 type CommandType uint8
 
 const (
-	CommandTypeNone         CommandType = 0
-	CommandTypeCancelJob    CommandType = 1
-	CommandTypeDeployTask   CommandType = 2
-	CommandTypeCancelTask   CommandType = 3
-	CommandTypeTakeSnapshot CommandType = 4
-	CommandTypeUpdateConfig CommandType = 5
+	CommandTypeNone             CommandType = 0
+	CommandTypeCancelJob        CommandType = 1
+	CommandTypeDeployTask       CommandType = 2
+	CommandTypeCancelTask       CommandType = 3
+	CommandTypeTakeSnapshot     CommandType = 4
+	CommandTypeUpdateConfig     CommandType = 5
+	CommandTypeAbortCheckpoint  CommandType = 6
+	CommandTypeCommitCheckpoint CommandType = 7
+	CommandTypeDeleteCheckpoint CommandType = 8
 )
 
 // String returns the human-readable name of the command type.
@@ -199,6 +204,12 @@ func (c CommandType) String() string {
 		return "CancelTask"
 	case CommandTypeTakeSnapshot:
 		return "TakeSnapshot"
+	case CommandTypeAbortCheckpoint:
+		return "AbortCheckpoint"
+	case CommandTypeDeleteCheckpoint:
+		return "DeleteCheckpoint"
+	case CommandTypeCommitCheckpoint:
+		return "CommitCheckpoint"
 	case CommandTypeUpdateConfig:
 		return "UpdateConfig"
 	default:
@@ -233,12 +244,15 @@ func (d DirectiveType) String() string {
 
 // SubmitJobRequest is sent from the Coordinator to deploy a job to a Worker.
 type SubmitJobRequest struct {
-	JobID       string                 `codec:"jid"`
-	JobName     string                 `codec:"jn"`
-	Graph       JobGraph               `codec:"g"`
-	Config      JobConfig              `codec:"cfg"`
-	EpochID     uint64                 `codec:"eid"`
-	RestoreInfo *CheckpointRestoreInfo `codec:"ri,omitempty"`
+	ReservationID string                 `codec:"reservation_id,omitempty"`
+	AttemptID     string                 `codec:"attempt_id,omitempty"`
+	Tasks         []TaskDescriptor       `codec:"tasks,omitempty"`
+	JobID         string                 `codec:"jid"`
+	JobName       string                 `codec:"jn"`
+	Graph         JobGraph               `codec:"g"`
+	Config        JobConfig              `codec:"cfg"`
+	EpochID       uint64                 `codec:"eid"`
+	RestoreInfo   *CheckpointRestoreInfo `codec:"ri,omitempty"`
 }
 
 // SubmitJobResponse is the Worker's reply to SubmitJob.
@@ -250,24 +264,34 @@ type SubmitJobResponse struct {
 
 // JobGraph describes the DAG of operators and edges.
 type JobGraph struct {
-	Operators []OperatorDescriptor `codec:"ops"`
-	Edges     []EdgeDescriptor     `codec:"edges"`
+	RestartPolicy    *RestartPolicy    `codec:"restart_policy,omitempty"`
+	CheckpointPolicy *CheckpointPolicy `codec:"checkpoint_policy,omitempty"`
+	// NumKeyGroups is fixed for the job lifetime; zero selects the default 128.
+	NumKeyGroups int                  `codec:"key_groups,omitempty"`
+	Operators    []OperatorDescriptor `codec:"ops"`
+	Edges        []EdgeDescriptor     `codec:"edges"`
 }
 
 // OperatorDescriptor describes a single operator in the job graph.
 type OperatorDescriptor struct {
-	DLQSink     *DLQSinkDescriptor `codec:"dlq,omitempty"`
-	ErrorPolicy *ErrorPolicy       `codec:"error_policy,omitempty"`
-	OperatorID  string             `codec:"oid"`
-	Name        string             `codec:"n"`
-	Type        OperatorType       `codec:"t"`
-	Parallelism int32              `codec:"p"`
-	ClassName   string             `codec:"cn,omitempty"`
-	Config      []byte             `codec:"cfg,omitempty"`
+	StateBackend   *StateBackendSpec  `codec:"state_backend,omitempty"`
+	SideOutputTags []string           `codec:"side_output_tags,omitempty"`
+	Window         *WindowDefinition  `codec:"window,omitempty"`
+	LateOutputTag  string             `codec:"late_output,omitempty"`
+	Watermark      *WatermarkConfig   `codec:"watermark,omitempty"`
+	DLQSink        *DLQSinkDescriptor `codec:"dlq,omitempty"`
+	ErrorPolicy    *ErrorPolicy       `codec:"error_policy,omitempty"`
+	OperatorID     string             `codec:"oid"`
+	Name           string             `codec:"n"`
+	Type           OperatorType       `codec:"t"`
+	Parallelism    int32              `codec:"p"`
+	ClassName      string             `codec:"cn,omitempty"`
+	Config         []byte             `codec:"cfg,omitempty"`
 }
 
 // EdgeDescriptor describes a connection between two operators.
 type EdgeDescriptor struct {
+	SideOutput       string          `codec:"side_output,omitempty"`
 	SourceOperatorID string          `codec:"src"`
 	TargetOperatorID string          `codec:"tgt"`
 	Shuffle          ShuffleStrategy `codec:"sh"`
@@ -280,18 +304,67 @@ type EdgeDescriptor struct {
 // fuse and execute locally. For Phase 1 (linear pipelines, no shuffle), this
 // is the full source→ops→sink chain. In later phases, it's the slice of
 // operators between two shuffle boundaries.
-type TaskDescriptor struct {
-	TaskID        string                  `codec:"tid"`
-	OperatorID    string                  `codec:"oid"`
-	SubtaskIndex  int32                   `codec:"si"`
-	Parallelism   int32                   `codec:"p"`
-	KeyGroup      KeyGroupRange           `codec:"kg"`
-	OperatorChain []OperatorDescriptor    `codec:"oc,omitempty"`
-	Upstream      []UpstreamChannelInfo   `codec:"up,omitempty"`
-	Downstream    []DownstreamChannelInfo `codec:"dn,omitempty"`
+type CheckpointRestoreDescriptor struct {
+	SourceJobID   string `codec:"source_job_id,omitempty"`
+	ArchiveSHA256 string `codec:"archive_sha256,omitempty"`
+	ArchiveSize   int64  `codec:"archive_size,omitempty"`
+	// SourceTaskID is set for rescaling; empty restores the receiving task itself.
+	SourceTaskID   string `codec:"source_task_id,omitempty"`
+	CheckpointID   uint64 `codec:"cid"`
+	EpochID        uint64 `codec:"eid"`
+	ReplicaAddress string `codec:"addr"`
 }
 
-// KeyGroupRange defines the key-group range assigned to a task.
+// RescaleStatePart identifies the stored snapshot and inclusive range to import.
+type RescaleStatePart struct {
+	ArchiveSHA256  string        `codec:"archive_sha256,omitempty"`
+	ArchiveSize    int64         `codec:"archive_size,omitempty"`
+	SourceTaskID   string        `codec:"source_task_id"`
+	ReplicaAddress string        `codec:"replica_address"`
+	Groups         KeyGroupRange `codec:"groups"`
+}
+
+// RescaleRestoreDescriptor retains the savepoint identity while ownership changes.
+type RescaleRestoreDescriptor struct {
+	CheckpointID uint64             `codec:"cid"`
+	EpochID      uint64             `codec:"eid"`
+	NumKeyGroups int                `codec:"key_groups"`
+	Parts        []RescaleStatePart `codec:"parts"`
+}
+
+// OutputGroupDescriptor routes one logical edge over its physical streams.
+type OutputGroupDescriptor struct {
+	Broadcast  bool   `codec:"broadcast,omitempty"`
+	SideOutput string `codec:"side_output,omitempty"`
+	Streams    []int  `codec:"streams"`
+	KeyGroups  int    `codec:"key_groups,omitempty"`
+}
+
+type TaskDescriptor struct {
+	TransactionJobID  string `codec:"transaction_job_id,omitempty"`
+	TransactionTaskID string `codec:"transaction_task_id,omitempty"`
+
+	OutputGroups             []OutputGroupDescriptor      `codec:"output_groups,omitempty"`
+	DeploymentGeneration     uint64                       `codec:"deployment_generation,omitempty"`
+	RestoreRescale           *RescaleRestoreDescriptor    `codec:"restore_rescale,omitempty"`
+	OutputKeyGroups          int                          `codec:"output_key_groups,omitempty"`
+	NumKeyGroups             int                          `codec:"key_groups,omitempty"`
+	AttemptID                string                       `codec:"attempt_id,omitempty"`
+	RestoreCheckpoint        *CheckpointRestoreDescriptor `codec:"restore,omitempty"`
+	CheckpointReplicaAddress string                       `codec:"checkpoint_replica_addr,omitempty"`
+	EpochID                  uint64                       `codec:"eid,omitempty"`
+	TaskID                   string                       `codec:"tid"`
+	OperatorID               string                       `codec:"oid"`
+	SubtaskIndex             int32                        `codec:"si"`
+	Parallelism              int32                        `codec:"p"`
+	KeyGroup                 KeyGroupRange                `codec:"kg"`
+	OperatorChain            []OperatorDescriptor         `codec:"oc,omitempty"`
+	Upstream                 []UpstreamChannelInfo        `codec:"up,omitempty"`
+	Downstream               []DownstreamChannelInfo      `codec:"dn,omitempty"`
+}
+
+// KeyGroupRange defines the inclusive key-group range [Start, End] assigned
+// to a task. Convert half-open keygroup.KeyGroupRange ends by subtracting one.
 type KeyGroupRange struct {
 	Start int32 `codec:"s"`
 	End   int32 `codec:"e"`
@@ -299,16 +372,21 @@ type KeyGroupRange struct {
 
 // UpstreamChannelInfo describes a task's upstream data source.
 type UpstreamChannelInfo struct {
-	OperatorID   string `codec:"oid"`
-	SubtaskIndex int32  `codec:"si"`
-	Address      string `codec:"addr"`
+	IdleTimeout    time.Duration `codec:"idle_timeout,omitempty"`
+	TaskID         string        `codec:"tid,omitempty"`
+	PartitionIndex uint16        `codec:"pi,omitempty"`
+	OperatorID     string        `codec:"oid"`
+	SubtaskIndex   int32         `codec:"si"`
+	Address        string        `codec:"addr"`
 }
 
 // DownstreamChannelInfo describes a task's downstream data sink.
 type DownstreamChannelInfo struct {
-	OperatorID   string `codec:"oid"`
-	SubtaskIndex int32  `codec:"si"`
-	Address      string `codec:"addr"`
+	TaskID         string `codec:"tid,omitempty"`
+	PartitionIndex uint16 `codec:"pi,omitempty"`
+	OperatorID     string `codec:"oid"`
+	SubtaskIndex   int32  `codec:"si"`
+	Address        string `codec:"addr"`
 }
 
 // CheckpointRestoreInfo carries state needed to restore from a checkpoint.
@@ -319,6 +397,7 @@ type CheckpointRestoreInfo struct {
 
 // StateHandle references a serialized state artifact.
 type StateHandle struct {
+	Manifest  []byte `codec:"manifest,omitempty"`
 	TaskID    string `codec:"tid"`
 	Path      string `codec:"p"`
 	SizeBytes int64  `codec:"sz"`
@@ -351,12 +430,14 @@ type TaskDeploymentStatus struct {
 
 // UpdateTaskStatusRequest is sent from Worker to Coordinator to report a task's status change.
 type UpdateTaskStatusRequest struct {
-	JobID   string           `codec:"jid"`
-	TaskID  string           `codec:"tid"`
-	Status  TaskStatus       `codec:"st"`
-	EpochID uint64           `codec:"eid"`
-	Metrics *TaskMetrics     `codec:"met,omitempty"`
-	Failure *TaskFailureInfo `codec:"fi,omitempty"`
+	AttemptID string           `codec:"attempt_id,omitempty"`
+	WorkerID  string           `codec:"wid"`
+	JobID     string           `codec:"jid"`
+	TaskID    string           `codec:"tid"`
+	Status    TaskStatus       `codec:"st"`
+	EpochID   uint64           `codec:"eid"`
+	Metrics   *TaskMetrics     `codec:"met,omitempty"`
+	Failure   *TaskFailureInfo `codec:"fi,omitempty"`
 }
 
 // UpdateTaskStatusResponse is the Coordinator's reply.
@@ -368,12 +449,13 @@ type UpdateTaskStatusResponse struct {
 
 // TaskMetrics carries runtime metrics for a task.
 type TaskMetrics struct {
-	RecordsIn   int64   `codec:"ri"`
-	RecordsOut  int64   `codec:"ro"`
-	BytesIn     int64   `codec:"bi"`
-	BytesOut    int64   `codec:"bo"`
-	Latency99   float64 `codec:"l99,omitempty"`
-	BacklogSize int64   `codec:"bl,omitempty"`
+	BackpressureMs int64   `codec:"bp_ms,omitempty"`
+	RecordsIn      int64   `codec:"ri"`
+	RecordsOut     int64   `codec:"ro"`
+	BytesIn        int64   `codec:"bi"`
+	BytesOut       int64   `codec:"bo"`
+	Latency99      float64 `codec:"l99,omitempty"`
+	BacklogSize    int64   `codec:"bl,omitempty"`
 }
 
 // TaskFailureInfo describes a task failure.
@@ -395,6 +477,8 @@ type CoordinatorDirective struct {
 
 // TriggerCheckpointRequest is sent from Coordinator to Worker to initiate a checkpoint.
 type TriggerCheckpointRequest struct {
+	Final        bool              `codec:"final,omitempty"`
+	AttemptID    string            `codec:"attempt_id,omitempty"`
 	JobID        string            `codec:"jid"`
 	CheckpointID uint64            `codec:"cid"`
 	EpochID      uint64            `codec:"eid"`
@@ -428,6 +512,9 @@ type CheckpointTriggerStatus struct {
 
 // AcknowledgeCheckpointRequest is sent from Worker to Coordinator when a task completes its checkpoint.
 type AcknowledgeCheckpointRequest struct {
+	AttemptID    string                `codec:"attempt_id,omitempty"`
+	Failure      string                `codec:"failure,omitempty"`
+	WorkerID     string                `codec:"wid"`
 	JobID        string                `codec:"jid"`
 	TaskID       string                `codec:"tid"`
 	CheckpointID uint64                `codec:"cid"`
@@ -454,13 +541,19 @@ type AckCheckpointMetrics struct {
 
 // RequestTaskSlotsRequest is sent from Coordinator to Worker to query available slots.
 type RequestTaskSlotsRequest struct {
-	JobID         string `codec:"jid"`
-	RequiredSlots int32  `codec:"rs"`
-	MemoryMB      int32  `codec:"mem,omitempty"`
+	EpochID              uint64 `codec:"epoch,omitempty"`
+	ReservationID        string `codec:"reservation_id,omitempty"`
+	ReservationTimeoutMs int64  `codec:"reservation_timeout_ms,omitempty"`
+	Release              bool   `codec:"release,omitempty"`
+	JobID                string `codec:"jid"`
+	RequiredSlots        int32  `codec:"rs"`
+	MemoryMB             int32  `codec:"mem,omitempty"`
 }
 
 // RequestTaskSlotsResponse is the Worker's reply.
 type RequestTaskSlotsResponse struct {
+	ReservationID  string              `codec:"reservation_id,omitempty"`
+	ExpiresAtMs    int64               `codec:"expires_at_ms,omitempty"`
 	Granted        int32               `codec:"g"`
 	AvailableSlots int32               `codec:"as"`
 	Resource       *WorkerResourceInfo `codec:"res,omitempty"`
@@ -480,12 +573,14 @@ type WorkerResourceInfo struct {
 
 // ResourceReport carries worker-level resource utilization.
 type ResourceReport struct {
-	CPUUsagePercent  float64 `codec:"cpu"`
-	MemoryUsedBytes  int64   `codec:"mub"`
-	MemoryTotalBytes int64   `codec:"mtb"`
-	DiskUsedBytes    int64   `codec:"dub"`
-	DiskTotalBytes   int64   `codec:"dtb"`
-	GoroutineCount   int     `codec:"gc"`
+	SampledAt        int64    `codec:"sampled_at,omitempty"`
+	Unavailable      []string `codec:"unavailable,omitempty"`
+	CPUUsagePercent  float64  `codec:"cpu"`
+	MemoryUsedBytes  int64    `codec:"mub"`
+	MemoryTotalBytes int64    `codec:"mtb"`
+	DiskUsedBytes    int64    `codec:"dub"`
+	DiskTotalBytes   int64    `codec:"dtb"`
+	GoroutineCount   int      `codec:"gc"`
 }
 
 // HeartbeatRequest is sent from Worker to Coordinator as a liveness signal.
@@ -515,22 +610,26 @@ type WorkerLoad struct {
 
 // RunningTaskSummary is a brief status of a running task.
 type RunningTaskSummary struct {
-	TaskID   string       `codec:"tid"`
-	JobID    string       `codec:"jid"`
-	Status   TaskStatus   `codec:"st"`
-	UptimeMs int64        `codec:"up"`
-	Metrics  *TaskMetrics `codec:"met,omitempty"`
+	AttemptID string       `codec:"aid,omitempty"`
+	EpochID   uint64       `codec:"eid,omitempty"`
+	TaskID    string       `codec:"tid"`
+	JobID     string       `codec:"jid"`
+	Status    TaskStatus   `codec:"st"`
+	UptimeMs  int64        `codec:"up"`
+	Metrics   *TaskMetrics `codec:"met,omitempty"`
 }
 
 // ---------- RegisterWorker RPC ----------
 
 // RegisterWorkerRequest is sent from Worker to Coordinator to register or re-register.
 type RegisterWorkerRequest struct {
-	WorkerID         string   `codec:"wid"`
-	Address          string   `codec:"addr"`
-	TaskSlotsTotal   int      `codec:"tst"`
-	HighestSeenEpoch uint64   `codec:"hse"`
-	RunningTasks     []string `codec:"rt,omitempty"`
+	SupportsReservations bool     `codec:"slot_reservations,omitempty"`
+	CheckpointAddress    string   `codec:"checkpoint_addr,omitempty"`
+	WorkerID             string   `codec:"wid"`
+	Address              string   `codec:"addr"`
+	TaskSlotsTotal       int      `codec:"tst"`
+	HighestSeenEpoch     uint64   `codec:"hse"`
+	RunningTasks         []string `codec:"rt,omitempty"`
 }
 
 // RegisterWorkerResponse is the Coordinator's reply to RegisterWorker.
@@ -553,8 +652,10 @@ type WatchCommandsRequest struct {
 
 // WorkerCommand carries a command from Coordinator to Worker via heartbeat.
 type WorkerCommand struct {
-	Type   CommandType `codec:"t"`
-	JobID  string      `codec:"jid,omitempty"`
-	TaskID string      `codec:"tid,omitempty"`
-	Data   []byte      `codec:"d,omitempty"`
+	AttemptID string      `codec:"attempt_id,omitempty"`
+	EpochID   uint64      `codec:"eid,omitempty"`
+	Type      CommandType `codec:"t"`
+	JobID     string      `codec:"jid,omitempty"`
+	TaskID    string      `codec:"tid,omitempty"`
+	Data      []byte      `codec:"d,omitempty"`
 }

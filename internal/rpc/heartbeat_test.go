@@ -14,6 +14,7 @@ func TestHeartbeatTrackerAliveToSuspect(t *testing.T) {
 	cfg.HeartbeatInterval = 10 * time.Millisecond
 	cfg.SuspectThreshold = 3
 	cfg.DeadThreshold = 5
+	cfg.CoordinatorContactTimeout = cfg.HeartbeatInterval * time.Duration(cfg.DeadThreshold)
 
 	var mu sync.Mutex
 	transitions := make([]struct{ from, to WorkerState }, 0)
@@ -27,13 +28,10 @@ func TestHeartbeatTrackerAliveToSuspect(t *testing.T) {
 
 	tracker.RegisterWorker("w-1", "localhost:4002")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go tracker.Run(ctx)
+	base := tracker.GetAllWorkers()[0].LastHeartbeat
 
 	// Wait for enough ticks to trigger SUSPECT (3 missed).
-	time.Sleep(cfg.HeartbeatInterval * time.Duration(cfg.SuspectThreshold+1))
+	tracker.checkWorkersAt(base.Add(cfg.HeartbeatInterval * time.Duration(cfg.SuspectThreshold)))
 
 	state, ok := tracker.GetWorkerState("w-1")
 	if !ok {
@@ -62,6 +60,7 @@ func TestHeartbeatTrackerSuspectToAlive(t *testing.T) {
 	cfg.HeartbeatInterval = 10 * time.Millisecond
 	cfg.SuspectThreshold = 2
 	cfg.DeadThreshold = 5
+	cfg.CoordinatorContactTimeout = cfg.HeartbeatInterval * time.Duration(cfg.DeadThreshold)
 
 	var mu sync.Mutex
 	transitions := make([]struct{ from, to WorkerState }, 0)
@@ -75,13 +74,10 @@ func TestHeartbeatTrackerSuspectToAlive(t *testing.T) {
 
 	tracker.RegisterWorker("w-1", "localhost:4002")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go tracker.Run(ctx)
+	base := tracker.GetAllWorkers()[0].LastHeartbeat
 
 	// Wait for SUSPECT transition.
-	time.Sleep(cfg.HeartbeatInterval * time.Duration(cfg.SuspectThreshold+1))
+	tracker.checkWorkersAt(base.Add(cfg.HeartbeatInterval * time.Duration(cfg.SuspectThreshold)))
 
 	state, _ := tracker.GetWorkerState("w-1")
 	if state != WorkerSuspect {
@@ -115,6 +111,7 @@ func TestHeartbeatTrackerSuspectToDead(t *testing.T) {
 	cfg.HeartbeatInterval = 10 * time.Millisecond
 	cfg.SuspectThreshold = 2
 	cfg.DeadThreshold = 4
+	cfg.CoordinatorContactTimeout = cfg.HeartbeatInterval * time.Duration(cfg.DeadThreshold)
 
 	var mu sync.Mutex
 	transitions := make([]struct{ from, to WorkerState }, 0)
@@ -128,13 +125,11 @@ func TestHeartbeatTrackerSuspectToDead(t *testing.T) {
 
 	tracker.RegisterWorker("w-1", "localhost:4002")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go tracker.Run(ctx)
+	base := tracker.GetAllWorkers()[0].LastHeartbeat
 
 	// Wait for enough ticks to trigger DEAD.
-	time.Sleep(cfg.HeartbeatInterval * time.Duration(cfg.DeadThreshold+2))
+	tracker.checkWorkersAt(base.Add(cfg.HeartbeatInterval * time.Duration(cfg.SuspectThreshold)))
+	tracker.checkWorkersAt(base.Add(cfg.CoordinatorContactTimeout))
 
 	state, ok := tracker.GetWorkerState("w-1")
 	if !ok {
@@ -348,6 +343,7 @@ func TestHeartbeatTrackerDeadDoesNotAdvance(t *testing.T) {
 	cfg.HeartbeatInterval = 10 * time.Millisecond
 	cfg.SuspectThreshold = 1
 	cfg.DeadThreshold = 2
+	cfg.CoordinatorContactTimeout = cfg.HeartbeatInterval * time.Duration(cfg.DeadThreshold)
 
 	callbackCount := 0
 	tracker := NewHeartbeatTracker(cfg, func(id string, from, to WorkerState) {
@@ -636,6 +632,7 @@ func TestWorkerLostCallbackFired(t *testing.T) {
 	cfg.HeartbeatInterval = 10 * time.Millisecond
 	cfg.SuspectThreshold = 1
 	cfg.DeadThreshold = 2
+	cfg.CoordinatorContactTimeout = cfg.HeartbeatInterval * time.Duration(cfg.DeadThreshold)
 
 	var mu sync.Mutex
 	var lostEvents []WorkerLostEvent
@@ -679,6 +676,7 @@ func TestWorkerLostEventContainsTasks(t *testing.T) {
 	cfg.HeartbeatInterval = 10 * time.Millisecond
 	cfg.SuspectThreshold = 1
 	cfg.DeadThreshold = 2
+	cfg.CoordinatorContactTimeout = cfg.HeartbeatInterval * time.Duration(cfg.DeadThreshold)
 
 	var mu sync.Mutex
 	var lostEvents []WorkerLostEvent
@@ -782,6 +780,7 @@ func TestRecordHeartbeatDeadWorkerIgnored(t *testing.T) {
 	cfg.HeartbeatInterval = 10 * time.Millisecond
 	cfg.SuspectThreshold = 1
 	cfg.DeadThreshold = 2
+	cfg.CoordinatorContactTimeout = cfg.HeartbeatInterval * time.Duration(cfg.DeadThreshold)
 
 	tracker := NewHeartbeatTracker(cfg, nil)
 	tracker.log = testLogger()
@@ -947,3 +946,51 @@ func TestOnContactLostRearms(t *testing.T) {
 
 // Suppress unused import warning for protocol.
 var _ = protocol.EncodeMsgPack
+
+func TestRejectedHeartbeatCountsAsContactFailure(t *testing.T) {
+	clientSession, serverSession := testYamuxPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := DefaultConfig()
+	cfg.MaxConsecutiveHeartbeatFailures = 2
+	server := NewServer(cfg)
+	server.Register(MethodHeartbeat, func(context.Context, uint64, []byte) (any, *RPCError) {
+		return &HeartbeatResponse{Accepted: false, Commands: []WorkerCommand{{Type: CommandTypeDeployTask}}}, nil
+	})
+	done := make(chan struct{})
+	go func() { defer close(done); server.ServeSession(ctx, serverSession) }()
+	defer func() { cancel(); _ = serverSession.Close(); <-done }()
+	lost, commands := 0, 0
+	sender := NewHeartbeatSender(NewClient(clientSession, cfg), cfg, func() *HeartbeatRequest { return &HeartbeatRequest{WorkerID: "worker"} }, func([]WorkerCommand) { commands++ }, WithContactLostCallback(func() { lost++ }))
+	sender.sendHeartbeat(ctx)
+	if lost != 0 {
+		t.Fatal("contact callback fired before configured threshold")
+	}
+	sender.sendHeartbeat(ctx)
+	sender.sendHeartbeat(ctx)
+	if lost != 1 || commands != 0 {
+		t.Fatalf("lost=%d commands=%d", lost, commands)
+	}
+}
+
+func TestNewHeartbeatEpochStopsCommandDeliveryImmediately(t *testing.T) {
+	clientSession, serverSession := testYamuxPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := DefaultConfig()
+	cfg.MaxConsecutiveHeartbeatFailures = 1
+	server := NewServer(cfg)
+	server.Register(MethodHeartbeat, func(context.Context, uint64, []byte) (any, *RPCError) {
+		return &HeartbeatResponse{Accepted: true, EpochID: 6, Commands: []WorkerCommand{{Type: CommandTypeDeployTask}}}, nil
+	})
+	done := make(chan struct{})
+	go func() { defer close(done); server.ServeSession(ctx, serverSession) }()
+	defer func() { cancel(); _ = serverSession.Close(); <-done }()
+	var observed uint64
+	commands, lost := 0, 0
+	sender := NewHeartbeatSender(NewClient(clientSession, cfg), cfg, func() *HeartbeatRequest { return &HeartbeatRequest{WorkerID: "worker", EpochID: 5} }, func([]WorkerCommand) { commands++ }, WithContactLostCallback(func() { lost++ }), WithNewEpochCallback(func(epoch uint64) { observed = epoch }))
+	sender.sendHeartbeat(ctx)
+	if observed != 6 || commands != 0 || lost != 0 {
+		t.Fatalf("epoch=%d commands=%d threshold callback=%d", observed, commands, lost)
+	}
+}

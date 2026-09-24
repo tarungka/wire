@@ -13,23 +13,25 @@ import (
 // recoveredState contains all state reconstructed from the metadata store
 // during crash recovery.
 type recoveredState struct {
-	jobs               map[string]*JobMeta
-	workers            map[string]*WorkerMeta
-	epoch              uint64
-	config             *ClusterConfig
-	latestCheckpoints  map[string]*CheckpointMeta // jobID → latest completed
-	checkpointsToAbort []*CheckpointMeta          // in-flight checkpoints to abort
-	savepointsToFail   []*SavepointMeta           // in-flight savepoints to mark failed
+	queuedSavepointJobs map[string]bool
+	jobs                map[string]*JobMeta
+	workers             map[string]*WorkerMeta
+	epoch               uint64
+	config              *ClusterConfig
+	latestCheckpoints   map[string]*CheckpointMeta // jobID → latest completed
+	checkpointsToAbort  []*CheckpointMeta          // in-flight checkpoints to abort
+	savepointsToFail    []*SavepointMeta           // in-flight savepoints to mark failed
 }
 
 // recoverFromStore reconstructs coordinator state from the metadata store.
 // All workers are marked stale (heartbeat zeroed). The epoch is incremented
 // and persisted to fence stale coordinators.
-func recoverFromStore(store MetadataStore) (*recoveredState, error) {
+func recoverFromStore(store MetadataStore, electionEpoch ...uint64) (*recoveredState, error) {
 	state := &recoveredState{
-		jobs:              make(map[string]*JobMeta),
-		workers:           make(map[string]*WorkerMeta),
-		latestCheckpoints: make(map[string]*CheckpointMeta),
+		queuedSavepointJobs: make(map[string]bool),
+		jobs:                make(map[string]*JobMeta),
+		workers:             make(map[string]*WorkerMeta),
+		latestCheckpoints:   make(map[string]*CheckpointMeta),
 	}
 
 	// 1. Recover jobs.
@@ -146,6 +148,11 @@ func recoverFromStore(store MetadataStore) (*recoveredState, error) {
 	}
 	// 6. Increment epoch and persist (fence stale coordinators).
 	state.epoch++
+	// Election backends may have advanced farther than the metadata token.
+	// Persist the actual advertised epoch, otherwise a restart could reuse it.
+	for _, minimum := range electionEpoch {
+		state.epoch = max(state.epoch, minimum)
+	}
 	epochBuf := make([]byte, 8)
 	binary.BigEndian.PutUint64(epochBuf, state.epoch)
 	if err := store.Set(ClusterEpochKey(), epochBuf); err != nil {
@@ -165,7 +172,7 @@ func recoverJobCheckpoints(store MetadataStore, jobID string, state *recoveredSt
 	err := store.PrefixScan(prefix, func(key, value []byte) bool {
 		k := string(key)
 		// Skip the "latest" pointer key.
-		if strings.HasSuffix(k, "/latest") {
+		if strings.HasSuffix(k, "/latest") || strings.HasSuffix(k, "/metadata.json") {
 			return true
 		}
 
@@ -213,7 +220,10 @@ func recoverJobSavepoints(store MetadataStore, jobID string, state *recoveredSta
 			return false
 		}
 
-		if sp.Status == SavepointInProgress {
+		if sp.Queued && sp.Status == SavepointInProgress {
+			state.queuedSavepointJobs[jobID] = true
+		}
+		if sp.Status == SavepointInProgress && !sp.Queued {
 			sp.Status = SavepointFailed
 			state.savepointsToFail = append(state.savepointsToFail, &sp)
 		}

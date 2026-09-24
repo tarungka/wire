@@ -1,6 +1,10 @@
 package coordinator
 
-import "time"
+import (
+	"time"
+
+	"github.com/tarungka/wire/internal/rpc"
+)
 
 // CoordinatorState represents the current operational state of a coordinator node.
 type CoordinatorState uint8
@@ -41,6 +45,8 @@ const (
 	JobCanceling                  // Job cancellation was requested.
 	JobCanceled                   // Job was canceled by the user.
 	JobPaused                     // Job is paused (savepoint taken).
+	JobPausing                    // Savepoint completed; waiting for task teardown.
+	JobResuming                   // Resume requested; waiting for placement.
 )
 
 func (s JobStatus) String() string {
@@ -65,6 +71,10 @@ func (s JobStatus) String() string {
 		return "CANCELED"
 	case JobPaused:
 		return "PAUSED"
+	case JobPausing:
+		return "PAUSING"
+	case JobResuming:
+		return "RESUMING"
 	default:
 		return "UNKNOWN"
 	}
@@ -103,37 +113,90 @@ func (s CheckpointStatus) String() string {
 	}
 }
 
+// SavepointRestoreReference pins an original archive while a successor starts.
+type SavepointRestoreReference struct {
+	JobID        string `codec:"job_id"`
+	SavepointID  string `codec:"savepoint_id"`
+	CheckpointID uint64 `codec:"checkpoint_id"`
+}
+
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
-	ID               string    `codec:"id"`
-	Name             string    `codec:"name"`
-	Status           JobStatus `codec:"status"`
-	Parallelism      int       `codec:"parallelism"`
-	ConfigHash       string    `codec:"config_hash"`
-	CreatedAt        time.Time `codec:"created_at"`
-	UpdatedAt        time.Time `codec:"updated_at"`
-	StartedAt        time.Time `codec:"started_at,omitempty"`
-	FinishedAt       time.Time `codec:"finished_at,omitempty"`
-	RestartCount     int       `codec:"restart_count,omitempty"`
-	LatestCheckpoint uint64    `codec:"latest_checkpoint,omitempty"`
-	Config           []byte    `codec:"config,omitempty"`
-	SavepointPath    string    `codec:"savepoint_path,omitempty"`
+	TransactionJobID  string `codec:"transaction_job_id,omitempty"`
+	CheckpointIDFloor uint64 `codec:"checkpoint_id_floor,omitempty"`
+
+	RestoreSavepoint   *SavepointRestoreReference `codec:"restore_savepoint,omitempty"`
+	UpgradeSuccessorID string                     `codec:"upgrade_successor_id,omitempty"`
+
+	CancelAfterSavepoint          bool                  `codec:"cancel_after_savepoint,omitempty"`
+	PauseSavepointID              string                `codec:"pause_savepoint_id,omitempty"`
+	PauseCheckpoint               uint64                `codec:"pause_checkpoint,omitempty"`
+	PauseFailure                  string                `codec:"pause_failure,omitempty"`
+	RestartPolicy                 *rpc.RestartPolicy    `codec:"restart_policy,omitempty"`
+	LastCheckpointTrigger         time.Time             `codec:"last_checkpoint_trigger,omitempty"`
+	CheckpointPolicy              *rpc.CheckpointPolicy `codec:"checkpoint_policy,omitempty"`
+	DeploymentGeneration          uint64                `codec:"deployment_generation,omitempty"`
+	CheckpointOutcomes            []bool                `codec:"checkpoint_outcomes,omitempty"`
+	CheckpointAttempts            uint64                `codec:"checkpoint_attempts,omitempty"`
+	CheckpointFailures            uint64                `codec:"checkpoint_failures,omitempty"`
+	ConsecutiveCheckpointFailures int                   `codec:"consecutive_checkpoint_failures,omitempty"`
+	LastCheckpointCompletion      time.Time             `codec:"last_checkpoint_completion,omitempty"`
+	CheckpointFailure             string                `codec:"checkpoint_failure,omitempty"`
+	// RescaleCheckpoint selects a completed savepoint for changed ownership.
+	RescaleRollback   *RescaleRollback `codec:"rescale_rollback,omitempty"`
+	RescaleFailure    string           `codec:"rescale_failure,omitempty"`
+	RescaleRequested  bool             `codec:"rescale_requested,omitempty"`
+	RecoveryAttempts  int              `codec:"recovery_attempts,omitempty"`
+	RunningSince      time.Time        `codec:"running_since,omitempty"`
+	RescaleCheckpoint uint64           `codec:"rescale_checkpoint,omitempty"`
+	ID                string           `codec:"id"`
+	Name              string           `codec:"name"`
+	Status            JobStatus        `codec:"status"`
+	Parallelism       int              `codec:"parallelism"`
+	ConfigHash        string           `codec:"config_hash"`
+	CreatedAt         time.Time        `codec:"created_at"`
+	UpdatedAt         time.Time        `codec:"updated_at"`
+	StartedAt         time.Time        `codec:"started_at,omitempty"`
+	FinishedAt        time.Time        `codec:"finished_at,omitempty"`
+	RestartCount      int              `codec:"restart_count,omitempty"`
+	LatestCheckpoint  uint64           `codec:"latest_checkpoint,omitempty"`
+	Config            []byte           `codec:"config,omitempty"`
+	SavepointPath     string           `codec:"savepoint_path,omitempty"`
 }
 
 // TaskAssignmentMap maps task IDs to the worker IDs they are assigned to.
 type TaskAssignmentMap struct {
-	JobID       string            `codec:"job_id"`
-	Assignments map[string]string `codec:"assignments"` // task_id → worker_id
+	RecoveryAttemptCharged bool                                       `codec:"recovery_attempt_charged,omitempty"`
+	RestoreCheckpoints     map[string]rpc.CheckpointRestoreDescriptor `codec:"restore_checkpoints,omitempty"`
+	RescaleParts           map[string][]RescaleStatePart              `codec:"rescale_parts,omitempty"`
+	TaskDescriptors        []rpc.TaskDescriptor                       `codec:"task_descriptors,omitempty"`
+	EpochID                uint64                                     `codec:"eid,omitempty"`
+	AttemptID              string                                     `codec:"attempt_id,omitempty"`
+	Replicas               map[string]string                          `codec:"replicas,omitempty"`
+	JobID                  string                                     `codec:"job_id"`
+	Assignments            map[string]string                          `codec:"assignments"` // task_id → worker_id
 }
 
 // CheckpointMeta holds persisted metadata for a single checkpoint.
 type CheckpointMeta struct {
-	ID         uint64            `codec:"id"`
-	JobID      string            `codec:"job_id"`
-	Status     CheckpointStatus  `codec:"status"`
-	Offsets    map[string]int64  `codec:"offsets"`     // source → offset
-	StatePaths map[string]string `codec:"state_paths"` // task_id → path
-	Timestamp  time.Time         `codec:"timestamp"`
+	CompletedAt     time.Time            `codec:"completed_at,omitempty"`
+	Final           bool                 `codec:"final,omitempty"`
+	AttemptID       string               `codec:"attempt_id,omitempty"`
+	InvalidReason   string               `codec:"invalid_reason,omitempty"`
+	ManifestVersion int                  `codec:"manifest_version,omitempty"`
+	TaskManifests   map[string][]byte    `codec:"task_manifests,omitempty"`
+	TaskDescriptors []rpc.TaskDescriptor `codec:"task_descriptors,omitempty"`
+	NumKeyGroups    int                  `codec:"key_groups,omitempty"`
+	SavepointID     string               `codec:"savepoint_id,omitempty"`
+	Replicas        map[string]string    `codec:"replicas,omitempty"`
+	EpochID         uint64               `codec:"epoch_id,omitempty"`
+	Tasks           map[string]string    `codec:"tasks,omitempty"`
+	ID              uint64               `codec:"id"`
+	JobID           string               `codec:"job_id"`
+	Status          CheckpointStatus     `codec:"status"`
+	Offsets         map[string]int64     `codec:"offsets"`     // source → offset
+	StatePaths      map[string]string    `codec:"state_paths"` // task_id → path
+	Timestamp       time.Time            `codec:"timestamp"`
 }
 
 // SavepointStatus represents the lifecycle state of a savepoint.
@@ -160,6 +223,11 @@ func (s SavepointStatus) String() string {
 
 // SavepointMeta holds persisted metadata for a single savepoint.
 type SavepointMeta struct {
+	Deleted        bool            `codec:"deleted,omitempty"`
+	Queued         bool            `codec:"queued,omitempty"`
+	NumKeyGroups   int             `codec:"key_groups,omitempty"`
+	CheckpointID   uint64          `codec:"checkpoint_id,omitempty"`
+	EpochID        uint64          `codec:"epoch_id,omitempty"`
 	ID             string          `codec:"id"`
 	JobID          string          `codec:"job_id"`
 	Status         SavepointStatus `codec:"status"`
@@ -170,12 +238,20 @@ type SavepointMeta struct {
 
 // WorkerMeta holds persisted metadata for a registered worker.
 type WorkerMeta struct {
-	ID                 string    `codec:"id"`
-	Address            string    `codec:"address"`
-	TaskSlotsTotal     int       `codec:"task_slots_total"`
-	TaskSlotsAvailable int       `codec:"task_slots_available"`
-	LastHeartbeat      time.Time `codec:"last_heartbeat"`
-	RunningTasks       []string  `codec:"running_tasks"`
+	Removed              bool                     `codec:"removed,omitempty"`
+	Lost                 bool                     `codec:"-" json:"-"`
+	Resources            *rpc.ResourceReport      `codec:"-" json:"-"`
+	TaskReports          []rpc.RunningTaskSummary `codec:"-" json:"-"`
+	RPCPeerEpoch         uint64                   `codec:"-" json:"-"`
+	RPCClient            *rpc.Client              `codec:"-" json:"-"`
+	SupportsReservations bool                     `codec:"slot_reservations,omitempty"`
+	CheckpointAddress    string                   `codec:"checkpoint_address,omitempty"`
+	ID                   string                   `codec:"id"`
+	Address              string                   `codec:"address"`
+	TaskSlotsTotal       int                      `codec:"task_slots_total"`
+	TaskSlotsAvailable   int                      `codec:"task_slots_available"`
+	LastHeartbeat        time.Time                `codec:"-"`
+	RunningTasks         []string                 `codec:"running_tasks"`
 }
 
 // ClusterConfig holds cluster-wide configuration parameters.
@@ -186,9 +262,10 @@ type ClusterConfig struct {
 
 // LeaderInfo describes the current cluster leader.
 type LeaderInfo struct {
-	NodeID  string `codec:"node_id"  json:"leader_id"`
-	Address string `codec:"address"  json:"leader_http_addr"`
-	Epoch   uint64 `codec:"epoch"    json:"leader_epoch"`
+	RPCAddress string `codec:"rpc_address" json:"leader_rpc_addr"`
+	NodeID     string `codec:"node_id"  json:"leader_id"`
+	Address    string `codec:"address"  json:"leader_http_addr"`
+	Epoch      uint64 `codec:"epoch"    json:"leader_epoch"`
 }
 
 // CommandType identifies the type of a coordinator command.
@@ -207,4 +284,13 @@ type CoordinatorCommand struct {
 	Epoch   uint64      `codec:"epoch"`
 	Type    CommandType `codec:"type"`
 	Payload []byte      `codec:"payload"`
+}
+
+// RescaleRollback retains the last working topology until the new tasks all run.
+type RescaleRollback struct {
+	PlacementFailedSince time.Time `codec:"placement_failed_since,omitempty"`
+	Config               []byte    `codec:"config"`
+	Parallelism          int       `codec:"parallelism"`
+	Checkpoint           uint64    `codec:"checkpoint"`
+	Attempted            bool      `codec:"attempted"`
 }

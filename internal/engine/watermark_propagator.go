@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -26,7 +27,7 @@ func runWatermarkPropagator(
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	var lastEmitted int64
+	lastEmitted := int64(math.MinInt64)
 
 	for {
 		select {
@@ -50,6 +51,30 @@ func runWatermarkPropagator(
 			}
 			select {
 			case outputCh <- msg:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+}
+
+// runOrderedWatermarkPropagator forwards boundaries through local operators.
+func runOrderedWatermarkPropagator(ctx context.Context, tracker *InputWatermarkTracker, events chan<- Event, interval, idleTimeout time.Duration) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	last := int64(math.MinInt64)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			timestamp, idle := tracker.MinWatermark(idleTimeout)
+			if idle || timestamp <= last {
+				continue
+			}
+			select {
+			case events <- Event{watermark: &timestamp}:
+				last = timestamp
 			case <-ctx.Done():
 				return ctx.Err()
 			}

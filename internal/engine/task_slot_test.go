@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -694,8 +695,8 @@ func TestTaskSlot_SourceEnd_ClosesOutputChannelAfterProducers(t *testing.T) {
 	}
 }
 
-func TestOutputWriter_DrainsAfterContextCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+func TestOutputWriter_DrainsClosedQueue(t *testing.T) {
+	ctx := context.Background()
 
 	ow, or := newTestStreamPair(t)
 	outputCh := make(chan OutputMsg, 10)
@@ -704,8 +705,7 @@ func TestOutputWriter_DrainsAfterContextCancel(t *testing.T) {
 	outputCh <- OutputMsg{Type: OutputData, Event: Event{Value: []byte("data1")}}
 	outputCh <- OutputMsg{Type: OutputEnd, End: &protocol.EndOfPartitionMsg{Reason: protocol.EndReasonExhausted}}
 
-	// Cancel context, then close channel (mimicking producerWg completion).
-	cancel()
+	// Closing the producer queue drains it using the task's output context.
 	close(outputCh)
 
 	done := make(chan error, 1)
@@ -901,11 +901,14 @@ func TestTaskSlot_BoundedOOOStrategy(t *testing.T) {
 		}
 	}
 
-	// Final watermark should be max(0, 20000-5000) = 15000.
-	if len(watermarks) > 0 {
-		last := watermarks[len(watermarks)-1]
-		if last > 15000 {
-			t.Errorf("final watermark too high: got %d, want <= 15000", last)
+	// Periodic watermarks obey out-of-orderness; bounded completion closes
+	// event time with a terminal watermark so pending windows/timers can fire.
+	if len(watermarks) == 0 || watermarks[len(watermarks)-1] != math.MaxInt64 {
+		t.Fatal("missing terminal watermark")
+	}
+	for _, watermark := range watermarks[:len(watermarks)-1] {
+		if watermark > 15000 {
+			t.Errorf("periodic watermark too high: %d", watermark)
 		}
 	}
 
@@ -1139,7 +1142,7 @@ func TestTaskSlot_LegacySourceBackwardCompat(t *testing.T) {
 
 	cfg := DefaultTaskSlotConfig()
 	cfg.WatermarkInterval = 50 * time.Millisecond
-	// No Watermark.Strategy set — should use legacy.
+	// No Watermark.Strategy set — source records still run with bounded watermarks.
 
 	ts := NewTaskSlot(cfg, nil, nil, []Operator{&noopMap{}, sink}, source)
 
@@ -1163,9 +1166,9 @@ func TestTaskSlot_ResolveStrategy(t *testing.T) {
 		wantType string
 	}{
 		{
-			name:     "default/legacy",
+			name:     "default/bounded-ooo",
 			config:   WatermarkConfig{},
-			wantType: "*engine.legacySourceStrategy",
+			wantType: "*engine.BoundedOutOfOrdernessStrategy",
 		},
 		{
 			name:     "bounded-ooo",

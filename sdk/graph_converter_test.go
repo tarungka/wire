@@ -51,8 +51,12 @@ func TestToJobGraphBasic(t *testing.T) {
 
 	// Check edges.
 	for _, edge := range jg.Edges {
-		if edge.Shuffle != rpc.ShuffleStrategyForward {
-			t.Errorf("expected Forward shuffle, got %v", edge.Shuffle)
+		want := rpc.ShuffleStrategyForward
+		if edge.SourceOperatorID == "src" {
+			want = rpc.ShuffleStrategyRebalance
+		}
+		if edge.Shuffle != want {
+			t.Errorf("edge %s: expected %v, got %v", edge.SourceOperatorID, want, edge.Shuffle)
 		}
 	}
 }
@@ -70,7 +74,7 @@ func TestToJobGraphHashShuffle(t *testing.T) {
 	// Find the hash edge.
 	found := false
 	for _, edge := range jg.Edges {
-		if edge.SourceOperatorID == "src" && edge.TargetOperatorID == "keyby" {
+		if edge.SourceOperatorID == "keyby" && edge.TargetOperatorID == "sink" {
 			if edge.Shuffle != rpc.ShuffleStrategyHash {
 				t.Errorf("expected Hash shuffle, got %v", edge.Shuffle)
 			}
@@ -79,5 +83,94 @@ func TestToJobGraphHashShuffle(t *testing.T) {
 	}
 	if !found {
 		t.Error("hash edge not found")
+	}
+}
+
+func TestNamedKeyBySelectsBeforeShuffle(t *testing.T) {
+	env := New()
+	env.AddSourceNamed("source", "source-factory", nil).KeyByNamed("select", "selector-factory", []byte("cfg")).AddSinkNamed("sink", "sink-factory", nil)
+	if err := env.graph.validateForCluster(); err != nil {
+		t.Fatal(err)
+	}
+	graph := env.graph.toJobGraph(3)
+	if len(graph.Edges) != 2 || graph.Edges[0].Shuffle != rpc.ShuffleStrategyForward || graph.Edges[1].Shuffle != rpc.ShuffleStrategyHash {
+		t.Fatalf("edges=%+v", graph.Edges)
+	}
+	if graph.Operators[1].ClassName != "selector-factory" || string(graph.Operators[1].Config) != "cfg" {
+		t.Fatalf("selector=%+v", graph.Operators[1])
+	}
+}
+
+func TestKeyByInheritsSingleSourceParallelism(t *testing.T) {
+	env := New().SetParallelism(4)
+	env.AddSourceNamed("source", "source", nil).SetParallelism(1).KeyByNamed("key", "selector", nil).AddSinkNamed("sink", "sink", nil)
+	graph := env.graph.toJobGraph(4)
+	if graph.Operators[0].Parallelism != 1 || graph.Operators[1].Parallelism != 1 || graph.Operators[2].Parallelism != 4 {
+		t.Fatalf("parallelism: %+v", graph.Operators)
+	}
+	if graph.Edges[0].Shuffle != rpc.ShuffleStrategyForward || graph.Edges[1].Shuffle != rpc.ShuffleStrategyHash {
+		t.Fatalf("routing: %+v", graph.Edges)
+	}
+}
+
+func TestKeyByExplicitAndMixedInputParallelism(t *testing.T) {
+	for _, explicit := range []int{0, 3} {
+		g := newStreamGraph()
+		a := g.addNode(&StreamNode{Name: "a", Type: NodeSource, Parallelism: 1})
+		b := g.addNode(&StreamNode{Name: "b", Type: NodeSource, Parallelism: 4})
+		k := g.addNode(&StreamNode{Name: "key", Type: NodeKeyBy, Parallelism: explicit})
+		g.addEdge(a, k, ShuffleHash)
+		g.addEdge(b, k, ShuffleHash)
+		graph := g.toJobGraph(4)
+		counts := map[string]int32{}
+		for _, op := range graph.Operators {
+			counts[op.OperatorID] = op.Parallelism
+		}
+		if explicit > 0 && counts["key"] != int32(explicit) {
+			t.Fatal("explicit KeyBy count ignored")
+		}
+		for _, edge := range graph.Edges {
+			want := rpc.ShuffleStrategyForward
+			if counts[edge.SourceOperatorID] != counts[edge.TargetOperatorID] {
+				want = rpc.ShuffleStrategyRebalance
+			}
+			if edge.Shuffle != want {
+				t.Fatalf("invalid pre-key routing: %+v", edge)
+			}
+		}
+	}
+}
+
+func TestNamedProcessPreservesSideOutputDeclarations(t *testing.T) {
+	env := New()
+	process := env.AddSourceNamed("source", "source", nil).KeyByNamed("keys", "selector", nil).ProcessNamed("process", "managed", []byte("config")).WithSideOutputs(NewOutputTag("audit"))
+	process.AddSinkNamed("main", "sink", nil)
+	process.GetSideOutput(NewOutputTag("audit")).AddSinkNamed("audit", "sink", nil)
+	if err := env.graph.validateForCluster(); err != nil {
+		t.Fatal(err)
+	}
+	graph := env.graph.toJobGraph(2)
+	found := false
+	for _, op := range graph.Operators {
+		if op.OperatorID == "process" {
+			found = true
+			if op.Type != rpc.OperatorTypeProcess || op.ClassName != "managed" || string(op.Config) != "config" || len(op.SideOutputTags) != 1 || op.SideOutputTags[0] != "audit" {
+				t.Fatalf("operator=%+v", op)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("Process disappeared from graph")
+	}
+}
+
+func TestExplicitOperatorParallelismRedistributesForwardEdges(t *testing.T) {
+	env := New().SetParallelism(4)
+	env.AddSourceNamed("source", "source", nil).SetParallelism(1).MapNamed("map", "map", nil).AddSinkNamed("sink", "sink", nil).SetParallelism(2)
+	graph := env.graph.toJobGraph(4)
+	for _, edge := range graph.Edges {
+		if edge.Shuffle != rpc.ShuffleStrategyRebalance {
+			t.Fatalf("unequal forward edge was not redistributed: %+v", edge)
+		}
 	}
 }

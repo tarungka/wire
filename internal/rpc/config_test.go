@@ -23,7 +23,7 @@ func TestDefaultConfig(t *testing.T) {
 		{"HeartbeatInterval", cfg.HeartbeatInterval, 5 * time.Second},
 		{"SuspectThreshold", cfg.SuspectThreshold, 3},
 		{"DeadThreshold", cfg.DeadThreshold, 5},
-		{"MaxConsecutiveHeartbeatFailures", cfg.MaxConsecutiveHeartbeatFailures, 6},
+		{"MaxConsecutiveHeartbeatFailures", cfg.MaxConsecutiveHeartbeatFailures, 0},
 		{"MaxConcurrentRPCs", cfg.MaxConcurrentRPCs, 256},
 		{"MaxPayloadSize", cfg.MaxPayloadSize, 16 * 1024 * 1024},
 	}
@@ -48,6 +48,7 @@ func TestMethodTimeout(t *testing.T) {
 		{MethodUpdateTaskStatus, 5 * time.Second},
 		{MethodTriggerCheckpoint, 10 * time.Second},
 		{MethodAcknowledgeCheckpoint, 5 * time.Second},
+		{MethodAcknowledgeCheckpointCleanup, 5 * time.Second},
 		{MethodRequestTaskSlots, 5 * time.Second},
 		{MethodHeartbeat, 2 * time.Second},
 		{MethodID(0xFFFF), 30 * time.Second}, // unknown falls back to SubmitJob timeout

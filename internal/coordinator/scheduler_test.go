@@ -1,12 +1,14 @@
 package coordinator
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/rs/zerolog"
 
+	"github.com/tarungka/wire/internal/keygroup"
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
 )
@@ -108,17 +110,15 @@ func TestGenerateTaskDescriptors_RejectsBadConfig(t *testing.T) {
 	}
 }
 
-func TestGenerateTaskDescriptors_RejectsShuffleEdge(t *testing.T) {
+func TestGenerateTaskDescriptors_ShuffleEdge(t *testing.T) {
 	graph := linearGraph()
-	graph.Edges[0].Shuffle = rpc.ShuffleStrategyHash // first edge becomes a shuffle
-	job := &JobMeta{ID: "job-shuffle", Parallelism: 1, Config: encode(t, graph)}
-
-	_, err := generateTaskDescriptors(job)
-	if err == nil {
-		t.Fatal("expected error for shuffle edge in Phase 1")
+	graph.Edges[0].Shuffle = rpc.ShuffleStrategyHash
+	tasks, err := generateTaskDescriptors(&JobMeta{ID: "job-shuffle", Parallelism: 3, Config: encode(t, graph)})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "shuffle") && !strings.Contains(err.Error(), "Phase 2") {
-		t.Fatalf("error %q should mention shuffle/Phase 2", err)
+	if len(tasks) != 6 || tasks[0].OutputKeyGroups != 128 || len(tasks[0].Downstream) != 3 || len(tasks[3].Upstream) != 3 {
+		t.Fatalf("invalid physical shuffle: %+v", tasks)
 	}
 }
 
@@ -228,6 +228,108 @@ func TestTopoSortOperators_DeterministicOrder(t *testing.T) {
 			if ids[k] != want[k] {
 				t.Fatalf("iteration %d: order = %v, want %v", i, ids, want)
 			}
+		}
+	}
+}
+
+func TestScheduleRecoveryCarriesCompletedCheckpoint(t *testing.T) {
+	for _, valid := range []bool{true, false} {
+		t.Run(fmt.Sprint(valid), func(t *testing.T) {
+			c, store := newTestCoordinator(t)
+			job := &JobMeta{ID: "job", Status: JobCreated, Parallelism: 1, Config: encode(t, linearGraph()), LatestCheckpoint: 7}
+			c.jobs[job.ID] = job
+			c.workers["worker"] = &WorkerMeta{ID: "worker", TaskSlotsAvailable: 1, LastHeartbeat: time.Now()}
+			cp := CheckpointMeta{ID: 7, JobID: "job", EpochID: 2, Status: CheckpointCompleted, Tasks: map[string]string{"job/m/0": "old-worker"}, Replicas: map[string]string{"job/m/0": "replica:1"}, StatePaths: map[string]string{"job/m/0": "replica:1"}}
+			if !valid {
+				cp.Status = CheckpointAborted
+			}
+			if err := store.Set(CheckpointKey("job", 7), encode(t, cp)); err != nil {
+				t.Fatal(err)
+			}
+			c.scheduleJob(job)
+			commands := c.DrainCommands("worker")
+			if !valid {
+				if len(commands) != 0 || job.Status != JobFailed {
+					t.Fatal("invalid recovery deployed")
+				}
+				return
+			}
+			if len(commands) != 1 {
+				t.Fatalf("commands: %+v", commands)
+			}
+			var task rpc.TaskDescriptor
+			if err := protocol.DecodeMsgPack(commands[0].Data, &task); err != nil {
+				t.Fatal(err)
+			}
+			assignmentData, err := store.Get(JobAssignmentsKey("job"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var assignment TaskAssignmentMap
+			if err := protocol.DecodeMsgPack(assignmentData, &assignment); err != nil {
+				t.Fatal(err)
+			}
+			if task.AttemptID == "" || task.AttemptID != assignment.AttemptID {
+				t.Fatal("deployment attempt was not persisted before dispatch")
+			}
+			restore := task.RestoreCheckpoint
+			if task.EpochID != 5 || restore == nil || restore.EpochID != 2 || restore.CheckpointID != 7 || restore.ReplicaAddress != "replica:1" {
+				t.Fatalf("deployment: %+v restore: %+v", task, restore)
+			}
+		})
+	}
+}
+
+func TestGenerateTaskDescriptorsOwnershipMatchesKeyGroups(t *testing.T) {
+	for parallelism := 1; parallelism <= keygroup.DefaultNumKeyGroups; parallelism++ {
+		job := &JobMeta{ID: "ownership", Parallelism: parallelism, Config: encode(t, linearGraph())}
+		tasks, err := generateTaskDescriptors(job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for group := 0; group < keygroup.DefaultNumKeyGroups; group++ {
+			owner := keygroup.AssignedTask(uint16(group), keygroup.DefaultNumKeyGroups, parallelism)
+			for index, task := range tasks {
+				contains := task.KeyGroup.Start <= int32(group) && int32(group) <= task.KeyGroup.End
+				if contains != (index == owner) {
+					t.Fatalf("parallelism=%d group=%d owner=%d task=%d range=%+v", parallelism, group, owner, index, task.KeyGroup)
+				}
+			}
+		}
+	}
+}
+
+func TestGenerateTaskDescriptorsRejectsExcessParallelism(t *testing.T) {
+	job := &JobMeta{ID: "too-many", Parallelism: keygroup.DefaultNumKeyGroups + 1, Config: encode(t, linearGraph())}
+	if _, err := generateTaskDescriptors(job); err == nil {
+		t.Fatal("accepted parallelism above key-group count")
+	}
+}
+
+func TestGenerateTaskDescriptorsConfiguredKeyGroups(t *testing.T) {
+	for _, count := range []int{1, 16, 256, 32768} {
+		graph := linearGraph()
+		graph.NumKeyGroups = count
+		parallelism := min(count, 3)
+		tasks, err := generateTaskDescriptors(&JobMeta{ID: "configured", Parallelism: parallelism, Config: encode(t, graph)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, task := range tasks {
+			expected, err := keygroup.TaskKeyGroupRange(i, count, parallelism)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if task.NumKeyGroups != count || task.KeyGroup.Start != int32(expected.Start) || task.KeyGroup.End != int32(expected.End)-1 {
+				t.Fatalf("count=%d task=%+v expected=%+v", count, task, expected)
+			}
+		}
+	}
+	for _, count := range []int{-1, 3, 32769, 65536} {
+		graph := linearGraph()
+		graph.NumKeyGroups = count
+		if _, err := generateTaskDescriptors(&JobMeta{ID: "invalid", Parallelism: 1, Config: encode(t, graph)}); err == nil {
+			t.Fatalf("accepted count %d", count)
 		}
 	}
 }

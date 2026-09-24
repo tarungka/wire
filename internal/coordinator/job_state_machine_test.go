@@ -20,6 +20,9 @@ func TestValidateTransition_Valid(t *testing.T) {
 		{JobRunning, JobFailing},
 		{JobRunning, JobCanceling},
 		{JobPaused, JobDeploying},
+		{JobPaused, JobCanceling},
+		{JobFailing, JobCanceling},
+		{JobFinishing, JobCanceling},
 		{JobFinishing, JobFinished},
 		{JobFailing, JobDeploying},
 		{JobFailing, JobFailed},
@@ -48,7 +51,6 @@ func TestValidateTransition_Invalid(t *testing.T) {
 		{JobFailed, JobRunning},
 		{JobCanceled, JobRunning},
 		{JobPaused, JobRunning},
-		{JobPaused, JobCanceling},
 	}
 
 	for _, tt := range tests {

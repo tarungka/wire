@@ -14,6 +14,11 @@ import (
 // TaskContext is passed to an operator factory when a task is deployed.
 // It carries per-task identity and scheduling information.
 type TaskContext struct {
+	DeploymentGeneration uint64
+	EpochID              uint64
+	AttemptID            string
+	// NumKeyGroups is fixed for the job and must be used when hashing state keys.
+	NumKeyGroups int
 	TaskID       string
 	JobID        string
 	OperatorID   string
@@ -37,11 +42,13 @@ type (
 // looks up factories by the ClassName in each OperatorDescriptor at task
 // deploy time.
 type Registry struct {
-	mu       sync.RWMutex
-	sources  map[string]SourceFactory
-	maps     map[string]MapFactory
-	flatMaps map[string]FlatMapFactory
-	sinks    map[string]SinkFactory
+	windows      map[string]WindowFactory
+	keySelectors map[string]KeySelectorFactory
+	mu           sync.RWMutex
+	sources      map[string]SourceFactory
+	maps         map[string]MapFactory
+	flatMaps     map[string]FlatMapFactory
+	sinks        map[string]SinkFactory
 }
 
 // NewRegistry returns an empty Registry.
@@ -67,6 +74,9 @@ func (r *Registry) RegisterSource(name string, f SourceFactory) {
 
 // RegisterMap adds a map factory. Panics on duplicate name.
 func (r *Registry) RegisterMap(name string, f MapFactory) {
+	if name == "wire.identity" {
+		panic("worker: wire.identity is a reserved built-in operator")
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.maps[name]; exists {
@@ -100,6 +110,9 @@ func (r *Registry) RegisterSink(name string, f SinkFactory) {
 // handled by the "filter" factory type on maps (a filter is a map that
 // conditionally returns a zero event).
 func (r *Registry) Build(ctx context.Context, desc rpc.OperatorDescriptor, tc TaskContext) (engine.Operator, error) {
+	if desc.Type == rpc.OperatorTypeMap && desc.ClassName == "wire.identity" {
+		return identityOperator{}, nil
+	}
 	if desc.ClassName == "" {
 		return nil, fmt.Errorf("worker: operator %q has no ClassName (required for cluster mode)", desc.OperatorID)
 	}
@@ -108,6 +121,33 @@ func (r *Registry) Build(ctx context.Context, desc rpc.OperatorDescriptor, tc Ta
 	defer r.mu.RUnlock()
 
 	switch desc.Type {
+	case rpc.OperatorTypeWindow:
+		factory := r.windows[desc.ClassName]
+		if factory == nil {
+			return nil, fmt.Errorf("worker: unknown window %q", desc.ClassName)
+		}
+		operator, err := factory(ctx, desc.Config, tc)
+		if err != nil {
+			return nil, fmt.Errorf("worker: window %q factory: %w", desc.ClassName, err)
+		}
+		if operator == nil {
+			return nil, fmt.Errorf("worker: window %q returned nil", desc.ClassName)
+		}
+		return operator, nil
+	case rpc.OperatorTypeKeyBy:
+		factory := r.keySelectors[desc.ClassName]
+		if factory == nil {
+			return nil, fmt.Errorf("worker: unknown key selector %q", desc.ClassName)
+		}
+		selector, err := factory(ctx, desc.Config, tc)
+		if err != nil {
+			return nil, fmt.Errorf("worker: key selector %q: %w", desc.ClassName, err)
+		}
+		if selector == nil {
+			return nil, fmt.Errorf("worker: key selector %q returned nil", desc.ClassName)
+		}
+		return &keyByOperator{selectKey: selector}, nil
+
 	case rpc.OperatorTypeSource:
 		f, ok := r.sources[desc.ClassName]
 		if !ok {
@@ -130,7 +170,7 @@ func (r *Registry) Build(ctx context.Context, desc rpc.OperatorDescriptor, tc Ta
 		}
 		return op, nil
 
-	case rpc.OperatorTypeFlatMap:
+	case rpc.OperatorTypeFlatMap, rpc.OperatorTypeProcess:
 		f, ok := r.flatMaps[desc.ClassName]
 		if !ok {
 			return nil, fmt.Errorf("worker: unknown flatmap %q", desc.ClassName)
@@ -176,3 +216,18 @@ func RegisterFlatMap(name string, f FlatMapFactory) { defaultRegistry.RegisterFl
 
 // RegisterSink registers a sink factory in the default registry.
 func RegisterSink(name string, f SinkFactory) { defaultRegistry.RegisterSink(name, f) }
+
+// identityOperator is the built-in merge point for SDK unions.
+type identityOperator struct{}
+
+func (identityOperator) Open(context.Context) error        { return nil }
+func (identityOperator) Close() error                      { return nil }
+func (identityOperator) Checkpoint(uint64) ([]byte, error) { return nil, nil }
+func (identityOperator) Map(_ context.Context, event engine.Event) (engine.Event, error) {
+	return event, nil
+}
+
+// RegisterProcess registers a stateful flat-map operator. SDK ProcessOperator
+// implements both this data interface and snapshot/watermark restoration.
+func (r *Registry) RegisterProcess(name string, f FlatMapFactory) { r.RegisterFlatMap(name, f) }
+func RegisterProcess(name string, f FlatMapFactory)               { defaultRegistry.RegisterProcess(name, f) }

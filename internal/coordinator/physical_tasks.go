@@ -1,0 +1,102 @@
+package coordinator
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/tarungka/wire/internal/keygroup"
+	"github.com/tarungka/wire/internal/rpc"
+)
+
+// buildPhysicalTasks materializes chains and their network boundaries. Addresses
+// are filled after worker placement; endpoint order follows target subtask order.
+func buildPhysicalTasks(jobID string, graph rpc.JobGraph, parallelism int) ([]rpc.TaskDescriptor, error) {
+	count, err := validateGraphKeyGroups(graph, parallelism)
+	if err != nil {
+		return nil, err
+	}
+	chains, membership, err := planPhysicalChains(graph, parallelism)
+	if err != nil {
+		return nil, err
+	}
+	var tasks []rpc.TaskDescriptor
+	indexes := make([][]int, len(chains))
+	for ci, chain := range chains {
+		ranges, err := keygroup.AllTaskRanges(count, chain.Parallelism)
+		if err != nil {
+			return nil, err
+		}
+		primary := chain.Operators[0].OperatorID
+		for _, op := range chain.Operators {
+			if op.Type != rpc.OperatorTypeSource {
+				primary = op.OperatorID
+				break
+			}
+		}
+		for i, groups := range ranges {
+			indexes[ci] = append(indexes[ci], len(tasks))
+			tasks = append(tasks, rpc.TaskDescriptor{TaskID: fmt.Sprintf("%s/%s/%d", jobID, primary, i), OperatorID: primary, SubtaskIndex: int32(i), Parallelism: int32(chain.Parallelism), NumKeyGroups: count, KeyGroup: rpc.KeyGroupRange{Start: int32(groups.Start), End: int32(groups.End) - 1}, OperatorChain: chain.Operators})
+		}
+	}
+	operators := make(map[string]rpc.OperatorDescriptor)
+	for _, op := range graph.Operators {
+		operators[op.OperatorID] = op
+	}
+
+	for _, edge := range graph.Edges {
+		// Omitted shuffle strategy in persisted legacy graphs means forward.
+		if edge.Shuffle == rpc.ShuffleStrategyUnknown {
+			edge.Shuffle = rpc.ShuffleStrategyForward
+		}
+		source, target := membership[edge.SourceOperatorID], membership[edge.TargetOperatorID]
+		if source == target {
+			continue
+		}
+		if edge.SideOutput != "" && !operators[edge.SourceOperatorID].HasSideOutput(edge.SideOutput) {
+			return nil, fmt.Errorf("unknown side output %q on %q", edge.SideOutput, edge.SourceOperatorID)
+		}
+		if edge.Shuffle != rpc.ShuffleStrategyForward && edge.Shuffle != rpc.ShuffleStrategyHash && edge.Shuffle != rpc.ShuffleStrategyRebalance && edge.Shuffle != rpc.ShuffleStrategyBroadcast {
+			return nil, fmt.Errorf("unsupported shuffle strategy %v", edge.Shuffle)
+		}
+		if edge.KeySelector != "" {
+			return nil, fmt.Errorf("edge key selector must be executed by an upstream KeyBy operator")
+		}
+		if edge.Shuffle == rpc.ShuffleStrategyHash {
+			for _, src := range indexes[source] {
+				tasks[src].OutputKeyGroups = count
+			}
+		}
+		if edge.Shuffle == rpc.ShuffleStrategyForward && len(indexes[source]) != len(indexes[target]) {
+			return nil, fmt.Errorf("forward edge %s→%s requires equal parallelism", edge.SourceOperatorID, edge.TargetOperatorID)
+		}
+		for si, src := range indexes[source] {
+			output := rpc.OutputGroupDescriptor{SideOutput: edge.SideOutput, Broadcast: edge.Shuffle == rpc.ShuffleStrategyBroadcast}
+			if edge.Shuffle == rpc.ShuffleStrategyHash {
+				output.KeyGroups = count
+			}
+			for ti, dst := range indexes[target] {
+				if edge.Shuffle == rpc.ShuffleStrategyForward && si != ti {
+					continue
+				}
+				if len(tasks[dst].Upstream) >= 65536 {
+					return nil, fmt.Errorf("task %s exceeds stream partition limit", tasks[dst].TaskID)
+				}
+				partition := uint16(len(tasks[dst].Upstream))
+				output.Streams = append(output.Streams, len(tasks[src].Downstream))
+				tasks[src].Downstream = append(tasks[src].Downstream, rpc.DownstreamChannelInfo{TaskID: tasks[dst].TaskID, OperatorID: tasks[dst].OperatorID, SubtaskIndex: int32(ti), PartitionIndex: partition})
+				tasks[dst].Upstream = append(tasks[dst].Upstream, rpc.UpstreamChannelInfo{IdleTimeout: sourceIdleTimeout(tasks[src]), TaskID: tasks[src].TaskID, OperatorID: tasks[src].OperatorID, SubtaskIndex: int32(si), PartitionIndex: partition})
+			}
+			tasks[src].OutputGroups = append(tasks[src].OutputGroups, output)
+		}
+	}
+	return tasks, nil
+}
+
+func sourceIdleTimeout(task rpc.TaskDescriptor) time.Duration {
+	for _, operator := range task.OperatorChain {
+		if operator.Type == rpc.OperatorTypeSource && operator.Watermark != nil {
+			return operator.Watermark.IdleTimeout
+		}
+	}
+	return 0
+}

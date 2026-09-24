@@ -18,15 +18,23 @@ import (
 // ACTIVE selects the generation to reopen; checkpoints remain independent of it.
 // Restore and Close invalidate outstanding iterators.
 type PebbleStateBackend struct {
-	mu        sync.Mutex
-	db        *pebble.DB
-	root      string
-	activeDir string
-	lock      io.Closer
-	iterators map[*pebbleStateIterator]struct{}
+	mu             sync.Mutex
+	db             *pebble.DB
+	root           string
+	activeDir      string
+	lock           io.Closer
+	iterators      map[*pebbleStateIterator]struct{}
+	maxCompactions int
 }
 
 func newPebbleStateBackend(cfg StateBackendConfig) (StateBackend, error) {
+	maxCompactions := cfg.PebbleMaxCompactionConcurrency
+	if maxCompactions < 0 {
+		return nil, errors.New("state backend: negative pebble compaction concurrency")
+	}
+	if maxCompactions == 0 {
+		maxCompactions = DefaultPebbleMaxCompactionConcurrency
+	}
 	if cfg.PebbleDataDir == "" {
 		return nil, fmt.Errorf("state backend: pebble requires PebbleDataDir to be set")
 	}
@@ -63,7 +71,10 @@ func newPebbleStateBackend(cfg StateBackendConfig) (StateBackend, error) {
 			return nil, fmt.Errorf("invalid state generation %q", name)
 		}
 	}
-	db, err := pebble.Open(filepath.Join(root, name), &pebble.Options{ErrorIfNotExists: len(data) > 0})
+	db, err := pebble.Open(filepath.Join(root, name), &pebble.Options{
+		ErrorIfNotExists:         len(data) > 0,
+		MaxConcurrentCompactions: func() int { return maxCompactions },
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +85,7 @@ func newPebbleStateBackend(cfg StateBackendConfig) (StateBackend, error) {
 		}
 	}
 	ok = true
-	return &PebbleStateBackend{db: db, root: root, activeDir: filepath.Join(root, name), lock: lock, iterators: make(map[*pebbleStateIterator]struct{})}, nil
+	return &PebbleStateBackend{db: db, root: root, activeDir: filepath.Join(root, name), lock: lock, iterators: make(map[*pebbleStateIterator]struct{}), maxCompactions: maxCompactions}, nil
 }
 
 func publishStateGeneration(root, name string) (bool, error) {
@@ -292,6 +303,9 @@ func (b *PebbleStateBackend) Checkpoint(id uint64) (SnapshotHandle, error) {
 	return SnapshotHandle{CheckpointID: id, BackendType: StateBackendPebble, Data: data}, err
 }
 
-func openRestoredState(path string) (*pebble.DB, error) {
-	return pebble.Open(path, &pebble.Options{ErrorIfNotExists: true})
+func openRestoredState(path string, maxCompactions int) (*pebble.DB, error) {
+	return pebble.Open(path, &pebble.Options{
+		ErrorIfNotExists:         true,
+		MaxConcurrentCompactions: func() int { return maxCompactions },
+	})
 }

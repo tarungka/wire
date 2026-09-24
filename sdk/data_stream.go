@@ -6,8 +6,9 @@ import "fmt"
 // Methods return a new DataStream (or KeyedStream) pointing to the newly
 // added graph node, enabling fluent chaining.
 type DataStream struct {
-	env    *StreamExecutionEnvironment
-	nodeID int
+	outputTag string
+	env       *StreamExecutionEnvironment
+	nodeID    int
 }
 
 // Map applies a one-to-one transformation.
@@ -27,7 +28,7 @@ func (ds *DataStream) mapWithName(fn MapFunc, name string) *DataStream {
 		MapFn: fn,
 	}
 	id := ds.env.graph.addNode(node)
-	ds.env.graph.addEdge(ds.nodeID, id, ShuffleForward)
+	ds.addEdge(id, ShuffleForward)
 	return &DataStream{env: ds.env, nodeID: id}
 }
 
@@ -48,7 +49,7 @@ func (ds *DataStream) flatMapWithName(fn FlatMapFunc, name string) *DataStream {
 		FlatMapFn: fn,
 	}
 	id := ds.env.graph.addNode(node)
-	ds.env.graph.addEdge(ds.nodeID, id, ShuffleForward)
+	ds.addEdge(id, ShuffleForward)
 	return &DataStream{env: ds.env, nodeID: id}
 }
 
@@ -63,7 +64,7 @@ func (ds *DataStream) MapNamed(name, className string, config []byte) *DataStrea
 		Config:    config,
 	}
 	id := ds.env.graph.addNode(node)
-	ds.env.graph.addEdge(ds.nodeID, id, ShuffleForward)
+	ds.addEdge(id, ShuffleForward)
 	return &DataStream{env: ds.env, nodeID: id}
 }
 
@@ -76,7 +77,7 @@ func (ds *DataStream) FlatMapNamed(name, className string, config []byte) *DataS
 		Config:    config,
 	}
 	id := ds.env.graph.addNode(node)
-	ds.env.graph.addEdge(ds.nodeID, id, ShuffleForward)
+	ds.addEdge(id, ShuffleForward)
 	return &DataStream{env: ds.env, nodeID: id}
 }
 
@@ -91,7 +92,7 @@ func (ds *DataStream) FilterNamed(name, className string, config []byte) *DataSt
 		Config:    config,
 	}
 	id := ds.env.graph.addNode(node)
-	ds.env.graph.addEdge(ds.nodeID, id, ShuffleForward)
+	ds.addEdge(id, ShuffleForward)
 	return &DataStream{env: ds.env, nodeID: id}
 }
 
@@ -104,7 +105,7 @@ func (ds *DataStream) AddSinkNamed(name, className string, config []byte) *DataS
 		Config:    config,
 	}
 	id := ds.env.graph.addNode(node)
-	ds.env.graph.addEdge(ds.nodeID, id, ShuffleForward)
+	ds.addEdge(id, ShuffleForward)
 	return &DataStream{env: ds.env, nodeID: id}
 }
 
@@ -125,13 +126,22 @@ func (ds *DataStream) filterWithName(fn FilterFunc, name string) *DataStream {
 		FilterFn: fn,
 	}
 	id := ds.env.graph.addNode(node)
-	ds.env.graph.addEdge(ds.nodeID, id, ShuffleForward)
+	ds.addEdge(id, ShuffleForward)
 	return &DataStream{env: ds.env, nodeID: id}
 }
 
 // KeyBy partitions the stream by key, returning a KeyedStream.
 func (ds *DataStream) KeyBy(selector KeySelector) *KeyedStream {
 	return ds.keyByWithName(selector, "")
+}
+
+// KeyByNamed selects keys using a worker.RegisterKeyBy factory in cluster mode.
+// Config is passed to the factory; key selection runs before network partitioning.
+func (ds *DataStream) KeyByNamed(name, className string, config []byte) *KeyedStream {
+	node := &StreamNode{Name: name, Type: NodeKeyBy, ClassName: className, Config: append([]byte(nil), config...)}
+	id := ds.env.graph.addNode(node)
+	ds.addEdge(id, ShuffleHash)
+	return &KeyedStream{env: ds.env, nodeID: id}
 }
 
 // KeyByWithName partitions the stream by key with a named operator.
@@ -146,23 +156,40 @@ func (ds *DataStream) keyByWithName(selector KeySelector, name string) *KeyedStr
 		KeyByFn: selector,
 	}
 	id := ds.env.graph.addNode(node)
-	ds.env.graph.addEdge(ds.nodeID, id, ShuffleHash)
+	ds.addEdge(id, ShuffleHash)
 	return &KeyedStream{env: ds.env, nodeID: id}
 }
 
 // Union merges this stream with one or more other streams.
 func (ds *DataStream) Union(others ...*DataStream) *DataStream {
-	// All input streams feed into ds's node via forward edges.
 	for _, other := range others {
-		ds.env.graph.addEdge(other.nodeID, ds.nodeID, ShuffleForward)
+		if other == nil || other.env != ds.env {
+			panic("sdk: union inputs must belong to the same environment")
+		}
 	}
-	return ds
+	// A union is a new identity operator, never an edge into an existing
+	// source or transform. Each input retains its own upstream computation.
+	id := ds.env.graph.addNode(&StreamNode{Type: NodeMap, ClassName: "wire.identity", MapFn: identityEvent})
+	ds.addEdge(id, ShuffleRebalance)
+	for _, other := range others {
+		other.addEdge(id, ShuffleRebalance)
+	}
+	return &DataStream{env: ds.env, nodeID: id}
 }
 
 // AssignTimestamps sets a custom timestamp extractor.
 func (ds *DataStream) AssignTimestamps(extractor TimestampExtractor) *DataStream {
-	ds.env.graph.nodes[ds.nodeID].TimestampExtractor = extractor
-	return ds
+	if extractor == nil {
+		panic("sdk: timestamp extractor must not be nil")
+	}
+	if ds.env.graph.nodes[ds.nodeID].Type == NodeSource {
+		ds.env.graph.nodes[ds.nodeID].TimestampExtractor = extractor
+		return ds
+	}
+	return ds.Map(func(event Event) (Event, error) {
+		event.EventTime = extractor(event)
+		return event, nil
+	})
 }
 
 // AddSink adds a terminal sink operator.
@@ -182,7 +209,7 @@ func (ds *DataStream) addSinkWithName(sink Sink, name string) *DataStream {
 		Sink: sink,
 	}
 	id := ds.env.graph.addNode(node)
-	ds.env.graph.addEdge(ds.nodeID, id, ShuffleForward)
+	ds.addEdge(id, ShuffleForward)
 	return &DataStream{env: ds.env, nodeID: id}
 }
 
@@ -219,3 +246,5 @@ func autoName(g *StreamGraph, prefix string) string {
 		}
 	}
 }
+
+func identityEvent(event Event) (Event, error) { return event, nil }

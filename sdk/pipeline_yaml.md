@@ -82,3 +82,23 @@ There is no automatic reload, drain/switchover, savepoint migration, CLI loader,
 or cluster deployment of CEL programs yet. Invalid reload candidates can be
 validated with ParsePipelineYAML, but callers must not infer a safe switchover
 protocol from that API. WIP-19 remains Partially Implemented.
+
+### Source watermarks
+
+A source under `spec.sources` accepts `watermark` alongside `name`, `type`, and
+`config`:
+
+```yaml
+watermark:
+  strategy: bounded-ooo
+  max_ooo: 5s
+  emit_interval: 200ms
+  idle_timeout: 1m
+```
+
+Strategies are `bounded-ooo`, `monotonic`, and `ingestion-time`. An omitted
+strategy uses bounded out-of-orderness. Ingestion time replaces producer event
+timestamps with the ingestion clock. `max_ooo` is only valid for bounded-ooo;
+omitting it selects the five-second default. Explicit `0s` means zero
+tolerance, equivalent to `monotonic`. Invalid strategies, durations, unknown fields, and watermark settings
+on transforms or sinks are rejected before connector factories run.

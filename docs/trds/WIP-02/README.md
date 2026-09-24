@@ -6,11 +6,11 @@
 >
 > **Author:** `Tarun Ashok`
 >
-> **Status:** `Partially Implemented`
+> **Status:** `Implemented`
 >
 > **Created:** `2026-02-22`
 >
-> **Last Updated:** `2026-09-12`
+> **Last Updated:** `2026-09-13`
 
 ### Revision History
 
@@ -21,12 +21,15 @@
 
 ---
 
-## Implementation Status — 2026-09-12
+## Implementation Status — 2026-09-13
 
-Assessed against `master` at `bb58acd`, with the barrier-identity validation in this PR. This section records current implementation; the proposal below retains its original design context and targets.
+Implemented in the `codex/wip-02-complete` follow-up, PR #211; merge is pending. The acceptance matrix in [acceptance.md](acceptance.md) maps the scoped requirements to executable evidence and records the specification correction carried forward from WIP-01.
 
 - **Implemented:** TaskSlot and operator-chain goroutines, bounded channels, coordinated cancellation, and alignment buffers are implemented. Alignment only counts valid inputs with the active checkpoint ID and epoch; invalid indices, checkpoint zero, and mixed identities cannot complete alignment. Operator-chain snapshot control also checks the active epoch.
-- **Remaining:** Durable snapshot replication and its resource-management path are not connected to cluster execution. The worker executor assembles its own linear chain. Conflicting barriers are ignored while alignment is active; timeout/abort handling must resolve a missing matching barrier. This does not establish persistent epoch fencing across task restarts.
+- **Connected in the follow-up:** Configured workers advertise replica endpoints; deployment assigns a remote peer and coordinator epoch. Source checkpoint commands use the TaskSlot boundary, bounded archive uploads publish peer state, and assignment-checked RPC reports drive persisted completion or abort decisions. A two-worker race test verifies source state on the remote worker after coordinator completion, using coordinator-backed replica authorization.
+- **Configured and tested:** The binary exposes replica storage, checkpoint timeout, and consecutive upload failure limits. Distributed tests cover transactional commit after coordinator completion and abort after replica failure. Checkpoint acknowledgements must name the peer captured in the replica assignment.
+- **Recovery evidence:** A two-worker race test completes a checkpoint, injects a source failure, redeploys with a new attempt ID, and verifies the new source restores the saved state before reading. Worker replica fetches are authorized against the completed checkpoint and current deployment.
+- **Review:** [PR #211](https://github.com/tarungka/wire/pull/211) is open as a follow-up to #149/#207. Local full race/integration tests and lint pass. All remote checks on runtime commit `769bbcb` pass, including the full race suite, integration tests, lint, builds, and CodeQL. Review and merge remain pending. Cluster coordinator replacement is now tested; broader worker-loss and HA policy belong to WIP-09. The worker executor still assembles its own linear chain. The acceptance matrix covers all nine scenarios in §8.1, configuration, metrics, topology, benchmarks, and Linux CPU-quota startup behavior.
 - **Evidence:** [task_slot.go](../../../internal/engine/task_slot.go), [task_executor.go](../../../internal/worker/task_executor.go).
 
 ---
@@ -140,6 +143,12 @@ flowchart LR
 | **Pebble Compaction** | 1-2 | Managed by Pebble | Background LSM compaction |
 | **Pebble WAL Sync** | 1 | Managed by Pebble | Write-ahead log synchronization |
 
+The implementation additionally uses one output dispatcher and one bounded
+one-entry queue per writer. Control broadcasts wait for every writer before
+later data is dispatched. Input readers use a bounded read-ahead helper, and
+TaskSlot owns shutdown/join helpers. These helpers are included in the task
+goroutine metric; shared transport and Pebble goroutines are excluded.
+
 **Typical total per Task Slot:** 5-10 goroutines (varies with number of input/output streams).
 
 **Design Constraint:** Source operator implementations MUST be internally thread-safe with respect to `ReadBatch()` (called by operator chain goroutine) and `GenerateWatermark()` (called by watermark emitter goroutine). These methods access shared state (e.g., `MaxObservedTimestamp`) from separate goroutines. Implementations should use `sync.Mutex` or atomic operations for shared fields.
@@ -196,16 +205,20 @@ Yamux Reader B ─────────────────────�
 Operator Chain Goroutine ───────────┤
   Receives BarrierReceived from     │
   ALL inputs → alignment complete:  │
-  1. Snapshot state: Checkpoint(N)  │
-  2. Drain side buffers → input     │
-  3. Forward barrier downstream     │
+  1. Process queued pre-barrier data│
+  2. Snapshot state: Checkpoint(N)  │
+  3. Forward barrier downstream    │
+  4. Submit asynchronous upload    │
+  5. Release post-barrier buffers  │
 ```
 
 **Side buffer semantics:**
 
 - Each input stream has a dedicated side buffer: `[]Event` with capacity `task_slot.alignment_buffer_size` (default 4096 events).
 - When the side buffer is full, the Yamux reader blocks on write, propagating backpressure upstream. This is bounded and safe.
-- If `AbortCheckpoint(N)` arrives via the control mailbox (WIP-05), side buffers are drained into the main input channel immediately and alignment state is discarded.
+- The chain processes queued pre-barrier records before capturing state. It enqueues the barrier on the ordered output path before processing post-barrier records from the side buffers; upload completion is not required to resume processing.
+- A transactional sink prepares its transaction instead of forwarding a barrier. It retains post-barrier events until the checkpoint decision.
+- If `AbortCheckpoint(N)` arrives via the control mailbox (WIP-05), alignment state is discarded and the chain processes the released side-buffer records without taking a snapshot. Records are not sent back through the bounded input channel from its own consumer.
 - Side buffers are only allocated when a barrier is received (lazy allocation).
 
 ### 2.6 Deserialization Point
@@ -265,9 +278,53 @@ if err := g.Wait(); err != nil {
 | `task_slot.checkpoint_upload_concurrency` | `1` | Max concurrent checkpoint uploads per task |
 | `pebble.max_compaction_concurrency` | `2` | Max concurrent Pebble compaction goroutines |
 
+### 3.1.1 Cluster replica configuration
+
+For the cluster replication path, configure at least two workers with distinct
+replica endpoints and worker-owned storage directories. The directories must
+already exist. Leave `worker.checkpoint_replica.listen_addr` empty to disable the
+endpoint. A wildcard listener requires an explicit reachable advertised address.
+
+```yaml
+checkpoint:
+  timeout: 10m
+  max_consecutive_failures: 0 # Unlimited; a positive limit fails the task.
+worker:
+  checkpoint_replica:
+    listen_addr: ":4004"
+    advertise_addr: "worker-a.example:4004"
+    store_root: "/var/lib/wire/checkpoint-metadata"
+    artifact_root: "/var/lib/wire/checkpoint-artifacts"
+    staging_root: "/var/lib/wire/checkpoint-staging"
+    concurrency: 1
+```
+
+Receiver concurrency is shared across uploads to that worker. The separate
+`task_slot.checkpoint_upload_concurrency` limits uploads from each task. The
+coordinator checks checkpoint expiry on its maintenance tick, so abort delivery
+may follow the configured deadline by up to one tick plus dispatch time. A failed task can restart from its completed checkpoint after the old tasks
+report terminal status. Recovery fetches import state into worker-owned storage
+before task processing. The coordinator-replacement test retains its metadata
+store, advances the epoch, and verifies worker reconnection and checkpoint
+restore. Recovery from lost coordinator storage and broader worker-loss/HA
+policy remain under WIP-09.
+
+Trigger a checkpoint for a running job with
+`POST /api/v1/jobs/{job_id}/checkpoints`. The `202` response contains its ID,
+epoch, and initial status. Read the persisted decision with
+`GET /api/v1/jobs/{job_id}/checkpoints/{checkpoint_id}`; checkpoint IDs in this
+URL are decimal. An accepted trigger is not evidence of durable completion.
+
 ### 3.2 GOMAXPROCS
 
-Wire imports `go.uber.org/automaxprocs` in `cmd/main.go`. This sets `GOMAXPROCS` to match the Linux cgroup CPU quota, which is essential for containerized deployments (Kubernetes, Docker). For bare-metal, it defaults to `runtime.NumCPU()` (same as Go default). No manual override is needed.
+Wire imports `go.uber.org/automaxprocs` in `cmd/main.go`. At startup this sets
+`GOMAXPROCS` from the Linux cgroup CPU quota, rounding down with a minimum of
+one. An explicit `GOMAXPROCS` environment variable takes precedence. Without a
+quota, or on non-Linux systems, it leaves the Go runtime's value unchanged.
+Go 1.25 also detects container quotas, but its rounding and minimum differ;
+Wire uses the automaxprocs policy specified here. Setting the value disables
+Go's automatic updates, so quota changes require a restart when automaxprocs
+has applied a quota. No manual override is needed for normal deployments.
 
 ### 3.3 Observability
 

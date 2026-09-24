@@ -1,6 +1,8 @@
 package coordinator
 
-import "net/http"
+import (
+	"net/http"
+)
 
 func (s *HTTPServer) handleTriggerSavepoint(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("job_id")

@@ -13,25 +13,28 @@ const (
 	DefaultRegisterWorkerTimeout           = 10 * time.Second
 	DefaultMaxRetries                      = 3
 	DefaultHeartbeatInterval               = 5 * time.Second
+	DefaultCoordinatorContactTimeout       = 30 * time.Second
 	DefaultSuspectThreshold                = 3
 	DefaultDeadThreshold                   = 5
-	DefaultMaxConsecutiveHeartbeatFailures = 6
+	DefaultMaxConsecutiveHeartbeatFailures = 0
 	DefaultMaxConcurrentRPCs               = 256
 	MaxRPCPayloadSize                      = 16 * 1024 * 1024 // 16 MB
 )
 
 // Config holds RPC-level configuration.
 type Config struct {
-	SubmitJobTimeout                time.Duration
-	UpdateTaskStatusTimeout         time.Duration
-	TriggerCheckpointTimeout        time.Duration
-	AcknowledgeCheckpointTimeout    time.Duration
-	RequestTaskSlotsTimeout         time.Duration
-	HeartbeatTimeout                time.Duration
-	RegisterWorkerTimeout           time.Duration
-	MaxRetries                      int
-	HeartbeatInterval               time.Duration
-	SuspectThreshold                int
+	CoordinatorContactTimeout    time.Duration
+	SubmitJobTimeout             time.Duration
+	UpdateTaskStatusTimeout      time.Duration
+	TriggerCheckpointTimeout     time.Duration
+	AcknowledgeCheckpointTimeout time.Duration
+	RequestTaskSlotsTimeout      time.Duration
+	HeartbeatTimeout             time.Duration
+	RegisterWorkerTimeout        time.Duration
+	MaxRetries                   int
+	HeartbeatInterval            time.Duration
+	SuspectThreshold             int
+	// Deprecated: CoordinatorContactTimeout controls elapsed-time loss detection.
 	DeadThreshold                   int
 	MaxConsecutiveHeartbeatFailures int
 	MaxConcurrentRPCs               int
@@ -41,6 +44,7 @@ type Config struct {
 // DefaultConfig returns a Config populated with default values.
 func DefaultConfig() Config {
 	return Config{
+		CoordinatorContactTimeout:       DefaultCoordinatorContactTimeout,
 		SubmitJobTimeout:                DefaultSubmitJobTimeout,
 		UpdateTaskStatusTimeout:         DefaultUpdateTaskStatusTimeout,
 		TriggerCheckpointTimeout:        DefaultTriggerCheckpointTimeout,
@@ -67,7 +71,7 @@ func (c Config) methodTimeout(method MethodID) time.Duration {
 		return c.UpdateTaskStatusTimeout
 	case MethodTriggerCheckpoint:
 		return c.TriggerCheckpointTimeout
-	case MethodAcknowledgeCheckpoint:
+	case MethodAcknowledgeCheckpoint, MethodAcknowledgeCheckpointCleanup:
 		return c.AcknowledgeCheckpointTimeout
 	case MethodRequestTaskSlots:
 		return c.RequestTaskSlotsTimeout

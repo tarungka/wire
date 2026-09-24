@@ -7,6 +7,7 @@ import "github.com/tarungka/wire/internal/rpc"
 func (g *StreamGraph) toJobGraph(defaultParallelism int) rpc.JobGraph {
 	var ops []rpc.OperatorDescriptor
 	var edges []rpc.EdgeDescriptor
+	parallelism := make(map[int]int)
 
 	// Map node IDs to string operator IDs.
 	idStr := func(id int) string {
@@ -23,23 +24,58 @@ func (g *StreamGraph) toJobGraph(defaultParallelism int) rpc.JobGraph {
 			p = defaultParallelism
 		}
 
+		if node.Type == NodeKeyBy && node.Parallelism <= 0 {
+			for _, edge := range g.edges {
+				if edge.TargetID == node.ID {
+					p = parallelism[edge.SourceID]
+					break
+				}
+			}
+		}
+		var window *rpc.WindowDefinition
+		if node.Window != nil {
+			window, _ = windowDefinition(node)
+		}
+		parallelism[node.ID] = p
 		ops = append(ops, rpc.OperatorDescriptor{
-			OperatorID:  idStr(node.ID),
-			ErrorPolicy: node.ErrorPolicy,
-			DLQSink:     node.NamedDLQ,
-			Name:        node.Name,
-			Type:        nodeTypeToRPC(node.Type),
-			Parallelism: int32(p),
-			ClassName:   node.ClassName,
-			Config:      node.Config,
+			OperatorID:     idStr(node.ID),
+			SideOutputTags: append([]string(nil), node.SideOutputTags...),
+			Window:         window,
+			LateOutputTag:  node.LateOutputTag,
+			Watermark:      node.Watermark,
+			ErrorPolicy:    node.ErrorPolicy,
+			DLQSink:        node.NamedDLQ,
+			Name:           node.Name,
+			Type:           nodeTypeToRPC(node.Type),
+			Parallelism:    int32(p),
+			ClassName:      node.ClassName,
+			Config:         node.Config,
 		})
 	}
 
 	for _, edge := range g.edges {
+		shuffle := shuffleTypeToRPC(edge.Shuffle)
+		if shuffle == rpc.ShuffleStrategyForward && parallelism[edge.SourceID] != parallelism[edge.TargetID] {
+			shuffle = rpc.ShuffleStrategyRebalance
+		}
+		// Logical KeyBy edges describe a partitioning operation. The physical
+		// graph must compute its key first, then shuffle the selected event.
+		if g.nodes[edge.TargetID].Type == NodeKeyBy {
+			shuffle = rpc.ShuffleStrategyForward
+			if parallelism[edge.SourceID] != parallelism[edge.TargetID] {
+				// Rebalance raw records before selecting their key; the outgoing
+				// KeyBy edge performs the actual keyed partitioning.
+				shuffle = rpc.ShuffleStrategyRebalance
+			}
+		}
+		if g.nodes[edge.SourceID].Type == NodeKeyBy {
+			shuffle = rpc.ShuffleStrategyHash
+		}
 		edges = append(edges, rpc.EdgeDescriptor{
 			SourceOperatorID: idStr(edge.SourceID),
+			SideOutput:       edge.SideOutput,
 			TargetOperatorID: idStr(edge.TargetID),
-			Shuffle:          shuffleTypeToRPC(edge.Shuffle),
+			Shuffle:          shuffle,
 		})
 	}
 

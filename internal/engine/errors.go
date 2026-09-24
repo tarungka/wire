@@ -3,6 +3,8 @@ package engine
 import "errors"
 
 var (
+	// ErrUncommittedTransactionAtEOF prevents successful completion with lost output.
+	ErrUncommittedTransactionAtEOF = errors.New("engine: source ended without a final committed transaction")
 	// ErrTaskFailed indicates the task slot failed during execution.
 	ErrTaskFailed = errors.New("engine: task failed")
 
@@ -56,6 +58,9 @@ var (
 
 	// ErrCommitFailed indicates a transactional sink failed to commit a transaction.
 	ErrCommitFailed = errors.New("engine: transactional sink commit failed")
+
+	// ErrTransactionAborted requires task recovery so rolled-back records are replayed.
+	ErrTransactionAborted = errors.New("engine: transaction aborted; checkpoint recovery required")
 
 	// ErrAbortFailed indicates a transactional sink failed to abort a transaction.
 	ErrAbortFailed = errors.New("engine: transactional sink abort failed")

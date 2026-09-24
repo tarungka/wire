@@ -18,7 +18,7 @@ const (
 	DefaultCheckpointTimeout                = 10 * time.Minute
 	DefaultCheckpointMinPause               = 0
 	DefaultMaxConsecutiveCheckpointFailures = 0   // 0 = unlimited
-	DefaultTolerableCheckpointFailureRate   = 0.0 // 0 = no tolerance
+	DefaultTolerableCheckpointFailureRate   = 0.0 // 0 = disabled
 )
 
 // Default error handling configuration values per WIP-11.
@@ -30,7 +30,7 @@ const (
 type WatermarkStrategyType uint8
 
 const (
-	// StrategyNone means no explicit strategy — use legacy source watermark.
+	// StrategyNone means no explicit strategy — use bounded OOO with DefaultMaxOOO.
 	StrategyNone WatermarkStrategyType = iota
 	// StrategyBoundedOOO allows events to arrive out of order up to MaxOOO.
 	StrategyBoundedOOO
@@ -45,7 +45,7 @@ type CheckpointConfig struct {
 	Timeout                time.Duration // Max time to wait for barrier alignment. 0 → DefaultCheckpointTimeout.
 	MinPause               time.Duration // Minimum pause between checkpoints. 0 → no pause.
 	MaxConsecutiveFailures int           // Max consecutive failures before fatal error. 0 → unlimited.
-	TolerableFailureRate   float64       // Max tolerable failure rate (0.0–1.0). 0 → no tolerance.
+	TolerableFailureRate   float64       // Max tolerable failure rate (0.0–1.0). 0 → disabled.
 }
 
 // WatermarkConfig holds watermark-specific configuration.
@@ -58,24 +58,26 @@ type WatermarkConfig struct {
 
 // TaskSlotConfig holds configuration for a single TaskSlot execution.
 type TaskSlotConfig struct {
-	InputBufferSize     int                  // Per-input event channel capacity.
-	OutputBufferSize    int                  // Output channel capacity.
-	AlignmentBufferSize int                  // Per-input side buffer capacity for barrier alignment.
-	DrainTimeout        time.Duration        // Maximum time to drain channels on shutdown.
-	WatermarkInterval   time.Duration        // Watermark emission interval (source tasks only). Deprecated: use Watermark.EmitInterval.
-	Watermark           WatermarkConfig      // Watermark generation and propagation config.
-	Checkpoint          CheckpointConfig     // Checkpoint timeout and failure tracking config.
-	ErrorConfigs        []ErrorHandlerConfig // Per-operator error handling config. nil = legacy behavior (fail on any error).
-	DLQBufferSize       int                  // DLQ channel buffer capacity. 0 → DefaultDLQBufferSize.
+	CheckpointUploadConcurrency int                  // Zero uses one upload per task; pending completions count toward the bound.
+	InputBufferSize             int                  // Per-input event channel capacity.
+	OutputBufferSize            int                  // Output channel capacity.
+	AlignmentBufferSize         int                  // Per-input side buffer capacity for barrier alignment.
+	DrainTimeout                time.Duration        // Maximum time to drain channels on shutdown.
+	WatermarkInterval           time.Duration        // Watermark emission interval (source tasks only). Deprecated: use Watermark.EmitInterval.
+	Watermark                   WatermarkConfig      // Watermark generation and propagation config.
+	Checkpoint                  CheckpointConfig     // Checkpoint timeout and failure tracking config.
+	ErrorConfigs                []ErrorHandlerConfig // Per-operator error handling config. nil = legacy behavior (fail on any error).
+	DLQBufferSize               int                  // Deprecated: task DLQ delivery uses ErrorConfigs.DLQWriter; this field is ignored.
 }
 
 // DefaultTaskSlotConfig returns a TaskSlotConfig populated with default values.
 func DefaultTaskSlotConfig() TaskSlotConfig {
 	return TaskSlotConfig{
-		InputBufferSize:     DefaultInputBufferSize,
-		OutputBufferSize:    DefaultOutputBufferSize,
-		AlignmentBufferSize: DefaultAlignmentBufferSize,
-		DrainTimeout:        DefaultDrainTimeout,
-		WatermarkInterval:   DefaultWatermarkInterval,
+		CheckpointUploadConcurrency: 1,
+		InputBufferSize:             DefaultInputBufferSize,
+		OutputBufferSize:            DefaultOutputBufferSize,
+		AlignmentBufferSize:         DefaultAlignmentBufferSize,
+		DrainTimeout:                DefaultDrainTimeout,
+		WatermarkInterval:           DefaultWatermarkInterval,
 	}
 }

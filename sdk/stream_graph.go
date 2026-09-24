@@ -3,6 +3,7 @@ package sdk
 import (
 	"fmt"
 
+	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/rpc"
 )
 
@@ -33,6 +34,7 @@ const (
 
 // StreamNode represents a single operator in the logical DAG.
 type StreamNode struct {
+	Watermark   *rpc.WatermarkConfig
 	NamedDLQ    *rpc.DLQSinkDescriptor
 	ErrorPolicy *rpc.ErrorPolicy
 	DLQSink     Sink
@@ -51,30 +53,37 @@ type StreamNode struct {
 
 	// Operator function pointers — exactly one is set in Embedded mode.
 	// In Cluster mode these are nil and ClassName is used instead.
-	MapFn      MapFunc
-	FlatMapFn  FlatMapFunc
-	FilterFn   FilterFunc
-	KeyByFn    KeySelector
-	ProcessFn  ProcessFunc
-	ReduceFn   ReduceFunc
-	WindowFn   WindowFunc
-	Source     Source
-	Sink       Sink
-	Window     WindowAssigner
-	Aggregator Aggregator
+	MapFn         MapFunc
+	FlatMapFn     FlatMapFunc
+	FilterFn      FilterFunc
+	KeyByFn       KeySelector
+	ProcessFn     ProcessFunc
+	ReduceFn      ReduceFunc
+	WindowFn      WindowFunc
+	SourceFactory SourceFactory
+	SinkFactory   SinkFactory
+	Source        Source
+	Sink          Sink
+	Window        WindowAssigner
+	Aggregator    Aggregator
+
+	TimerFn        TimerFunc
+	SideOutputTags []string
 
 	// Timestamp extractor (optional).
 	TimestampExtractor TimestampExtractor
 
 	// Windowed stream config.
 	AllowedLateness int64 // millis
+	LateOutputTag   string
 }
 
 // StreamEdge connects two nodes in the graph.
 type StreamEdge struct {
-	SourceID int
-	TargetID int
-	Shuffle  ShuffleType
+	SideOutput string
+	SourceID   int
+	TargetID   int
+	Shuffle    ShuffleType
 }
 
 // StreamGraph is the internal DAG representation of a pipeline.
@@ -120,6 +129,9 @@ func (g *StreamGraph) addEdge(sourceID, targetID int, shuffle ShuffleType) {
 // boundary and so are not allowed in a Cluster-mode graph.
 func (g *StreamGraph) validateForCluster() error {
 	for _, node := range g.nodes {
+		if node.TimestampExtractor != nil {
+			return fmt.Errorf("%w: cluster timestamp extraction requires a registered operator", ErrInvalidConfig)
+		}
 		if node.DLQSink != nil {
 			return fmt.Errorf("sdk: inline DLQ sinks require embedded mode")
 		}
@@ -146,6 +158,30 @@ func (g *StreamGraph) validate() error {
 	hasSources := false
 	hasSinks := false
 	for _, node := range g.nodes {
+		if node.Type == NodeProcess {
+			if err := (rpc.OperatorDescriptor{Type: rpc.OperatorTypeProcess, SideOutputTags: node.SideOutputTags, ErrorPolicy: node.ErrorPolicy}).ValidateSideOutputs(); err != nil {
+				return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+			}
+		}
+		if node.ErrorPolicy != nil && node.ErrorPolicy.OnExhausted == "dlq" && node.DLQSink == nil && (node.NamedDLQ == nil || node.NamedDLQ.ClassName == "") {
+			return fmt.Errorf("%w: DLQ destination required for %q", ErrInvalidConfig, node.Name)
+		}
+		if _, ok := node.Sink.(engine.TransactionalSink); ok && node.ErrorPolicy != nil && (node.ErrorPolicy.MaxRetries != 0 || (node.ErrorPolicy.OnExhausted != "" && node.ErrorPolicy.OnExhausted != "fail")) {
+			return fmt.Errorf("%w: transactional sink requires fail policy with no record retries", ErrInvalidConfig)
+		}
+		if node.Type == NodeWindow || node.Type == NodeReduce {
+			if _, err := windowDefinition(node); err != nil {
+				return err
+			}
+		}
+		if node.Watermark != nil {
+			if node.Type != NodeSource {
+				return fmt.Errorf("watermark strategy requires a source: %s", node.Name)
+			}
+			if err := node.Watermark.Validate(); err != nil {
+				return err
+			}
+		}
 		if node.Type == NodeSource {
 			hasSources = true
 		}
@@ -174,6 +210,16 @@ func (g *StreamGraph) validate() error {
 	// Cycle detection using DFS.
 	if g.hasCycle() {
 		return ErrCyclicGraph
+	}
+
+	for _, edge := range g.edges {
+		source, target := g.nodes[edge.SourceID], g.nodes[edge.TargetID]
+		if source == nil || target == nil {
+			return fmt.Errorf("%w: edge references missing operator", ErrInvalidConfig)
+		}
+		if source.Type == NodeSink || target.Type == NodeSource {
+			return fmt.Errorf("%w: sources cannot consume inputs and sinks cannot produce outputs", ErrInvalidConfig)
+		}
 	}
 
 	return nil
@@ -291,4 +337,27 @@ func (g *StreamGraph) upstream(nodeID int) []StreamEdge {
 		}
 	}
 	return result
+}
+
+// Only a single stateless path can use the whole-graph fusion fast path.
+func (g *StreamGraph) canFuseLinear() bool {
+	if len(g.sources()) != 1 || len(g.edges) != len(g.nodes)-1 {
+		return false
+	}
+	for _, node := range g.nodes {
+		if node.Parallelism > 1 || node.SourceFactory != nil || node.SinkFactory != nil || len(g.upstream(node.ID)) > 1 || len(g.downstream(node.ID)) > 1 {
+			return false
+		}
+		switch node.Type {
+		case NodeSource, NodeMap, NodeFlatMap, NodeFilter, NodeSink:
+		default:
+			return false
+		}
+	}
+	for _, edge := range g.edges {
+		if edge.Shuffle != ShuffleForward || edge.SideOutput != "" {
+			return false
+		}
+	}
+	return true
 }

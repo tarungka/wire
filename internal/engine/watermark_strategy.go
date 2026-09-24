@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"math"
 	"sync/atomic"
 	"time"
 )
@@ -15,7 +16,7 @@ type WatermarkStrategy interface {
 }
 
 // BoundedOutOfOrdernessStrategy allows events to arrive out of order up to
-// a configurable bound. The watermark is max(0, maxObserved - maxOOO).
+// a configurable bound. The watermark is maxObserved - maxOOO, saturating at MinInt64.
 type BoundedOutOfOrdernessStrategy struct {
 	maxObservedTimestamp atomic.Int64
 	maxOutOfOrderness    int64 // millis
@@ -27,17 +28,17 @@ func NewBoundedOutOfOrdernessStrategy(maxOOO time.Duration) *BoundedOutOfOrderne
 	if maxOOO <= 0 {
 		maxOOO = DefaultMaxOOO
 	}
-	return &BoundedOutOfOrdernessStrategy{
-		maxOutOfOrderness: maxOOO.Milliseconds(),
-	}
+	s := &BoundedOutOfOrdernessStrategy{maxOutOfOrderness: maxOOO.Milliseconds()}
+	s.maxObservedTimestamp.Store(math.MinInt64)
+	return s
 }
 
 func (s *BoundedOutOfOrdernessStrategy) GenerateWatermark() int64 {
-	wm := s.maxObservedTimestamp.Load() - s.maxOutOfOrderness
-	if wm < 0 {
-		return 0
+	observed := s.maxObservedTimestamp.Load()
+	if observed < math.MinInt64+s.maxOutOfOrderness {
+		return math.MinInt64
 	}
-	return wm
+	return observed - s.maxOutOfOrderness
 }
 
 func (s *BoundedOutOfOrdernessStrategy) ObserveEventTime(eventTime int64) {
@@ -55,11 +56,14 @@ func (s *BoundedOutOfOrdernessStrategy) ObserveEventTime(eventTime int64) {
 // NewMonotonicTimestampsStrategy creates a strategy equivalent to
 // BoundedOutOfOrderness with maxOOO=0 (events assumed in order).
 func NewMonotonicTimestampsStrategy() *BoundedOutOfOrdernessStrategy {
-	return &BoundedOutOfOrdernessStrategy{maxOutOfOrderness: 0}
+	s := &BoundedOutOfOrdernessStrategy{}
+	s.maxObservedTimestamp.Store(math.MinInt64)
+	return s
 }
 
 // IngestionTimeStrategy uses the current wall clock as the watermark.
-// ObserveEventTime is a no-op — event timestamps are NOT overwritten.
+// The source reader assigns timestamps from this clock at ingestion.
+// ObserveEventTime is a no-op because producer timestamps are not used.
 type IngestionTimeStrategy struct {
 	clock func() int64 // returns millis; injectable for testing
 }

@@ -171,33 +171,37 @@ func TestCancelJob_InvalidState(t *testing.T) {
 }
 
 func TestPauseResumeJob(t *testing.T) {
-	c, _ := newReadyCoordinator(t)
-
-	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
-	if err := c.transitionJob(job, JobDeploying); err != nil {
-		t.Fatalf("transitionJob to DEPLOYING: %v", err)
-	}
-	if err := c.transitionJob(job, JobRunning); err != nil {
-		t.Fatalf("transitionJob to RUNNING: %v", err)
-	}
-
-	paused, sp, err := c.PauseJob(job.ID)
+	c, _ := checkpointPolicyCoordinator(t)
+	job := c.jobs["job"]
+	pending, sp, err := c.PauseJob(job.ID)
 	if err != nil {
-		t.Fatalf("PauseJob: %v", err)
+		t.Fatal(err)
 	}
-	if paused.Status != JobPaused {
-		t.Fatalf("expected PAUSED, got %s", paused.Status)
+	if pending.Status != JobRunning || !sp.Queued {
+		t.Fatal("pause claimed completion before its snapshot")
 	}
-	if sp == nil {
-		t.Fatal("expected savepoint to be created")
+	if _, err := c.ResumeJob(job.ID); err != ErrJobNotPaused {
+		t.Fatalf("early resume: %v", err)
 	}
-
+	if err := c.advanceQueuedSavepoint(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	completeQueueCheckpoint(t, c, c.activeCheckpoints[job.ID])
+	if job.Status != JobPausing {
+		t.Fatal("checkpoint completion did not start teardown")
+	}
+	if err := c.advancePause(job.ID, time.Now().Add(c.config.WorkerTimeout)); err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != JobPaused {
+		t.Fatal("pause did not finish teardown")
+	}
 	resumed, err := c.ResumeJob(job.ID)
 	if err != nil {
-		t.Fatalf("ResumeJob: %v", err)
+		t.Fatal(err)
 	}
-	if resumed.Status != JobDeploying {
-		t.Fatalf("expected DEPLOYING after resume, got %s", resumed.Status)
+	if resumed.Status != JobResuming {
+		t.Fatalf("resume state = %s", resumed.Status)
 	}
 }
 
@@ -246,7 +250,7 @@ func TestResumeJob_NotPaused(t *testing.T) {
 	}
 
 	_, err := c.ResumeJob(job.ID)
-	if !errors.Is(err, ErrInvalidTransition) {
-		t.Fatalf("expected ErrInvalidTransition, got: %v", err)
+	if !errors.Is(err, ErrJobNotPaused) {
+		t.Fatalf("expected ErrJobNotPaused, got: %v", err)
 	}
 }

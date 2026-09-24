@@ -26,3 +26,19 @@ Proposal discrepancies must be recorded explicitly rather than silently deleting
 acceptance criteria: the current runtime has no Raft transport; a missing client
 certificate fails at the TLS layer rather than yielding an HTTP 401; metrics are
 explicitly public in §3.6. The secured deployment guide must explain these facts.
+
+## Current-stack integration
+
+The existing WIP-17 branch now integrates the WIP-13–16 stack. Conflicts retain
+the current HA term ownership, RPC certificate identity checks, worker discovery,
+checkpoint cleanup, heartbeat fencing and lifecycle configuration. The old
+worker TLS fixture now uses RPCTLSConfig. Focused TLS/authentication race tests
+pass in cmd, coordinator and transport; the worker package compiles but had no
+matching tests in that filtered run. Full repository compilation also passes.
+
+The merge identifies an unresolved production gap: HA startup returns through
+NewHAService before standalone HTTP TLS/auth setup, and term handlers currently
+construct unconfigured HTTPServer instances. HA HTTPS/auth must be wired before
+this WIP can be considered complete or ready to merge. Data-plane/replica TLS,
+client credentials, secret handling and the original acceptance matrix remain
+open as tracked above.
