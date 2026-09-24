@@ -12,12 +12,22 @@ import (
 )
 
 func TestSameJobReplacementRestoresSourceAndNewCode(t *testing.T) {
-	for _, scenario := range []string{"success", "rollback", "no-restart"} {
-		t.Run(scenario, func(t *testing.T) { testSameJobReplacement(t, scenario != "success", scenario != "no-restart") })
+	for _, transactional := range []bool{false, true} {
+		kind := "ordinary"
+		if transactional {
+			kind = "transactional"
+		}
+		t.Run(kind, func(t *testing.T) {
+			for _, scenario := range []string{"success", "rollback", "no-restart"} {
+				t.Run(scenario, func(t *testing.T) {
+					testSameJobReplacement(t, scenario != "success", scenario != "no-restart", transactional)
+				})
+			}
+		})
 	}
 }
 
-func testSameJobReplacement(t *testing.T, fail, recovery bool) {
+func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool) {
 	release := make(chan struct{})
 	restored := make(chan uint64, 4)
 	var closed atomic.Int32
@@ -34,7 +44,11 @@ func testSameJobReplacement(t *testing.T, fail, recovery bool) {
 		})
 	}
 	output := &collectSink{}
+	ledger := &pauseTransactionLedger{prepared: map[uint64][]string{}, committed: map[uint64]bool{}}
 	registry.RegisterSink("output", func(context.Context, []byte, WorkerTaskContext) (Sink, error) {
+		if transactional {
+			return &pauseTransactionSink{ledger: ledger, observed: output}, nil
+		}
 		return &pipelineRemoteSink{target: output}, nil
 	})
 	ctx, coord, url := lifecycleCluster(t, registry)
@@ -62,6 +76,9 @@ func testSameJobReplacement(t *testing.T, fail, recovery bool) {
 		saved, err := coord.GetSavepoint(jobID, sp.ID)
 		return err == nil && saved.Status == coordinator.SavepointCompleted
 	})
+	if transactional {
+		lifecycleWait(t, ctx, func() bool { ledger.mu.Lock(); defer ledger.mu.Unlock(); return len(ledger.visible) == 1 })
+	}
 	old, err := coord.GetJob(jobID)
 	if err != nil {
 		t.Fatal(err)
@@ -95,6 +112,14 @@ func testSameJobReplacement(t *testing.T, fail, recovery bool) {
 			}
 		case <-ctx.Done():
 			t.Fatal("job result not delivered")
+		}
+		if transactional {
+			ledger.mu.Lock()
+			visible := append([]string(nil), ledger.visible...)
+			ledger.mu.Unlock()
+			if len(visible) != 1 || visible[0] != "v1:first" {
+				t.Fatalf("disabled recovery commits=%v", visible)
+			}
 		}
 		if len(output.Events()) != 1 {
 			t.Fatal("disabled recovery emitted extra output")
@@ -139,6 +164,16 @@ func testSameJobReplacement(t *testing.T, fail, recovery bool) {
 	events := output.Events()
 	if len(events) != 2 || string(events[0].Value) != "v1:first" || string(events[1].Value) != expected {
 		t.Fatalf("output=%v", events)
+	}
+	if transactional {
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		if len(ledger.visible) != 2 || ledger.visible[0] != "v1:first" || ledger.visible[1] != expected {
+			t.Fatalf("external commits=%v", ledger.visible)
+		}
+		if ledger.jobID != jobID || ledger.generation <= old.DeploymentGeneration {
+			t.Fatalf("transaction authority not preserved: job=%s generation=%d", ledger.jobID, ledger.generation)
+		}
 	}
 	if len(coord.ListJobs(nil)) != 1 {
 		t.Fatal("replacement created another job")

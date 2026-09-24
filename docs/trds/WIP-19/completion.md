@@ -137,3 +137,11 @@ A separate no-restart case ends FAILED with the original graph restored and no
 additional output. Rollback does not override configured recovery limits.
 Transactional external commit behavior and controller-driven migration still
 need dedicated acceptance coverage.
+
+The replacement runtime matrix now also uses the fenced transactional test
+sink. It waits for the savepoint's first external commit before replacing,
+then checks exactly two visible records after success/rollback, stable job/task
+transaction namespace and increased writer generation. With no restart budget,
+the external ledger keeps only the first committed record. This covers ordinary
+commit responses; replacement-specific lost commit response and crash timing
+remain unverified. Automatic controller orchestration remains unfinished.
