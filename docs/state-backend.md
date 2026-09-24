@@ -47,7 +47,7 @@ type StateBackend interface {
 
 ## 3. Pebble Implementation (Default)
 
-Wire uses **Pebble** (by CockroachDB) as the default engine state backend. The factory also supports `hashmap`, an in-memory sorted-slice backend with serialized snapshots and an optional logical payload memory limit. See [WIP-18](trds/WIP-18/README.md) and the [backend factory](../internal/engine/state_backend_factory.go) for configuration and scope.
+Wire uses **Pebble** (by CockroachDB) as the default engine state backend. The factory also supports `hashmap`, an in-memory B-tree backend with serialized snapshots and an optional logical payload memory limit. See [WIP-18](trds/WIP-18/README.md) and the [backend factory](../internal/engine/state_backend_factory.go) for configuration and scope.
 
 ### 3.1 Why Pebble?
 *   **Go Native:** No CGO overhead (unlike RocksDB), simpler cross-compilation.

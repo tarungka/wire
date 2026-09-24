@@ -5,14 +5,15 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
-	"sort"
 	"sync"
+
+	"github.com/tidwall/btree"
 )
 
 // hashMapSnapshotVersion is the binary format version for HashMap snapshots.
 const hashMapSnapshotVersion uint8 = 1
 
-// HashMapStateBackend is an in-memory state backend backed by a sorted slice.
+// HashMapStateBackend is an in-memory state backend backed by a B-tree.
 // It is designed for testing, development, and small-state workloads where
 // the full dataset fits in memory.
 //
@@ -21,7 +22,7 @@ const hashMapSnapshotVersion uint8 = 1
 // would exceed memLimit (0 = unlimited).
 type HashMapStateBackend struct {
 	mu          sync.RWMutex
-	entries     []kvEntry // sorted by key
+	entries     *btree.BTreeG[kvEntry] // ordered by key; guarded by mu
 	curMemBytes int64
 	memLimit    int64 // 0 = unlimited
 	closed      bool
@@ -38,6 +39,7 @@ type kvEntry struct {
 func NewHashMapStateBackend(memLimit int64) *HashMapStateBackend {
 	return &HashMapStateBackend{
 		memLimit: memLimit,
+		entries:  newHashMapTree(),
 	}
 }
 
@@ -50,17 +52,13 @@ func (h *HashMapStateBackend) Put(key, value []byte) error {
 		return ErrBackendClosed
 	}
 
-	idx := h.search(key)
-
-	if idx < len(h.entries) && bytes.Equal(h.entries[idx].key, key) {
-		// Update existing entry.
-		oldSize := int64(len(h.entries[idx].value))
-		newSize := int64(len(value))
-		delta := newSize - oldSize
+	previous, exists := h.entries.Get(kvEntry{key: key})
+	if exists {
+		delta := int64(len(value)) - int64(len(previous.value))
 		if h.memLimit > 0 && h.curMemBytes+delta > h.memLimit {
 			return ErrMemoryLimitExceeded
 		}
-		h.entries[idx].value = cloneBytes(value)
+		h.entries.Set(kvEntry{key: previous.key, value: cloneBytes(value)})
 		h.curMemBytes += delta
 		return nil
 	}
@@ -72,10 +70,7 @@ func (h *HashMapStateBackend) Put(key, value []byte) error {
 	}
 
 	entry := kvEntry{key: cloneBytes(key), value: cloneBytes(value)}
-	// Insert in sorted position.
-	h.entries = append(h.entries, kvEntry{})
-	copy(h.entries[idx+1:], h.entries[idx:])
-	h.entries[idx] = entry
+	h.entries.Set(entry)
 	h.curMemBytes += entrySize
 	return nil
 }
@@ -89,9 +84,8 @@ func (h *HashMapStateBackend) Get(key []byte) ([]byte, error) {
 		return nil, ErrBackendClosed
 	}
 
-	idx := h.search(key)
-	if idx < len(h.entries) && bytes.Equal(h.entries[idx].key, key) {
-		return cloneBytes(h.entries[idx].value), nil
+	if entry, ok := h.entries.Get(kvEntry{key: key}); ok {
+		return cloneBytes(entry.value), nil
 	}
 	return nil, ErrKeyNotFound
 }
@@ -105,13 +99,11 @@ func (h *HashMapStateBackend) Delete(key []byte) error {
 		return ErrBackendClosed
 	}
 
-	idx := h.search(key)
-	if idx >= len(h.entries) || !bytes.Equal(h.entries[idx].key, key) {
+	entry, ok := h.entries.Delete(kvEntry{key: key})
+	if !ok {
 		return ErrKeyNotFound
 	}
-
-	h.curMemBytes -= int64(len(h.entries[idx].key) + len(h.entries[idx].value))
-	h.entries = append(h.entries[:idx], h.entries[idx+1:]...)
+	h.curMemBytes -= int64(len(entry.key) + len(entry.value))
 	return nil
 }
 
@@ -124,23 +116,15 @@ func (h *HashMapStateBackend) NewIterator(prefix []byte) StateIterator {
 		return &hashMapIterator{} // empty iterator
 	}
 
-	// Find the start of the prefix range.
-	start := sort.Search(len(h.entries), func(i int) bool {
-		return bytes.Compare(h.entries[i].key, prefix) >= 0
-	})
-
-	// Collect all entries with the given prefix. We snapshot them to avoid
-	// holding the lock during iteration.
+	// Copy matching entries so iteration neither holds the lock nor aliases state.
 	var snapshot []kvEntry
-	for i := start; i < len(h.entries); i++ {
-		if !bytes.HasPrefix(h.entries[i].key, prefix) {
-			break
+	h.entries.Ascend(kvEntry{key: prefix}, func(entry kvEntry) bool {
+		if !bytes.HasPrefix(entry.key, prefix) {
+			return false
 		}
-		snapshot = append(snapshot, kvEntry{
-			key:   cloneBytes(h.entries[i].key),
-			value: cloneBytes(h.entries[i].value),
-		})
-	}
+		snapshot = append(snapshot, kvEntry{key: cloneBytes(entry.key), value: cloneBytes(entry.value)})
+		return true
+	})
 
 	return &hashMapIterator{entries: snapshot, pos: -1}
 }
@@ -162,7 +146,12 @@ func (h *HashMapStateBackend) Checkpoint(checkpointID uint64) (SnapshotHandle, e
 		return SnapshotHandle{}, ErrBackendClosed
 	}
 
-	data, err := serializeHashMapSnapshot(h.entries)
+	entries := make([]kvEntry, 0, h.entries.Len())
+	h.entries.Scan(func(entry kvEntry) bool {
+		entries = append(entries, entry)
+		return true
+	})
+	data, err := serializeHashMapSnapshot(entries)
 	if err != nil {
 		return SnapshotHandle{}, fmt.Errorf("hashmap checkpoint: %w", err)
 	}
@@ -201,7 +190,14 @@ func (h *HashMapStateBackend) Restore(handle SnapshotHandle) error {
 		return ErrMemoryLimitExceeded
 	}
 
-	h.entries = entries
+	tree := newHashMapTree()
+	for i, entry := range entries {
+		if i > 0 && bytes.Compare(entries[i-1].key, entry.key) >= 0 {
+			return fmt.Errorf("%w: snapshot keys must be strictly increasing", ErrSnapshotCorrupt)
+		}
+		tree.Set(entry)
+	}
+	h.entries = tree
 	h.curMemBytes = memBytes
 	return nil
 }
@@ -232,15 +228,17 @@ func (h *HashMapStateBackend) MemUsage() int64 {
 func (h *HashMapStateBackend) Len() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return len(h.entries)
+	if h.closed {
+		return 0
+	}
+	return h.entries.Len()
 }
 
-// search returns the index where key would be inserted to maintain sorted order.
-// Must be called with h.mu held (read or write).
-func (h *HashMapStateBackend) search(key []byte) int {
-	return sort.Search(len(h.entries), func(i int) bool {
-		return bytes.Compare(h.entries[i].key, key) >= 0
-	})
+// The backend lock makes tree updates and memory accounting atomic together.
+func newHashMapTree() *btree.BTreeG[kvEntry] {
+	return btree.NewBTreeGOptions(func(a, b kvEntry) bool {
+		return bytes.Compare(a.key, b.key) < 0
+	}, btree.Options{NoLocks: true})
 }
 
 // cloneBytes returns a copy of b. Returns nil if b is nil.

@@ -8,7 +8,7 @@ type StateBackendType string
 const (
 	// StateBackendPebble selects the PebbleDB-backed state backend (default).
 	StateBackendPebble StateBackendType = "pebble"
-	// StateBackendHashMap selects the in-memory sorted-slice state backend.
+	// StateBackendHashMap selects the in-memory B-tree state backend.
 	StateBackendHashMap StateBackendType = "hashmap"
 )
 

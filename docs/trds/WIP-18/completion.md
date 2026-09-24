@@ -8,7 +8,7 @@ are not evidence that every requirement is implemented.
 | Requirement | Evidence or remaining work |
 | --- | --- |
 | Two interchangeable backend implementations | Engine factory, HashMap and Pebble implementations and shared contract tests exist. Audit against every specified method and failure case remains. |
-| HashMap ordered storage | Current implementation uses a sorted slice, whereas the proposal specifies a B-tree. Resolve this explicitly; do not describe the current implementation as a B-tree. |
+| HashMap ordered storage | Implemented with `github.com/tidwall/btree` v1.8.1. Ordered prefix iteration snapshots owned bytes; atomic batches use copy-on-write. The version-1 snapshot encoding remains unchanged. Regression tests cover 10,000 reverse-order inserts, snapshot bytes, stable prefix iteration, rejected unordered/duplicate snapshots and atomic memory-limit rejection. |
 | SDK backend selection and worker execution | Existing graph specs, worker factory injection, scoped state and distributed tests exist. Full original acceptance audit remains. |
 | MiniCluster defaults to HashMap, Pebble remains overridable | This follow-up selects HashMap with a 256 MiB logical payload limit. A real-worker test inspects checkpoint backend identity during Process execution and checks keyed-state continuity for both the default and an explicit Pebble override. |
 | MiniCluster startup below 100 ms | Lifecycle benchmark measures construction through the first actual stateful invocation, plus total completion/shutdown separately. Record local measurements; do not use constructor-only timing or promise this target for every host. |
@@ -75,3 +75,12 @@ parsing, file→environment→explicit-flag precedence, alias conflicts, overflo
 immutable caller bytes, no persistence on invalid selection and recovered graph
 stability. The complete YAML/CLI/SDK precedence and aggregate worker memory
 admission are still required before marking this WIP implemented.
+
+## B-tree index validation
+
+The full engine and SDK suites pass with `-race` after replacing the sorted
+slice. Existing version-1 snapshots retain their byte format; restore rejects
+unordered or duplicate keys instead of silently changing cardinality or memory
+accounting. The memory cap still measures logical key/value payload, not tree
+allocation overhead or process RSS. Comparative throughput and serialization
+benchmarks remain outstanding.
