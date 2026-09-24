@@ -142,9 +142,8 @@ The replacement runtime matrix now also uses the fenced transactional test
 sink. It waits for the savepoint's first external commit before replacing,
 then checks exactly two visible records after success/rollback, stable job/task
 transaction namespace and increased writer generation. With no restart budget,
-the external ledger keeps only the first committed record. This covers ordinary
-commit responses; replacement-specific lost commit response and crash timing
-remain unverified. Automatic controller orchestration remains unfinished.
+the external ledger keeps only the first committed record. The original matrix covers ordinary commit responses; lost-response coverage
+is recorded below. Process-crash timing remains unverified.
 
 The same-layout replacement operation is now exposed through operator-authorized
 HTTP and SDK ReplaceFromSavepoint. The real-worker matrix uses that SDK/HTTP path
@@ -162,8 +161,7 @@ transactional success/rollback/no-restart cases run through this entire HTTP
 sequence. WatchLiveUpdates can opt in via AllowReplacement and advances its
 private baseline only on success; errors preserve the savepoint ID through
 OnReload. Savepoints remain retained. Changed-topology migration, concurrent
-external-edit reconciliation, CLI watch and replacement-specific lost-response
-or process-crash acceptance remain unfinished. TestYAMLFileReplacementThroughWorkers now covers the file-watcher opt-in with
+external-edit reconciliation, process-crash acceptance and broader HTTP response ambiguity remain unfinished. TestYAMLFileReplacementThroughWorkers now covers the file-watcher opt-in with
 real workers and a fenced transactional sink. An invalid edit leaves status,
 deployment generation and source lifetime unchanged. A subsequent atomic CEL
 edit creates a savepoint, restores source offset 1, joins the old source and
@@ -192,3 +190,16 @@ race/HTTP tests prove a stale writer receives a conflict and cannot alter memory
 or persisted metadata; watcher tests check the baseline advances across edits
 and reverts. This addresses concurrent interval overwrites, not full graph
 revision conflicts or ABA detection; migration concurrency remains open.
+
+## Lost transactional commit replies during reload
+
+`TestSameJobReplacementLostCommitResponse` injects a successful external commit
+whose first response is an error. It covers the reload savepoint in success,
+rollback and no-restart cases, plus the final checkpoint after successful
+replacement or recovery to the old graph. The test verifies the injection was
+consumed and the external ledger contains each expected record exactly once;
+the no-restart case retains only the first committed record. Source offsets,
+job identity and writer generation retain the existing runtime assertions.
+The original six cases and these five cases pass three times under `-race`.
+This exercises a retryable commit reply loss, not coordinator/worker process
+crashes or a lost HTTP response to savepoint/replacement requests.

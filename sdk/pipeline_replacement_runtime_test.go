@@ -18,14 +18,29 @@ func TestSameJobReplacementRestoresSourceAndNewCode(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			for _, scenario := range []string{"success", "rollback", "no-restart"} {
 				t.Run(scenario, func(t *testing.T) {
-					testSameJobReplacement(t, scenario != "success", scenario != "no-restart", transactional)
+					testSameJobReplacement(t, scenario != "success", scenario != "no-restart", transactional, "")
 				})
 			}
 		})
 	}
 }
 
-func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool) {
+func TestSameJobReplacementLostCommitResponse(t *testing.T) {
+	for _, boundary := range []string{"savepoint", "replacement-final"} {
+		t.Run(boundary, func(t *testing.T) {
+			for _, scenario := range []string{"success", "rollback", "no-restart"} {
+				if boundary == "replacement-final" && scenario == "no-restart" {
+					continue // A failed job never reaches the replacement's final commit.
+				}
+				t.Run(scenario, func(t *testing.T) {
+					testSameJobReplacement(t, scenario != "success", scenario != "no-restart", true, boundary)
+				})
+			}
+		})
+	}
+}
+
+func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, responseLoss string) {
 	release := make(chan struct{})
 	restored := make(chan uint64, 4)
 	var closed atomic.Int32
@@ -42,7 +57,14 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool) {
 		})
 	}
 	output := &collectSink{}
-	ledger := &pauseTransactionLedger{prepared: map[uint64][]string{}, committed: map[uint64]bool{}}
+	ledger := &pauseTransactionLedger{prepared: map[uint64][]string{}, committed: map[uint64]bool{}, loseResponse: responseLoss == "savepoint"}
+	t.Cleanup(func() {
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		if ledger.loseResponse {
+			t.Error("lost commit response was never injected")
+		}
+	})
 	registry.RegisterSink("output", func(context.Context, []byte, WorkerTaskContext) (Sink, error) {
 		if transactional {
 			return &pauseTransactionSink{ledger: ledger, observed: output}, nil
@@ -126,6 +148,14 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool) {
 	})
 	if (!fail && closed.Load() != 1) || closed.Load() < 1 {
 		t.Fatalf("old source not closed before replacement: %d", closed.Load())
+	}
+	if responseLoss == "replacement-final" {
+		// No periodic checkpoints are configured. Arm only after replacement
+		// or rollback has restored the first savepoint, before EOF can trigger
+		// the final checkpoint with the second record.
+		ledger.mu.Lock()
+		ledger.loseResponse = true
+		ledger.mu.Unlock()
 	}
 	close(release)
 	select {
