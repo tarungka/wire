@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
@@ -97,6 +98,27 @@ func (s *HTTPServer) handleGetJob(w http.ResponseWriter, r *http.Request) {
 
 func (s *HTTPServer) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("job_id")
+	if values, ok := r.URL.Query()["savepoint"]; ok {
+		if len(values) != 1 {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "savepoint must be a single boolean")
+			return
+		}
+		requested, err := strconv.ParseBool(values[0])
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "savepoint must be a boolean")
+			return
+		}
+		if requested {
+			job, sp, err := s.coord.CancelJobWithSavepoint(jobID)
+			if err != nil {
+				writeJobError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, pauseJobResponse{Job: jobDetailFromMeta(job), Savepoint: savepointResponseFromMeta(sp)})
+			return
+		}
+	}
+
 	job, err := s.coord.CancelJob(jobID)
 	if err != nil {
 		writeJobError(w, err)

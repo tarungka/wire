@@ -52,7 +52,29 @@ Cancellation resumes after a coordinator restart. Repeating the command while
 jobs can be canceled; terminal jobs reject the transition.
 
 Cancellation without a savepoint does not create a new restore point. The
-savepoint-before-cancel workflow remains a WIP-15 implementation item.
+savepoint-before-cancel form is:
+
+```bash
+wire jobs cancel JOB_ID --savepoint
+```
+
+This requires a `RUNNING` job and returns HTTP 202 with `job` and `savepoint`
+objects. Keep the returned savepoint ID. The job continues processing while the
+snapshot queues or runs, then enters `CANCELING` only after the savepoint is
+complete. `CANCELED` still waits for task teardown. Inspect the saved boundary
+with `wire savepoints get JOB_ID SAVEPOINT_ID`; `job.savepoint_path` identifies
+its checkpoint. The shared stop workflow exposes the pending ID in
+`pause_savepoint_id` and sets `cancel_after_savepoint: true`.
+
+A failed snapshot leaves the job running and records the failure in
+`pause_failure`; it does not silently fall back to cancellation without state.
+Repeating the pending request returns the same ID. A competing pause request is
+rejected. Plain `jobs cancel` can override the pending request when immediate
+cancellation is desired. Cancel-with-savepoint is a snapshot followed by stopping,
+not a source drain: records after the boundary may be replayed on restore.
+The completed checkpoint records a durable transaction decision, not an
+acknowledgement from an external sink; restoration reconciles uncertain commits
+using the transactional sink's idempotent recovery contract.
 
 ### Savepoints queued behind a checkpoint
 

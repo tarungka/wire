@@ -115,6 +115,7 @@ func (s CheckpointStatus) String() string {
 
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
+	CancelAfterSavepoint          bool                  `codec:"cancel_after_savepoint,omitempty"`
 	PauseSavepointID              string                `codec:"pause_savepoint_id,omitempty"`
 	PauseCheckpoint               uint64                `codec:"pause_checkpoint,omitempty"`
 	PauseFailure                  string                `codec:"pause_failure,omitempty"`

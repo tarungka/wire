@@ -66,6 +66,9 @@ func (c *Coordinator) transitionJobLocked(job *JobMeta, to JobStatus) error {
 	// Derive a candidate without publishing it. A failed fsync must leave
 	// status, budgets, timestamps and the name reservation retryable.
 	next := *job
+	if to == JobCanceling {
+		next.CancelAfterSavepoint = false
+	}
 	if to == JobFailing {
 		c.resetStableRecoveryBudget(&next, now)
 	}

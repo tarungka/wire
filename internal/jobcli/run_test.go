@@ -20,6 +20,7 @@ func TestCommands(t *testing.T) {
 	}{
 		{[]string{"jobs", "list", "--status", "RUNNING"}, "GET", "/api/v1/jobs?status=RUNNING"},
 		{[]string{"jobs", "get", "job-1"}, "GET", "/api/v1/jobs/job-1"},
+		{[]string{"jobs", "cancel", "job-1", "--savepoint"}, "POST", "/api/v1/jobs/job-1/cancel?savepoint=true"},
 		{[]string{"jobs", "cancel", "job-1"}, "POST", "/api/v1/jobs/job-1/cancel"},
 		{[]string{"savepoints", "get", "job-1", "sp-1"}, "GET", "/api/v1/jobs/job-1/savepoints/sp-1"},
 		{[]string{"savepoints", "delete", "job-1", "sp-1"}, "DELETE", "/api/v1/jobs/job-1/savepoints/sp-1"},
@@ -95,5 +96,13 @@ func TestSubmissionAndCanceledRequest(t *testing.T) {
 	}
 	if err := Run(context.Background(), args, io.Discard, io.Discard); err == nil {
 		t.Fatal("accepted invalid JSON")
+	}
+}
+
+func TestSavepointFlagRejectedOutsideCancel(t *testing.T) {
+	for _, args := range [][]string{{"jobs", "get", "job", "--savepoint"}, {"jobs", "pause", "job", "--savepoint=false"}, {"savepoints", "trigger", "job", "--savepoint"}} {
+		if err := Run(context.Background(), args, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "only valid for jobs cancel") {
+			t.Fatalf("args=%v error=%v", args, err)
+		}
 	}
 }

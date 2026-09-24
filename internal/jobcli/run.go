@@ -34,6 +34,7 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	timeout := flags.Duration("timeout", 30*time.Second, "request timeout")
 	file := flags.String("file", "", "submission JSON file")
 	status := flags.String("status", "", "job-list status filter")
+	savepoint := flags.Bool("savepoint", false, "take a completed savepoint before canceling the job")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			return nil
@@ -100,6 +101,9 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if *file != "" && (words[0] != "jobs" || words[1] != "submit") {
 		return fmt.Errorf("--file is only valid for jobs submit")
 	}
+	if flags.Changed("savepoint") && (words[0] != "jobs" || words[1] != "cancel") {
+		return fmt.Errorf("--savepoint is only valid for jobs cancel")
+	}
 	var body []byte
 	if words[0] == "jobs" && words[1] == "submit" {
 		if *file == "" {
@@ -124,6 +128,9 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 			return fmt.Errorf("--status is only valid for jobs list")
 		}
 		target += "?" + url.Values{"status": {*status}}.Encode()
+	}
+	if *savepoint {
+		target += "?savepoint=true"
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
 	if err != nil {

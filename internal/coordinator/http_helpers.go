@@ -18,16 +18,17 @@ type errorResponse struct {
 
 // jobResponse is the API representation of a job.
 type jobResponse struct {
-	PauseSavepointID  string `json:"pause_savepoint_id,omitempty"`
-	PauseFailure      string `json:"pause_failure,omitempty"`
-	CheckpointFailure string `json:"checkpoint_failure,omitempty"`
-	RescaleFailure    string `json:"rescale_failure,omitempty"`
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	Status            string `json:"status"`
-	Parallelism       int    `json:"parallelism"`
-	CreatedAt         string `json:"created_at"`
-	UpdatedAt         string `json:"updated_at"`
+	CancelAfterSavepoint bool   `json:"cancel_after_savepoint,omitempty"`
+	PauseSavepointID     string `json:"pause_savepoint_id,omitempty"`
+	PauseFailure         string `json:"pause_failure,omitempty"`
+	CheckpointFailure    string `json:"checkpoint_failure,omitempty"`
+	RescaleFailure       string `json:"rescale_failure,omitempty"`
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	Status               string `json:"status"`
+	Parallelism          int    `json:"parallelism"`
+	CreatedAt            string `json:"created_at"`
+	UpdatedAt            string `json:"updated_at"`
 }
 
 // jobDetailResponse includes full job details.
@@ -163,7 +164,8 @@ func formatTime(t time.Time) string {
 
 func jobResponseFromMeta(j *JobMeta) jobResponse {
 	return jobResponse{
-		PauseSavepointID: j.PauseSavepointID, PauseFailure: j.PauseFailure,
+		CancelAfterSavepoint: j.CancelAfterSavepoint,
+		PauseSavepointID:     j.PauseSavepointID, PauseFailure: j.PauseFailure,
 		CheckpointFailure: j.CheckpointFailure,
 		RescaleFailure:    j.RescaleFailure,
 		ID:                j.ID,

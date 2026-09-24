@@ -292,3 +292,62 @@ func testCLIPauseResume(t *testing.T, transactional bool) {
 		t.Fatalf("manual resume charged recovery: %+v %v", finished, err)
 	}
 }
+
+func TestCLICancelWithSavepointPersistsBeforeStopping(t *testing.T) {
+	release := make(chan struct{})
+	var closed atomic.Int32
+	registry := NewWorkerRegistry()
+	registry.RegisterSource("replay", func(context.Context, []byte, WorkerTaskContext) (Source, error) {
+		return &pauseReplaySource{release: release, restored: make(chan uint64, 1), closed: &closed}, nil
+	})
+	sink := &collectSink{}
+	registry.RegisterSink("collect", func(context.Context, []byte, WorkerTaskContext) (Sink, error) { return sink, nil })
+	ctx, coord, url := lifecycleCluster(t, registry)
+	env := New().SetMode(Cluster).SetCoordinator(url)
+	env.AddSourceNamed("source", "replay", nil).AddSinkNamed("sink", "collect", nil)
+	done := make(chan error, 1)
+	go func() { _, err := env.ExecuteWithName(ctx, "savepoint-cancel"); done <- err }()
+	var jobID string
+	lifecycleWait(t, ctx, func() bool {
+		jobs := coord.ListJobs(nil)
+		if len(jobs) != 1 || jobs[0].Status != coordinator.JobRunning || len(sink.Events()) != 1 {
+			return false
+		}
+		jobID = jobs[0].ID
+		return true
+	})
+	var response bytes.Buffer
+	if err := jobcli.Run(ctx, []string{"jobs", "cancel", jobID, "--savepoint", "--coordinator", url}, &response, &response); err != nil {
+		t.Fatal(err)
+	}
+	var accepted struct {
+		Savepoint struct {
+			ID string `json:"id"`
+		} `json:"savepoint"`
+	}
+	if err := json.Unmarshal(response.Bytes(), &accepted); err != nil || accepted.Savepoint.ID == "" {
+		t.Fatalf("missing accepted savepoint: %s %v", response.String(), err)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancellation reported normal completion")
+		}
+	case <-ctx.Done():
+		t.Fatal("savepoint cancellation did not finish")
+	}
+	job, err := coord.GetJob(jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp, err := coord.GetSavepoint(jobID, accepted.Savepoint.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != coordinator.JobCanceled || sp.Status != coordinator.SavepointCompleted || sp.CheckpointID == 0 || job.SavepointPath == "" || closed.Load() != 1 {
+		t.Fatalf("canceled without completed savepoint/teardown: job=%+v savepoint=%+v closed=%d", job, sp, closed.Load())
+	}
+	if job.RecoveryAttempts != 0 || job.RestartCount != 0 {
+		t.Fatalf("cancellation consumed recovery: %+v", job)
+	}
+}

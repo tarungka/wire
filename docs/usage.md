@@ -218,6 +218,16 @@ Response:
 curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/cancel | jq
 ```
 
+To create a savepoint before stopping a running job:
+
+```bash
+curl -s -X POST 'http://localhost:4001/api/v1/jobs/{job_id}/cancel?savepoint=true' | jq
+```
+
+This returns 202 with the accepted job and savepoint. Poll until the savepoint is
+completed and the job is `CANCELED`. Snapshot failure leaves the job running;
+see [cancellation details](job-cli.md#cancellation-completion).
+
 ### Pause a Job
 
 Pause returns HTTP 202 after persisting a savepoint request. Poll the job until

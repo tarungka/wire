@@ -375,10 +375,12 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 	var notify map[string]string
 	c.mu.Lock()
 	defer func() {
-		c.mu.Unlock()
+		// Queue the durable commit before pause/cancel reconciliation can enqueue
+		// teardown for the same attempt. enqueueCommandLocked never blocks.
 		for taskID, workerID := range notify {
-			c.EnqueueCommand(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeCommitCheckpoint, JobID: request.JobID, TaskID: taskID, Data: decision})
+			c.enqueueCommandLocked(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeCommitCheckpoint, JobID: request.JobID, TaskID: taskID, Data: decision})
 		}
+		c.mu.Unlock()
 	}()
 	if !c.readyLocked() {
 		return ErrNotLeader
@@ -478,6 +480,9 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 		next.LatestCheckpoint = checkpoint.ID
 		if checkpoint.SavepointID != "" && checkpoint.SavepointID == job.PauseSavepointID && job.Status == JobRunning {
 			next.Status = JobPausing
+			if job.CancelAfterSavepoint {
+				next.Status = JobCanceling
+			}
 			next.UpdatedAt = time.Now().UTC()
 			next.PauseCheckpoint = checkpoint.ID
 			next.SavepointPath = fmt.Sprintf("jobs/%s/checkpoints/%d", job.ID, checkpoint.ID)

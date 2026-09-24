@@ -10,6 +10,16 @@ import (
 // PauseJob atomically queues a savepoint and records pause intent. Processing
 // continues until that checkpoint completes; PAUSED is published after teardown.
 func (c *Coordinator) PauseJob(jobID string) (*JobMeta, *SavepointMeta, error) {
+	return c.requestSavepointStop(jobID, false)
+}
+
+// CancelJobWithSavepoint keeps the job running until a durable savepoint is
+// available, then uses the cancellation reconciler to stop its old tasks.
+func (c *Coordinator) CancelJobWithSavepoint(jobID string) (*JobMeta, *SavepointMeta, error) {
+	return c.requestSavepointStop(jobID, true)
+}
+
+func (c *Coordinator) requestSavepointStop(jobID string, cancelAfter bool) (*JobMeta, *SavepointMeta, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.readyLocked() {
@@ -28,6 +38,9 @@ func (c *Coordinator) PauseJob(jobID string) (*JobMeta, *SavepointMeta, error) {
 			return nil, nil, err
 		}
 		if sp.Status == SavepointInProgress {
+			if job.CancelAfterSavepoint != cancelAfter {
+				return nil, nil, fmt.Errorf("%w: another savepoint stop operation is pending", ErrInvalidTransition)
+			}
 			snapshot := *job
 			return &snapshot, sp, nil
 		}
@@ -35,6 +48,7 @@ func (c *Coordinator) PauseJob(jobID string) (*JobMeta, *SavepointMeta, error) {
 	sp := &SavepointMeta{ID: generateSavepointID(), JobID: jobID, Status: SavepointInProgress, Queued: true, TriggerTime: time.Now().UTC()}
 	next := *job
 	next.PauseSavepointID = sp.ID
+	next.CancelAfterSavepoint = cancelAfter
 	next.PauseFailure = ""
 	jobData, err := protocol.EncodeMsgPack(&next)
 	if err != nil {
@@ -99,6 +113,10 @@ func (c *Coordinator) advancePause(jobID string, now time.Time) error {
 		next := *job
 		next.PauseSavepointID = ""
 		next.PauseFailure = "pause savepoint failed; job was not paused"
+		if job.CancelAfterSavepoint {
+			next.PauseFailure = "cancel savepoint failed; job was not canceled"
+		}
+		next.CancelAfterSavepoint = false
 		if err := c.persistJobLocked(&next); err != nil {
 			return err
 		}

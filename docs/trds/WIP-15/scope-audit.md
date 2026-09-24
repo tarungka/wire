@@ -9,7 +9,7 @@ branch builds on WIP-14's per-job policies and local worker runtime.
 | Complete durable job/task state machine | `job_state_machine.go`, transition and task-status tests | Fix lifecycle gaps below; verify all transitions under storage failures and recovery |
 | Submission, listing, inspection and filtering | Existing JSON graph-envelope handlers and CLI | YAML submission (WIP-19 integration); full detailed task/checkpoint response; malformed body/error audit |
 | Binary submission | `handleSubmitBinary` returns 501 | Implement actual compiled-application submission and execution contract, including limits and isolation; do not call the existing stub complete |
-| Cancel, including during deployment | Durable scheduler reconciliation, old-attempt fencing, CLI teardown and recovery tests | Savepoint-before-cancel and final whole-workflow acceptance |
+| Cancel, including during deployment | Durable scheduler reconciliation, old-attempt fencing, CLI teardown and recovery tests | Final whole-workflow acceptance |
 | Pause and resume | Durable queued intent, atomic checkpoint/PAUSING decision, fenced teardown, RESUMING placement; live CLI restores offsets and keyed state | Final operational walkthrough and acceptance audit |
 | Completed savepoints and restore/upgrade | Existing checkpoint manifests, worker restore, rescale and savepoint metadata | Cross-job compatible restore, operator identity validation and documented upgrade walkthrough |
 | Savepoint lifetime | Explicit metadata deletion exists | Delete replica data safely; protect all live restore references; unfinished savepoint cleanup |
@@ -18,7 +18,7 @@ branch builds on WIP-14's per-job policies and local worker runtime.
 | Cluster status and node removal | Existing cluster routes | Removal must stop/fence execution and recover affected jobs safely; current removal only deletes worker metadata |
 | Health, readiness and metrics | Existing endpoints and metrics listener | Include actual addresses/status semantics in the final API reference and walkthrough |
 | Authenticated REST and protected secrets | WIP-17/WIP-19 dependencies | Verify all private routes and ensure resolved credentials never persist or appear in responses |
-| CLI and operational walkthrough | Existing JSON submission and management commands | YAML/binary/restore/cancel-with-savepoint support; run complete documented lifecycle against live workers |
+| CLI and operational walkthrough | Existing JSON submission and management commands | YAML/binary/restore support; run complete documented lifecycle against live workers |
 | Tests and final PR | Existing API and recovery suites | Full lifecycle, failure injection, all state transitions, end-to-end CLI and final race/build/vet/lint |
 
 Compatibility decisions must be explicit. Existing numeric persisted job states,
@@ -42,8 +42,8 @@ pass aborts active checkpoints durably, retries old-attempt cancellation command
 and publishes CANCELED only once tasks report terminal states or their execution
 authority expires. Recovery preserves CANCELING and waits for the old epoch fence.
 Created jobs with no assignments complete cancellation without waiting for tasks.
-Paused, failing and finishing jobs also accept cancellation; savepoint-before-cancel
-is still outstanding.
+Paused, failing and finishing jobs also accept ordinary cancellation. Running jobs
+can request a savepoint before cancellation using the workflow below.
 
 `TestCLICancelWaitsForWorkerTeardown` uses the CLI, HTTP server, coordinator, real
 workers and a source whose Close is deliberately held. It verifies CANCELING
@@ -82,3 +82,17 @@ The live CLI test restores source offset 1 and keyed count 1, then emits count 2
 Its transactional variant loses the first response after an external commit and
 verifies that resume produces each output once. These tests exercise real workers
 and replicas. Remaining WIP-15 requirements in the table still gate completion.
+
+## Savepoint before cancellation
+
+The REST `cancel?savepoint=true` and CLI `jobs cancel --savepoint` persist the
+snapshot and stop intent together. Completion atomically changes the job to
+CANCELING; snapshot failure leaves RUNNING and reports the failure. Commit commands
+are queued under the ownership lock before teardown commands can be enqueued.
+This orders commands but does not claim an external commit acknowledgement.
+
+Tests cover atomic request failure, duplicate/conflicting operations, recovery,
+HTTP query validation, snapshot failure, and a live CLI/worker/replica run that
+verifies a completed savepoint and source teardown before terminal cancellation.
+Cross-job restore and transactional reconciliation remain part of the broader
+restore/upgrade acceptance work above.
