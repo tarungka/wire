@@ -206,9 +206,9 @@ flags apply to either format. Both input and compiled request are limited to 4 M
 Malformed graphs and CEL expressions are rejected before the HTTP request.
 
 The stock CLI maps `http-api` source and sink types to `http-api.yaml.v1`.
-Target workers must explicitly call `RegisterPipelineTransforms()` and
-`httpworker.RegisterYAML(registry)` before starting; stock node-mode workers do
-not yet install these factories. Custom applications can use `ParsePipelineYAML` and
+Stock node-mode workers install YAML transforms and HTTP YAML factories in a
+private registry. Custom SDK workers must call `RegisterPipelineTransforms()`
+and `httpworker.RegisterYAML(registry)` before starting. Custom applications can use `ParsePipelineYAML` and
 `YAMLPipeline.ExportSubmission` with their own named bindings, then submit the
 exported JSON through the existing CLI. Worker factories
 validate connector configuration on deployment; compiling a named binding does

@@ -1,6 +1,10 @@
 package main
 
-import "github.com/tarungka/wire/sdk"
+import (
+	"github.com/tarungka/wire/internal/worker"
+	"github.com/tarungka/wire/sdk"
+	httpworker "github.com/tarungka/wire/sdk/connectors/httpapi/worker"
+)
 
 // CLI submissions target workers that explicitly register YAML transforms and
 // the public HTTP YAML factories. Parsing never starts local connector I/O.
@@ -13,4 +17,13 @@ func compileYAMLPipeline(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	return pipeline.ExportSubmission()
+}
+
+// Every worker receives a private registry. This does not mutate the legacy
+// global registry and keeps connector I/O deferred until task deployment.
+func pipelineWorkerRegistry() *worker.Registry {
+	registry := sdk.NewWorkerRegistry()
+	registry.RegisterPipelineTransforms()
+	httpworker.RegisterYAML(registry)
+	return registry.RuntimeRegistry()
 }

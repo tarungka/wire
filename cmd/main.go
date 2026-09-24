@@ -285,7 +285,7 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 	if err != nil {
 		return err
 	}
-	w := worker.New(worker.Config{
+	w := worker.NewWithRegistry(worker.Config{
 		PeerTLSConfig:        peerTLS,
 		MaxFrameSize:         wireCfg.MaxFrameSize,
 		EpochPath:            wireCfg.Worker.EpochPath,
@@ -301,7 +301,7 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 		CoordinatorAddr:      wireCfg.Worker.CoordinatorAddr,
 		ListenAddr:           wireCfg.Worker.ListenAddr,
 		TaskSlots:            wireCfg.Worker.TaskSlots,
-	}, log.Logger)
+	}, pipelineWorkerRegistry(), log.Logger)
 
 	g, gCtx := errgroup.WithContext(ctx)
 

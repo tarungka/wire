@@ -70,5 +70,8 @@ hot reload, CLI loading, state migration or live configuration updates.
 HTTP/security/mutation path. The stock binary maps public HTTP connector types
 to their JSON worker classes. The CLI regression decodes the submitted graph,
 checks the savepoint override and proves an invalid candidate sends no request.
-Stock worker factory installation, automatic watch/reload and migration are
-still outstanding; custom workers explicitly register these classes.
+Stock node-mode workers install these factories in a private registry. An
+integration test uses the actual runWorker entry point, submits YAML through
+the CLI, sends an HTTP source record and verifies CEL-transformed HTTP output.
+Automatic watch/reload and migration are still outstanding; custom SDK workers
+explicitly register these classes.
