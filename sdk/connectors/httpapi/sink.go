@@ -19,18 +19,18 @@ import (
 )
 
 type SinkConfig struct {
-	URL                 string            `codec:"url"`
-	Method              string            `codec:"method"`
-	Headers             map[string]string `codec:"headers"`
-	Auth                Auth              `codec:"auth"`
-	BatchSize           int               `codec:"batch_size"`
-	Timeout             time.Duration     `codec:"timeout"`
-	MaxAttempts         int               `codec:"max_attempts"`
-	InitialDelay        time.Duration     `codec:"initial_delay"`
-	MaxDelay            time.Duration     `codec:"max_delay"`
-	Backoff             string            `codec:"backoff"`
-	IdempotencyKeyField string            `codec:"idempotency_key_field"`
-	AllowInsecure       bool              `codec:"allow_insecure"`
+	URL                 string            `codec:"url" json:"url"`
+	Method              string            `codec:"method" json:"method"`
+	Headers             map[string]string `codec:"headers" json:"headers"`
+	Auth                Auth              `codec:"auth" json:"auth"`
+	BatchSize           int               `codec:"batch_size" json:"batch_size"`
+	Timeout             time.Duration     `codec:"timeout" json:"timeout"`
+	MaxAttempts         int               `codec:"max_attempts" json:"max_attempts"`
+	InitialDelay        time.Duration     `codec:"initial_delay" json:"initial_delay"`
+	MaxDelay            time.Duration     `codec:"max_delay" json:"max_delay"`
+	Backoff             string            `codec:"backoff" json:"backoff"`
+	IdempotencyKeyField string            `codec:"idempotency_key_field" json:"idempotency_key_field"`
+	AllowInsecure       bool              `codec:"allow_insecure" json:"allow_insecure"`
 }
 
 // DeliveryError reports a failed request without including response bodies or

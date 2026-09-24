@@ -58,6 +58,8 @@ closures, and checks parallel CEL/key-by/window/projection output. A separate
 case checks successful output plus malformed JSON delivered in a named DLQ
 envelope. Malformed, oversized and incompatible definitions are rejected.
 
-The HTTP connector's MessagePack factories still need a public YAML JSON
-adapter; this increment does not prove that integration, process isolation,
+A separate HTTP YAML adapter now registers strict JSON factories under
+`http-api.yaml.v1`, preserving the original MessagePack class. A coordinator/worker
+integration test submits YAML with CEL and delivers to an HTTP endpoint.
+This does not prove process isolation,
 hot reload, CLI loading, state migration or live configuration updates.

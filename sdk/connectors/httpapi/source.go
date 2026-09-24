@@ -18,15 +18,15 @@ import (
 )
 
 type SourceConfig struct {
-	Address       string `codec:"address"`
-	Path          string `codec:"path"`
-	BufferSize    int    `codec:"buffer_size"`
-	MaxBatch      int    `codec:"max_batch"`
-	MaxBodySize   int64  `codec:"max_body_size"`
-	Auth          Auth   `codec:"auth"`
-	AllowInsecure bool   `codec:"allow_insecure"`
-	CertFile      string `codec:"cert_file"`
-	KeyFile       string `codec:"key_file"`
+	Address       string `codec:"address" json:"address"`
+	Path          string `codec:"path" json:"path"`
+	BufferSize    int    `codec:"buffer_size" json:"buffer_size"`
+	MaxBatch      int    `codec:"max_batch" json:"max_batch"`
+	MaxBodySize   int64  `codec:"max_body_size" json:"max_body_size"`
+	Auth          Auth   `codec:"auth" json:"auth"`
+	AllowInsecure bool   `codec:"allow_insecure" json:"allow_insecure"`
+	CertFile      string `codec:"cert_file" json:"cert_file"`
+	KeyFile       string `codec:"key_file" json:"key_file"`
 }
 
 // Source acknowledges acceptance into memory, not a durable checkpoint. Its

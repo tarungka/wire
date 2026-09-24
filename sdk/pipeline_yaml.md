@@ -184,6 +184,15 @@ Connector config is JSON, including for a named `__dlq__` sink. Such sinks recei
 the normal DLQ envelope with original event, error and operator attribution.
 Named bindings are remote-only and cannot overlap local factories for a type.
 
-These JSON bindings do not directly match the HTTP connector's existing
-MessagePack factory format. Register an application JSON adapter for that
-connector until the public YAML connector adapter is available.
+For the public HTTP connector, call `httpworker.RegisterYAML(registry)` from
+`sdk/connectors/httpapi/worker` and bind type `http-api` to worker class
+`http-api.yaml.v1`. Its snake_case configuration matches `SourceConfig` and
+`SinkConfig`; sink `timeout`, `initial_delay` and `max_delay` use duration strings
+such as `30s`. Unknown fields are rejected. Registration does not open listeners
+or send requests. The original `http-api` MessagePack class remains unchanged.
+
+HTTP sources are unbounded and acknowledge in-memory acceptance, not durable
+checkpoint completion. Their sequence offsets do not make client replay
+automatic. HTTP sinks require receiver-side idempotency for replay-safe output.
+For multiple source instances, assign distinct listen addresses through custom
+worker factories; the shared YAML address is not partition-expanded.

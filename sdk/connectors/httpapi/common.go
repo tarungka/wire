@@ -11,10 +11,10 @@ import (
 )
 
 type Auth struct {
-	Type     string `codec:"type"`
-	Token    string `codec:"token"`
-	Username string `codec:"username"`
-	Password string `codec:"password"`
+	Type     string `codec:"type" json:"type"`
+	Token    string `codec:"token" json:"token"`
+	Username string `codec:"username" json:"username"`
+	Password string `codec:"password" json:"password"`
 }
 
 func (a Auth) validate() error {
