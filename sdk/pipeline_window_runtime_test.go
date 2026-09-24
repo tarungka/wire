@@ -2,7 +2,7 @@ package sdk
 
 import (
 	"context"
-	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
@@ -42,8 +42,12 @@ spec:
       type: %s
       input: keyed
       config: {%s, aggregation: count}
+    - name: projected
+      type: select
+      input: window
+      config: {fields: [key, count, window_start, window_end, is_update]}
   sinks:
-    - {name: output, type: collected, input: window}
+    - {name: output, type: collected, input: projected}
 `, backend, checkpoint, window.kind, window.config)
 					var mu sync.Mutex
 					var sinks []*collectSink
@@ -77,8 +81,22 @@ spec:
 						t.Fatalf("windows=%d want %d", len(results), window.outputs)
 					}
 					for _, event := range results {
-						if string(event.Key) != "shared" || len(event.Value) != 8 || binary.BigEndian.Uint64(event.Value) != 3 {
-							t.Fatalf("partitioned window did not combine all records: key=%q value=%x", event.Key, event.Value)
+						var value struct {
+							Key    string `json:"key"`
+							Count  uint64 `json:"count"`
+							Start  int64  `json:"window_start"`
+							End    int64  `json:"window_end"`
+							Update bool   `json:"is_update"`
+						}
+						if err := json.Unmarshal(event.Value, &value); err != nil {
+							t.Fatal(err)
+						}
+						metadata, ok, err := DecodeWindowResult(event)
+						if err != nil || !ok {
+							t.Fatalf("window metadata missing: %v", err)
+						}
+						if string(event.Key) != "shared" || value.Key != "shared" || value.Count != 3 || value.Start != metadata.WindowStart || value.End != metadata.WindowEnd || value.Update != metadata.IsUpdate {
+							t.Fatalf("incorrect window result: %s metadata=%+v", event.Value, metadata)
 						}
 					}
 				})

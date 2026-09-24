@@ -36,6 +36,9 @@ func embeddedWindow(node *StreamNode) (engine.Operator, error) {
 		return nil, err
 	}
 	op.LateOutputTag = node.LateOutputTag
+	if aggregator, ok := node.Aggregator.(pipelineWindowAggregator); ok {
+		op.ResultEvents = aggregator.encode
+	}
 	if node.ReduceFn != nil {
 		op.ResultEvents = func(_ context.Context, r engine.WindowResult) ([]Event, error) {
 			var event Event

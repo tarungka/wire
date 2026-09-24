@@ -144,3 +144,26 @@ selection. An omitted `state_backend` preserves the environment default;
 embedded Pebble uses temporary storage unless a directory is configured.
 The connector and deployment requirements above still apply. Full CLI/pipeline/system precedence and distributed YAML execution are
 tracked in the [WIP-19 completion audit](../docs/trds/WIP-19/completion.md).
+
+## Window values and projection
+
+YAML windows emit JSON objects so downstream `select`, `filter`, `map` and
+`rename` can consume their results. Every result contains `key`, `window_start`,
+`window_end`, `is_update`, and a numeric field named after its aggregation:
+`count`, `sum`, `min` or `max`. Window bounds are event-time milliseconds; the
+event retains its key, window-end timestamp and SDK window metadata headers.
+For example, the proposal's `fields: [key, count, window_start, window_end]`
+projection can follow a count window directly. Late-output records retain their
+original payload and do not become result objects.
+
+Count accepts any payload and produces an unsigned integer. Sum/min/max accept
+a JSON number as the entire input value; use an upstream map such as
+`expression: "value.amount"` to select an object field. These numeric aggregates
+use float64 arithmetic, including its rounding limits for large integers.
+Invalid JSON, nonnumeric values and non-finite aggregate results return errors
+without publishing partial window state. Count overflow is also rejected.
+
+Compatibility: earlier YAML windows exposed the Go SDK's binary aggregate
+bytes. YAML consumers must now read the named JSON aggregate field. Numeric
+YAML input is JSON rather than binary float bytes. Ordinary Go SDK window
+values and binary checkpoint accumulator formats are unchanged.

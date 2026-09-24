@@ -7,7 +7,7 @@ SDK, connector, security and state integrations from WIP-13 through WIP-18.
 | Requirement | Current evidence and remaining work |
 | --- | --- |
 | Strict YAML schema | Existing single-document, known-field parser and graph validation; schema field-coverage tests. Full original field and invalid-input audit remains. |
-| Transform types and expressions | All listed transforms compile through existing CEL and SDK graph code. Distributed serialization, worker registration and execution remain required. |
+| Transform types and expressions | All listed transforms compile through existing CEL and SDK graph code. YAML windows now format JSON aggregate results for downstream projection, and numeric aggregations validate JSON input through checked callbacks. The documented window→select shape is covered across all three window kinds, both backends and embedded/checkpoint-configured execution; numeric projection and atomic error tests cover sum/min/max. Distributed serialization, worker registration and execution remain required. |
 | Connector availability | Caller-provided source/sink factories are validated before construction. WIP-16 connector registry and worker factory integration remain required. |
 | Graph conversion | Existing SDK graph construction, forward references and cycle rejection. Validate shuffle semantics against current SDK and parallel execution. |
 | Pipeline state backend | `spec.state_backend` accepts WIP-18 nested HashMap/Pebble configuration. Validation runs before connector construction; omitted HashMap limit is 256 MiB and explicit zero is unlimited. SDK override has precedence. Full CLI/pipeline/system precedence remains open. |
