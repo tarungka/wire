@@ -153,3 +153,15 @@ is acceptance only. Strict request tests reject malformed input/name changes
 without changing the running job, and HTTPS role acceptance includes the route.
 Automatic savepoint selection/orchestration and changed-topology migration remain
 unfinished.
+
+## Same-layout reload orchestration
+
+The SDK Reload operation now sequences preflight, savepoint creation/polling,
+replacement and deployment outcome polling. The six real-worker ordinary and
+transactional success/rollback/no-restart cases run through this entire HTTP
+sequence. WatchLiveUpdates can opt in via AllowReplacement and advances its
+private baseline only on success; errors preserve the savepoint ID through
+OnReload. Savepoints remain retained. Changed-topology migration, concurrent
+external-edit reconciliation, CLI watch and replacement-specific lost-response
+or process-crash acceptance remain unfinished. The file-watcher opt-in itself
+still needs a full YAML file-to-worker migration acceptance test.

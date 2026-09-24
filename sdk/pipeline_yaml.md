@@ -283,3 +283,19 @@ returned job identity; reconcile ambiguous responses before another mutation.
 Rollback restores the prior graph/policies, but restarting it still requires
 remaining recovery budget. This API does not itself watch files or support
 changed-topology migration.
+
+`candidate.Reload(ctx, jobID)` orchestrates same-layout preflight, creation and
+completion of a savepoint, replacement acceptance, and status polling. It returns
+the savepoint ID even if a later step fails. `ErrPipelineReplacementRolledBack`
+means the previous configuration has been restored; its recovery may still be
+in progress or may exhaust the restart budget. A successful return means the
+replacement reached RUNNING or FINISHED. Bound this operation with a context.
+
+Set `PipelineLiveWatchConfig.AllowReplacement` to enable this path for stable
+non-interval file edits. `OnReload` receives its result/error, including the
+retained savepoint ID. The watcher advances its baseline only on success and
+stops on rollback or uncertain requests. Savepoints are retained for explicit
+cleanup. Exclusive configuration ownership is still required; a periodic
+checkpoint that supersedes the savepoint can cause safe rejection and must be
+reconciled before another reload. Changed topology remains unsupported by this
+same-layout orchestration.

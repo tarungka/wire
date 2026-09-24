@@ -15,18 +15,23 @@ var ErrPipelineMigrationRequired = errors.New("sdk: pipeline edit requires migra
 type PipelineLiveWatchConfig struct {
 	PipelineWatchConfig
 	OnApplied func(PipelineUpdatePlan)
+	// AllowReplacement enables same-layout savepoint reload. Topology changes
+	// remain rejected by preflight without stopping the job.
+	AllowReplacement bool
+	OnReload         func(PipelineReloadResult, error)
 }
 
-// WatchLiveUpdates watches a named-worker definition for interval-only edits.
+// WatchLiveUpdates watches interval edits and optional same-layout replacements.
 // The receiver must describe the currently running job and carry its coordinator
 // URL/security. Callers must own configuration updates for this job exclusively;
 // this method does not reconcile independent external edits. Receiver and
 // bindings must not be mutated while watching.
 //
 // Successful interval updates advance the watcher's private baseline. Invalid
-// YAML leaves the job unchanged. A migration-required edit or uncertain HTTP
-// update stops the watcher; it never pauses, cancels or redeploys the job.
-// Full savepoint migration and live parallelism are separate unfinished work.
+// YAML leaves the job unchanged. By default migration-required edits stop the watcher. AllowReplacement enables
+// same-layout savepoint replacement; errors and rollback stop the watcher without
+// advancing its baseline. Changed-topology migration and live parallelism remain
+// unfinished.
 func (p *YAMLPipeline) WatchLiveUpdates(ctx context.Context, path, jobID string, bindings PipelineConnectors, config PipelineLiveWatchConfig) error {
 	if p == nil || p.env == nil || p.env.coordinatorURL == "" {
 		return fmt.Errorf("%w: live watcher requires a remote pipeline", ErrInvalidConfig)
@@ -44,7 +49,17 @@ func (p *YAMLPipeline) WatchLiveUpdates(ctx context.Context, path, jobID string,
 				return err
 			}
 		default:
-			return ErrPipelineMigrationRequired
+			if !config.AllowReplacement {
+				return ErrPipelineMigrationRequired
+			}
+			candidate.SetCoordinator(p.env.coordinatorURL).SetCoordinatorSecurity(p.env.coordinatorSecurity)
+			result, err := candidate.Reload(ctx, jobID)
+			if config.OnReload != nil {
+				config.OnReload(result, err)
+			}
+			if err != nil {
+				return err
+			}
 		}
 		current = candidate
 		if config.OnApplied != nil {

@@ -66,17 +66,6 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool) {
 		jobID = jobs[0].ID
 		return true
 	})
-	sp, err := coord.TriggerSavepoint(jobID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lifecycleWait(t, ctx, func() bool {
-		saved, err := coord.GetSavepoint(jobID, sp.ID)
-		return err == nil && saved.Status == coordinator.SavepointCompleted
-	})
-	if transactional {
-		lifecycleWait(t, ctx, func() bool { ledger.mu.Lock(); defer ledger.mu.Unlock(); return len(ledger.visible) == 1 })
-	}
 	old, err := coord.GetJob(jobID)
 	if err != nil {
 		t.Fatal(err)
@@ -87,8 +76,12 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool) {
 	}
 	candidateEnv.AddSourceNamed("source", "replay", nil).MapNamed("map", "v2", nil).AddSinkNamed("sink", "output", nil)
 	candidate := &YAMLPipeline{Name: old.Name, env: candidateEnv}
-	if err := candidate.ReplaceFromSavepoint(ctx, jobID, sp.ID); err != nil {
-		t.Fatal(err)
+	result, reloadErr := candidate.Reload(ctx, jobID)
+	if (!fail && reloadErr != nil) || (fail && !errors.Is(reloadErr, ErrPipelineReplacementRolledBack)) {
+		t.Fatalf("reload=%+v err=%v", result, reloadErr)
+	}
+	if result.JobID != jobID || result.SavepointID == "" || result.RolledBack != fail {
+		t.Fatalf("reload result=%+v", result)
 	}
 
 	if !recovery {
