@@ -113,3 +113,13 @@ A live CLI/HTTP removal test recovers onto the remaining real worker, asserts so
 teardown before replacement, and verifies exactly one recovery attempt. It uses
 no checkpoint, so initial-position replay is expected; archive migration is not
 claimed by node removal.
+
+## Cross-job restore work in progress
+
+The [upgrade implementation contract](savepoint-upgrade-contract.md) records the
+archive identity, transaction lineage and reference-lifetime invariants still to
+implement. The direct physical-layout planner maps target tasks to original
+archive task IDs and rejects incompatible operator order/types, ownership,
+channels and replica inventories. Its tests are component evidence only: submission,
+fetch authorization, transaction succession and end-to-end upgrade are not yet
+implemented or claimed complete.
