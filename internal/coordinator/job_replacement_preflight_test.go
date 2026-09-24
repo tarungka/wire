@@ -1,7 +1,14 @@
 package coordinator
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/rpc"
 )
@@ -36,6 +43,33 @@ func TestReplacementPreflightRejectsLayoutBeforeStopping(t *testing.T) {
 			after, _ := store.Get(JobAssignmentsKey(job.ID))
 			if string(after) != string(assignments) || len(c.DrainCommands("worker")) != 0 {
 				t.Fatal("preflight changed assignment or sent commands")
+			}
+		})
+	}
+}
+
+func TestReplacementPreflightHTTP(t *testing.T) {
+	c, _ := checkpointPolicyCoordinator(t)
+	c.jobs["job"].Config = encode(t, linearGraph())
+	c.jobs["job"].Parallelism = 2
+	server := NewHTTPServer(c, "", zerolog.Nop())
+	for _, tc := range []struct {
+		name        string
+		parallelism int
+		expected    int
+	}{{"same", 2, 204}, {"changed", 3, 400}} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(map[string]any{"name": "candidate", "parallelism": tc.parallelism, "graph_bytes": base64.StdEncoding.EncodeToString(encode(t, linearGraph()))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			server.server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/jobs/job/replacement/validate", bytes.NewReader(data)))
+			if response.Code != tc.expected {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if c.jobs["job"].Status != JobRunning || c.jobs["job"].PauseSavepointID != "" {
+				t.Fatal("validation stopped job")
 			}
 		})
 	}

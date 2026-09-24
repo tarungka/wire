@@ -59,3 +59,35 @@ func (p *YAMLPipeline) UpdateCheckpointInterval(ctx context.Context, jobID strin
 	}
 	return nil
 }
+
+// ValidateReplacement checks this candidate's physical layout against a running
+// remote job without stopping it. Success does not certify archive availability
+// or application state compatibility; actual restore repeats its own checks.
+func (p *YAMLPipeline) ValidateReplacement(ctx context.Context, jobID string) error {
+	if jobID == "" || jobID == "." || jobID == ".." || strings.ContainsAny(jobID, "/\\") {
+		return fmt.Errorf("%w: invalid job ID", ErrInvalidConfig)
+	}
+	data, err := p.ExportSubmission()
+	if err != nil {
+		return err
+	}
+	client, err := apiclient.New(p.env.coordinatorURL, apiclient.Config(p.env.coordinatorSecurity), 30*time.Second)
+	if err != nil {
+		return err
+	}
+	defer client.CloseIdleConnections()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.env.coordinatorURL, "/")+"/api/v1/jobs/"+url.PathEscape(jobID)+"/replacement/validate", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("sdk: replacement layout preflight: HTTP %d", response.StatusCode)
+	}
+	return nil
+}

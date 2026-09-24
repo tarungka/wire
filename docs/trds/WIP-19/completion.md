@@ -103,5 +103,7 @@ ownership, chain identity, backend kind or channel layout without stopping the
 running job or sending worker commands. Code/config changes can pass structural
 validation; this does not prove serializer compatibility or archive health.
 Actual restore still requires a completed durable savepoint and repeats checks.
-The preflight is not yet exposed to the reload controller, and topology-changing
-migration is not implemented by this unchanged-layout restore check.
+Preflight is exposed as POST /api/v1/jobs/{id}/replacement/validate and the SDK
+ValidateReplacement method, with HTTPS role acceptance coverage. It has not yet
+been connected to automatic reload, and topology-changing migration is not
+implemented by this unchanged-layout restore check.

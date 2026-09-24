@@ -254,3 +254,12 @@ than matching a few YAML fields. A simultaneous expression/connector/backend
 edit cannot be sent through the interval-only path. Planning has no runtime
 side effects. Migration-required is a decision to perform further validation,
 not a guarantee that the existing savepoint restore path supports that change.
+
+Before stopping a predecessor, a controller can call
+`candidate.SetCoordinator(url).ValidateReplacement(ctx, jobID)`. This submits the
+candidate graph to `POST /api/v1/jobs/{id}/replacement/validate` and checks the
+current physical layout without changing the job. Operator authorization is
+required. A successful response is advisory: it does not reserve the current
+job, prove archive health or certify application state serializers. Restore
+must still validate the actual savepoint. Changed topology/parallelism requires
+a migration implementation beyond this existing-layout check.

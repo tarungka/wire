@@ -52,3 +52,33 @@ func TestPipelineLiveIntervalClient(t *testing.T) {
 		})
 	}
 }
+
+func TestPipelineReplacementPreflightClient(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/jobs/job/replacement/validate" {
+			t.Errorf("request=%s %s", r.Method, r.URL)
+		}
+		var request submitJobRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if request.Name != "test-pipeline" || request.GraphBytes == "" {
+			t.Errorf("missing candidate graph: %+v", request)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	definition := yamlPipelineHeader + "  sinks:\n    - {name: output, type: test-sink, input: input}\n"
+	pipeline, err := ParsePipelineYAML([]byte(definition), PipelineConnectors{NamedSources: map[string]string{"test-source": "source"}, NamedSinks: map[string]string{"test-sink": "sink"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pipeline.SetCoordinator(server.URL).ValidateReplacement(t.Context(), "job"); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("requests=%d", calls.Load())
+	}
+}
