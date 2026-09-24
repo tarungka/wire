@@ -41,7 +41,7 @@ func TestTerminalTaskRetryCannotResurrectAttempt(t *testing.T) {
 
 func TestRPCIdentityMatchesVerifiedCertificate(t *testing.T) {
 	ctx := context.WithValue(context.Background(), workerCertificateKey{}, "worker")
-	for _, method := range []rpc.MethodID{rpc.MethodRegisterWorker, rpc.MethodHeartbeat, rpc.MethodUpdateTaskStatus, rpc.MethodAcknowledgeCheckpoint, rpc.MethodWatchCommands, rpc.MethodAuthorizeCheckpointReplica, rpc.MethodAuthorizeCheckpointFetch} {
+	for _, method := range []rpc.MethodID{rpc.MethodRegisterWorker, rpc.MethodHeartbeat, rpc.MethodUpdateTaskStatus, rpc.MethodAcknowledgeCheckpoint, rpc.MethodWatchCommands, rpc.MethodAuthorizeCheckpointReplica, rpc.MethodAuthorizeCheckpointFetch, rpc.MethodAcknowledgeCheckpointCleanup} {
 		for _, name := range []string{"worker", "other", ""} {
 			payload := encode(t, struct {
 				WorkerID        string `codec:"wid"`

@@ -10,6 +10,8 @@ import (
 // SavepointCleanup retains exact replica identities until deletion receipts have
 // been durably recorded. It must survive loss of the public savepoint entry.
 type SavepointCleanup struct {
+	Completed    map[string]bool   `codec:"completed,omitempty"`
+	CompletedAt  time.Time         `codec:"completed_at,omitempty"`
 	JobID        string            `codec:"job_id"`
 	SavepointID  string            `codec:"savepoint_id"`
 	CheckpointID uint64            `codec:"checkpoint_id"`

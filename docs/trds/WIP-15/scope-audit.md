@@ -200,3 +200,14 @@ from Get/List and cannot be reactivated as queued requests. Tests cover failed
 publication, deletion retries and retention of the replica identity/epoch. Replica
 delivery/receipts and shared-artifact collection remain pending, so physical space
 reclamation is not yet claimed by the HTTP endpoint.
+
+## Durable cleanup receipts
+
+The coordinator exposes a certificate-guarded cleanup acknowledgement RPC with
+the configured checkpoint acknowledgement timeout. It accepts only the exact
+worker address, current coordinator epoch and persisted job/savepoint/task/archive
+identity. Per-replica completion and the all-replicas completion time are durable;
+a failed write remains retryable and duplicate receipts are idempotent. Tests
+cover mismatched identities, removed/lost workers, write failure, partial and final
+receipts. Command dispatch and worker receipt generation are still required; this
+RPC alone does not initiate deletion or establish end-to-end cleanup acceptance.

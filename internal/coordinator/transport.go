@@ -73,6 +73,7 @@ func coordinatorRPCServer(coord *Coordinator) *rpc.Server {
 	srv.Register(rpc.MethodAcknowledgeCheckpoint, guardWorkerRPC(rpc.MethodAcknowledgeCheckpoint, coord.HandleAcknowledgeCheckpoint))
 	srv.Register(rpc.MethodAuthorizeCheckpointReplica, guardWorkerRPC(rpc.MethodAuthorizeCheckpointReplica, coord.HandleAuthorizeCheckpointReplica))
 	srv.Register(rpc.MethodAuthorizeCheckpointFetch, guardWorkerRPC(rpc.MethodAuthorizeCheckpointFetch, coord.HandleAuthorizeCheckpointFetch))
+	srv.Register(rpc.MethodAcknowledgeCheckpointCleanup, guardWorkerRPC(rpc.MethodAcknowledgeCheckpointCleanup, coord.HandleAcknowledgeCheckpointCleanup))
 	srv.RegisterStream(rpc.MethodWatchCommands, func(ctx context.Context, id uint64, payload []byte, stream *yamux.Stream) error {
 		if err := checkWorkerIdentity(ctx, rpc.MethodWatchCommands, payload); err != nil {
 			return err

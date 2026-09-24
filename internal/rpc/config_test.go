@@ -48,6 +48,7 @@ func TestMethodTimeout(t *testing.T) {
 		{MethodUpdateTaskStatus, 5 * time.Second},
 		{MethodTriggerCheckpoint, 10 * time.Second},
 		{MethodAcknowledgeCheckpoint, 5 * time.Second},
+		{MethodAcknowledgeCheckpointCleanup, 5 * time.Second},
 		{MethodRequestTaskSlots, 5 * time.Second},
 		{MethodHeartbeat, 2 * time.Second},
 		{MethodID(0xFFFF), 30 * time.Second}, // unknown falls back to SubmitJob timeout
