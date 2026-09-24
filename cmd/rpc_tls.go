@@ -31,3 +31,18 @@ func workerRPCTLS(cfg config.TLSConfig) (*tls.Config, error) {
 	result.ServerName = cfg.VerifyServerName
 	return result, nil
 }
+
+func workerPeerTLS(cfg config.PeerTLSConfig) (*tls.Config, error) {
+	if cfg == (config.PeerTLSConfig{}) {
+		return nil, nil
+	}
+	if cfg.Cert == "" || cfg.Key == "" || cfg.CACert == "" {
+		return nil, fmt.Errorf("worker peer TLS requires certificate, key and explicit CA")
+	}
+	result, err := transport.LoadTLSConfig(cfg.Cert, cfg.Key, true, cfg.CACert)
+	if err != nil {
+		return nil, err
+	}
+	result.RootCAs = result.ClientCAs.Clone()
+	return result, nil
+}

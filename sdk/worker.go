@@ -25,6 +25,7 @@ type WorkerConfig struct {
 	TaskSlots                             int
 	HeartbeatInterval, HeartbeatTimeout   time.Duration
 	RPCTLSConfig                          *tls.Config
+	PeerTLSConfig                         *tls.Config
 	// CheckpointDirectory enables replica storage. At least two configured
 	// workers are needed to checkpoint a job. This directory is retained.
 	CheckpointDirectory                     string
@@ -57,6 +58,9 @@ func RunWorker(ctx context.Context, config WorkerConfig, registry *WorkerRegistr
 		config.ShutdownTimeout = 30 * time.Second
 	}
 	cfg := worker.Config{CoordinatorSeeds: append([]string(nil), config.CoordinatorSeeds...), EpochPath: config.EpochPath, DiscoverySecurity: apiclient.Config(config.DiscoverySecurity), WorkerID: config.WorkerID, CoordinatorAddr: config.CoordinatorAddr, ListenAddr: config.ListenAddr, TaskSlots: config.TaskSlots, HeartbeatInterval: config.HeartbeatInterval, HeartbeatTimeout: config.HeartbeatTimeout}
+	if config.PeerTLSConfig != nil {
+		cfg.PeerTLSConfig = config.PeerTLSConfig.Clone()
+	}
 	if config.RPCTLSConfig != nil {
 		cfg.RPCTLSConfig = config.RPCTLSConfig.Clone()
 	}

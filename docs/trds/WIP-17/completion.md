@@ -102,3 +102,18 @@ the real coordinator RPC server. Full SDK and cmd race suites passed; the initia
 config run identified the generated reference update, which was regenerated and
 verified. Original data-plane/replica TLS and remaining security acceptance work
 are still required.
+
+## Worker peer mTLS transport wiring
+
+Worker PeerTLSConfig / node worker.peer_tls now covers data mux connections,
+checkpoint replica listeners, reconnecting uploads and restore fetches. Explicit
+CA trust, certificates and mutual verification are required when enabled. Node
+configuration builds a symmetric server/client trust policy; SDK workers clone
+the supplied configuration. The configuration reference includes the new fields.
+
+Real data-frame exchange and replica publication/fetch/restore pass with mTLS.
+Negative tests reject plaintext, missing client certificates, wrong hostnames,
+untrusted data peers and incomplete mutual-TLS configurations. The full cmd,
+config, worker and SDK race suites passed. This establishes transport wiring,
+not full peer certificate-to-claimed-worker identity binding or the remaining
+revocation/security matrix; those requirements remain open.

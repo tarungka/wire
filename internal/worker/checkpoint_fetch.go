@@ -113,7 +113,7 @@ func (w *Worker) fetchTaskCheckpoint(ctx context.Context, jobID, taskID string, 
 	if err := request.Validate(); err != nil {
 		return nil, err
 	}
-	session, err := transport.NewClientSessionContext(ctx, restore.ReplicaAddress, transport.DefaultConfig())
+	session, err := transport.NewClientSessionContext(ctx, restore.ReplicaAddress, w.peerTransportConfig())
 	if err != nil {
 		return nil, err
 	}

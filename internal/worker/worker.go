@@ -32,6 +32,7 @@ type Config struct {
 	HeartbeatTimeout     time.Duration
 	HeartbeatMaxFailures int
 	RPCTLSConfig         *tls.Config
+	PeerTLSConfig        *tls.Config
 	CheckpointReplica    *CheckpointReplicaConfig
 	TaskSlot             *engine.TaskSlotConfig // Nil selects engine defaults.
 	WorkerID             string
@@ -111,6 +112,9 @@ func NewWithRegistry(cfg Config, reg *Registry, log zerolog.Logger) *Worker {
 // Run connects to the coordinator, registers, and starts the heartbeat loop.
 // It blocks until ctx is canceled or an unrecoverable error occurs.
 func (w *Worker) Run(ctx context.Context) (retErr error) {
+	if err := validatePeerTLS(w.cfg.PeerTLSConfig); err != nil {
+		return err
+	}
 	if len(w.cfg.CoordinatorSeeds) > 0 && w.cfg.EpochPath == "" {
 		return fmt.Errorf("HA discovery requires a durable worker epoch path")
 	}
@@ -147,6 +151,7 @@ func (w *Worker) Run(ctx context.Context) (retErr error) {
 	var checkpointAddress string
 	if w.cfg.CheckpointReplica != nil {
 		replicaConfig := *w.cfg.CheckpointReplica
+		replicaConfig.TLSConfig = w.cfg.PeerTLSConfig
 		if replicaConfig.AuthorizeFetch == nil {
 			replicaConfig.AuthorizeFetch = w.authorizeCheckpointFetch
 		}
@@ -168,7 +173,7 @@ func (w *Worker) Run(ctx context.Context) (retErr error) {
 		checkpointAddress = addr
 		w.log.Info().Str("addr", addr).Msg("checkpoint replica listener started")
 	}
-	dataConfig := transport.DefaultConfig()
+	dataConfig := w.peerTransportConfig()
 	dataConfig.TaskRegistrationTimeout = 5 * time.Second
 	dataConfig.NodeID = workerID
 	dataConfig.ListenAddr = w.cfg.ListenAddr
@@ -830,4 +835,10 @@ func (w *Worker) acknowledgeAbsentCancellation(client *rpc.Client, cmd rpc.Worke
 			w.log.Warn().Err(err).Msg("cannot acknowledge absent task cancellation")
 		}
 	}()
+}
+
+func (w *Worker) peerTransportConfig() transport.Config {
+	cfg := transport.DefaultConfig()
+	cfg.TLSConfig = w.cfg.PeerTLSConfig
+	return cfg
 }

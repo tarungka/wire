@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 
 	"github.com/tarungka/wire/internal/rpc"
@@ -10,10 +11,15 @@ import (
 
 // Each upload owns its connection. A failed peer/session cannot poison future
 // checkpoints, and concurrent uploads do not close each other's connections.
-type reconnectingCheckpointClient struct{ address string }
+type reconnectingCheckpointClient struct {
+	address   string
+	tlsConfig *tls.Config
+}
 
 func (c *reconnectingCheckpointClient) ReplicateCheckpoint(ctx context.Context, request rpc.ReplicateCheckpointRequest, body io.Reader) error {
-	session, err := transport.NewClientSessionContext(ctx, c.address, transport.DefaultConfig())
+	cfg := transport.DefaultConfig()
+	cfg.TLSConfig = c.tlsConfig
+	session, err := transport.NewClientSessionContext(ctx, c.address, cfg)
 	if err != nil {
 		return err
 	}

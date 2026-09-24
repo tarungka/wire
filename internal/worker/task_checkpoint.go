@@ -61,7 +61,7 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 		maxFailures = w.executor.taskConfig.Checkpoint.MaxConsecutiveFailures
 	}
 	consecutiveFailures := 0
-	replicator := &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: &reconnectingCheckpointClient{address: desc.CheckpointReplicaAddress}}
+	replicator := &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: &reconnectingCheckpointClient{address: desc.CheckpointReplicaAddress, tlsConfig: w.cfg.PeerTLSConfig}}
 	runtime.replicator = replicator
 	runtime.sourceExhausted = func(ctx context.Context) error {
 		w.mu.Lock()

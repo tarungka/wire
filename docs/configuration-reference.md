@@ -63,6 +63,9 @@ into the current runtime; setting them does not enable those features.
 | `election.kubernetes.retry_period` | duration string | `1s` | — |
 | `election.backend` | string | `noop` | `--election-backend` |
 | `election.lock_path` | string | `data/coordinator/leader.lock` | `--election-lock-path` |
+| `worker.peer_tls.cert` | string | `""` | — |
+| `worker.peer_tls.key` | string | `""` | — |
+| `worker.peer_tls.ca_cert` | string | `""` | — |
 | `worker.discovery_http.ca_cert` | string | `""` | — |
 | `worker.discovery_http.client_cert` | string | `""` | — |
 | `worker.discovery_http.client_key` | string | `""` | — |

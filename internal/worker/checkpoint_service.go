@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ import (
 // exist and be owned by this worker. Authorize must validate current assignment
 // ownership before a verified transfer can be published.
 type CheckpointReplicaConfig struct {
+	TLSConfig      *tls.Config
 	ListenAddr     string
 	AdvertiseAddr  string
 	StoreRoot      string
@@ -29,6 +31,9 @@ type CheckpointReplicaConfig struct {
 }
 
 func startCheckpointReplicaService(ctx context.Context, cfg CheckpointReplicaConfig) (string, func(), error) {
+	if err := validatePeerTLS(cfg.TLSConfig); err != nil {
+		return "", nil, err
+	}
 	if cfg.Authorize == nil {
 		return "", nil, fmt.Errorf("checkpoint replica authorization is required")
 	}
@@ -97,7 +102,9 @@ func startCheckpointReplicaService(ctx context.Context, cfg CheckpointReplicaCon
 				defer conn.Close()
 				stop := context.AfterFunc(serviceCtx, func() { _ = conn.Close() })
 				defer stop()
-				session, err := transport.NewServerSession(conn, transport.DefaultConfig())
+				transportConfig := transport.DefaultConfig()
+				transportConfig.TLSConfig = cfg.TLSConfig
+				session, err := transport.NewServerSession(conn, transportConfig)
 				if err != nil {
 					return
 				}

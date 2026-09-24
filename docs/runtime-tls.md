@@ -130,3 +130,38 @@ sdk.WorkerConfig{
 
 A direct `CoordinatorAddr` without seeds does not use HTTP discovery. Discovery
 credentials are process-local and never become task/operator configuration.
+
+## Worker data and checkpoint peers
+
+Enable peer mTLS on every worker participating in secured data exchange or
+checkpoint replication:
+
+```yaml
+worker:
+  peer_tls:
+    cert: /etc/wire/worker-a.crt
+    key: /etc/wire/worker-a.key
+    ca_cert: /etc/wire/worker-ca.crt
+```
+
+All three files are required together. Each worker certificate must support both
+TLS server and client authentication. Its SANs must match the advertised data
+and replica addresses (including IP SANs when dialing IP addresses). The configured
+CA verifies both incoming client certificates and outgoing server certificates;
+TLS 1.3 and hostname verification are mandatory. There is no plaintext fallback
+for a configured TLS connection. Workers with no peer TLS configured retain the
+development plaintext behavior; enabling only `node_tls` does not enable this
+separate peer policy.
+
+The policy applies to the data mux listener/dials, replica listener, every new
+checkpoint upload connection, and checkpoint fetches during restore/rescale.
+Failed upload connections do not cause later reconnects to lose TLS settings.
+Assignment authorization still runs before checkpoint publication or fetch.
+
+SDK workers can supply `WorkerConfig.PeerTLSConfig` with certificate/key,
+`RootCAs`, `ClientCAs`, and `ClientAuth: tls.RequireAndVerifyClientCert`.
+`InsecureSkipVerify` is rejected. RPC TLS and HTTP discovery security remain
+separate settings. Certificates are loaded at startup; restart workers to rotate
+credentials. Full certificate-to-claimed-peer identity binding and revocation
+acceptance remain tracked requirements; CA membership alone is not proof of a
+specific worker's assignment identity.

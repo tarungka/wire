@@ -279,7 +279,12 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 	if err != nil {
 		return err
 	}
+	peerTLS, err := workerPeerTLS(wireCfg.Worker.PeerTLS)
+	if err != nil {
+		return err
+	}
 	w := worker.New(worker.Config{
+		PeerTLSConfig:        peerTLS,
 		EpochPath:            wireCfg.Worker.EpochPath,
 		CoordinatorSeeds:     wireCfg.Worker.CoordinatorSeeds,
 		DiscoverySecurity:    apiclient.Config(wireCfg.Worker.DiscoveryHTTP),

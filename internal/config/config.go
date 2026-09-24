@@ -26,6 +26,7 @@ type CheckpointConfig struct {
 
 // WorkerConfig holds settings for running in worker mode.
 type WorkerConfig struct {
+	PeerTLS           PeerTLSConfig           `yaml:"peer_tls" json:"peer_tls" koanf:"peer_tls"`
 	DiscoveryHTTP     HTTPClientConfig        `yaml:"discovery_http" json:"discovery_http" koanf:"discovery_http"`
 	CoordinatorSeeds  []string                `yaml:"coordinator_seeds" json:"coordinator_seeds" koanf:"coordinator_seeds"`
 	EpochPath         string                  `yaml:"epoch_path" json:"epoch_path" koanf:"epoch_path"`
@@ -129,4 +130,11 @@ type HTTPClientConfig struct {
 	APIKeyFile   string `yaml:"api_key_file" json:"api_key_file" koanf:"api_key_file"`
 	Username     string `yaml:"username" json:"username" koanf:"username"`
 	PasswordFile string `yaml:"password_file" json:"password_file" koanf:"password_file"`
+}
+
+// PeerTLSConfig enables mutual TLS for both worker data and replica transports.
+type PeerTLSConfig struct {
+	Cert   string `yaml:"cert" json:"cert" koanf:"cert"`
+	Key    string `yaml:"key" json:"key" koanf:"key"`
+	CACert string `yaml:"ca_cert" json:"ca_cert" koanf:"ca_cert"`
 }

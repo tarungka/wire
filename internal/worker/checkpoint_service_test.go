@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"os"
 	"testing"
@@ -14,10 +15,17 @@ import (
 )
 
 func TestCheckpointReplicaServicePublishesAndJoins(t *testing.T) {
+	testCheckpointReplicaService(t, nil)
+}
+func TestCheckpointReplicaServiceMutualTLS(t *testing.T) {
+	testCheckpointReplicaService(t, testPeerTLS(t))
+}
+func testCheckpointReplicaService(t *testing.T, peerTLS *tls.Config) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	root := t.TempDir()
-	addr, closeService, err := startCheckpointReplicaService(ctx, CheckpointReplicaConfig{ListenAddr: "127.0.0.1:0", StoreRoot: root, ArtifactRoot: t.TempDir(), StagingRoot: t.TempDir(), Concurrency: 1, AuthorizeFetch: func(_ context.Context, request rpc.FetchCheckpointRequest) error {
+	addr, closeService, err := startCheckpointReplicaService(ctx, CheckpointReplicaConfig{TLSConfig: peerTLS, ListenAddr: "127.0.0.1:0", StoreRoot: root, ArtifactRoot: t.TempDir(), StagingRoot: t.TempDir(), Concurrency: 1, AuthorizeFetch: func(_ context.Context, request rpc.FetchCheckpointRequest) error {
 		if request.TargetJobID != "" && (request.TargetJobID != "new-job" || request.TargetTaskID != "new-task" || request.JobID != "job" || request.TaskID != "task") {
 			return errors.New("wrong upgrade identities")
 		}
@@ -35,12 +43,37 @@ func TestCheckpointReplicaServicePublishesAndJoins(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeService()
-	session, err := transport.NewClientSession(addr, transport.DefaultConfig())
+	if peerTLS != nil {
+		for _, kind := range []string{"plaintext", "missing-client", "wrong-host"} {
+			t.Run(kind, func(t *testing.T) {
+				var config *tls.Config
+				if kind != "plaintext" {
+					config = peerTLS.Clone()
+				}
+				if kind == "missing-client" {
+					config.Certificates = nil
+				}
+				if kind == "wrong-host" {
+					config.ServerName = "wrong.example"
+				}
+				denied := archiveCheckpointReplicator{jobID: "job", taskID: "task", epoch: 2, stagingRoot: t.TempDir(), client: &reconnectingCheckpointClient{address: addr, tlsConfig: config}}
+				attempt, stop := context.WithTimeout(ctx, time.Second)
+				defer stop()
+				if err := denied.Replicate(attempt, engine.TaskCheckpoint{TaskID: "task", CheckpointID: 7, EpochID: 2}); err == nil {
+					t.Fatal("insecure replica upload succeeded")
+				}
+			})
+		}
+	}
+
+	transportConfig := transport.DefaultConfig()
+	transportConfig.TLSConfig = peerTLS
+	session, err := transport.NewClientSession(addr, transportConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	replica := archiveCheckpointReplicator{jobID: "job", taskID: "task", epoch: 2, stagingRoot: t.TempDir(), client: rpc.NewClient(session.YamuxSession(), rpc.DefaultConfig())}
+	replica := archiveCheckpointReplicator{jobID: "job", taskID: "task", epoch: 2, stagingRoot: t.TempDir(), client: &reconnectingCheckpointClient{address: addr, tlsConfig: peerTLS}}
 	if err := replica.Replicate(ctx, engine.TaskCheckpoint{TaskID: "task", CheckpointID: 7, EpochID: 2, Operators: [][]byte{[]byte("state")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +111,7 @@ func TestCheckpointReplicaServicePublishesAndJoins(t *testing.T) {
 	if len(snapshot.Operators) != 1 || string(snapshot.Operators[0]) != "state" {
 		t.Fatalf("restored: %+v", snapshot)
 	}
-	recovery := &Worker{cfg: Config{WorkerID: "recovery-worker", CheckpointReplica: &CheckpointReplicaConfig{StoreRoot: t.TempDir(), ArtifactRoot: t.TempDir(), StagingRoot: t.TempDir()}}}
+	recovery := &Worker{cfg: Config{PeerTLSConfig: peerTLS, WorkerID: "recovery-worker", CheckpointReplica: &CheckpointReplicaConfig{StoreRoot: t.TempDir(), ArtifactRoot: t.TempDir(), StagingRoot: t.TempDir()}}}
 	recovered, err := recovery.fetchTaskCheckpoint(ctx, "job", "task", rpc.TaskDescriptor{EpochID: 3, RestoreCheckpoint: &rpc.CheckpointRestoreDescriptor{CheckpointID: 7, EpochID: 2, ReplicaAddress: addr}})
 	if err != nil {
 		t.Fatal(err)
