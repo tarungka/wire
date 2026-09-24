@@ -219,4 +219,25 @@ mutation each. Three real-worker transactional cases drop the accepted reply
 at a reverse proxy and still verify successful replacement, rollback and
 no-restart behavior, source offsets and exact external output. Each passed
 three race-detected runs. This is not idempotent mutation replay, an external
-configuration lock, process-crash evidence or savepoint POST reply recovery.
+configuration lock or process-crash evidence. Savepoint POST reply recovery is
+covered separately below.
+
+## Lost savepoint creation replies
+
+Reload now chooses the savepoint identity before its creation POST. The optional
+HTTP savepoint_id uses the existing sp- plus 32 lowercase hex format. Requests
+with an ID are durably queued under the ownership lock; repeated IDs return the
+same request, while deleted IDs cannot be reused. Empty-body callers retain
+server-generated IDs. The SDK sends once and reconciles a lost response with a
+GET for the exact selected ID; an unsuccessful/mismatched read stops before
+replacement and returns the requested ID for inspection.
+
+Coordinator tests cover eight concurrent duplicate calls, queue recovery,
+activation/completion without reallocation, invalid IDs/bodies, tombstone reuse
+and failed persistence without queue publication. SDK negative tests cover a
+missing savepoint, a different identity and failed completion. A real-worker
+proxy drops the accepted savepoint reply for successful replacement, rollback
+and no-restart cases; the test verifies exactly one savepoint and the existing
+transactional output/offset invariants. These targeted cases pass three race
+runs. This does not prove OS-process crash recovery or retry failed readbacks;
+a returned request identity alone is not proof that the server accepted it.

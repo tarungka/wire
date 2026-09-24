@@ -295,9 +295,18 @@ acceptance and retained across rollback. If its HTTP reply is lost, Reload reads
 job status and continues only when that ID matches. A missing/different ID or
 failed status read returns an error; no mutation is resent. The result exposes
 `ReplacementRequestID` for reconciliation. This is a correlation marker, not an
-idempotency key or a configuration lock. A lost savepoint-creation reply still
-requires manual reconciliation; automatic recovery of that request is not yet
-implemented.
+idempotency key or a configuration lock.
+
+Reload also selects a random savepoint ID before creation and sends it as
+`{"savepoint_id":"sp-<32 lowercase hex digits>"}`. The coordinator durably queues
+this request before returning 202. Repeating that ID returns the same queued,
+active or completed savepoint; deleted IDs cannot be reused. Existing callers
+that send no ID retain server-generated IDs. After a lost creation reply, Reload
+reads only the selected ID and continues if it exists with the expected job
+identity. It never sends a second POST. If the read fails or the request wasn't
+persisted, it stops with that ID in the result for manual reconciliation. An ID
+in the result is not proof of acceptance. This path requires a coordinator that
+supports caller-selected savepoint IDs; upgrade the coordinator before clients.
 
 Set `PipelineLiveWatchConfig.AllowReplacement` to enable this path for stable
 non-interval file edits. `OnReload` receives its result/error, including the

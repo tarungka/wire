@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tarungka/wire/internal/protocol"
@@ -45,6 +46,50 @@ func (c *Coordinator) TriggerSavepoint(jobID string) (*SavepointMeta, error) {
 		return nil, err
 	}
 	c.queuedSavepointJobs[jobID] = true
+	return sp, nil
+}
+
+// queueIdentifiedSavepoint reserves a caller-selected ID durably before dispatch.
+// Repeating an ID observes the same request; deleted IDs cannot be reused.
+func (c *Coordinator) queueIdentifiedSavepoint(jobID, id string) (*SavepointMeta, error) {
+	if len(id) != 35 || id[:3] != "sp-" {
+		return nil, fmt.Errorf("%w: savepoint_id must be sp- followed by 32 lowercase hex digits", ErrInvalidConfig)
+	}
+	if _, err := hex.DecodeString(id[3:]); err != nil || strings.ToLower(id) != id {
+		return nil, fmt.Errorf("%w: invalid savepoint_id", ErrInvalidConfig)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.readyLocked() {
+		return nil, ErrNotLeader
+	}
+	job := c.jobs[jobID]
+	if job == nil {
+		return nil, ErrJobNotFound
+	}
+	data, err := c.store.Get(SavepointKey(jobID, id))
+	if err != nil {
+		return nil, err
+	}
+	if data != nil {
+		var existing SavepointMeta
+		if err := protocol.DecodeMsgPack(data, &existing); err != nil {
+			return nil, err
+		}
+		if existing.Deleted {
+			return nil, fmt.Errorf("%w: savepoint ID was deleted", ErrInvalidTransition)
+		}
+		return &existing, nil
+	}
+	if job.Status != JobRunning {
+		return nil, ErrJobNotRunning
+	}
+	sp := &SavepointMeta{ID: id, JobID: jobID, Status: SavepointInProgress, Queued: true, TriggerTime: time.Now().UTC()}
+	if err := c.persistSavepoint(sp); err != nil {
+		return nil, err
+	}
+	c.queuedSavepointJobs[jobID] = true
+	c.kickScheduler()
 	return sp, nil
 }
 

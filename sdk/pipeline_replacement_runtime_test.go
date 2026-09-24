@@ -37,6 +37,14 @@ func TestSameJobReplacementLostHTTPResponse(t *testing.T) {
 	}
 }
 
+func TestSameJobReplacementLostSavepointHTTPResponse(t *testing.T) {
+	for _, scenario := range []string{"success", "rollback", "no-restart"} {
+		t.Run(scenario, func(t *testing.T) {
+			testSameJobReplacement(t, scenario != "success", scenario != "no-restart", true, "savepoint-http")
+		})
+	}
+}
+
 func TestSameJobReplacementLostCommitResponse(t *testing.T) {
 	for _, boundary := range []string{"savepoint", "replacement-final"} {
 		t.Run(boundary, func(t *testing.T) {
@@ -109,15 +117,19 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, re
 		candidateEnv.SetRestartStrategy(FixedDelay(3, 0))
 	}
 	candidateEnv.AddSourceNamed("source", "replay", nil).MapNamed("map", "v2", nil).AddSinkNamed("sink", "output", nil)
-	if responseLoss == "http" {
+	if responseLoss == "http" || responseLoss == "savepoint-http" {
 		target, err := url.Parse(endpoint)
 		if err != nil {
 			t.Fatal(err)
 		}
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		var dropped atomic.Int32
+		dropPath := "/api/v1/jobs/" + jobID + "/replacement"
+		if responseLoss == "savepoint-http" {
+			dropPath = "/api/v1/jobs/" + jobID + "/savepoints"
+		}
 		proxy.ModifyResponse = func(response *http.Response) error {
-			if response.Request.URL.Path == "/api/v1/jobs/"+jobID+"/replacement" && response.StatusCode == http.StatusAccepted {
+			if response.Request.URL.Path == dropPath && response.StatusCode == http.StatusAccepted {
 				dropped.Add(1)
 				return errors.New("injected lost accepted replacement reply")
 			}
@@ -149,6 +161,12 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, re
 		t.Fatalf("reload result=%+v", result)
 	}
 
+	if responseLoss == "savepoint-http" {
+		savepoints, err := coord.ListSavepoints(jobID)
+		if err != nil || len(savepoints) != 1 || savepoints[0].ID != result.SavepointID {
+			t.Fatalf("savepoint creation duplicated or lost: %+v %v", savepoints, err)
+		}
+	}
 	if !recovery {
 		lifecycleWait(t, ctx, func() bool { job, err := coord.GetJob(jobID); return err == nil && job.Status == coordinator.JobFailed })
 		job, _ := coord.GetJob(jobID)

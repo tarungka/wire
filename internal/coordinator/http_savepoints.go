@@ -1,12 +1,31 @@
 package coordinator
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 )
 
 func (s *HTTPServer) handleTriggerSavepoint(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("job_id")
-	sp, err := s.coord.TriggerSavepoint(jobID)
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var request struct {
+		ID string `json:"savepoint_id"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	decodeErr := decoder.Decode(&request)
+	if (decodeErr != nil && decodeErr != io.EOF) || (decodeErr == nil && decoder.Decode(new(any)) != io.EOF) {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid savepoint request")
+		return
+	}
+	var sp *SavepointMeta
+	var err error
+	if request.ID == "" {
+		sp, err = s.coord.TriggerSavepoint(jobID)
+	} else {
+		sp, err = s.coord.queueIdentifiedSavepoint(jobID, request.ID)
+	}
 	if err != nil {
 		writeJobError(w, err)
 		return

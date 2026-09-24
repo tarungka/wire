@@ -3,7 +3,6 @@ package sdk
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -14,7 +13,7 @@ func TestReloadReconcilesLostReplacementResponse(t *testing.T) {
 	for _, scenario := range []string{"accepted", "rollback", "not-accepted", "other-request"} {
 		t.Run(scenario, func(t *testing.T) {
 			var mu sync.Mutex
-			var requestID string
+			var requestID, savepointID string
 			var mutations, reads int
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				mu.Lock()
@@ -23,8 +22,15 @@ func TestReloadReconcilesLostReplacementResponse(t *testing.T) {
 				case "POST /api/v1/jobs/job/replacement/validate":
 					w.WriteHeader(http.StatusNoContent)
 				case "POST /api/v1/jobs/job/savepoints":
+					var body struct {
+						ID string `json:"savepoint_id"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					savepointID = body.ID
 					w.WriteHeader(http.StatusAccepted)
-					_, _ = fmt.Fprint(w, `{"id":"save","job_id":"job","status":"COMPLETED"}`)
+					_ = json.NewEncoder(w).Encode(map[string]string{"id": savepointID, "job_id": "job", "status": "COMPLETED"})
 				case "POST /api/v1/jobs/job/replacement":
 					mutations++
 					var body struct {
@@ -85,7 +91,7 @@ func TestReloadReconcilesLostReplacementResponse(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if mutations != 1 || result.ReplacementRequestID != requestID || result.SavepointID != "save" {
+			if mutations != 1 || result.ReplacementRequestID != requestID || result.SavepointID != savepointID {
 				t.Fatalf("mutation count=%d result=%+v request=%s", mutations, result, requestID)
 			}
 		})

@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -28,10 +29,10 @@ type PipelineReloadResult struct {
 // Reload preflights a same-layout candidate, takes a savepoint, requests fenced
 // replacement, and waits for RUNNING/FINISHED or failure/rollback. The caller
 // must exclusively own job configuration changes and bound the operation with
-// ctx. Mutations are sent once. A lost replacement reply is reconciled only if
-// job status confirms its persisted request ID; other errors may require manual
-// reconciliation. Retained
-// savepoints are not deleted automatically. Changed topology is not supported.
+// ctx. Mutations are sent once. Lost replies are reconciled by reading the
+// selected savepoint identity or persisted replacement request ID. Failed reads
+// may still require manual reconciliation. Returned IDs identify requests, not
+// proof of acceptance. Savepoints are retained. Changed topology is not supported.
 func (p *YAMLPipeline) Reload(ctx context.Context, jobID string) (PipelineReloadResult, error) {
 	result := PipelineReloadResult{JobID: jobID}
 	if err := p.ValidateReplacement(ctx, jobID); err != nil {
@@ -44,9 +45,20 @@ func (p *YAMLPipeline) Reload(ctx context.Context, jobID string) (PipelineReload
 	defer client.CloseIdleConnections()
 	base := strings.TrimRight(p.env.coordinatorURL, "/") + "/api/v1/jobs/" + url.PathEscape(jobID)
 	requestJSON := func(method, target string, status int, out any) error {
-		request, err := http.NewRequestWithContext(ctx, method, target, nil)
+		var body io.Reader
+		if method == http.MethodPost {
+			data, err := json.Marshal(map[string]string{"savepoint_id": result.SavepointID})
+			if err != nil {
+				return err
+			}
+			body = bytes.NewReader(data)
+		}
+		request, err := http.NewRequestWithContext(ctx, method, target, body)
 		if err != nil {
 			return err
+		}
+		if body != nil {
+			request.Header.Set("Content-Type", "application/json")
 		}
 		response, err := client.Do(request)
 		if err != nil {
@@ -63,13 +75,21 @@ func (p *YAMLPipeline) Reload(ctx context.Context, jobID string) (PipelineReload
 		JobID  string `json:"job_id"`
 		Status string `json:"status"`
 	}
-	if err := requestJSON(http.MethodPost, base+"/savepoints", http.StatusAccepted, &saved); err != nil {
+	var idBytes [16]byte
+	if _, err := rand.Read(idBytes[:]); err != nil {
 		return result, err
 	}
-	if saved.ID == "" || saved.JobID != jobID {
+	result.SavepointID = fmt.Sprintf("sp-%x", idBytes)
+	if createErr := requestJSON(http.MethodPost, base+"/savepoints", http.StatusAccepted, &saved); createErr != nil {
+		// The request may have been persisted before its reply disappeared.
+		// Read that exact identity, never issue another creation request.
+		if err := requestJSON(http.MethodGet, base+"/savepoints/"+result.SavepointID, http.StatusOK, &saved); err != nil {
+			return result, errors.Join(createErr, err)
+		}
+	}
+	if saved.ID != result.SavepointID || saved.JobID != jobID {
 		return result, fmt.Errorf("sdk: invalid reload savepoint identity")
 	}
-	result.SavepointID = saved.ID
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	wait := func() error {
