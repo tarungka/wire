@@ -84,3 +84,21 @@ nor exports credentials or their paths. Tests verify authenticated submission an
 completion polling, decoded-graph secret exclusion, plaintext rejection before
 network activity, and refusal to replay a redirected submission. Worker discovery
 configuration remains the next client integration gap.
+
+## Secured worker discovery
+
+Node `worker.discovery_http` and SDK `WorkerConfig.DiscoverySecurity` now configure
+private trust roots, optional client certificates and file-backed API credentials
+for discovery. Public workers also expose CoordinatorSeeds and durable EpochPath.
+Readiness/epoch confirmation remains mandatory. HTTPS or credential-configured
+leader hints are limited to explicitly configured HTTPS seed origins; bare hints
+inherit HTTPS, and downgrade/unlisted hints are rejected without sending a request.
+Legacy unauthenticated discovery behavior is retained.
+
+Worker race tests cover authenticated standby/leader confirmation, unlisted and
+plaintext hints, bare secure hints, and plaintext seed refusal. A public SDK
+worker test discovers through private-CA HTTPS with credentials and registers over
+the real coordinator RPC server. Full SDK and cmd race suites passed; the initial
+config run identified the generated reference update, which was regenerated and
+verified. Original data-plane/replica TLS and remaining security acceptance work
+are still required.

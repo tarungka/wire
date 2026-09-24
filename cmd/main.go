@@ -15,6 +15,7 @@ import (
 	_ "go.uber.org/automaxprocs" // Apply Linux CPU quotas before starting task goroutines.
 	"golang.org/x/sync/errgroup"
 
+	"github.com/tarungka/wire/internal/apiclient"
 	"github.com/tarungka/wire/internal/cmd"
 	"github.com/tarungka/wire/internal/config"
 	"github.com/tarungka/wire/internal/coordinator"
@@ -281,6 +282,7 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 	w := worker.New(worker.Config{
 		EpochPath:            wireCfg.Worker.EpochPath,
 		CoordinatorSeeds:     wireCfg.Worker.CoordinatorSeeds,
+		DiscoverySecurity:    apiclient.Config(wireCfg.Worker.DiscoveryHTTP),
 		HeartbeatInterval:    wireCfg.Heartbeat.Interval.Duration,
 		HeartbeatTimeout:     wireCfg.Heartbeat.Timeout.Duration,
 		HeartbeatMaxFailures: wireCfg.Heartbeat.MaxFailures,

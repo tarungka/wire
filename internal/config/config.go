@@ -26,6 +26,7 @@ type CheckpointConfig struct {
 
 // WorkerConfig holds settings for running in worker mode.
 type WorkerConfig struct {
+	DiscoveryHTTP     HTTPClientConfig        `yaml:"discovery_http" json:"discovery_http" koanf:"discovery_http"`
 	CoordinatorSeeds  []string                `yaml:"coordinator_seeds" json:"coordinator_seeds" koanf:"coordinator_seeds"`
 	EpochPath         string                  `yaml:"epoch_path" json:"epoch_path" koanf:"epoch_path"`
 	CheckpointReplica CheckpointReplicaConfig `yaml:"checkpoint_replica" json:"checkpoint_replica" koanf:"checkpoint_replica"`
@@ -118,4 +119,14 @@ type KubernetesElectionConfig struct {
 	LeaseDuration Duration `yaml:"lease_duration" json:"lease_duration" koanf:"lease_duration"`
 	RenewDeadline Duration `yaml:"renew_deadline" json:"renew_deadline" koanf:"renew_deadline"`
 	RetryPeriod   Duration `yaml:"retry_period" json:"retry_period" koanf:"retry_period"`
+}
+
+// HTTPClientConfig is process-local discovery trust and credential configuration.
+type HTTPClientConfig struct {
+	CACert       string `yaml:"ca_cert" json:"ca_cert" koanf:"ca_cert"`
+	ClientCert   string `yaml:"client_cert" json:"client_cert" koanf:"client_cert"`
+	ClientKey    string `yaml:"client_key" json:"client_key" koanf:"client_key"`
+	APIKeyFile   string `yaml:"api_key_file" json:"api_key_file" koanf:"api_key_file"`
+	Username     string `yaml:"username" json:"username" koanf:"username"`
+	PasswordFile string `yaml:"password_file" json:"password_file" koanf:"password_file"`
 }

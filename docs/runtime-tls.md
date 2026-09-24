@@ -81,3 +81,52 @@ submissions are not automatically replayed against a different node.
 Neither credential contents nor their paths are serialized into the job graph.
 These options secure the submitting application's HTTP requests only; they do
 not configure worker discovery, RPC TLS or operator HTTP connectors.
+
+## Authenticated worker leader discovery
+
+Workers that discover an HA leader through HTTP need HTTP credentials separately
+from their RPC certificate. Configure every eligible coordinator as an explicit
+HTTPS seed:
+
+```yaml
+worker:
+  coordinator_seeds:
+    - https://coordinator-a.example:4001
+    - https://coordinator-b.example:4001
+  epoch_path: /var/lib/wire/worker-epoch
+  discovery_http:
+    ca_cert: /etc/wire/http-ca.crt
+    api_key_file: /run/secrets/wire-discovery-key
+    # client_cert/client_key: optional HTTPS client credentials
+    # username/password_file: alternative to api_key_file
+```
+
+Use an API identity authorized to read cluster discovery (the viewer role is
+sufficient). Discovery requests require TLS 1.3 and hostname verification. The
+worker confirms readiness and epoch with the advertised leader itself. For HTTPS
+or credential-configured discovery, that leader must match a configured HTTPS
+seed; an unlisted host or plaintext hint never receives credentials. Bare leader
+hints inherit the seed's HTTPS scheme. HTTP redirects are not followed. Configure
+the full seed list on every worker so a legitimate takeover can be confirmed.
+Legacy unauthenticated HTTP discovery remains available for development.
+
+Public SDK application workers use the corresponding fields:
+
+```go
+sdk.WorkerConfig{
+    WorkerID: "worker-a",
+    CoordinatorSeeds: []string{
+        "https://coordinator-a.example:4001",
+        "https://coordinator-b.example:4001",
+    },
+    EpochPath: "/var/lib/wire/worker-epoch",
+    DiscoverySecurity: sdk.CoordinatorSecurity{
+        CACert: "/etc/wire/http-ca.crt",
+        APIKeyFile: "/run/secrets/wire-discovery-key",
+    },
+    // RPCTLSConfig must be configured separately for the discovered RPC endpoint.
+}
+```
+
+A direct `CoordinatorAddr` without seeds does not use HTTP discovery. Discovery
+credentials are process-local and never become task/operator configuration.

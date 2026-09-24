@@ -11,6 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/tarungka/wire/internal/apiclient"
 	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/observability"
 	"github.com/tarungka/wire/internal/protocol"
@@ -24,6 +25,7 @@ type Config struct {
 	// Local SDK execution uses it to preserve Go error identities across its RPC boundary.
 	TaskFailureObserver func(jobID, taskID string, err error)
 	CoordinatorSeeds    []string
+	DiscoverySecurity   apiclient.Config
 	// EpochPath enables durable fencing across process restarts; required for HA discovery.
 	EpochPath            string
 	HeartbeatInterval    time.Duration

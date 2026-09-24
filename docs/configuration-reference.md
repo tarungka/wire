@@ -63,6 +63,12 @@ into the current runtime; setting them does not enable those features.
 | `election.kubernetes.retry_period` | duration string | `1s` | — |
 | `election.backend` | string | `noop` | `--election-backend` |
 | `election.lock_path` | string | `data/coordinator/leader.lock` | `--election-lock-path` |
+| `worker.discovery_http.ca_cert` | string | `""` | — |
+| `worker.discovery_http.client_cert` | string | `""` | — |
+| `worker.discovery_http.client_key` | string | `""` | — |
+| `worker.discovery_http.api_key_file` | string | `""` | — |
+| `worker.discovery_http.username` | string | `""` | — |
+| `worker.discovery_http.password_file` | string | `""` | — |
 | `worker.coordinator_seeds` | slice | `[]` | — |
 | `worker.epoch_path` | string | `data/worker/epoch` | — |
 | `worker.checkpoint_replica.listen_addr` | string | `""` | — |
