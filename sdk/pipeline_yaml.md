@@ -51,8 +51,8 @@ and Close belong to runtime execution, not parsing.
 - `rename`: simultaneously renames top-level fields using `mappings`. Duplicate
   targets, missing source fields, and overwriting untouched fields fail.
 - Window transforms populate the SDK window assigner and count/sum/min/max
-  aggregator. Positive durations are required. They are graph definitions only
-  until window execution is integrated.
+  aggregator. Positive durations are required. Window execution supports named
+  late outputs and the selected managed state backend.
 
 CEL variables are `key` (string), `value` (parsed JSON when valid, otherwise raw
 string), `event_time` (integer), `headers` (string map), and declared JSON parse
@@ -70,13 +70,28 @@ unavailable connector types, missing input references, cycles, invalid duration
 settings, and invalid expressions fail parsing. Forward input references are
 allowed. Connector-specific `config` validation is the factory's responsibility.
 
-`Graph()` exposes the compiled SDK graph for integration. `Execute` currently
-supports stateless linear pipelines with exactly one source, one sink, and
-parallelism one. It rejects branching, key-by/window execution, parallelism above
-one, periodic checkpoints, and restart policies because the underlying runtime
-cannot yet honor all of those contracts. Parsing their graph/configuration does
-not imply that execution is available. The SDK source lifecycle correction here
-is also present in the separate HTTP connector PR.
+`Graph()` exposes the compiled SDK graph for integration. Linear pipelines
+support parallel execution when every source and sink uses an instance-aware
+factory. The legacy `Sources`/`Sinks` factories remain limited to parallelism
+one. Key-by requires a window, and stateless branching and multiple sources
+remain rejected by the YAML executor.
+
+`PipelineConnectors.SourceInstances` and `.SinkInstances` map type names to
+`func(map[string]any, InstanceContext) (Source, error)` and the corresponding
+sink function. `InstanceContext` contains `Index` and `Parallelism`; use these
+to partition source input instead of emitting the whole input from each copy.
+Each call receives a deep copy of its YAML configuration and must return a
+fresh, unopened connector. Instance factories run during execution after graph
+validation. Registering both legacy and instance factories for the same type is
+an error. Named DLQ destinations currently require a legacy shared sink factory.
+
+Checkpoint and restart settings use the SDK's local coordinator/worker runtime
+and require instance-aware factories for every source and sink, including at
+parallelism one. This permits a fresh connector on each deployment attempt;
+sources must still implement the SDK checkpoint/restore contract for replay,
+and exactly-once external output requires transactional sinks. Factory support
+alone does not provide either guarantee. External cluster deployment and YAML
+recovery acceptance remain in the completion audit.
 
 There is no automatic reload, drain/switchover, savepoint migration, CLI loader,
 or cluster deployment of CEL programs yet. Invalid reload candidates can be
@@ -123,6 +138,5 @@ The limit applies to logical state payload per managed operator instance.
 `pipeline.SetStateBackend(sdk.NewHashMapStateBackend(64))` overrides the YAML
 selection. An omitted `state_backend` preserves the environment default;
 embedded Pebble uses temporary storage unless a directory is configured.
-This option does not remove the parallel/checkpoint execution restrictions
-above. Full CLI/pipeline/system precedence and distributed YAML execution are
+The connector and deployment requirements above still apply. Full CLI/pipeline/system precedence and distributed YAML execution are
 tracked in the [WIP-19 completion audit](../docs/trds/WIP-19/completion.md).

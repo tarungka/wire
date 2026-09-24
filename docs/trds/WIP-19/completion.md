@@ -11,8 +11,8 @@ SDK, connector, security and state integrations from WIP-13 through WIP-18.
 | Connector availability | Caller-provided source/sink factories are validated before construction. WIP-16 connector registry and worker factory integration remain required. |
 | Graph conversion | Existing SDK graph construction, forward references and cycle rejection. Validate shuffle semantics against current SDK and parallel execution. |
 | Pipeline state backend | `spec.state_backend` accepts WIP-18 nested HashMap/Pebble configuration. Validation runs before connector construction; omitted HashMap limit is 256 MiB and explicit zero is unlimited. SDK override has precedence. Full CLI/pipeline/system precedence remains open. |
-| Parallel/keyed/window execution | Current YAML executor still rejects parallel connector execution and checkpoint/restart settings. Remove restrictions only when per-instance factories, worker execution and recovery are proven. Existing single-instance window execution remains available. |
-| Checkpoint and restart | Integrate configured policies with actual coordinator/worker execution and test failure recovery. |
+| Parallel/keyed/window execution | Instance-aware YAML factories now execute a three-partition CEL pipeline through embedded and local coordinator/worker runtimes. Private config copies, partition identity, factory errors and legacy guards have race tests. Keyed/window parallel, branching and recovery acceptance remain. |
+| Checkpoint and restart | Configured policies now reach local coordinator/worker execution when all connectors use fresh-instance factories. A checkpoint-configured bounded pipeline executes successfully. Periodic checkpoint/replay and failure recovery still need dedicated YAML acceptance tests. |
 | File watching and validation | Detect edits and validate a complete replacement before touching the current run. Not implemented. |
 | Graceful switchover | Drain old execution and start the validated replacement without overlapping ownership. Not implemented. |
 | Topology changes | Savepoint-based migration and failure rollback. Not implemented. |

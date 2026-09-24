@@ -19,6 +19,10 @@ import (
 type PipelineConnectors struct {
 	Sources map[string]func(map[string]any) (Source, error)
 	Sinks   map[string]func(map[string]any) (Sink, error)
+	// Instance factories receive partition identity and a private configuration
+	// copy on every execution. They must return independently owned connectors.
+	SourceInstances map[string]func(map[string]any, InstanceContext) (Source, error)
+	SinkInstances   map[string]func(map[string]any, InstanceContext) (Sink, error)
 }
 
 type pipelineOperator struct {
@@ -88,14 +92,20 @@ func (p *YAMLPipeline) Execute(ctx context.Context) (*JobResult, error) {
 			return nil, fmt.Errorf("%w: YAML branching execution is not supported", ErrInvalidConfig)
 		}
 	}
-	if p.env.parallelism != 1 {
-		return nil, fmt.Errorf("%w: YAML parallel execution requires per-instance connector factories", ErrInvalidConfig)
+	for _, node := range p.env.graph.nodes {
+		if node.Parallelism > 1 && ((node.Type == NodeSource && node.SourceFactory == nil) || (node.Type == NodeSink && node.SinkFactory == nil)) {
+			return nil, fmt.Errorf("%w: YAML parallel execution requires per-instance connector factories for %q", ErrInvalidConfig, node.Name)
+		}
 	}
 	if sources != 1 || sinks < 1 || (!hasWindow && sinks != 1) {
 		return nil, fmt.Errorf("%w: YAML execution requires one source and sink", ErrInvalidConfig)
 	}
 	if p.env.checkpointInterval != 0 || p.env.restartStrategy.Type != RestartNone {
-		return nil, fmt.Errorf("%w: YAML checkpoint/restart execution is not supported", ErrInvalidConfig)
+		for _, node := range p.env.graph.nodes {
+			if (node.Type == NodeSource && node.SourceFactory == nil) || (node.Type == NodeSink && node.SinkFactory == nil) {
+				return nil, fmt.Errorf("%w: YAML checkpoint/restart execution requires fresh connector instances for %q", ErrInvalidConfig, node.Name)
+			}
+		}
 	}
 	return p.env.ExecuteWithName(ctx, p.Name)
 }
@@ -164,16 +174,20 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 		if _, ok := byName[op.Name]; ok {
 			return nil, fmt.Errorf("%w: %s", ErrDuplicateName, op.Name)
 		}
+		if (i < len(doc.Spec.Sources) && connectors.Sources[op.Type] != nil && connectors.SourceInstances[op.Type] != nil) ||
+			(i >= len(doc.Spec.Sources)+len(doc.Spec.Transforms) && connectors.Sinks[op.Type] != nil && connectors.SinkInstances[op.Type] != nil) {
+			return nil, fmt.Errorf("%w: ambiguous connector factories for %q", ErrInvalidConfig, op.Name)
+		}
 		byName[op.Name] = op
 		switch {
 		case i < len(doc.Spec.Sources):
 			kinds[op.Name] = NodeSource
-			if op.Input != "" || connectors.Sources[op.Type] == nil {
+			if op.Input != "" || (connectors.Sources[op.Type] == nil && connectors.SourceInstances[op.Type] == nil) {
 				return nil, fmt.Errorf("%w: invalid or unavailable source %q", ErrInvalidConfig, op.Name)
 			}
 		case i >= len(doc.Spec.Sources)+len(doc.Spec.Transforms):
 			kinds[op.Name] = NodeSink
-			if connectors.Sinks[op.Type] == nil {
+			if connectors.Sinks[op.Type] == nil && connectors.SinkInstances[op.Type] == nil {
 				return nil, fmt.Errorf("%w: unavailable sink type %q", ErrInvalidConfig, op.Type)
 			}
 		default:
@@ -293,6 +307,9 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 	var dlq Sink
 	if dlqName != "" {
 		op := byName[dlqName]
+		if connectors.Sinks[op.Type] == nil {
+			return nil, fmt.Errorf("%w: DLQ requires a single shared sink factory", ErrInvalidConfig)
+		}
 		destination, factoryErr := connectors.Sinks[op.Type](op.Config)
 		if factoryErr != nil || destination == nil {
 			return nil, fmt.Errorf("%w: DLQ connector %q: %v", ErrInvalidConfig, dlqName, factoryErr)
@@ -312,11 +329,21 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 		}
 		switch node.Type {
 		case NodeSource:
+			if factory := connectors.SourceInstances[op.Type]; factory != nil {
+				config := clonePipelineConfig(op.Config)
+				node.SourceFactory = func(instance InstanceContext) (Source, error) { return factory(clonePipelineConfig(config), instance) }
+				break
+			}
 			node.Source, err = connectors.Sources[op.Type](op.Config)
 			if err == nil && node.Source == nil {
 				err = fmt.Errorf("nil source")
 			}
 		case NodeSink:
+			if factory := connectors.SinkInstances[op.Type]; factory != nil {
+				config := clonePipelineConfig(op.Config)
+				node.SinkFactory = func(instance InstanceContext) (Sink, error) { return factory(clonePipelineConfig(config), instance) }
+				break
+			}
 			node.Sink, err = connectors.Sinks[op.Type](op.Config)
 			if err == nil && node.Sink == nil {
 				err = fmt.Errorf("nil sink")
