@@ -67,3 +67,29 @@ Coordinator metadata and checkpoint replica storage are separate from managed
 operator state. Selecting HashMap does not make a cluster disk-free or disable
 checkpoint replication. See [state storage](state-backend.md) and
 [storage security](storage-security.md) for those boundaries.
+
+## Snapshot format upgrades
+
+New HashMap snapshots use this binary layout (integer fields are little-endian):
+
+```text
+WHSB | version (1 byte, currently 1) | entry count (uint32)
+     | repeated: key length (uint32), key, value length (uint32), value
+     | CRC32 IEEE (uint32 over all preceding bytes, including WHSB)
+```
+
+Keys are strictly increasing in byte order. Unknown versions, invalid lengths,
+duplicate/unordered keys and checksum failures are rejected before publishing
+restored state. The enclosing snapshot handle must identify `hashmap`.
+
+The reader also accepts the previous unframed version-1 format, which starts
+with the version byte instead of `WHSB`. Restoring an old checkpoint requires no
+manual conversion; the next checkpoint uses the current format. Pebble's native
+format is unchanged, and this does not enable migration between backend types.
+
+Workers from before this change cannot read new HashMap snapshots. Upgrade all
+workers eligible for HashMap recovery before allowing jobs to publish the new
+format; do not mix old and new workers for those jobs. A binary downgrade needs
+a retained pre-upgrade checkpoint/savepoint and must not roll transactional sink
+state backwards past already committed output. There is no automatic downgrade
+conversion or negotiation of this snapshot format.

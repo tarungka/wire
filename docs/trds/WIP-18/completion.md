@@ -8,14 +8,14 @@ are not evidence that every requirement is implemented.
 | Requirement | Evidence or remaining work |
 | --- | --- |
 | Two interchangeable backend implementations | Engine factory, HashMap and Pebble implementations and shared contract tests exist. Audit against every specified method and failure case remains. |
-| HashMap ordered storage | Implemented with `github.com/tidwall/btree` v1.8.1. Ordered prefix iteration snapshots owned bytes; atomic batches use copy-on-write. The version-1 snapshot encoding remains unchanged. Regression tests cover 10,000 reverse-order inserts, snapshot bytes, stable prefix iteration, rejected unordered/duplicate snapshots and atomic memory-limit rejection. |
+| HashMap ordered storage | Implemented with `github.com/tidwall/btree` v1.8.1. Ordered prefix iteration snapshots owned bytes; atomic batches use copy-on-write. Legacy snapshots remain readable; new snapshots now carry the required magic header. Regression tests cover 10,000 reverse-order inserts, snapshot bytes, stable prefix iteration, rejected unordered/duplicate snapshots and atomic memory-limit rejection. |
 | SDK backend selection and worker execution | Existing graph specs, worker factory injection, scoped state and distributed tests exist. Full original acceptance audit remains. |
 | MiniCluster defaults to HashMap, Pebble remains overridable | This follow-up selects HashMap with a 256 MiB logical payload limit. A real-worker test inspects checkpoint backend identity during Process execution and checks keyed-state continuity for both the default and an explicit Pebble override. |
 | MiniCluster startup below 100 ms | Lifecycle benchmark measures construction through the first actual stateful invocation, plus total completion/shutdown separately. Record local measurements; do not use constructor-only timing or promise this target for every host. |
 | Node configuration, CLI and environment defaults | Node state settings, both CLI flags and environment names now resolve omitted managed-operator choices at submission and persist them. Tests cover node precedence, explicit SDK choices, validation and recovery stability. Full pipeline precedence remains below. |
 | Pipeline YAML and full selection precedence | Preserve the original pipeline field and SDK/CLI/pipeline/system/default ordering. Integration with WIP-19 remains required; not removed from scope. |
 | Memory limits and safeguards | Existing logical payload accounting and errors need full boundary/overflow/restore audit. Worker aggregate admission against available memory remains open. Runtime overhead and snapshot/iterator copies must be documented accurately. |
-| Checkpoint format and metadata | HashMap serialization and backend-tagged handles exist. Audit magic/version/CRC, backend mismatch, native Pebble semantics and durable manifest evidence. |
+| Checkpoint format and metadata | HashMap writes `WHSB`, version 1, length-prefixed entries and CRC32, and reads legacy unframed version-1 snapshots. Fixed byte fixtures verify upgrade compatibility and malformed-header rejection. Backend-tagged handles exist; backend mismatch, native Pebble semantics and durable manifest evidence remain in the final audit. |
 | Replication, restore and retention | Current worker archive transport and retention code exist from earlier WIPs. Prove both backends through actual completed-checkpoint recovery and cleanup; helper round trips alone are insufficient. |
 | Rescaling | Prove HashMap 4→8, 8→4 and 4→3 key-group redistribution through the distributed runtime, with equivalent Pebble behavior. |
 | Contract/negative tests | Shared `TestStateBackendAcceptance` verifies every entry of a 10,000-entry restore, empty restore, 10 MiB value, binary key groups 0x0000–0x007F with ordered 0x0020 prefix selection, and checkpoint consistency during concurrent atomic updates/Get. Three runs pass under `-race` for both backends. Existing corruption, cross-backend rejection and memory-limit cases still need final requirement mapping. |
@@ -79,7 +79,7 @@ admission are still required before marking this WIP implemented.
 ## B-tree index validation
 
 The full engine and SDK suites pass with `-race` after replacing the sorted
-slice. Existing version-1 snapshots retain their byte format; restore rejects
+slice. Existing unframed version-1 snapshots remain readable; restore rejects
 unordered or duplicate keys instead of silently changing cardinality or memory
 accounting. The memory cap still measures logical key/value payload, not tree
 allocation overhead or process RSS. Comparative throughput and checkpoint measurements are recorded in
@@ -94,3 +94,17 @@ checkpoint creation with paired atomic updates and reads, then restores each
 snapshot into a separate instance and checks that its pair is consistent.
 This is local backend acceptance; it does not substitute for distributed
 replication, task-loss recovery, retention or key-group rescale acceptance.
+
+## Snapshot magic and compatibility
+
+The serializer now emits the proposed `WHSB` header. `TestHashMapSnapshotFormatUpgrade`
+uses fixed old/new byte fixtures and proves that old snapshots restore and are
+re-emitted in the current format. Header tests recompute valid CRCs for invalid
+magic, unsupported versions, truncated headers and oversized lengths/counts,
+so structural validation is exercised independently of checksum rejection.
+Malformed restores leave existing state unchanged. See the
+[selection guide](../../state-backend-selection.md#snapshot-format-upgrades)
+for the worker upgrade and downgrade boundary.
+
+After the magic-header change, the full engine, worker and SDK suites pass
+with `-race`; engine lint reports zero issues.

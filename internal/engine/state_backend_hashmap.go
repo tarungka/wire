@@ -13,6 +13,8 @@ import (
 // hashMapSnapshotVersion is the binary format version for HashMap snapshots.
 const hashMapSnapshotVersion uint8 = 1
 
+const hashMapSnapshotMagic = "WHSB"
+
 // HashMapStateBackend is an in-memory state backend backed by a B-tree.
 // It is designed for testing, development, and small-state workloads where
 // the full dataset fits in memory.
@@ -133,7 +135,7 @@ func (h *HashMapStateBackend) NewIterator(prefix []byte) StateIterator {
 //
 // Binary format:
 //
-//	[version:1B][num_entries:4B LE][entries...][crc32:4B LE]
+//	[magic:4B WHSB][version:1B][num_entries:4B LE][entries...][crc32:4B LE]
 //
 // Each entry:
 //
@@ -283,7 +285,7 @@ func (it *hashMapIterator) Close() {
 // serializeHashMapSnapshot encodes entries into the binary snapshot format.
 func serializeHashMapSnapshot(entries []kvEntry) ([]byte, error) {
 	// Pre-calculate buffer size.
-	size := 1 + 4 // version + num_entries
+	size := len(hashMapSnapshotMagic) + 1 + 4 // magic + version + num_entries
 	for _, e := range entries {
 		size += 4 + len(e.key) + 4 + len(e.value)
 	}
@@ -291,6 +293,7 @@ func serializeHashMapSnapshot(entries []kvEntry) ([]byte, error) {
 
 	buf := make([]byte, 0, size)
 
+	buf = append(buf, hashMapSnapshotMagic...)
 	// Version.
 	buf = append(buf, hashMapSnapshotVersion)
 
@@ -332,31 +335,41 @@ func deserializeHashMapSnapshot(data []byte) ([]kvEntry, error) {
 		return nil, fmt.Errorf("%w: CRC32 mismatch (expected %08x, got %08x)", ErrSnapshotCorrupt, expected, actual)
 	}
 
-	// Version check.
-	if data[0] != hashMapSnapshotVersion {
-		return nil, fmt.Errorf("%w: unsupported version %d", ErrSnapshotCorrupt, data[0])
+	// New snapshots carry the proposal's magic header. The old unframed
+	// version-1 format remains readable for checkpoint/savepoint upgrades.
+	header := 0
+	if bytes.HasPrefix(data, []byte(hashMapSnapshotMagic)) {
+		header = len(hashMapSnapshotMagic)
+		if payloadLen < header+5 {
+			return nil, fmt.Errorf("%w: truncated snapshot header", ErrSnapshotCorrupt)
+		}
+	} else if data[0] != hashMapSnapshotVersion {
+		return nil, fmt.Errorf("%w: invalid snapshot magic", ErrSnapshotCorrupt)
+	}
+	if data[header] != hashMapSnapshotVersion {
+		return nil, fmt.Errorf("%w: unsupported version %d", ErrSnapshotCorrupt, data[header])
 	}
 
-	numEntries := binary.LittleEndian.Uint32(data[1:5])
-	// Guard against corrupt numEntries causing OOM: each entry needs at least
-	// 8 bytes (4B key_len + 4B val_len), so cap against payload capacity.
-	maxPossibleEntries := uint32(payloadLen / 8)
-	if numEntries > maxPossibleEntries {
+	numEntries := binary.LittleEndian.Uint32(data[header+1 : header+5])
+	pos := header + 5
+	// Each entry needs at least its two lengths. Compare without narrowing
+	// the payload size so oversized headers cannot trigger a huge allocation.
+	if uint64(numEntries) > uint64(payloadLen-pos)/8 {
 		return nil, fmt.Errorf("%w: numEntries %d exceeds payload capacity", ErrSnapshotCorrupt, numEntries)
 	}
-	pos := 5
 
 	entries := make([]kvEntry, 0, numEntries)
 	for i := uint32(0); i < numEntries; i++ {
 		if pos+4 > payloadLen {
 			return nil, fmt.Errorf("%w: truncated at entry %d key length", ErrSnapshotCorrupt, i)
 		}
-		keyLen := int(binary.LittleEndian.Uint32(data[pos : pos+4]))
+		keySize := binary.LittleEndian.Uint32(data[pos : pos+4])
 		pos += 4
 
-		if pos+keyLen > payloadLen {
+		if uint64(keySize) > uint64(payloadLen-pos) {
 			return nil, fmt.Errorf("%w: truncated at entry %d key data", ErrSnapshotCorrupt, i)
 		}
+		keyLen := int(keySize)
 		key := make([]byte, keyLen)
 		copy(key, data[pos:pos+keyLen])
 		pos += keyLen
@@ -364,12 +377,13 @@ func deserializeHashMapSnapshot(data []byte) ([]kvEntry, error) {
 		if pos+4 > payloadLen {
 			return nil, fmt.Errorf("%w: truncated at entry %d value length", ErrSnapshotCorrupt, i)
 		}
-		valLen := int(binary.LittleEndian.Uint32(data[pos : pos+4]))
+		valueSize := binary.LittleEndian.Uint32(data[pos : pos+4])
 		pos += 4
 
-		if pos+valLen > payloadLen {
+		if uint64(valueSize) > uint64(payloadLen-pos) {
 			return nil, fmt.Errorf("%w: truncated at entry %d value data", ErrSnapshotCorrupt, i)
 		}
+		valLen := int(valueSize)
 		value := make([]byte, valLen)
 		copy(value, data[pos:pos+valLen])
 		pos += valLen

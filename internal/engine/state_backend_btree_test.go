@@ -27,7 +27,7 @@ func TestHashMapOrderedSnapshotCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(handle.Data, expected) {
-		t.Fatal("snapshot differs from sorted version-1 encoding")
+		t.Fatal("snapshot differs from sorted encoding")
 	}
 	restored := NewHashMapStateBackend(0)
 	if err := restored.Restore(handle); err != nil {
