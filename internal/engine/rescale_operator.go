@@ -8,7 +8,7 @@ import (
 )
 
 // KeyGroupStateRestorer restores typed keyed snapshots before task processing.
-// Implementations can delegate to PebbleStateBackend.RestoreKeyGroupRanges.
+// Implementations can delegate to either backend's RestoreKeyGroupRanges method.
 type KeyGroupStateRestorer interface {
 	RestoreKeyGroupState(context.Context, keygroup.KeyGroupRange, []KeyGroupSnapshot) error
 }

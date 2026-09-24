@@ -20,21 +20,9 @@ type KeyGroupSnapshot struct {
 // range copying leaves the destination unchanged. Parts must cover the entire
 // assigned interval exactly once and belong to the same checkpoint.
 func (b *PebbleStateBackend) RestoreKeyGroupRanges(ctx context.Context, assigned keygroup.KeyGroupRange, parts []KeyGroupSnapshot) error {
-	if assigned.Start >= assigned.End || int(assigned.End) > keygroup.MaxKeyGroups || len(parts) == 0 {
-		return fmt.Errorf("invalid rescale range or empty snapshot set")
-	}
-	ordered := append([]KeyGroupSnapshot(nil), parts...)
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Groups.Start < ordered[j].Groups.Start })
-	next := assigned.Start
-	checkpoint := ordered[0].Snapshot.CheckpointID
-	for _, part := range ordered {
-		if part.Groups.Start != next || part.Groups.End <= next || part.Groups.End > assigned.End || part.Snapshot.CheckpointID != checkpoint || checkpoint == 0 {
-			return fmt.Errorf("rescale snapshots have gaps, overlaps, or mixed checkpoint identities")
-		}
-		next = part.Groups.End
-	}
-	if next != assigned.End {
-		return fmt.Errorf("rescale snapshots do not cover assigned range")
+	ordered, checkpoint, err := validateKeyGroupSnapshots(assigned, parts)
+	if err != nil {
+		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -84,4 +72,26 @@ func (b *PebbleStateBackend) RestoreKeyGroupRanges(ctx context.Context, assigned
 		return err
 	}
 	return b.Restore(handle)
+}
+
+// validateKeyGroupSnapshots rejects incomplete or ambiguous ownership before
+// either backend allocates a replacement. It never sorts the caller's slice.
+func validateKeyGroupSnapshots(assigned keygroup.KeyGroupRange, parts []KeyGroupSnapshot) ([]KeyGroupSnapshot, uint64, error) {
+	if assigned.Start >= assigned.End || int(assigned.End) > keygroup.MaxKeyGroups || len(parts) == 0 {
+		return nil, 0, fmt.Errorf("invalid rescale range or empty snapshot set")
+	}
+	ordered := append([]KeyGroupSnapshot(nil), parts...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Groups.Start < ordered[j].Groups.Start })
+	next := assigned.Start
+	checkpoint := ordered[0].Snapshot.CheckpointID
+	for _, part := range ordered {
+		if part.Groups.Start != next || part.Groups.End <= next || part.Groups.End > assigned.End || part.Snapshot.CheckpointID != checkpoint || checkpoint == 0 {
+			return nil, 0, fmt.Errorf("rescale snapshots have gaps, overlaps, or mixed checkpoint identities")
+		}
+		next = part.Groups.End
+	}
+	if next != assigned.End {
+		return nil, 0, fmt.Errorf("rescale snapshots do not cover assigned range")
+	}
+	return ordered, checkpoint, nil
 }

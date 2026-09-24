@@ -17,7 +17,7 @@ are not evidence that every requirement is implemented.
 | Memory limits and safeguards | Existing logical payload accounting and errors need full boundary/overflow/restore audit. Worker aggregate admission against available memory remains open. Runtime overhead and snapshot/iterator copies must be documented accurately. |
 | Checkpoint format and metadata | HashMap writes `WHSB`, version 1, length-prefixed entries and CRC32, and reads legacy unframed version-1 snapshots. Fixed byte fixtures verify upgrade compatibility and malformed-header rejection. Backend-tagged handles exist; backend mismatch, native Pebble semantics and durable manifest evidence remain in the final audit. |
 | Replication, restore and retention | Current worker archive transport and retention code exist from earlier WIPs. Prove both backends through actual completed-checkpoint recovery and cleanup; helper round trips alone are insufficient. |
-| Rescaling | Prove HashMap 4→8, 8→4 and 4→3 key-group redistribution through the distributed runtime, with equivalent Pebble behavior. |
+| Rescaling | Both backends pass real coordinator/two-worker savepoint rescale tests for 4→8, 8→4 and 4→3, including replicated fetch, assigned-key validation, replacement checkpoint and old-savepoint release. Backend restore rejects gaps, overlaps, mixed checkpoints, corruption and cancellation atomically. SDK managed-operator/MiniCluster rescale integration remains to be completed and verified. |
 | Contract/negative tests | Shared `TestStateBackendAcceptance` verifies every entry of a 10,000-entry restore, empty restore, 10 MiB value, binary key groups 0x0000–0x007F with ordered 0x0020 prefix selection, and checkpoint consistency during concurrent atomic updates/Get. Three runs pass under `-race` for both backends. Existing corruption, cross-backend rejection and memory-limit cases still need final requirement mapping. |
 | Comparative benchmarks | Implemented reproducible Put/Get/full-iterator and 1/64/256 MiB checkpoint benchmarks for both backends. [Local measurements and raw output](benchmarks.md) distinguish volatile writes from synchronized writes and serialization from native checkpoint hashing; proposal estimates are not guarantees. |
 | Documentation and upgrade behavior | Record current formats, defaults, resource boundaries and incompatibilities, link runtime guidance, then audit all original sections before marking Implemented. |
@@ -108,3 +108,20 @@ for the worker upgrade and downgrade boundary.
 
 After the magic-header change, the full engine, worker and SDK suites pass
 with `-race`; engine lint reports zero issues.
+
+## Distributed rescale and atomic range restore
+
+HashMap now implements `VisitKeyGroupRange` and `RestoreKeyGroupRanges`.
+Replacement state is assembled privately with the destination logical memory
+limit; only a fully validated result is published. The two backends share
+validation of contiguous, non-overlapping ownership and checkpoint identity.
+
+`TestClusterSavepointRescalesKeyGroups` runs both backends on a real coordinator
+and two workers with replica servers, through the HTTP rescale API. It checks
+4→8, 8→4 and 4→3, plus unsupported-source rollback and a delayed state fetch.
+Restored values and ownership are checked before operator Open can initialize
+state. A new checkpoint must complete before deleting the old savepoint.
+The cluster test and both backends' range-restore tests pass under `-race`;
+engine/worker lint is clean. This test uses a registered stateful test operator,
+not SDK MiniCluster managed Process; the latter remains a separate integration
+requirement, as does recovery from actual worker loss.
