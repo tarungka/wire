@@ -122,5 +122,34 @@ func adaptSink(sink Sink) engine.SinkOperator {
 	if transactional, ok := sink.(TransactionalSink); ok {
 		return transactional
 	}
+	if batch, ok := sink.(BatchSink); ok {
+		return &batchSinkAdapter{sinkAdapter: &sinkAdapter{sink: sink}, batch: batch}
+	}
 	return &sinkAdapter{sink: sink}
+}
+
+func adaptSource(source Source, timestamp TimestampExtractor) engine.SourceOperator {
+	adapter := &sourceAdapter{source: source, timestamp: timestamp}
+	if pre, ok := source.(PreOpenCheckpointedSource); ok {
+		return &preOpenSourceAdapter{sourceAdapter: adapter, restore: pre.RestoreOffsetBeforeOpen}
+	}
+	return adapter
+}
+
+type preOpenSourceAdapter struct {
+	*sourceAdapter
+	restore func(context.Context, []byte) error
+}
+
+func (a *preOpenSourceAdapter) RestoreOffsetBeforeOpen(ctx context.Context, data []byte) error {
+	return a.restore(ctx, append([]byte(nil), data...))
+}
+
+type batchSinkAdapter struct {
+	*sinkAdapter
+	batch BatchSink
+}
+
+func (a *batchSinkAdapter) WriteBatch(ctx context.Context, events []Event) error {
+	return a.batch.WriteBatch(ctx, events)
 }

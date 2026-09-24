@@ -63,7 +63,7 @@ func (r *WorkerRegistry) RegisterSource(name string, factory WorkerSourceFactory
 		if nilConnector(source) {
 			return nil, fmt.Errorf("sdk: source factory %q returned nil", name)
 		}
-		return &sourceAdapter{source: source}, nil
+		return adaptSource(source, nil), nil
 	})
 }
 func (r *WorkerRegistry) RegisterSink(name string, factory WorkerSinkFactory) {

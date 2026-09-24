@@ -16,8 +16,12 @@ type Sink interface {
 	Close() error
 }
 
-// BatchSink optionally accepts an explicit batch. Write remains synchronous;
-// callers must handle partial delivery if a batch spans multiple requests.
+// BatchSink optionally accepts buffered events synchronously. The runtime groups
+// up to 100 queued records and flushes when input is idle or before checkpoint,
+// watermark and end-of-input boundaries. Configured record-level retry/DLQ/drop
+// policies use Write instead, since a batch error cannot attribute individual
+// outcomes. Batch errors fail the task; connectors must account for partial
+// external delivery and replay. WriteBatch must not retain the supplied slice.
 type BatchSink interface {
 	Sink
 	WriteBatch(ctx context.Context, events []Event) error

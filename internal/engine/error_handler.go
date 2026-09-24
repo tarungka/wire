@@ -50,6 +50,7 @@ type ErrorHandlerConfig struct {
 
 // ChainLink pairs an Operator with its ErrorHandlerConfig.
 type ChainLink struct {
+	batch    *sinkBatch
 	Operator Operator
 	Config   ErrorHandlerConfig
 }

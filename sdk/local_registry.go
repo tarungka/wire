@@ -80,7 +80,7 @@ func (env *StreamExecutionEnvironment) localRegistry(ctx context.Context) (rpc.J
 				if nilConnector(source) {
 					return nil, fmt.Errorf("sdk: source factory returned nil")
 				}
-				return &sourceAdapter{source: source, timestamp: node.TimestampExtractor}, nil
+				return adaptSource(source, node.TimestampExtractor), nil
 			})
 		case NodeSink:
 			reg.RegisterSink(node.ClassName, func(_ context.Context, _ []byte, tc worker.TaskContext) (engine.SinkOperator, error) {

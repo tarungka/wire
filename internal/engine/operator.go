@@ -56,6 +56,13 @@ type SinkOperator interface {
 	Write(ctx context.Context, event Event) error
 }
 
+// BatchSinkOperator optionally consumes buffered events synchronously. An error
+// fails the task; the connector must account for partial external delivery.
+type BatchSinkOperator interface {
+	SinkOperator
+	WriteBatch(context.Context, []Event) error
+}
+
 // TransactionalSink extends SinkOperator with two-phase commit (2PC) support.
 // Sinks that implement this interface participate in the checkpoint protocol:
 //   - BeginTransaction: open a new transaction (called at startup and after each Commit)
