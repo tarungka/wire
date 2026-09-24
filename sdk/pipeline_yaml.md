@@ -299,3 +299,23 @@ cleanup. Exclusive configuration ownership is still required; a periodic
 checkpoint that supersedes the savepoint can cause safe rejection and must be
 reconciled before another reload. Changed topology remains unsupported by this
 same-layout orchestration.
+
+### CLI watch
+
+After submitting the initial definition, attach with:
+
+```sh
+wire jobs watch JOB_ID --file pipeline.yaml --coordinator https://host:4001 \
+  --ca-cert ca.pem --api-key-file api-key.txt --allow-replacement
+```
+
+Without `--allow-replacement`, only interval edits are applied and other edits
+stop the watcher. `--poll-interval` defaults to 250ms. The supplied file must
+initially describe the running job, and this watcher must exclusively own its
+configuration updates. It does not submit an initial job or reconcile other
+controllers. Stdout contains JSON applied/reload events; reload events include
+the savepoint ID for later inspection/cleanup. Ctrl-C stops watching; it does
+not cancel the remote job or undo an already accepted replacement. Existing
+HTTPS/client-certificate/API-key/password-file settings are supported. The
+stock command binds public HTTP connectors; application-specific registries
+can use the SDK watch API.

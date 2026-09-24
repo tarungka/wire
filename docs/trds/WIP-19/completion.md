@@ -168,3 +168,13 @@ real workers and a fenced transactional sink. An invalid edit leaves status,
 deployment generation and source lifetime unchanged. A subsequent atomic CEL
 edit creates a savepoint, restores source offset 1, joins the old source and
 commits exactly v1:first followed by v2:second. Cancellation joins the watcher.
+
+## CLI watch integration
+
+`jobs watch JOB_ID --file pipeline.yaml` attaches to an existing job using the
+current file as its baseline. It validates endpoint/security/arguments, emits
+JSON confirmation events, and opts into same-layout reload with
+--allow-replacement. CLI race tests cover atomic interval edits through HTTP and
+cancellation. The SDK file-to-worker test covers replacement orchestration.
+A built-binary watch smoke test, external-edit reconciliation and remaining
+migration/crash requirements are still pending.

@@ -51,7 +51,13 @@ func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "jobs" || os.Args[1] == "savepoints" || os.Args[1] == "cluster") {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		if err := jobcli.RunWithPipelineCompiler(ctx, os.Args[1:], os.Stdout, os.Stderr, compileYAMLPipeline); err != nil {
+		var err error
+		if len(os.Args) > 2 && os.Args[1] == "jobs" && os.Args[2] == "watch" {
+			err = runPipelineWatch(ctx, os.Args[3:], os.Stdout, os.Stderr)
+		} else {
+			err = jobcli.RunWithPipelineCompiler(ctx, os.Args[1:], os.Stdout, os.Stderr, compileYAMLPipeline)
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
