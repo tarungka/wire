@@ -290,6 +290,14 @@ the savepoint ID even if a later step fails. `ErrPipelineReplacementRolledBack`
 means the previous configuration has been restored; its recovery may still be
 in progress or may exhaust the restart budget. A successful return means the
 replacement reached RUNNING or FINISHED. Bound this operation with a context.
+Each replacement carries a fresh `replacement_request_id`, persisted with its
+acceptance and retained across rollback. If its HTTP reply is lost, Reload reads
+job status and continues only when that ID matches. A missing/different ID or
+failed status read returns an error; no mutation is resent. The result exposes
+`ReplacementRequestID` for reconciliation. This is a correlation marker, not an
+idempotency key or a configuration lock. A lost savepoint-creation reply still
+requires manual reconciliation; automatic recovery of that request is not yet
+implemented.
 
 Set `PipelineLiveWatchConfig.AllowReplacement` to enable this path for stable
 non-interval file edits. `OnReload` receives its result/error, including the
@@ -314,7 +322,7 @@ stop the watcher. `--poll-interval` defaults to 250ms. The supplied file must
 initially describe the running job, and this watcher must exclusively own its
 configuration updates. It does not submit an initial job or reconcile other
 controllers. Stdout contains JSON applied/reload events; reload events include
-the savepoint ID for later inspection/cleanup. Ctrl-C stops watching; it does
+the savepoint ID and replacement request ID for later inspection/reconciliation. Ctrl-C stops watching; it does
 not cancel the remote job or undo an already accepted replacement. Existing
 HTTPS/client-certificate/API-key/password-file settings are supported. The
 stock command binds public HTTP connectors; application-specific registries

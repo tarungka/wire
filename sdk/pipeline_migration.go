@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,17 +17,20 @@ import (
 
 var ErrPipelineReplacementRolledBack = errors.New("sdk: pipeline replacement rolled back")
 
-// PipelineReloadResult preserves the savepoint identity for inspection/cleanup,
+// PipelineReloadResult preserves savepoint and request identities for reconciliation,
 // including when a later mutation fails or its response is uncertain.
 type PipelineReloadResult struct {
-	JobID, SavepointID string
-	RolledBack         bool
+	JobID, SavepointID   string
+	ReplacementRequestID string
+	RolledBack           bool
 }
 
 // Reload preflights a same-layout candidate, takes a savepoint, requests fenced
 // replacement, and waits for RUNNING/FINISHED or failure/rollback. The caller
 // must exclusively own job configuration changes and bound the operation with
-// ctx. Mutations are sent once; an error can require reconciliation. Retained
+// ctx. Mutations are sent once. A lost replacement reply is reconciled only if
+// job status confirms its persisted request ID; other errors may require manual
+// reconciliation. Retained
 // savepoints are not deleted automatically. Changed topology is not supported.
 func (p *YAMLPipeline) Reload(ctx context.Context, jobID string) (PipelineReloadResult, error) {
 	result := PipelineReloadResult{JobID: jobID}
@@ -93,20 +97,25 @@ func (p *YAMLPipeline) Reload(ctx context.Context, jobID string) (PipelineReload
 			return result, fmt.Errorf("sdk: reload savepoint identity changed")
 		}
 	}
-	if err := p.ReplaceFromSavepoint(ctx, jobID, result.SavepointID); err != nil {
-		return result, err
-	}
+	result.ReplacementRequestID = rand.Text()
+	// Send the mutation once. An error may mean the coordinator accepted it
+	// but the reply was lost; only the persisted correlation ID proves that.
+	replaceErr := p.replaceFromSavepoint(ctx, jobID, result.SavepointID, result.ReplacementRequestID)
 	for {
 		var job struct {
-			ID      string `json:"id"`
-			Status  string `json:"status"`
-			Failure string `json:"rescale_failure"`
+			ID        string `json:"id"`
+			RequestID string `json:"replacement_request_id"`
+			Status    string `json:"status"`
+			Failure   string `json:"rescale_failure"`
 		}
 		if err := requestJSON(http.MethodGet, base, http.StatusOK, &job); err != nil {
-			return result, err
+			return result, errors.Join(replaceErr, err)
 		}
 		if job.ID != jobID {
 			return result, fmt.Errorf("sdk: reload job identity changed")
+		}
+		if job.RequestID != result.ReplacementRequestID {
+			return result, errors.Join(replaceErr, fmt.Errorf("sdk: replacement request not confirmed; reconcile job before resubmitting"))
 		}
 		if job.Failure != "" {
 			result.RolledBack = true
@@ -117,7 +126,7 @@ func (p *YAMLPipeline) Reload(ctx context.Context, jobID string) (PipelineReload
 			return result, nil
 		case "FAILED", "CANCELED":
 			return result, fmt.Errorf("sdk: replacement ended %s", job.Status)
-		case "FAILING", "DEPLOYING":
+		case "FAILING", "DEPLOYING", "FINISHING":
 		default:
 			return result, fmt.Errorf("sdk: unexpected replacement status %q", job.Status)
 		}

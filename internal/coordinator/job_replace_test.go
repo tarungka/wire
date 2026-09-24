@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
 )
 
@@ -40,13 +41,28 @@ func TestSameLayoutReplacementPreservesFullSnapshotAndRollsBack(t *testing.T) {
 	candidate := linearGraph()
 	candidate.Operators[1].ClassName = "new-map"
 	candidate.CheckpointPolicy = &rpc.CheckpointPolicy{Interval: time.Second, Timeout: time.Minute}
-	result, err := c.ReplaceJobFromSavepoint("job", "save", 4, encode(t, candidate))
+	result, err := c.replaceJobFromSavepoint("job", "save", 4, encode(t, candidate), "request-123")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Status != JobFailing || result.ReplacementCheckpoint != 7 || result.RescaleCheckpoint != 0 || result.RescaleRollback == nil {
 		t.Fatalf("replacement=%+v", result)
 	}
+	assertRequestPersisted := func() {
+		t.Helper()
+		data, err := store.Get(JobMetaKey("job"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var persisted JobMeta
+		if err := protocol.DecodeMsgPack(data, &persisted); err != nil {
+			t.Fatal(err)
+		}
+		if persisted.ReplacementRequestID != "request-123" || jobDetailFromMeta(&persisted).ReplacementRequestID != "request-123" {
+			t.Fatal("accepted request identity lost in storage or API")
+		}
+	}
+	assertRequestPersisted()
 	tasks, err := generateTaskDescriptors(job)
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +79,7 @@ func TestSameLayoutReplacementPreservesFullSnapshotAndRollsBack(t *testing.T) {
 	if err := c.rollbackFailedRescale(job); err != nil {
 		t.Fatal(err)
 	}
+	assertRequestPersisted()
 	if string(job.Config) != original || job.CheckpointPolicy != nil || job.ReplacementCheckpoint != 0 || job.RescaleRollback != nil {
 		t.Fatal("rollback did not restore graph and policy")
 	}

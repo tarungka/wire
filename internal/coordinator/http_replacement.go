@@ -38,11 +38,12 @@ func (s *HTTPServer) handleReplaceJob(w http.ResponseWriter, r *http.Request) {
 		Name        string `json:"name"`
 		Parallelism int    `json:"parallelism"`
 		GraphBytes  string `json:"graph_bytes"`
+		RequestID   string `json:"replacement_request_id,omitempty"`
 		SavepointID string `json:"savepoint_id"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil || request.GraphBytes == "" || request.SavepointID == "" || decoder.Decode(new(any)) != io.EOF {
+	if err := decoder.Decode(&request); err != nil || request.GraphBytes == "" || request.SavepointID == "" || len(request.RequestID) > 128 || decoder.Decode(new(any)) != io.EOF {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "provide graph_bytes and savepoint_id")
 		return
 	}
@@ -60,7 +61,7 @@ func (s *HTTPServer) handleReplaceJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "replacement must preserve the job name")
 		return
 	}
-	job, err := s.coord.ReplaceJobFromSavepoint(current.ID, request.SavepointID, request.Parallelism, graph)
+	job, err := s.coord.replaceJobFromSavepoint(current.ID, request.SavepointID, request.Parallelism, graph, request.RequestID)
 	if err != nil {
 		writeJobError(w, err)
 		return

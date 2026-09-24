@@ -107,6 +107,10 @@ func (p *YAMLPipeline) ValidateReplacement(ctx context.Context, jobID string) er
 // rescale_failure to distinguish deployment success from rollback. Mutations
 // are never retried; after an uncertain response reconcile before resubmitting.
 func (p *YAMLPipeline) ReplaceFromSavepoint(ctx context.Context, jobID, savepointID string) error {
+	return p.replaceFromSavepoint(ctx, jobID, savepointID, "")
+}
+
+func (p *YAMLPipeline) replaceFromSavepoint(ctx context.Context, jobID, savepointID, requestID string) error {
 	if jobID == "" || jobID == "." || jobID == ".." || strings.ContainsAny(jobID, "/\\") || savepointID == "" {
 		return fmt.Errorf("%w: invalid job or savepoint ID", ErrInvalidConfig)
 	}
@@ -119,7 +123,8 @@ func (p *YAMLPipeline) ReplaceFromSavepoint(ctx context.Context, jobID, savepoin
 		Parallelism int    `json:"parallelism"`
 		GraphBytes  string `json:"graph_bytes"`
 		SavepointID string `json:"savepoint_id"`
-	}{submission.Name, submission.Parallelism, submission.GraphBytes, savepointID})
+		RequestID   string `json:"replacement_request_id,omitempty"`
+	}{submission.Name, submission.Parallelism, submission.GraphBytes, savepointID, requestID})
 	if err != nil {
 		return err
 	}

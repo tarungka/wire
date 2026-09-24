@@ -3,6 +3,10 @@ package sdk
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"sync/atomic"
 	"testing"
 
@@ -21,6 +25,14 @@ func TestSameJobReplacementRestoresSourceAndNewCode(t *testing.T) {
 					testSameJobReplacement(t, scenario != "success", scenario != "no-restart", transactional, "")
 				})
 			}
+		})
+	}
+}
+
+func TestSameJobReplacementLostHTTPResponse(t *testing.T) {
+	for _, scenario := range []string{"success", "rollback", "no-restart"} {
+		t.Run(scenario, func(t *testing.T) {
+			testSameJobReplacement(t, scenario != "success", scenario != "no-restart", true, "http")
 		})
 	}
 }
@@ -71,8 +83,8 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, re
 		}
 		return &pipelineRemoteSink{target: output}, nil
 	})
-	ctx, coord, url := lifecycleCluster(t, registry)
-	env := New().SetMode(Cluster).SetCoordinator(url)
+	ctx, coord, endpoint := lifecycleCluster(t, registry)
+	env := New().SetMode(Cluster).SetCoordinator(endpoint)
 	if recovery {
 		env.SetRestartStrategy(FixedDelay(3, 0))
 	}
@@ -92,11 +104,42 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, re
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidateEnv := New().SetMode(Cluster).SetCoordinator(url)
+	candidateEnv := New().SetMode(Cluster).SetCoordinator(endpoint)
 	if recovery {
 		candidateEnv.SetRestartStrategy(FixedDelay(3, 0))
 	}
 	candidateEnv.AddSourceNamed("source", "replay", nil).MapNamed("map", "v2", nil).AddSinkNamed("sink", "output", nil)
+	if responseLoss == "http" {
+		target, err := url.Parse(endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		var dropped atomic.Int32
+		proxy.ModifyResponse = func(response *http.Response) error {
+			if response.Request.URL.Path == "/api/v1/jobs/"+jobID+"/replacement" && response.StatusCode == http.StatusAccepted {
+				dropped.Add(1)
+				return errors.New("injected lost accepted replacement reply")
+			}
+			return nil
+		}
+		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_ = conn.Close()
+		}
+		server := httptest.NewServer(proxy)
+		t.Cleanup(func() {
+			server.Close()
+			if dropped.Load() != 1 {
+				t.Errorf("dropped replies=%d", dropped.Load())
+			}
+		})
+		candidateEnv.SetCoordinator(server.URL)
+	}
 	candidate := &YAMLPipeline{Name: old.Name, env: candidateEnv}
 	result, reloadErr := candidate.Reload(ctx, jobID)
 	if (!fail && reloadErr != nil) || (fail && !errors.Is(reloadErr, ErrPipelineReplacementRolledBack)) {

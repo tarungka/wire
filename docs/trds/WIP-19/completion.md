@@ -203,3 +203,20 @@ job identity and writer generation retain the existing runtime assertions.
 The original six cases and these five cases pass three times under `-race`.
 This exercises a retryable commit reply loss, not coordinator/worker process
 crashes or a lost HTTP response to savepoint/replacement requests.
+
+## Lost replacement HTTP replies
+
+Reload now sends a unique replacement request ID. The coordinator persists it
+atomically with the accepted replacement and exposes it on job detail, retaining
+it through rollback. The SDK sends the mutation once, then uses this ID to
+reconcile a missing HTTP reply before interpreting job status. Missing or
+conflicting IDs fail rather than treating the old RUNNING job as success.
+The result and CLI reload event expose the ID for later reconciliation.
+
+Coordinator tests verify durable identity before/after rollback. HTTP tests
+cover accepted, rolled-back, unaccepted and conflicting requests with one
+mutation each. Three real-worker transactional cases drop the accepted reply
+at a reverse proxy and still verify successful replacement, rollback and
+no-restart behavior, source offsets and exact external output. Each passed
+three race-detected runs. This is not idempotent mutation replay, an external
+configuration lock, process-crash evidence or savepoint POST reply recovery.

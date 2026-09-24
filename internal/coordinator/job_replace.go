@@ -12,6 +12,10 @@ import (
 // job identity. Old tasks are fenced and joined by the normal restart path.
 // Failed placement/deployment restores the old graph through rollback handling.
 func (c *Coordinator) ReplaceJobFromSavepoint(jobID, savepointID string, parallelism int, config []byte) (*JobMeta, error) {
+	return c.replaceJobFromSavepoint(jobID, savepointID, parallelism, config, "")
+}
+
+func (c *Coordinator) replaceJobFromSavepoint(jobID, savepointID string, parallelism int, config []byte, requestID string) (*JobMeta, error) {
 	config, err := c.resolveStateBackendDefaults(config)
 	if err != nil {
 		return nil, err
@@ -59,6 +63,7 @@ func (c *Coordinator) ReplaceJobFromSavepoint(jobID, savepointID string, paralle
 		return nil, fmt.Errorf("%w: replacement requires latest completed savepoint", ErrInvalidTransition)
 	}
 	next := *job
+	next.ReplacementRequestID = requestID
 	next.Config = append([]byte(nil), config...)
 	next.Parallelism = parallelism
 	next.CheckpointPolicy = graph.CheckpointPolicy

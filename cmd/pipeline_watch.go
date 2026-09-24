@@ -88,7 +88,7 @@ func runPipelineWatch(ctx context.Context, args []string, out, errOut io.Writer)
 		AllowReplacement:    *replacement,
 		OnApplied:           func(plan sdk.PipelineUpdatePlan) { emit(map[string]any{"event": "applied", "kind": plan.Kind}) },
 		OnReload: func(result sdk.PipelineReloadResult, err error) {
-			event := map[string]any{"event": "reload", "job_id": result.JobID, "savepoint_id": result.SavepointID, "rolled_back": result.RolledBack}
+			event := map[string]any{"event": "reload", "job_id": result.JobID, "savepoint_id": result.SavepointID, "replacement_request_id": result.ReplacementRequestID, "rolled_back": result.RolledBack}
 			if err != nil {
 				event["error"] = err.Error()
 			}

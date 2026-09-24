@@ -35,7 +35,8 @@ type jobResponse struct {
 
 // jobDetailResponse includes full job details.
 type jobDetailResponse struct {
-	Checkpoints *jobCheckpointResponse `json:"checkpoints,omitempty"`
+	ReplacementRequestID string                 `json:"replacement_request_id,omitempty"`
+	Checkpoints          *jobCheckpointResponse `json:"checkpoints,omitempty"`
 	jobResponse
 	StartedAt        string            `json:"started_at,omitempty"`
 	FinishedAt       string            `json:"finished_at,omitempty"`
@@ -193,12 +194,13 @@ func jobResponseFromMeta(j *JobMeta) jobResponse {
 
 func jobDetailFromMeta(j *JobMeta) jobDetailResponse {
 	return jobDetailResponse{
-		jobResponse:      jobResponseFromMeta(j),
-		StartedAt:        formatTime(j.StartedAt),
-		FinishedAt:       formatTime(j.FinishedAt),
-		RestartCount:     j.RestartCount,
-		LatestCheckpoint: j.LatestCheckpoint,
-		SavepointPath:    j.SavepointPath,
+		jobResponse:          jobResponseFromMeta(j),
+		StartedAt:            formatTime(j.StartedAt),
+		FinishedAt:           formatTime(j.FinishedAt),
+		RestartCount:         j.RestartCount,
+		LatestCheckpoint:     j.LatestCheckpoint,
+		ReplacementRequestID: j.ReplacementRequestID,
+		SavepointPath:        j.SavepointPath,
 	}
 }
 
