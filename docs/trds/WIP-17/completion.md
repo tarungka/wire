@@ -11,7 +11,7 @@ The existing PR is #197. Other merged TRDs will use linked follow-up PRs.
 | Inter-node mutual TLS | Coordinator/worker RPC TLS exists. Verify identities, invalid/expired certificates, secure data-plane transport, and the documented trust boundaries. |
 | Authentication file (§3.4, §4.1) | Startup loader added: JSON, unique users/keys, roles, one credential, bcrypt cost >=10, bounded file/user count. Expand negative tests and verify all schema constraints. |
 | Basic and Bearer authentication (§3.5) | Runtime middleware added; authentication failures return 401. Verify certificate+auth combinations through an actual HTTPS server. |
-| Endpoint RBAC (§3.6) | Authenticated HTTPS acceptance covers every registered coordinator route, all roles, HEAD variants, public probes, escaped paths and canonical redirects; the test enforces route-inventory coverage. Separate metrics-listener acceptance remains. |
+| Endpoint RBAC (§3.6) | Authenticated HTTPS acceptance covers every registered coordinator route, all roles, HEAD variants, public probes, escaped paths and canonical redirects; the test enforces route-inventory coverage. A subprocess acceptance test also verifies the production metrics listener stays public while the API rejects anonymous requests. |
 | Brute-force protection (§6) | Bounded global authentication admission added (20 burst, 10 checks/second). Document operational behavior and test concurrent admission. |
 | Authentication logs (§7.3) | Successful identity and failed source/Basic username logging added. Add capture tests proving passwords and API keys never appear. |
 | Connector secret substitution (§3.7) | Implemented for structured JSON connector settings: submission-time snapshots, missing-variable rejection, reference-only metadata, recovery reconstruction and mTLS/capability-gated worker delivery. Live worker acceptance passes; complete recovery acceptance remains. |
@@ -401,3 +401,13 @@ is trust-anchor replacement, not CRL/OCSP or individual-certificate revocation.
 The runtime guide explicitly describes that boundary and existing-session
 handling. These HTTPS tests do not prove the separate RPC/data/replica expiry
 or credential recovery requirements; those acceptance gates remain open.
+
+### Separate metrics listener acceptance
+
+`TestMetricsListenerRemainsPublicWithAPIAuthentication` runs production
+observability.Init in an isolated process and scrapes its real listener while
+an authenticated coordinator API returns 401 to anonymous requests. Both
+anonymous and invalid-Bearer scrapes return Prometheus data over plain HTTP.
+This verifies the explicitly public metrics contract; it does not claim API
+TLS or RBAC applies to metrics. The runtime guide now states the separate
+listener's network/proxy protection requirements.

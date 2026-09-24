@@ -230,3 +230,14 @@ and output destinations are trusted application code; do not unwrap sanitized
 errors and serialize the original fields. Arbitrary application encodings cannot
 be made safe merely by filtering known credential representations. TLS and these
 runtime protections do not encrypt local state or external sink contents.
+
+## Metrics listener boundary
+
+The Prometheus listener (`--metrics-addr`, default `:9090`) is a separate
+plain HTTP server. `--auth`, HTTP TLS and HTTP client-certificate settings
+protect the coordinator API, not this listener. `/metrics` accepts anonymous
+scrapes even when API authentication is enabled; invalid Authorization headers
+do not turn it into an authenticated endpoint. Bind it to a trusted monitoring
+interface (for example `--metrics-addr 127.0.0.1:9090`), restrict access at the
+network boundary, or use an authenticated TLS proxy. Disable it with
+`--metrics-enabled=false` when it is not needed.
