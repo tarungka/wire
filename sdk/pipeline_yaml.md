@@ -272,3 +272,14 @@ backend or topology edits return `ErrPipelineMigrationRequired` without stopping
 the job. The caller must supply the current definition and exclusively own job
 configuration changes; independent external edits are not reconciled yet.
 This remains interval-only reload support, not full WIP-19 migration.
+
+For same-layout replacements, `candidate.ReplaceFromSavepoint(ctx, jobID,
+savepointID)` calls `POST /api/v1/jobs/{id}/replacement`. The candidate preserves
+the job name and physical layout; the coordinator requires its latest completed
+savepoint and no active checkpoint. HTTP 202 means accepted for fenced teardown
+and redeployment, not that the new code is running. Inspect job status and
+`rescale_failure` to detect rollback. The SDK sends one request and verifies the
+returned job identity; reconcile ambiguous responses before another mutation.
+Rollback restores the prior graph/policies, but restarting it still requires
+remaining recovery budget. This API does not itself watch files or support
+changed-topology migration.

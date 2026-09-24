@@ -7,8 +7,6 @@ import (
 	"testing"
 
 	"github.com/tarungka/wire/internal/coordinator"
-	"github.com/tarungka/wire/internal/protocol"
-	"github.com/tarungka/wire/internal/rpc"
 )
 
 func TestSameJobReplacementRestoresSourceAndNewCode(t *testing.T) {
@@ -83,22 +81,16 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var graph rpc.JobGraph
-	if err := protocol.DecodeMsgPack(old.Config, &graph); err != nil {
+	candidateEnv := New().SetMode(Cluster).SetCoordinator(url)
+	if recovery {
+		candidateEnv.SetRestartStrategy(FixedDelay(3, 0))
+	}
+	candidateEnv.AddSourceNamed("source", "replay", nil).MapNamed("map", "v2", nil).AddSinkNamed("sink", "output", nil)
+	candidate := &YAMLPipeline{Name: old.Name, env: candidateEnv}
+	if err := candidate.ReplaceFromSavepoint(ctx, jobID, sp.ID); err != nil {
 		t.Fatal(err)
 	}
-	for i := range graph.Operators {
-		if graph.Operators[i].ClassName == "v1" {
-			graph.Operators[i].ClassName = "v2"
-		}
-	}
-	config, err := protocol.EncodeMsgPack(graph)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := coord.ReplaceJobFromSavepoint(jobID, sp.ID, old.Parallelism, config); err != nil {
-		t.Fatal(err)
-	}
+
 	if !recovery {
 		lifecycleWait(t, ctx, func() bool { job, err := coord.GetJob(jobID); return err == nil && job.Status == coordinator.JobFailed })
 		job, _ := coord.GetJob(jobID)

@@ -145,3 +145,11 @@ transaction namespace and increased writer generation. With no restart budget,
 the external ledger keeps only the first committed record. This covers ordinary
 commit responses; replacement-specific lost commit response and crash timing
 remain unverified. Automatic controller orchestration remains unfinished.
+
+The same-layout replacement operation is now exposed through operator-authorized
+HTTP and SDK ReplaceFromSavepoint. The real-worker matrix uses that SDK/HTTP path
+for all ordinary/transactional success, rollback and no-restart cases. HTTP 202
+is acceptance only. Strict request tests reject malformed input/name changes
+without changing the running job, and HTTPS role acceptance includes the route.
+Automatic savepoint selection/orchestration and changed-topology migration remain
+unfinished.

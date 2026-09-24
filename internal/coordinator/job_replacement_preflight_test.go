@@ -74,3 +74,19 @@ func TestReplacementPreflightHTTP(t *testing.T) {
 		})
 	}
 }
+
+func TestReplacementHTTPRejectsMalformedMutation(t *testing.T) {
+	c, _ := checkpointPolicyCoordinator(t)
+	c.jobs["job"].Name = "current"
+	server := NewHTTPServer(c, "", zerolog.Nop())
+	for _, body := range []string{`{}`, `{"savepoint_id":"save","graph_bytes":"invalid"}`, `{"name":"current","savepoint_id":"save","graph_bytes":"eA==","extra":true}`, `{"name":"other","savepoint_id":"save","graph_bytes":"eA=="}`, `{"name":"current","savepoint_id":"save","graph_bytes":"eA=="} {}`} {
+		response := httptest.NewRecorder()
+		server.server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/jobs/job/replacement", bytes.NewBufferString(body)))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("body=%s status=%d", body, response.Code)
+		}
+		if c.jobs["job"].Status != JobRunning || c.jobs["job"].RescaleRollback != nil {
+			t.Fatal("rejected request mutated job")
+		}
+	}
+}

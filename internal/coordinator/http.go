@@ -48,6 +48,8 @@ func NewHTTPServer(coord *Coordinator, listenAddr string, log zerolog.Logger, tl
 
 	mux.HandleFunc("POST /api/v1/jobs/{job_id}/replacement/validate", s.leaderOnly(s.handleValidateReplacement))
 
+	mux.HandleFunc("POST /api/v1/jobs/{job_id}/replacement", s.leaderOnly(s.handleReplaceJob))
+
 	// Savepoint endpoints.
 	mux.HandleFunc("POST /api/v1/jobs/{job_id}/checkpoints", s.leaderOnly(s.handleTriggerCheckpoint))
 	mux.HandleFunc("GET /api/v1/jobs/{job_id}/checkpoints/{checkpoint_id}", s.handleGetCheckpoint)
