@@ -12,7 +12,7 @@ SDK, connector, security and state integrations from WIP-13 through WIP-18.
 | Graph conversion | Existing SDK graph construction, forward references and cycle rejection. Validate shuffle semantics against current SDK and parallel execution. |
 | Pipeline state backend | `spec.state_backend` accepts WIP-18 nested HashMap/Pebble configuration. Validation runs before connector construction; omitted HashMap limit is 256 MiB and explicit zero is unlimited. SDK override has precedence. Full CLI/pipeline/system precedence remains open. |
 | Parallel/keyed/window execution | Instance-aware YAML factories now execute a three-partition CEL pipeline through embedded and local coordinator/worker runtimes. Private config copies, partition identity, factory errors and legacy guards have race tests. The 12-case `TestYAMLParallelKeyedWindowRuntime` matrix now verifies tumbling/sliding/session windows on HashMap/Pebble through embedded and checkpoint-configured worker execution. Every case combines three distinct original record keys under the CEL-selected key and verifies all accumulator contributions. Multiple-source/keyed-fan-out acceptance now passes with legacy factories, parallel instance factories and checkpoint-configured workers. Each branch receives every expected record once; selected keys remain in one partition. Recovery and mixed bounded/unbounded completion remain open. |
-| Checkpoint and restart | Configured policies now reach local coordinator/worker execution when all connectors use fresh-instance factories. A checkpoint-configured bounded pipeline executes successfully. Periodic checkpoint/replay and failure recovery still need dedicated YAML acceptance tests. |
+| Checkpoint and restart | Configured policies reach local coordinator/worker execution with fresh-instance factories. `TestYAMLPeriodicCheckpointRecoversTransactionalOutput` completes a periodic checkpoint, fails a sink after staging new output, restores source offsets into fresh connectors, and verifies exactly one external commit of each expected result. Three race repetitions cover a CEL map and managed HashMap/Pebble windows. Mixed-source completion and broader external deployment/lifecycle acceptance remain open. |
 | File watching and validation | Detect edits and validate a complete replacement before touching the current run. Not implemented. |
 | Graceful switchover | Drain old execution and start the validated replacement without overlapping ownership. Not implemented. |
 | Topology changes | Savepoint-based migration and failure rollback. Not implemented. |
@@ -33,3 +33,17 @@ keeps its slot and output streams open indefinitely. Current multi-source
 acceptance uses finite sources; it does not prove independent branch completion.
 This must be resolved with correct treatment of finished tasks in later
 checkpoints, not by merely releasing EOF and omitting their restore state.
+
+## Periodic checkpoint recovery evidence
+
+The source emits its first record, then returns empty batches while waiting for
+a confirmed transactional commit. This ensures the failure happens after a
+completed periodic checkpoint rather than relying on a sleep. The sink stages
+new output and fails once; fresh source/sink instances must restore and finish.
+The mapped case commits exactly `[11, 12]`. Window cases for HashMap and Pebble
+commit one JSON count result containing both input records. A valid restored
+window source offset can be 1 or 2 depending on whether another completed
+checkpoint captured the unfired window before EOF; either case must preserve
+the accumulator and commit the result once. All three cases pass three runs
+under `-race` (14.340s total). This tests task recovery with live replica
+workers, not replacement of a crashed OS process.
