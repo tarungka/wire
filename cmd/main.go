@@ -23,6 +23,7 @@ import (
 	"github.com/tarungka/wire/internal/jobcli"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/observability"
+	"github.com/tarungka/wire/internal/rpc"
 	"github.com/tarungka/wire/internal/transport"
 	"github.com/tarungka/wire/internal/worker"
 )
@@ -177,6 +178,7 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 
 	// Create coordinator.
 	coordCfg := coordinator.CoordinatorConfig{
+		DefaultStateBackend:              &rpc.StateBackendSpec{Type: wireCfg.State.DefaultBackend, DataDir: wireCfg.State.Pebble.DataDir, MaxMemoryBytes: wireCfg.State.HashMap.MaxMemoryMB * 1024 * 1024},
 		WorkerTimeout:                    wireCfg.Heartbeat.Timeout.Duration,
 		HeartbeatInterval:                wireCfg.Heartbeat.Interval.Duration,
 		CheckpointTimeout:                wireCfg.Checkpoint.Timeout.Duration,

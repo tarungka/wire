@@ -25,8 +25,10 @@
 The active follow-up audit is [completion.md](completion.md). MiniCluster now
 defaults managed Process/window state to HashMap with a 256 MiB logical payload
 limit per instance; explicit SDK selection still overrides it. The remaining
-original configuration, resource, recovery, rescale and benchmark requirements
-are tracked there. WIP-18 remains partially implemented.
+original pipeline precedence, resource, recovery, rescale and benchmark requirements
+are tracked there. Node configuration/CLI defaults now resolve at submission and
+are persisted per job; see [backend selection](../../state-backend-selection.md).
+WIP-18 remains partially implemented.
 
 ## Historical implementation assessment — 2026-09-12
 

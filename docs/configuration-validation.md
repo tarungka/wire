@@ -47,6 +47,8 @@ the parser/factories, which validate their types, expressions and graph edges.
 After merging, the node validator collects errors for:
 
 - Frame sizes below five bytes (type plus CRC).
+- Unknown `state.default_backend` values, negative HashMap limits, or limits
+  that overflow when converted from MiB to bytes.
 - Nonpositive heartbeat interval, timeout not greater than interval, or negative
   maximum failures.
 - Negative checkpoint minimum pause, nonpositive timeout, negative consecutive

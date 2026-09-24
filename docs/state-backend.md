@@ -6,6 +6,8 @@
 
 ---
 
+For node/CLI/SDK selection and persisted defaults, see [backend selection](state-backend-selection.md).
+
 ## 1. State Model
 
 State in Wire is not a "sidecar" cache; it is a first-class citizen embedded in the processing pipeline.

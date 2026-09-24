@@ -181,6 +181,33 @@
       },
       "type": "object"
     },
+    "state": {
+      "additionalProperties": false,
+      "properties": {
+        "default_backend": {
+          "type": "string"
+        },
+        "hashmap": {
+          "additionalProperties": false,
+          "properties": {
+            "max_memory_mb": {
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "pebble": {
+          "additionalProperties": false,
+          "properties": {
+            "data_dir": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "task_slot": {
       "additionalProperties": false,
       "properties": {

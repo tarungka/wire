@@ -13,6 +13,12 @@ import (
 // validation errors rather than failing on the first one.
 func (c *WireConfig) Validate() error {
 	var errs []error
+	if c.State.DefaultBackend != "pebble" && c.State.DefaultBackend != "hashmap" {
+		errs = append(errs, fmt.Errorf("state.default_backend must be pebble or hashmap"))
+	}
+	if c.State.HashMap.MaxMemoryMB < 0 || c.State.HashMap.MaxMemoryMB > math.MaxInt64/(1024*1024) {
+		errs = append(errs, fmt.Errorf("state.hashmap.max_memory_mb must be nonnegative and fit in bytes"))
+	}
 	if c.MaxFrameSize < 5 {
 		errs = append(errs, errors.New("max_frame_size must be at least 5 bytes (type and CRC header)"))
 	}

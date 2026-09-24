@@ -6,6 +6,7 @@ import "time"
 // These defaults match the current pflag defaults in cmd/init.go.
 func DefaultConfig() WireConfig {
 	return WireConfig{
+		State:        StateConfig{DefaultBackend: "pebble", HashMap: HashMapStateConfig{MaxMemoryMB: 256}, Pebble: PebbleStateConfig{DataDir: "/var/lib/wire/state"}},
 		MaxFrameSize: 16 * 1024 * 1024,
 		Heartbeat:    HeartbeatConfig{Interval: Duration{5 * time.Second}, Timeout: Duration{30 * time.Second}},
 		Checkpoint:   CheckpointConfig{Timeout: Duration{10 * time.Minute}},

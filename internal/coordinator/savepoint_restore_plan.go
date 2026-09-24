@@ -73,6 +73,9 @@ func planSavepointTaskRestore(cp CheckpointMeta, targets []rpc.TaskDescriptor) (
 		}
 		for i, old := range source.OperatorChain {
 			next := target.OperatorChain[i]
+			if (old.Type == rpc.OperatorTypeProcess || old.Type == rpc.OperatorTypeWindow) && stateBackendKind(old.StateBackend) != stateBackendKind(next.StateBackend) {
+				return invalid(fmt.Sprintf("state backend mismatch: checkpoint uses %q, job configured with %q", stateBackendKind(old.StateBackend), stateBackendKind(next.StateBackend)))
+			}
 			if old.OperatorID == "" || old.OperatorID != next.OperatorID || old.Type != next.Type {
 				return invalid("operator chain identity or order differs")
 			}
@@ -102,4 +105,11 @@ func sameSavepointRoutes(source, target rpc.TaskDescriptor) bool {
 		return result
 	}
 	return reflect.DeepEqual(normalize(source), normalize(target))
+}
+
+func stateBackendKind(spec *rpc.StateBackendSpec) string {
+	if spec == nil || spec.Type == "" {
+		return "pebble"
+	}
+	return spec.Type
 }

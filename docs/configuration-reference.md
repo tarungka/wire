@@ -17,6 +17,9 @@ Write-queue settings include fields that are not wired into the runtime.
 
 | Field | Type | Default | CLI override |
 | --- | --- | --- | --- |
+| `state.default_backend` | string | `pebble` | `--state-backend` |
+| `state.hashmap.max_memory_mb` | int64 | `256` | `--state-hashmap-max-memory-mb` |
+| `state.pebble.data_dir` | string | `/var/lib/wire/state` | — |
 | `max_frame_size` | uint32 | `16777216` | `--max-frame-size` |
 | `heartbeat.interval` | duration string | `5s` | — |
 | `heartbeat.timeout` | duration string | `30s` | — |
