@@ -1,5 +1,8 @@
 # Runtime TLS
 
+TLS protects data in transit. For local state, checkpoint archives and backups,
+see [storage security](storage-security.md). Wire does not encrypt files itself.
+
 Configure coordinator HTTPS and node RPC TLS independently in the system file:
 
 ```yaml
