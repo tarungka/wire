@@ -126,7 +126,7 @@ func (ex *embeddedExecutor) runLinearInstance(
 		before := len(operators)
 		switch node.Type {
 		case NodeSource:
-			sa := &sourceAdapter{source: node.Source, timestamp: node.TimestampExtractor}
+			sa := adaptSource(node.Source, node.TimestampExtractor)
 			sourceOp = sa
 		case NodeMap:
 			operators = append(operators, &mapAdapter{fn: node.MapFn})
@@ -230,7 +230,7 @@ func (ex *embeddedExecutor) runStageInstance(
 		switch node.Type {
 		case NodeSource:
 			if isSourceStage {
-				sourceOp = &sourceAdapter{source: node.Source, timestamp: node.TimestampExtractor}
+				sourceOp = adaptSource(node.Source, node.TimestampExtractor)
 			}
 		case NodeMap:
 			operators = append(operators, &mapAdapter{fn: node.MapFn})

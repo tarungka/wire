@@ -19,6 +19,7 @@ import (
 // topology. It orchestrates input readers, the operator chain, output writers,
 // and optionally a source reader and watermark emitter.
 type TaskSlot struct {
+	sourceRestoredBeforeOpen bool
 	// SourceExhausted parks a bounded source until its final global checkpoint.
 	SourceExhausted func(context.Context) error
 	// TransactionRecovery supplies distributed writer identity; completed boundary
@@ -89,6 +90,12 @@ func (ts *TaskSlot) Run(ctx context.Context) error {
 		return err
 	}
 
+	ts.sourceRestoredBeforeOpen = false
+	if ts.RestoreCheckpoint != nil {
+		if err := ts.restoreSourceBeforeOpen(ctx); err != nil {
+			return err
+		}
+	}
 	// Initialize synchronously so workers report RUNNING only after every
 	// operator, including the source, has opened successfully.
 	operators := make([]Operator, 0, len(ts.Operators)+1)

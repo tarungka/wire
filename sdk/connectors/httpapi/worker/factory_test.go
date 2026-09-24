@@ -28,6 +28,9 @@ func TestPublicHTTPFactoriesPreserveConnectorContracts(t *testing.T) {
 	if first == second || first.(*httpapi.Source).Address() != "" {
 		t.Fatal("factory reused or opened source")
 	}
+	if _, ok := first.(sdk.PreOpenCheckpointedSource); !ok {
+		t.Fatal("source lost pre-open restore contract")
+	}
 	checkpointed, ok := first.(sdk.CheckpointedSource)
 	if !ok {
 		t.Fatal("source lost checkpoint contract")

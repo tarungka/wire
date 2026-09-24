@@ -170,7 +170,14 @@ func (s *Source) ingest(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"accepted": len(request.Events), "sequence": s.received})
 }
 func (s *Source) ReadBatch(ctx context.Context) ([]engine.Event, error) {
+	// Yield a non-nil empty batch while idle so the runtime can service source
+	// checkpoint boundaries. A nil batch is reserved for end of input.
+	idle := time.NewTimer(100 * time.Millisecond)
+	defer idle.Stop()
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		s.mu.Lock()
 		if s.closed {
 			err := s.serveErr
@@ -196,6 +203,11 @@ func (s *Source) ReadBatch(ctx context.Context) ([]engine.Event, error) {
 			return nil, ctx.Err()
 		case <-s.done:
 		case <-s.notify:
+		case <-idle.C:
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return []engine.Event{}, nil
 		}
 	}
 }
@@ -236,4 +248,10 @@ func (s *Source) Close() error {
 		return server.Close()
 	}
 	return nil
+}
+
+// RestoreOffsetBeforeOpen lets worker and SDK runtimes restore sequence state
+// before publishing the ingress listener. It does not recover queued events.
+func (s *Source) RestoreOffsetBeforeOpen(ctx context.Context, offset []byte) error {
+	return s.RestoreOffset(ctx, offset)
 }

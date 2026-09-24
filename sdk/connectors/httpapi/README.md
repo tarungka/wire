@@ -117,3 +117,13 @@ configuration as supplied; do not treat this as secret-reference support. Source
 instances need distinct listen addresses when sharing a host. The HTTP replay and
 volatile acknowledgement limitations above still apply. Automatic batching and
 the full cluster lifecycle example remain tracked in WIP-16's completion audit.
+
+The source implements `sdk.PreOpenCheckpointedSource`: restored sequence state is
+loaded before the listener opens. Ordinary checkpointed connectors continue to
+restore after Open unless they explicitly opt into the pre-open contract. This
+ordering prevents accepting requests with a reset sequence during startup; it
+does not add durable ingress or automatic sender replay.
+
+While idle, HTTP source reads yield a non-nil empty batch every 100ms so pending
+checkpoint/savepoint requests can run without another ingress request. This is
+not end of input; the listener remains active.

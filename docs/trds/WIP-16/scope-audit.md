@@ -33,3 +33,27 @@ retry body/idempotency key, the original DLQ event, and no DLQ output on success
 These scenarios pass with the race detector. They establish the sink integration;
 HTTP source restore/replay, runtime batching, YAML and developer-trial requirements
 remain open.
+
+## HTTP source restore ordering
+
+The engine normally restores operators after Open. HTTP ingress requires the
+sequence offset before its listener becomes visible, so the runtime now supports
+an explicit SourceOffsetRestorerBeforeOpen contract. SDK PreOpenCheckpointedSource
+adapters preserve that opt-in in embedded, local-cluster and registered-worker
+paths. Other sources/operators retain their existing restore-after-open order.
+Pre-open restore only loads state; connectors must acquire resources in Open.
+
+A production TaskSlot test restores HTTP offset 42 and verifies its first ingress
+request receives sequence 43. Invalid topology/offset tests verify no listener is
+opened. `TestPublicHTTPSourcePauseResumeRestoresSequence` exercises a real
+coordinator, two public workers and named HTTP source registration: ingress sequence
+1 is delivered, an idle source is savepointed and paused, and a fresh instance
+resumes with sequence 2. The test originally timed out because idle ReadBatch
+never yielded to checkpoint handling. HTTP idle reads now return a non-nil empty
+batch every 100ms, allowing the runtime to service boundaries without new traffic.
+Both HTTP connector packages pass with the race detector. Engine, worker and SDK
+race suites also pass for the restore-order change.
+
+HTTP accepted events are still volatile, and restoring a sequence does not
+recreate the input queue or request sender replay. Crash/replay acceptance and the
+remaining scope above are not established by this pause/resume test.

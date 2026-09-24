@@ -25,3 +25,11 @@ type CheckpointedSource interface {
 	Checkpoint(checkpointID uint64) ([]byte, error)
 	RestoreOffset(ctx context.Context, offset []byte) error
 }
+
+// PreOpenCheckpointedSource opts into restoration before Open. The method must
+// only load offsets; resource acquisition belongs in Open. The runtime calls this
+// instead of RestoreOffset on recovery, before exposing an ingress listener.
+type PreOpenCheckpointedSource interface {
+	CheckpointedSource
+	RestoreOffsetBeforeOpen(context.Context, []byte) error
+}

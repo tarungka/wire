@@ -124,3 +124,20 @@ func adaptSink(sink Sink) engine.SinkOperator {
 	}
 	return &sinkAdapter{sink: sink}
 }
+
+func adaptSource(source Source, timestamp TimestampExtractor) engine.SourceOperator {
+	adapter := &sourceAdapter{source: source, timestamp: timestamp}
+	if pre, ok := source.(PreOpenCheckpointedSource); ok {
+		return &preOpenSourceAdapter{sourceAdapter: adapter, restore: pre.RestoreOffsetBeforeOpen}
+	}
+	return adapter
+}
+
+type preOpenSourceAdapter struct {
+	*sourceAdapter
+	restore func(context.Context, []byte) error
+}
+
+func (a *preOpenSourceAdapter) RestoreOffsetBeforeOpen(ctx context.Context, data []byte) error {
+	return a.restore(ctx, append([]byte(nil), data...))
+}

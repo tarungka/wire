@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-func (ts *TaskSlot) restoreCheckpoint() error {
+func (ts *TaskSlot) validateCheckpointRestore() error {
 	snapshot := ts.RestoreCheckpoint
 	expectedTaskID := ts.TaskID
 	if ts.RestoreTaskID != "" {
@@ -18,6 +18,42 @@ func (ts *TaskSlot) restoreCheckpoint() error {
 	if err := snapshot.ValidateStateHandles(); err != nil {
 		return err
 	}
+	return nil
+}
+
+// SourceOffsetRestorerBeforeOpen opts into offset restoration before opening a
+// source. It must only load state; resource acquisition belongs in Open.
+type SourceOffsetRestorerBeforeOpen interface {
+	RestoreOffsetBeforeOpen(context.Context, []byte) error
+}
+
+func (ts *TaskSlot) restoreSourceBeforeOpen(ctx context.Context) error {
+	source, ok := ts.Source.(SourceOffsetRestorerBeforeOpen)
+	if !ok {
+		return nil
+	}
+	if err := ts.validateCheckpointRestore(); err != nil {
+		return err
+	}
+	for _, index := range ts.RestoreCheckpoint.StateHandleIndexes {
+		if index == -1 {
+			return fmt.Errorf("pre-open source offsets cannot contain a typed state handle")
+		}
+	}
+	if err := invokeOperator(func() error {
+		return source.RestoreOffsetBeforeOpen(ctx, append([]byte(nil), ts.RestoreCheckpoint.Source...))
+	}); err != nil {
+		return err
+	}
+	ts.sourceRestoredBeforeOpen = true
+	return nil
+}
+
+func (ts *TaskSlot) restoreCheckpoint() error {
+	if err := ts.validateCheckpointRestore(); err != nil {
+		return err
+	}
+	snapshot := ts.RestoreCheckpoint
 	typed := make(map[int]bool, len(snapshot.StateHandleIndexes))
 	for _, index := range snapshot.StateHandleIndexes {
 		typed[index] = true
@@ -45,7 +81,7 @@ func (ts *TaskSlot) restoreCheckpoint() error {
 			return nil
 		})
 	}
-	if ts.Source != nil {
+	if ts.Source != nil && !ts.sourceRestoredBeforeOpen {
 		if err := restore(-1, ts.Source, snapshot.Source); err != nil {
 			return err
 		}
