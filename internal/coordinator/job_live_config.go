@@ -12,6 +12,10 @@ import (
 // changing deployment identity or interrupting an in-flight checkpoint. Zero
 // disables periodic triggers; manual checkpoints and savepoints remain enabled.
 func (c *Coordinator) SetCheckpointInterval(jobID string, interval time.Duration) (*JobMeta, error) {
+	return c.setCheckpointInterval(jobID, interval, nil)
+}
+
+func (c *Coordinator) setCheckpointInterval(jobID string, interval time.Duration, expected *time.Duration) (*JobMeta, error) {
 	if interval < 0 {
 		return nil, fmt.Errorf("%w: checkpoint interval must be nonnegative", ErrInvalidConfig)
 	}
@@ -34,6 +38,9 @@ func (c *Coordinator) SetCheckpointInterval(jobID string, interval time.Duration
 	policy := rpc.CheckpointPolicy{Timeout: c.config.CheckpointTimeout, MinPause: c.config.CheckpointMinPause}
 	if job.CheckpointPolicy != nil {
 		policy = *job.CheckpointPolicy
+	}
+	if expected != nil && policy.Interval != *expected {
+		return nil, fmt.Errorf("%w: checkpoint interval changed since last observation", ErrInvalidTransition)
 	}
 	policy.Interval = interval
 	if err := policy.Validate(); err != nil {

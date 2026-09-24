@@ -186,3 +186,9 @@ confirmation, invalid-edit isolation, exact interval PUT payload, confirmation
 and clean SIGINT exit without extra mutation. It exposed and fixed SIGINT being
 reported as a command failure. This does not replace the real-worker YAML reload
 test or prove full multi-process coordinator/worker crash recovery.
+
+Live interval watching now sends an expected-interval precondition. Coordinator
+race/HTTP tests prove a stale writer receives a conflict and cannot alter memory
+or persisted metadata; watcher tests check the baseline advances across edits
+and reverts. This addresses concurrent interval overwrites, not full graph
+revision conflicts or ABA detection; migration concurrency remains open.

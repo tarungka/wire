@@ -81,7 +81,7 @@ spec:
                     raise AssertionError("invalid edit was not reported")
             assert requests.empty(), "invalid edit sent a mutation"
             replace(definition.replace("interval: 1s", "interval: 2s"))
-            assert requests.get(timeout=10) == ("/api/v1/jobs/job/checkpoint-interval", {"interval": "2s"})
+            assert requests.get(timeout=10) == ("/api/v1/jobs/job/checkpoint-interval", {"interval": "2s", "expected_interval": "1s"})
             assert json.loads(output.get(timeout=10))["kind"] == "checkpoint-interval"
             process.send_signal(signal.SIGINT)
             assert process.wait(timeout=10) == 0, "SIGINT was treated as a command failure"

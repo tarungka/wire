@@ -19,6 +19,10 @@ import (
 // The pipeline must have SetCoordinator configured; its security settings apply.
 // Zero disables periodic triggers. Manual checkpoints remain available.
 func (p *YAMLPipeline) UpdateCheckpointInterval(ctx context.Context, jobID string, interval time.Duration) error {
+	return p.updateCheckpointInterval(ctx, jobID, interval, nil)
+}
+
+func (p *YAMLPipeline) updateCheckpointInterval(ctx context.Context, jobID string, interval time.Duration, expected *time.Duration) error {
 	if interval < 0 || jobID == "" || jobID == "." || jobID == ".." || strings.ContainsAny(jobID, "/\\") {
 		return fmt.Errorf("%w: invalid job ID or checkpoint interval", ErrInvalidConfig)
 	}
@@ -27,9 +31,15 @@ func (p *YAMLPipeline) UpdateCheckpointInterval(ctx context.Context, jobID strin
 		return err
 	}
 	defer client.CloseIdleConnections()
+	var previous *string
+	if expected != nil {
+		value := expected.String()
+		previous = &value
+	}
 	data, err := json.Marshal(struct {
-		Interval string `json:"interval"`
-	}{interval.String()})
+		Interval string  `json:"interval"`
+		Expected *string `json:"expected_interval,omitempty"`
+	}{interval.String(), previous})
 	if err != nil {
 		return err
 	}

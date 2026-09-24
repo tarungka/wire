@@ -45,7 +45,7 @@ func (p *YAMLPipeline) WatchLiveUpdates(ctx context.Context, path, jobID string,
 		switch plan.Kind {
 		case PipelineUnchanged:
 		case PipelineIntervalUpdate:
-			if err := p.UpdateCheckpointInterval(ctx, jobID, plan.CheckpointInterval); err != nil {
+			if err := p.updateCheckpointInterval(ctx, jobID, plan.CheckpointInterval, &current.env.checkpointInterval); err != nil {
 				return err
 			}
 		default:

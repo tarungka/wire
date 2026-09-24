@@ -113,3 +113,41 @@ func TestHTTPLiveCheckpointIntervalValidation(t *testing.T) {
 		t.Fatal("incorrect live configuration authorization")
 	}
 }
+
+func TestLiveIntervalPreconditionRejectsStaleWriter(t *testing.T) {
+	c, store := checkpointPolicyCoordinator(t)
+	job := c.jobs["job"]
+	job.Config = encode(t, rpc.JobGraph{})
+	if _, err := c.SetCheckpointInterval("job", time.Second); err != nil {
+		t.Fatal(err)
+	}
+	expected := time.Second
+	if _, err := c.setCheckpointInterval("job", 2*time.Second, &expected); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Get(JobMetaKey("job"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.setCheckpointInterval("job", 3*time.Second, &expected); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("stale update=%v", err)
+	}
+	after, err := store.Get(JobMetaKey("job"))
+	if err != nil || string(before) != string(after) || job.CheckpointPolicy.Interval != 2*time.Second {
+		t.Fatal("stale update mutated state")
+	}
+}
+
+func TestHTTPStaleIntervalReturnsConflict(t *testing.T) {
+	c, _ := checkpointPolicyCoordinator(t)
+	c.jobs["job"].Config = encode(t, rpc.JobGraph{})
+	if _, err := c.SetCheckpointInterval("job", 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	server := NewHTTPServer(c, "", zerolog.Nop())
+	server.server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/api/v1/jobs/job/checkpoint-interval", strings.NewReader(`{"interval":"3s","expected_interval":"1s"}`)))
+	if response.Code != http.StatusConflict || c.jobs["job"].CheckpointPolicy.Interval != 2*time.Second {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}

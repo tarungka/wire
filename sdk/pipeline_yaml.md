@@ -324,3 +324,11 @@ For a reproducible built-binary command smoke test, run
 `python3 scripts/pipeline-watch-smoke.py /absolute/path/to/wire`. It checks watch
 routing, invalid/valid edits and clean SIGINT shutdown against a fake coordinator;
 real-worker replacement coverage is in the SDK runtime tests.
+
+Watched interval requests include `expected_interval`, taken from the last
+confirmed definition. The coordinator compares it atomically before persisting;
+a concurrent interval change returns HTTP 409 and stops the watcher without
+overwriting it. Direct UpdateCheckpointInterval remains an unconditional
+explicit update. This precondition does not detect unrelated graph edits or
+an interval changed away and back, so it does not replace exclusive controller
+ownership for migration.

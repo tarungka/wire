@@ -11,6 +11,7 @@ func (s *HTTPServer) handleCheckpointInterval(w http.ResponseWriter, r *http.Req
 	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	var request struct {
 		Interval *string `json:"interval"`
+		Expected *string `json:"expected_interval,omitempty"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -23,7 +24,16 @@ func (s *HTTPServer) handleCheckpointInterval(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid checkpoint interval")
 		return
 	}
-	job, err := s.coord.SetCheckpointInterval(r.PathValue("job_id"), interval)
+	var expected *time.Duration
+	if request.Expected != nil {
+		parsed, err := time.ParseDuration(*request.Expected)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid expected interval")
+			return
+		}
+		expected = &parsed
+	}
+	job, err := s.coord.setCheckpointInterval(r.PathValue("job_id"), interval, expected)
 	if err != nil {
 		writeJobError(w, err)
 		return

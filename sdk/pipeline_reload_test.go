@@ -24,9 +24,17 @@ func TestPipelineFileLiveIntervalUpdates(t *testing.T) {
 		}
 		var body struct {
 			Interval string `json:"interval"`
+			Expected string `json:"expected_interval"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
+		}
+		expected := "1s"
+		if body.Interval == "1s" {
+			expected = "2s"
+		}
+		if body.Expected != expected {
+			t.Errorf("precondition=%s want=%s", body.Expected, expected)
 		}
 		updates <- body.Interval
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": "job", "checkpoint_interval": body.Interval})
