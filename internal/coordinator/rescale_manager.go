@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/tarungka/wire/internal/keygroup"
@@ -99,7 +100,7 @@ func (c *Coordinator) rescaleJob(jobID, savepointID string, parallelism int, ope
 	}
 	candidate := *job
 	candidate.RescaleFailure = ""
-	candidate.RescaleRollback = &RescaleRollback{Config: append([]byte(nil), job.Config...), Parallelism: job.Parallelism, Checkpoint: job.LatestCheckpoint}
+	candidate.RescaleRollback = &RescaleRollback{TransactionTaskIDs: maps.Clone(job.TransactionTaskIDs), Config: append([]byte(nil), job.Config...), Parallelism: job.Parallelism, Checkpoint: job.LatestCheckpoint}
 	candidate.Config = config
 	candidate.Parallelism = parallelism
 	candidate.ReplacementCheckpoint = 0

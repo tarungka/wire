@@ -308,3 +308,23 @@ parallelism migration requirements.
 
 Full engine/coordinator race suites pass with removal (74.912s / 37.410s);
 the additional typed-handle regression passes separately (1.569s).
+
+## Transaction namespace prerequisite for task identity changes
+
+Job metadata now stores an explicit map from each current task to its original
+external transaction task identity. Replacement and savepoint upgrade compose
+this mapping through the predecessor instead of deriving a fresh namespace from
+the new task name. Deployment sends the persisted namespace alongside the newer
+generation/attempt fence. Rollback restores the prior mapping with the graph;
+read-only job snapshots clone the map so callers cannot mutate live metadata.
+Legacy metadata without a map retains the existing derived identity.
+
+Tests cover composed task-name mappings, persisted metadata recovery, repeated
+upgrade lineage, rollback, snapshot isolation and serialized deployment commands.
+Existing real-worker reload cases remain covered. This is a prerequisite for
+renaming a physical task during migration, not permission to do so yet: the
+planner still rejects edits that change task identity until archive mapping and
+fetch authorization are extended together.
+
+Lineage verification passes under `-race`: full coordinator 36.397s, real-worker
+reload cases 16.005s, and single/repeated savepoint upgrades 7.685s. Lint is clean.

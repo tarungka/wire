@@ -385,3 +385,10 @@ keeps the source paused at offset 1, inserts a transform, reverts the file throu
 a second savepoint, then releases the source. Both old attempts are joined and
 external output contains only the original first and second records, once each.
 A removed operator's unexpected saved state is never silently dropped.
+
+Sink transaction namespaces are now persisted separately from physical task
+names and carried through replacement, rollback and savepoint upgrades. This
+prepares task identity changes without treating a restored sink as a new writer;
+the current migration planner still rejects such edits. Successful migrations
+retain the namespace while increasing deployment generation and changing the
+attempt fence. Older metadata without a mapping keeps its previous behavior.

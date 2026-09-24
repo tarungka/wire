@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"maps"
 	"testing"
 	"time"
 
@@ -16,6 +17,8 @@ func TestSameLayoutReplacementPreservesFullSnapshotAndRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	job := &JobMeta{ID: "job", Status: JobRunning, Parallelism: 4, Config: encode(t, graph), LatestCheckpoint: 7}
+	job.TransactionTaskIDs = map[string]string{old[0].TaskID: "job/original-head/0"}
+	originalLineage := maps.Clone(job.TransactionTaskIDs)
 	c.jobs["job"] = job
 	c.workers["worker"] = &WorkerMeta{ID: "worker", Address: "localhost:1234", TaskSlotsAvailable: 8, LastHeartbeat: time.Now()}
 	assignment := TaskAssignmentMap{JobID: "job", EpochID: 5, AttemptID: "old", Assignments: map[string]string{}}
@@ -63,6 +66,9 @@ func TestSameLayoutReplacementPreservesFullSnapshotAndRollsBack(t *testing.T) {
 		}
 	}
 	assertRequestPersisted()
+	if job.TransactionTaskIDs[old[0].TaskID] != "job/original-head/0" {
+		t.Fatal("replacement reset sink lineage")
+	}
 	tasks, err := generateTaskDescriptors(job)
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +86,9 @@ func TestSameLayoutReplacementPreservesFullSnapshotAndRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRequestPersisted()
+	if !maps.Equal(job.TransactionTaskIDs, originalLineage) {
+		t.Fatal("rollback did not restore original transaction namespace map")
+	}
 	if string(job.Config) != original || job.CheckpointPolicy != nil || job.ReplacementCheckpoint != 0 || job.RescaleRollback != nil {
 		t.Fatal("rollback did not restore graph and policy")
 	}

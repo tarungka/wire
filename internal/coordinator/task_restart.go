@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"maps"
 	"time"
 
 	"github.com/tarungka/wire/internal/protocol"
@@ -94,6 +95,7 @@ func (c *Coordinator) rollbackFailedRescale(job *JobMeta) error {
 	old := job.RescaleRollback
 	next := *job
 	next.Config = append([]byte(nil), old.Config...)
+	next.TransactionTaskIDs = maps.Clone(old.TransactionTaskIDs)
 	next.Parallelism = old.Parallelism
 	next.LatestCheckpoint = old.Checkpoint
 	var restoredSecrets jobSecretValues

@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/tarungka/wire/internal/protocol"
@@ -72,7 +73,7 @@ func (c *Coordinator) replaceJobFromSavepoint(jobID, savepointID string, paralle
 	next.RescaleCheckpoint = 0
 	next.RescaleFailure = ""
 	next.RescaleRequested = true
-	next.RescaleRollback = &RescaleRollback{Config: append([]byte(nil), job.Config...), Parallelism: job.Parallelism, Checkpoint: job.LatestCheckpoint}
+	next.RescaleRollback = &RescaleRollback{TransactionTaskIDs: maps.Clone(job.TransactionTaskIDs), Config: append([]byte(nil), job.Config...), Parallelism: job.Parallelism, Checkpoint: job.LatestCheckpoint}
 	sources, err := generateTaskDescriptors(job)
 	if err != nil {
 		return nil, err
@@ -84,9 +85,11 @@ func (c *Coordinator) replaceJobFromSavepoint(jobID, savepointID string, paralle
 	if len(sources) == 0 {
 		return nil, fmt.Errorf("%w: empty replacement layout", ErrInvalidConfig)
 	}
-	if _, err := planTaskLayoutRestoreMode(sources[0].NumKeyGroups, sources, targets, true); err != nil {
+	plan, err := planTaskLayoutRestoreMode(sources[0].NumKeyGroups, sources, targets, true)
+	if err != nil {
 		return nil, err
 	}
+	next.TransactionTaskIDs = remapTransactionIdentities(job, plan)
 	if err := c.attachCheckpointRestoreLocked(&next, map[string][]rpc.TaskDescriptor{"validation": targets}); err != nil {
 		return nil, err
 	}

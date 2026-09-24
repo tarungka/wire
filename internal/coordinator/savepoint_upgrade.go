@@ -88,9 +88,11 @@ func (c *Coordinator) SubmitJobFromSavepoint(name string, parallelism int, confi
 	if err := c.hydrateSavepointChannels(&cp); err != nil {
 		return nil, err
 	}
-	if _, err := planSavepointTaskRestore(cp, targets); err != nil {
+	plan, err := planSavepointTaskRestore(cp, targets)
+	if err != nil {
 		return nil, err
 	}
+	job.TransactionTaskIDs = remapTransactionIdentities(source, plan)
 	highest := id
 	var scanErr error
 	err = c.store.PrefixScan([]byte("jobs/"+source.ID+"/checkpoints/"), func(key, value []byte) bool {

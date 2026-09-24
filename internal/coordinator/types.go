@@ -122,8 +122,11 @@ type SavepointRestoreReference struct {
 
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
-	TransactionJobID  string `codec:"transaction_job_id,omitempty"`
-	CheckpointIDFloor uint64 `codec:"checkpoint_id_floor,omitempty"`
+	// TransactionTaskIDs maps current task IDs to their original sink namespaces.
+	// Treat this map as immutable: publish a new map with each topology change.
+	TransactionTaskIDs map[string]string `codec:"transaction_task_ids,omitempty"`
+	TransactionJobID   string            `codec:"transaction_job_id,omitempty"`
+	CheckpointIDFloor  uint64            `codec:"checkpoint_id_floor,omitempty"`
 
 	RestoreSavepoint   *SavepointRestoreReference `codec:"restore_savepoint,omitempty"`
 	UpgradeSuccessorID string                     `codec:"upgrade_successor_id,omitempty"`
@@ -293,9 +296,10 @@ type CoordinatorCommand struct {
 
 // RescaleRollback retains the last working topology until the new tasks all run.
 type RescaleRollback struct {
-	PlacementFailedSince time.Time `codec:"placement_failed_since,omitempty"`
-	Config               []byte    `codec:"config"`
-	Parallelism          int       `codec:"parallelism"`
-	Checkpoint           uint64    `codec:"checkpoint"`
-	Attempted            bool      `codec:"attempted"`
+	TransactionTaskIDs   map[string]string `codec:"transaction_task_ids,omitempty"`
+	PlacementFailedSince time.Time         `codec:"placement_failed_since,omitempty"`
+	Config               []byte            `codec:"config"`
+	Parallelism          int               `codec:"parallelism"`
+	Checkpoint           uint64            `codec:"checkpoint"`
+	Attempted            bool              `codec:"attempted"`
 }
