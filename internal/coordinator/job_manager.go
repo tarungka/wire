@@ -37,6 +37,9 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 	var checkpointPolicy *rpc.CheckpointPolicy
 	var restartPolicy *rpc.RestartPolicy
 	if err := protocol.DecodeMsgPack(config, &graph); err == nil {
+		if err := validateJobSecretReferences(graph); err != nil {
+			return nil, err
+		}
 		if err := graph.RestartPolicy.Validate(); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 		}

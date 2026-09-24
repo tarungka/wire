@@ -25,6 +25,9 @@ func (c *Coordinator) SubmitJobFromSavepoint(name string, parallelism int, confi
 	if err := protocol.DecodeMsgPack(config, &graph); err != nil {
 		return nil, fmt.Errorf("%w: restore requires a structured job graph", ErrInvalidConfig)
 	}
+	if err := validateJobSecretReferences(graph); err != nil {
+		return nil, err
+	}
 	if err := graph.CheckpointPolicy.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 	}

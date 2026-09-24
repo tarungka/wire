@@ -178,3 +178,18 @@ cover JSON-escaped reference markers and opaque configurations without reference
 This helper is not yet connected to submission, deployment or recovery. It does
 not establish secret-management completion: coordinator-owned resolution,
 reference-only persistence, secure worker delivery and redaction remain open.
+
+### Submission-time secret validation
+
+Normal and savepoint-upgrade submissions now validate environment references in
+operator and named-DLQ configurations on the coordinator before reserving names
+or writing metadata. Missing variables and malformed references return
+`ErrInvalidConfig`; temporary resolved byte slices are cleared and never replace
+the supplied graph. Regression tests verify both rejection paths leave no job
+reservation or metadata, and successful submission preserves the original
+references in both the job metadata and separate configuration record.
+
+Deployment-time delivery is still pending. This change validates references but
+does not yet supply resolved configurations to worker factories; do not treat it
+as end-to-end secret support. Recovery must reconstruct runtime-only credentials
+without modifying persisted task descriptors, and worker errors need redaction.
