@@ -93,3 +93,10 @@ format; do not mix old and new workers for those jobs. A binary downgrade needs
 a retained pre-upgrade checkpoint/savepoint and must not roll transactional sink
 state backwards past already committed output. There is no automatic downgrade
 conversion or negotiation of this snapshot format.
+
+Window operators now publish backend-tagged snapshots, including native Pebble
+handles, instead of only portable processor bytes. Their legacy portable restore
+method remains available. Workers predating typed window restore cannot consume
+these new window snapshots, regardless of backend choice; upgrade all eligible
+workers before allowing jobs to publish them. This is an additional compatibility
+boundary to the HashMap magic header described above.

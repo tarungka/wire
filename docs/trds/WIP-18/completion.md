@@ -148,3 +148,22 @@ on publication; temporary restore memory/disk is additional resource use.
 
 Full SDK and worker suites pass under `-race` after this integration; lint of
 SDK and worker packages reports zero issues.
+
+## Typed window checkpoint path
+
+Event-time windows now expose the selected backend's typed snapshot handle to
+checkpoint replication. Portable `Checkpoint`/`RestoreCheckpoint` remain for
+legacy processor snapshots. Typed restore first validates a private backend and
+reconstructs a candidate WindowProcessor, then replaces the live backend and
+cached state only after validation succeeds. Backend memory-limit checks still
+apply during publication.
+
+`TestWindowTypedSnapshotBackends` covers tumbling, sliding and session windows
+with both backend types. It checks accumulator continuity, no repeated firing
+at a restored watermark, and atomic rejection of a checksummed backend snapshot
+whose window metadata is malformed. This adds the prerequisite for distributed
+window rescale; it does not yet redistribute windows or solve differing source
+partition watermarks. That requirement remains open.
+
+The full engine, worker and SDK suites pass under `-race` with typed window
+checkpoints enabled; engine lint reports zero issues.
