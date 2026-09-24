@@ -63,3 +63,12 @@ A separate HTTP YAML adapter now registers strict JSON factories under
 integration test submits YAML with CEL and delivers to an HTTP endpoint.
 This does not prove process isolation,
 hot reload, CLI loading, state migration or live configuration updates.
+
+## CLI YAML submission
+
+`jobs submit --format yaml` uses an injected compiler to preserve the existing
+HTTP/security/mutation path. The stock binary maps public HTTP connector types
+to their JSON worker classes. The CLI regression decodes the submitted graph,
+checks the savepoint override and proves an invalid candidate sends no request.
+Stock worker factory installation, automatic watch/reload and migration are
+still outstanding; custom workers explicitly register these classes.

@@ -97,8 +97,7 @@ the exhausted source task and its output streams open; independently finishing
 those branches is an open lifecycle requirement. Task recovery acceptance covers CEL and both window backends; process replacement
 and mixed-source completion remain in the completion audit.
 
-There is no automatic reload, drain/switchover, savepoint migration, CLI loader,
-yet. Invalid reload candidates can be
+There is no automatic reload, drain/switchover or topology migration yet. Invalid reload candidates can be
 validated with ParsePipelineYAML, but callers must not infer a safe switchover
 protocol from that API. WIP-19 remains Partially Implemented.
 
@@ -196,3 +195,21 @@ checkpoint completion. Their sequence offsets do not make client replay
 automatic. HTTP sinks require receiver-side idempotency for replay-safe output.
 For multiple source instances, assign distinct listen addresses through custom
 worker factories; the shared YAML address is not partition-expanded.
+
+### CLI submission
+
+`wire jobs submit --file pipeline.yaml --format yaml --coordinator https://host:4001`
+compiles and submits a YAML pipeline and prints the coordinator's response without
+waiting for completion. The default format remains the existing REST JSON envelope.
+The same `--ca-cert`, client certificate, API key/password-file and `--savepoint`
+flags apply to either format. Both input and compiled request are limited to 4 MiB.
+Malformed graphs and CEL expressions are rejected before the HTTP request.
+
+The stock CLI maps `http-api` source and sink types to `http-api.yaml.v1`.
+Target workers must explicitly call `RegisterPipelineTransforms()` and
+`httpworker.RegisterYAML(registry)` before starting; stock node-mode workers do
+not yet install these factories. Custom applications can use `ParsePipelineYAML` and
+`YAMLPipeline.ExportSubmission` with their own named bindings, then submit the
+exported JSON through the existing CLI. Worker factories
+validate connector configuration on deployment; compiling a named binding does
+not open or validate the target connector's runtime resources.

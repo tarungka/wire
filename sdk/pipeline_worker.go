@@ -131,3 +131,9 @@ func pipelineConnectorConfig(config map[string]any) ([]byte, error) {
 	}
 	return json.Marshal(config)
 }
+
+// ExportSubmission validates and serializes this pipeline for CLI/REST submission.
+// All connectors must use named worker bindings; no runtime is started.
+func (p *YAMLPipeline) ExportSubmission() ([]byte, error) {
+	return p.env.ExportSubmission(p.Name)
+}

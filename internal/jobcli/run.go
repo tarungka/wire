@@ -24,6 +24,16 @@ const maxBody = 4 << 20
 // Run executes a management command and writes the coordinator's JSON response.
 // It never retries mutations or follows redirects to another coordinator.
 func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
+	return RunWithPipelineCompiler(ctx, args, out, errOut, nil)
+}
+
+// PipelineCompiler validates YAML and returns a REST submission envelope without
+// opening connectors or submitting a job. Applications provide their bindings.
+type PipelineCompiler func([]byte) ([]byte, error)
+
+// RunWithPipelineCompiler enables --format yaml with an application compiler.
+// The resulting request uses the same authentication and mutation rules as JSON.
+func RunWithPipelineCompiler(ctx context.Context, args []string, out, errOut io.Writer, compile PipelineCompiler) error {
 	flags := pflag.NewFlagSet("wire jobs", pflag.ContinueOnError)
 	flags.SetOutput(errOut)
 	flags.Usage = func() {
@@ -41,7 +51,8 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	flags.StringVar(&security.Username, "username", "", "Basic authentication username")
 	flags.StringVar(&security.PasswordFile, "password-file", "", "file containing Basic authentication password (HTTPS required)")
 	timeout := flags.Duration("timeout", 30*time.Second, "request timeout")
-	file := flags.String("file", "", "submission JSON file")
+	file := flags.String("file", "", "submission file")
+	format := flags.String("format", "json", "submission format: json or yaml")
 	status := flags.String("status", "", "job-list status filter")
 	savepoint := new(bool)
 	var restorePath string
@@ -119,6 +130,12 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 			path += "/" + words[1]
 		}
 	}
+	if flags.Changed("format") && !submissionCommand {
+		return fmt.Errorf("--format is only valid for jobs submit")
+	}
+	if *format != "json" && *format != "yaml" {
+		return fmt.Errorf("--format must be json or yaml")
+	}
 	if *file != "" && (words[0] != "jobs" || words[1] != "submit") {
 		return fmt.Errorf("--file is only valid for jobs submit")
 	}
@@ -128,7 +145,7 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	var body []byte
 	if words[0] == "jobs" && words[1] == "submit" {
 		if *file == "" {
-			return fmt.Errorf("jobs submit requires --file with a REST submission JSON body")
+			return fmt.Errorf("jobs submit requires --file with a submission body")
 		}
 		f, err := os.Open(*file)
 		if err != nil {
@@ -138,6 +155,18 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 		body, err = io.ReadAll(io.LimitReader(f, maxBody+1))
 		if err != nil {
 			return err
+		}
+		if len(body) > maxBody {
+			return fmt.Errorf("submission must be at most 4 MiB")
+		}
+		if *format == "yaml" {
+			if compile == nil {
+				return fmt.Errorf("YAML submission requires a pipeline compiler")
+			}
+			body, err = compile(body)
+			if err != nil {
+				return fmt.Errorf("compile pipeline: %w", err)
+			}
 		}
 		if len(body) > maxBody || !json.Valid(body) {
 			return fmt.Errorf("submission must be valid JSON at most 4 MiB")
