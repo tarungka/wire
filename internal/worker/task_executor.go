@@ -160,6 +160,9 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			}
 			late.SetLateOutputTag(od.LateOutputTag)
 		}
+		if keyed, ok := op.(interface{ SetKeyGroupCount(int) }); ok {
+			keyed.SetKeyGroupCount(groups)
+		}
 		if identity, ok := op.(interface{ SetProcessIdentity(string, string, int) }); ok {
 			identity.SetProcessIdentity(jobID, od.OperatorID, int(desc.SubtaskIndex))
 		}

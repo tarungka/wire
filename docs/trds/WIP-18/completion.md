@@ -17,7 +17,7 @@ are not evidence that every requirement is implemented.
 | Memory limits and safeguards | Existing logical payload accounting and errors need full boundary/overflow/restore audit. Worker aggregate admission against available memory remains open. Runtime overhead and snapshot/iterator copies must be documented accurately. |
 | Checkpoint format and metadata | HashMap writes `WHSB`, version 1, length-prefixed entries and CRC32, and reads legacy unframed version-1 snapshots. Fixed byte fixtures verify upgrade compatibility and malformed-header rejection. Backend-tagged handles exist; backend mismatch, native Pebble semantics and durable manifest evidence remain in the final audit. |
 | Replication, restore and retention | Current worker archive transport and retention code exist from earlier WIPs. Prove both backends through actual completed-checkpoint recovery and cleanup; helper round trips alone are insufficient. |
-| Rescaling | Both backends pass real coordinator/two-worker savepoint rescale tests for 4→8, 8→4 and 4→3, including replicated fetch, assigned-key validation, replacement checkpoint and old-savepoint release. Backend restore rejects gaps, overlaps, mixed checkpoints, corruption and cancellation atomically. SDK managed-operator/MiniCluster rescale integration remains to be completed and verified. |
+| Rescaling | Both backends pass real coordinator/two-worker savepoint rescale tests for 4→8, 8→4 and 4→3, including replicated fetch, assigned-key validation, replacement checkpoint and old-savepoint release. Backend restore rejects gaps, overlaps, mixed checkpoints, corruption and cancellation atomically. SDK managed Process now implements typed key-group restore, with shared HashMap/Pebble state/TTL/timer tests at the same sizes. MiniCluster end-to-end managed Process and window rescale acceptance remains. |
 | Contract/negative tests | Shared `TestStateBackendAcceptance` verifies every entry of a 10,000-entry restore, empty restore, 10 MiB value, binary key groups 0x0000–0x007F with ordered 0x0020 prefix selection, and checkpoint consistency during concurrent atomic updates/Get. Three runs pass under `-race` for both backends. Existing corruption, cross-backend rejection and memory-limit cases still need final requirement mapping. |
 | Comparative benchmarks | Implemented reproducible Put/Get/full-iterator and 1/64/256 MiB checkpoint benchmarks for both backends. [Local measurements and raw output](benchmarks.md) distinguish volatile writes from synchronized writes and serialization from native checkpoint hashing; proposal estimates are not guarantees. |
 | Documentation and upgrade behavior | Record current formats, defaults, resource boundaries and incompatibilities, link runtime guidance, then audit all original sections before marking Implemented. |
@@ -125,3 +125,26 @@ The cluster test and both backends' range-restore tests pass under `-race`;
 engine/worker lint is clean. This test uses a registered stateful test operator,
 not SDK MiniCluster managed Process; the latter remains a separate integration
 requirement, as does recovery from actual worker loss.
+
+## SDK managed Process rescale
+
+The Process adapter now implements typed `RestoreKeyGroupState`. It understands
+the existing SDK state-key layout rather than treating its first two bytes as
+a key-group prefix. The worker supplies the job's immutable key-group count.
+Values, lists, maps, TTL entries and timers follow their embedded user key using
+the same hash function as routing. The restored operator-wide watermark is the
+minimum across contributing snapshots, with a missing watermark treated as the
+initial minimum. This preserves existing saved-state encoding.
+
+`TestManagedProcessRescaleState` checks 4→8, 8→4 and 4→3 for both backends,
+including wrong-owner absence, complete timer coverage without duplicates,
+TTL expiry after restore and watermark selection. Malformed state keys and
+watermarks fail without replacing existing destination state. These are real
+operator/backend tests; they do not claim MiniCluster HTTP-rescale coverage.
+Snapshot assembly uses temporary backend storage and scans contributing
+snapshots; optimizing this to a prefixed layout would require a separate
+state-format migration. The destination backend still enforces its memory limit
+on publication; temporary restore memory/disk is additional resource use.
+
+Full SDK and worker suites pass under `-race` after this integration; lint of
+SDK and worker packages reports zero issues.

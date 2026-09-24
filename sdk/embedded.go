@@ -317,6 +317,7 @@ func (ex *embeddedExecutor) runStageInstance(
 
 // processAdapter wraps a ProcessFunc to implement engine.FlatMapOperator.
 type processAdapter struct {
+	numKeyGroups     int
 	backendFactory   func() (engine.StateBackend, func(), error)
 	clock            func() time.Time
 	fn               ProcessFunc
