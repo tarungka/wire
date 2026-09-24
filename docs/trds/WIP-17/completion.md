@@ -42,3 +42,22 @@ construct unconfigured HTTPServer instances. HA HTTPS/auth must be wired before
 this WIP can be considered complete or ready to merge. Data-plane/replica TLS,
 client credentials, secret handling and the original acceptance matrix remain
 open as tracked above.
+
+
+## HA HTTP security integration
+
+`HAService.ConfigureHTTP` now installs a cloned TLS configuration and immutable
+authentication policy before listening. Authentication wraps term dispatch, so
+standby redirects and new leadership handlers cannot bypass it or reset its
+admission limiter. The HA listener uses ServeTLS when configured; command startup
+loads credentials before choosing HA or standalone execution. Redirects received
+over HTTPS retain HTTPS and their original path/query.
+
+`TestHAHTTPAuthenticationSurvivesTakeover` uses real TLS listeners and file-lock
+leadership takeover with shared Pebble metadata. It verifies unauthenticated
+requests fail, viewer mutations are forbidden, authorized reads work after
+takeover, health remains public, TLS 1.3 is negotiated, plaintext is rejected,
+and standby redirects retain HTTPS. Invalid auth configuration installs no partial
+policy, and configuration changes after Listen are rejected. This resolves the
+HA startup gap identified during stack integration; the other requirements above
+remain open.

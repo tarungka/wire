@@ -195,19 +195,6 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 	if err != nil {
 		return err
 	}
-	if election != nil {
-		service := coordinator.NewHAService(coordCfg, wireCfg.Listen, election, func() (coordinator.MetadataStore, error) {
-			return coordinator.NewPebbleStore(wireCfg.Node.DataDir)
-		}, rpcTLS, log.Logger)
-		return service.Run(ctx)
-	}
-	store, err := coordinator.NewPebbleStore(wireCfg.Node.DataDir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = store.Close() }()
-	coord := coordinator.New(coordCfg, store, election, log.Logger)
-
 	// Load configured HTTPS credentials before starting any server.
 	var httpTLS *tls.Config
 	if wireCfg.HTTP.TLS.Cert != "" || wireCfg.HTTP.TLS.Key != "" || wireCfg.HTTP.TLS.VerifyClient || wireCfg.HTTP.TLS.CACert != "" {
@@ -217,6 +204,22 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 			return fmt.Errorf("HTTP TLS: %w", err)
 		}
 	}
+	if election != nil {
+		service := coordinator.NewHAService(coordCfg, wireCfg.Listen, election, func() (coordinator.MetadataStore, error) {
+			return coordinator.NewPebbleStore(wireCfg.Node.DataDir)
+		}, rpcTLS, log.Logger)
+		if err := service.ConfigureHTTP(httpTLS, wireCfg.Auth.File); err != nil {
+			return fmt.Errorf("HA HTTP security: %w", err)
+		}
+		return service.Run(ctx)
+	}
+	store, err := coordinator.NewPebbleStore(wireCfg.Node.DataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+	coord := coordinator.New(coordCfg, store, election, log.Logger)
+
 	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger, httpTLS)
 	if err := httpSrv.ConfigureAuth(wireCfg.Auth.File); err != nil {
 		return fmt.Errorf("HTTP authentication: %w", err)

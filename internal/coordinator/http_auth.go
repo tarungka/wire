@@ -99,7 +99,7 @@ func readAPIAuth(r io.Reader) (*apiAuth, error) {
 				return nil, fmt.Errorf("authentication user %d has invalid or duplicate API key", i)
 			}
 			for _, c := range u.APIKey[8:] {
-				if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+				if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
 					return nil, fmt.Errorf("authentication user %d has invalid API key", i)
 				}
 			}

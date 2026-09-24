@@ -50,6 +50,30 @@ func NewHAService(cfg CoordinatorConfig, rpcAddr string, election LeaderElection
 	return h
 }
 
+// ConfigureHTTP installs one immutable security policy around term dispatch.
+// Call before Listen/Run. Authentication therefore also covers standby redirects
+// and cannot be lost or reset when a new leadership term replaces its handler.
+func (h *HAService) ConfigureHTTP(config *tls.Config, authFile string) error {
+	if h.httpListener != nil {
+		return fmt.Errorf("configure HA HTTP security before Listen")
+	}
+	secured := NewHTTPServer(h.standby.coord, h.cfg.ListenAddr, h.log, config)
+	secured.server.Handler = http.HandlerFunc(h.serveHTTP)
+	if err := secured.ConfigureAuth(authFile); err != nil {
+		return err
+	}
+	h.http.TLSConfig = secured.server.TLSConfig
+	h.http.Handler = secured.server.Handler
+	return nil
+}
+
+func (h *HAService) serveHTTPListener() error {
+	if h.http.TLSConfig != nil {
+		return h.http.ServeTLS(h.httpListener, "", "")
+	}
+	return h.http.Serve(h.httpListener)
+}
+
 // Listen binds both endpoints before Run. It supports ephemeral ports in
 // embedded deployments and tests without reserving then releasing port numbers.
 func (h *HAService) Listen() error {
@@ -127,7 +151,7 @@ func (h *HAService) Run(ctx context.Context) error {
 	defer h.transport.Shutdown(context.Background())
 	httpDone := make(chan error, 1)
 	rpcDone := make(chan error, 1)
-	go func() { err := h.http.Serve(h.httpListener); httpDone <- err; cancel() }()
+	go func() { err := h.serveHTTPListener(); httpDone <- err; cancel() }()
 	go func() { err := h.transport.Serve(ctx); rpcDone <- err; cancel() }()
 	err := h.campaign(ctx)
 	cancel()

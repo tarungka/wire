@@ -176,7 +176,11 @@ func (s *HTTPServer) writeStandbyRedirect(w http.ResponseWriter, r *http.Request
 		w.Header().Set("X-Wire-Leader-Addr", info.Address)
 		w.Header().Set("X-Wire-Leader-Epoch", strconv.FormatUint(info.Epoch, 10))
 		// Build redirect URL preserving the original request path.
-		location := "http://" + info.Address + r.URL.Path
+		scheme := "http://"
+		if r.TLS != nil {
+			scheme = "https://"
+		}
+		location := scheme + info.Address + r.URL.Path
 		if r.URL.RawQuery != "" {
 			location += "?" + r.URL.RawQuery
 		}
