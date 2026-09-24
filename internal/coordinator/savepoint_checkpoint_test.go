@@ -108,6 +108,9 @@ func TestRescaleSavepointRetainedUntilReplacementCheckpoint(t *testing.T) {
 		}
 	}
 	job.LatestCheckpoint = 8
+	if err := store.Set(CheckpointKey("job", 7), encode(t, CheckpointMeta{JobID: "job", ID: 7, SavepointID: "save", Status: CheckpointCompleted})); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.DeleteSavepoint("job", "save"); err != nil {
 		t.Fatal(err)
 	}

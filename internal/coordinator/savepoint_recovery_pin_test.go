@@ -9,6 +9,9 @@ func TestDeleteSavepointProtectsLatestActiveRecoveryBoundary(t *testing.T) {
 	for _, status := range []JobStatus{JobCreated, JobDeploying, JobRunning, JobFinishing, JobFailing, JobCanceling, JobPausing, JobPaused, JobResuming} {
 		t.Run(status.String(), func(t *testing.T) {
 			c, _ := newReadyCoordinator(t)
+			if err := c.store.Set(CheckpointKey("job", 7), encode(t, CheckpointMeta{JobID: "job", ID: 7, SavepointID: "save", Status: CheckpointCompleted})); err != nil {
+				t.Fatal(err)
+			}
 			c.jobs["job"] = &JobMeta{ID: "job", Status: status, LatestCheckpoint: 7}
 			sp := &SavepointMeta{ID: "save", JobID: "job", Status: SavepointCompleted, CheckpointID: 7}
 			if err := c.persistSavepoint(sp); err != nil {
@@ -29,6 +32,9 @@ func TestDeleteSavepointProtectsLatestActiveRecoveryBoundary(t *testing.T) {
 	for _, status := range []JobStatus{JobFinished, JobFailed, JobCanceled} {
 		t.Run(status.String(), func(t *testing.T) {
 			c, _ := newReadyCoordinator(t)
+			if err := c.store.Set(CheckpointKey("job", 7), encode(t, CheckpointMeta{JobID: "job", ID: 7, SavepointID: "save", Status: CheckpointCompleted})); err != nil {
+				t.Fatal(err)
+			}
 			c.jobs["job"] = &JobMeta{ID: "job", Status: status, LatestCheckpoint: 7}
 			if err := c.persistSavepoint(&SavepointMeta{ID: "save", JobID: "job", Status: SavepointCompleted, CheckpointID: 7}); err != nil {
 				t.Fatal(err)

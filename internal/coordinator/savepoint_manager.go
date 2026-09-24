@@ -62,6 +62,9 @@ func (c *Coordinator) GetSavepoint(jobID, spID string) (*SavepointMeta, error) {
 	if err := protocol.DecodeMsgPack(data, &sp); err != nil {
 		return nil, fmt.Errorf("decoding savepoint %s/%s: %w", jobID, spID, err)
 	}
+	if sp.Deleted {
+		return nil, ErrSavepointNotFound
+	}
 	return &sp, nil
 }
 
@@ -75,6 +78,9 @@ func (c *Coordinator) ListSavepoints(jobID string) ([]*SavepointMeta, error) {
 		if err := protocol.DecodeMsgPack(value, &sp); err != nil {
 			decodeErr = fmt.Errorf("decoding savepoint %q: %w", string(key), err)
 			return false
+		}
+		if sp.Deleted {
+			return true
 		}
 		result = append(result, &sp)
 		return true
@@ -109,6 +115,9 @@ func (c *Coordinator) DeleteSavepoint(jobID, spID string) error {
 	if err := protocol.DecodeMsgPack(data, &sp); err != nil {
 		return err
 	}
+	if sp.Deleted {
+		return ErrSavepointNotFound
+	}
 	// A savepoint is also a normal recovery boundary. Physical cleanup must
 	// not remove the latest selected boundary of an active job, even when it
 	// was requested directly rather than by pause/rescale.
@@ -131,7 +140,7 @@ func (c *Coordinator) DeleteSavepoint(jobID, spID string) error {
 		return ErrCheckpointInProgress
 	}
 
-	if err := c.store.Delete(SavepointKey(jobID, spID)); err != nil {
+	if err := c.persistSavepointDeletionLocked(sp); err != nil {
 		return fmt.Errorf("deleting savepoint %s/%s: %w", jobID, spID, err)
 	}
 

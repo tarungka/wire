@@ -223,6 +223,7 @@ func (s SavepointStatus) String() string {
 
 // SavepointMeta holds persisted metadata for a single savepoint.
 type SavepointMeta struct {
+	Deleted        bool            `codec:"deleted,omitempty"`
 	Queued         bool            `codec:"queued,omitempty"`
 	NumKeyGroups   int             `codec:"key_groups,omitempty"`
 	CheckpointID   uint64          `codec:"checkpoint_id,omitempty"`

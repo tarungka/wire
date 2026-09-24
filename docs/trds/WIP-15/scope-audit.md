@@ -189,3 +189,14 @@ a held archive upload. Shared content-addressed Pebble artifacts remain until
 reference-aware collection can establish that no checkpoint uses them. Coordinator
 authorization, durable deletion delivery/retry and artifact collection are still
 required before the HTTP delete operation can claim physical cleanup.
+
+## Atomic cleanup requests
+
+Savepoint deletion now atomically writes a hidden savepoint tombstone, the exact
+replica cleanup inventory, and checkpoint invalidation. A failed batch publishes
+none of these changes. Completed checkpoint records/manifests remain available for
+outcome accounting and transactional recovery fencing; deleted savepoints vanish
+from Get/List and cannot be reactivated as queued requests. Tests cover failed
+publication, deletion retries and retention of the replica identity/epoch. Replica
+delivery/receipts and shared-artifact collection remain pending, so physical space
+reclamation is not yet claimed by the HTTP endpoint.
