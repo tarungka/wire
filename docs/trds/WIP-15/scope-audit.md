@@ -145,5 +145,7 @@ The job-detail endpoint now includes sorted assigned tasks with operator/subtask
 worker, attempt and observed status from a consistent coordinator snapshot.
 Unreported status is UNKNOWN, including after leadership recovery; corrupt stored
 assignments return an error rather than silently hiding tasks. The HTTP and
-snapshot tests cover these fields. Per-task metrics and checkpoint summaries
-remain open and are not represented by fabricated zero values.
+snapshot tests cover these fields. Per-task heartbeat metrics now include record/byte counters, backpressure and
+the receipt timestamp. Ownership-fence tests reject other workers, jobs, epochs
+and attempts, lost/removed workers and absent reports, and verify copied values.
+Checkpoint summaries remain open; missing metrics are not fabricated as zeros.

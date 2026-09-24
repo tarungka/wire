@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -64,5 +65,62 @@ func TestJobInspectionAssignmentSnapshot(t *testing.T) {
 	}
 	if _, err := c.jobInspection("job"); err == nil {
 		t.Fatal("corruption silently hidden")
+	}
+}
+
+func TestJobInspectionMetricsRespectAssignmentFences(t *testing.T) {
+	for _, invalid := range []string{"", "worker", "job", "attempt", "epoch", "lost", "removed", "missing"} {
+		t.Run(invalid, func(t *testing.T) {
+			store := NewMemoryStore()
+			defer func() { _ = store.Close() }()
+			c := New(CoordinatorConfig{}, store, nil, zerolog.Nop())
+			c.jobs["job"] = &JobMeta{ID: "job", Status: JobRunning}
+			assignment := TaskAssignmentMap{JobID: "job", AttemptID: "attempt", EpochID: 3, Assignments: map[string]string{"task": "worker"}}
+			raw, err := protocol.EncodeMsgPack(assignment)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Set(JobAssignmentsKey("job"), raw); err != nil {
+				t.Fatal(err)
+			}
+			report := rpc.RunningTaskSummary{JobID: "job", TaskID: "task", AttemptID: "attempt", EpochID: 3, Metrics: &rpc.TaskMetrics{RecordsIn: 11, RecordsOut: 9, BytesIn: 100, BytesOut: 80, BackpressureMs: 7}}
+			worker := &WorkerMeta{ID: "worker", LastHeartbeat: time.Unix(100, 0)}
+			switch invalid {
+			case "worker":
+				worker.ID = "other"
+			case "job":
+				report.JobID = "other"
+			case "attempt":
+				report.AttemptID = "old"
+			case "epoch":
+				report.EpochID = 2
+			case "lost":
+				worker.Lost = true
+			case "removed":
+				worker.Removed = true
+			case "missing":
+				report.Metrics = nil
+			}
+			worker.TaskReports = []rpc.RunningTaskSummary{report}
+			c.workers[worker.ID] = worker
+			detail, err := c.jobInspection("job")
+			if err != nil {
+				t.Fatal(err)
+			}
+			metrics := detail.Tasks[0].Metrics
+			if invalid != "" {
+				if metrics != nil {
+					t.Fatalf("exposed %s metrics: %+v", invalid, metrics)
+				}
+				return
+			}
+			if metrics == nil || metrics.RecordsIn != 11 || metrics.RecordsOut != 9 || metrics.BytesIn != 100 || metrics.BytesOut != 80 || metrics.BackpressureMs != 7 || metrics.ReportedAt != formatTime(worker.LastHeartbeat) {
+				t.Fatalf("metrics=%+v", metrics)
+			}
+			report.Metrics.RecordsIn = 999
+			if metrics.RecordsIn != 11 {
+				t.Fatal("response aliases mutable heartbeat")
+			}
+		})
 	}
 }

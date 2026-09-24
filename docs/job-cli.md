@@ -185,3 +185,18 @@ The upgraded job gets a new runtime ID, but transactional sinks retain their
 original external job/task identity with a higher deployment generation.
 Checkpoint IDs continue above the predecessor's high-water mark. This preserves
 the idempotent commit/recovery contract when a prior commit reply was lost.
+
+### Task details and sampled metrics
+
+`wire jobs get JOB_ID` (the job-detail REST response) includes assigned `tasks`,
+ordered by task ID. Each entry identifies its operator, subtask, worker and
+attempt, with the coordinator's observed status. `UNKNOWN` means no accepted
+status report is available, including after coordinator recovery.
+
+When the assigned worker has reported metrics for the same job, epoch and
+attempt, `metrics` includes `records_in`, `records_out`, `bytes_in`, `bytes_out`,
+`backpressure_ms` and `reported_at` (the heartbeat receipt time). These are sampled
+attempt counters, not job-lifetime totals. Missing metrics are omitted rather
+than reported as zero. Lost or removed workers' reports are omitted. They are
+advisory and do not survive coordinator restart; use the timestamp when assessing
+freshness. Checkpoint summaries remain separate implementation work.
