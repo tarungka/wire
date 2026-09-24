@@ -39,6 +39,9 @@ type ErrorClassifier func(err error) ErrorClass
 
 // ErrorHandlerConfig holds per-operator error handling configuration.
 type ErrorHandlerConfig struct {
+	// SanitizeDiagnostic filters diagnostic text before it enters a DLQ.
+	// It does not alter original records or error classification.
+	SanitizeDiagnostic func(string) string
 	// DLQWriter synchronously delivers a failed event; failures are logged and counted as drops.
 	DLQWriter    func(context.Context, DLQEvent) error
 	OperatorName string          // Human-readable operator name (for metrics/DLQ).
@@ -234,6 +237,9 @@ func handleExhausted(
 			OperatorName:  cfg.OperatorName,
 			Timestamp:     time.Now().UnixMilli(),
 			RetryCount:    retryCount,
+		}
+		if cfg.SanitizeDiagnostic != nil {
+			dlqEvent.Error = cfg.SanitizeDiagnostic(dlqEvent.Error)
 		}
 		if cfg.DLQWriter != nil {
 			if writeErr := safeInvoke(func() error { return cfg.DLQWriter(ctx, dlqEvent) }); writeErr != nil {

@@ -273,3 +273,22 @@ contain quotes, newlines or backslashes.
 Automatic construction of per-task filtered loggers from delivered credentials
 is still pending, along with task-status, panic-stack and DLQ redaction. No
 resolved credentials are being dispatched yet.
+
+### Task-status and DLQ diagnostic redaction
+
+Task descriptors can carry runtime-only redaction values for secure deployment
+copies. Worker admission builds an immutable task redactor. Failure status RPCs
+filter error messages and panic stacks, observer Error() text is sanitized, and
+the final worker failure log uses a filtered error. Error wrapping preserves
+checkpoint-unavailable classification. Trusted observers must not unwrap and
+serialize original error fields themselves.
+
+Worker error policies now supply the same filter for DLQ diagnostic strings.
+Both synchronous destinations and channel-based DLQs retain the original record,
+retry count and operator identity. Tests exercise real status RPC serialization,
+panic stacks, observer diagnostics, recovery classification and both DLQ paths.
+
+The coordinator still does not dispatch resolved configurations. Automatic
+filtered-logger construction, secure connection gating and worker capability
+negotiation remain prerequisites; old workers must not receive credentials under
+an assumption that they implement these new diagnostic protections.

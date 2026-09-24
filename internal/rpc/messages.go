@@ -341,8 +341,11 @@ type OutputGroupDescriptor struct {
 }
 
 type TaskDescriptor struct {
-	TransactionJobID  string `codec:"transaction_job_id,omitempty"`
-	TransactionTaskID string `codec:"transaction_task_id,omitempty"`
+	// SecretValues is runtime-only redaction material, sent only with secure
+	// deployment copies; it must never be persisted in assignment metadata.
+	SecretValues      []string `codec:"secret_values,omitempty" json:"-"`
+	TransactionJobID  string   `codec:"transaction_job_id,omitempty"`
+	TransactionTaskID string   `codec:"transaction_task_id,omitempty"`
 
 	OutputGroups             []OutputGroupDescriptor      `codec:"output_groups,omitempty"`
 	DeploymentGeneration     uint64                       `codec:"deployment_generation,omitempty"`

@@ -10,6 +10,7 @@ import (
 	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/keygroup"
 	"github.com/tarungka/wire/internal/rpc"
+	"github.com/tarungka/wire/internal/secretconfig"
 	"github.com/tarungka/wire/internal/transport"
 )
 
@@ -61,6 +62,10 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		Log:                  log,
 	}
 
+	var diagnosticRedactor *secretconfig.Redactor
+	if len(desc.SecretValues) > 0 {
+		diagnosticRedactor = secretconfig.NewRedactor(desc.SecretValues)
+	}
 	var sourceOp engine.SourceOperator
 	var operators []engine.Operator
 	var errorConfigs []engine.ErrorHandlerConfig
@@ -182,6 +187,9 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			}
 			defer destination.Close()
 			cfg.DLQWriter = destination.Write
+		}
+		if diagnosticRedactor != nil {
+			cfg.SanitizeDiagnostic = diagnosticRedactor.String
 		}
 		errorConfigs = append(errorConfigs, cfg)
 	}
