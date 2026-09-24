@@ -72,6 +72,28 @@ func (c *Coordinator) attachCheckpointRestoreLocked(job *JobMeta, assignments ma
 		}
 		return nil
 	}
+	var replacementIndexes map[string][]int
+	if job.ReplacementCheckpoint != 0 && job.ReplacementCheckpoint == checkpoint.ID {
+		var targets []rpc.TaskDescriptor
+		for _, tasks := range assignments {
+			targets = append(targets, tasks...)
+		}
+		if _, err := planTaskLayoutRestoreMode(checkpoint.NumKeyGroups, checkpoint.TaskDescriptors, targets, true); err != nil {
+			return err
+		}
+		sources := make(map[string]rpc.TaskDescriptor, len(checkpoint.TaskDescriptors))
+		for _, source := range checkpoint.TaskDescriptors {
+			sources[source.TaskID] = source
+		}
+		replacementIndexes = make(map[string][]int, len(targets))
+		for _, target := range targets {
+			indexes, err := replacementChainIndexes(sources[target.TaskID].OperatorChain, target.OperatorChain)
+			if err != nil {
+				return err
+			}
+			replacementIndexes[target.TaskID] = indexes
+		}
+	}
 	savedGroups := checkpoint.NumKeyGroups
 	if savedGroups == 0 {
 		savedGroups = keygroup.DefaultNumKeyGroups
@@ -97,7 +119,7 @@ func (c *Coordinator) attachCheckpointRestoreLocked(job *JobMeta, assignments ma
 	}
 	for _, tasks := range assignments {
 		for i := range tasks {
-			tasks[i].RestoreCheckpoint = &rpc.CheckpointRestoreDescriptor{CheckpointID: checkpoint.ID, EpochID: checkpoint.EpochID, ReplicaAddress: checkpoint.StatePaths[tasks[i].TaskID], ArchiveSize: inventory[tasks[i].TaskID].StateSizeBytes, ArchiveSHA256: inventory[tasks[i].TaskID].StateSHA256["checkpoint.archive"]}
+			tasks[i].RestoreCheckpoint = &rpc.CheckpointRestoreDescriptor{OperatorRestoreIndexes: replacementIndexes[tasks[i].TaskID], CheckpointID: checkpoint.ID, EpochID: checkpoint.EpochID, ReplicaAddress: checkpoint.StatePaths[tasks[i].TaskID], ArchiveSize: inventory[tasks[i].TaskID].StateSizeBytes, ArchiveSHA256: inventory[tasks[i].TaskID].StateSHA256["checkpoint.archive"]}
 		}
 	}
 	return nil

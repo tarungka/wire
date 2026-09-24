@@ -255,6 +255,43 @@
             ]
           },
           "minItems": 1
+        },
+        "state_backend": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "pebble",
+                "hashmap"
+              ]
+            },
+            "hashmap": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "max_memory_mb": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 8796093022207,
+                  "default": 256
+                }
+              }
+            },
+            "pebble": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "data_dir": {
+                  "type": "string"
+                },
+                "max_compaction_concurrency": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
         }
       },
       "additionalProperties": false,

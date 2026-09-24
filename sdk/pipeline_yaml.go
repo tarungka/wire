@@ -17,8 +17,16 @@ import (
 // PipelineConnectors supplies available connector types. Factories configure
 // instances but must leave I/O startup to Open. No factory runs before validation.
 type PipelineConnectors struct {
-	Sources map[string]func(map[string]any) (Source, error)
-	Sinks   map[string]func(map[string]any) (Sink, error)
+	// Named bindings select pre-registered worker classes for remote execution.
+	// The YAML config map is encoded as JSON and passed to that worker factory.
+	NamedSources map[string]string
+	NamedSinks   map[string]string
+	Sources      map[string]func(map[string]any) (Source, error)
+	Sinks        map[string]func(map[string]any) (Sink, error)
+	// Instance factories receive partition identity and a private configuration
+	// copy on every execution. They must return independently owned connectors.
+	SourceInstances map[string]func(map[string]any, InstanceContext) (Source, error)
+	SinkInstances   map[string]func(map[string]any, InstanceContext) (Sink, error)
 }
 
 type pipelineOperator struct {
@@ -37,8 +45,9 @@ type pipelineDocument struct {
 		Labels map[string]string `yaml:"labels"`
 	} `yaml:"metadata"`
 	Spec struct {
-		Parallelism int `yaml:"parallelism"`
-		Checkpoint  struct {
+		StateBackend *pipelineStateBackend `yaml:"state_backend"`
+		Parallelism  int                   `yaml:"parallelism"`
+		Checkpoint   struct {
 			Interval time.Duration `yaml:"interval"`
 			Timeout  time.Duration `yaml:"timeout"`
 		} `yaml:"checkpoint"`
@@ -54,7 +63,7 @@ type pipelineDocument struct {
 }
 
 // YAMLPipeline is a validated definition compiled to the SDK StreamGraph.
-// Execute rejects capabilities that the embedded runtime cannot yet provide.
+// Execute uses the SDK graph runtime and enforces connector instance ownership.
 type YAMLPipeline struct {
 	Name   string
 	Labels map[string]string
@@ -63,38 +72,20 @@ type YAMLPipeline struct {
 
 func (p *YAMLPipeline) Graph() *StreamGraph { return p.env.graph }
 func (p *YAMLPipeline) Execute(ctx context.Context) (*JobResult, error) {
-	hasWindow := false
 	for _, node := range p.env.graph.nodes {
-		hasWindow = hasWindow || node.Type == NodeWindow || node.Type == NodeReduce
+		if p.env.mode != Cluster && node.NamedDLQ != nil {
+			return nil, fmt.Errorf("%w: named YAML DLQ requires remote execution", ErrInvalidConfig)
+		}
+		if p.env.mode != Cluster && node.Parallelism > 1 && ((node.Type == NodeSource && node.SourceFactory == nil) || (node.Type == NodeSink && node.SinkFactory == nil)) {
+			return nil, fmt.Errorf("%w: YAML parallel execution requires per-instance connector factories for %q", ErrInvalidConfig, node.Name)
+		}
 	}
-	sources, sinks := 0, 0
-	outgoing := map[int]int{}
-	for _, edge := range p.env.graph.edges {
-		outgoing[edge.SourceID]++
-	}
-	for _, node := range p.env.graph.nodes {
-		switch node.Type {
-		case NodeSource:
-			sources++
-		case NodeSink:
-			sinks++
-		case NodeKeyBy:
-			if !hasWindow {
-				return nil, fmt.Errorf("%w: YAML keyed execution requires a window", ErrInvalidConfig)
+	if p.env.mode != Cluster && (p.env.checkpointInterval != 0 || p.env.restartStrategy.Type != RestartNone) {
+		for _, node := range p.env.graph.nodes {
+			if (node.Type == NodeSource && node.SourceFactory == nil) || (node.Type == NodeSink && node.SinkFactory == nil) {
+				return nil, fmt.Errorf("%w: YAML checkpoint/restart execution requires fresh connector instances for %q", ErrInvalidConfig, node.Name)
 			}
 		}
-		if outgoing[node.ID] > 1 && !hasWindow {
-			return nil, fmt.Errorf("%w: YAML branching execution is not supported", ErrInvalidConfig)
-		}
-	}
-	if p.env.parallelism != 1 {
-		return nil, fmt.Errorf("%w: YAML parallel execution requires per-instance connector factories", ErrInvalidConfig)
-	}
-	if sources != 1 || sinks < 1 || (!hasWindow && sinks != 1) {
-		return nil, fmt.Errorf("%w: YAML execution requires one source and sink", ErrInvalidConfig)
-	}
-	if p.env.checkpointInterval != 0 || p.env.restartStrategy.Type != RestartNone {
-		return nil, fmt.Errorf("%w: YAML checkpoint/restart execution is not supported", ErrInvalidConfig)
 	}
 	return p.env.ExecuteWithName(ctx, p.Name)
 }
@@ -130,6 +121,13 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 		return nil, ErrNoSinks
 	}
 	env := New().SetParallelism(doc.Spec.Parallelism).SetCheckpointInterval(doc.Spec.Checkpoint.Interval)
+	if doc.Spec.StateBackend != nil {
+		backend, err := doc.Spec.StateBackend.compile()
+		if err != nil {
+			return nil, err
+		}
+		env.SetStateBackend(backend)
+	}
 	if doc.Spec.Checkpoint.Timeout > 0 {
 		env.SetCheckpointTimeout(doc.Spec.Checkpoint.Timeout)
 	}
@@ -156,16 +154,45 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 		if _, ok := byName[op.Name]; ok {
 			return nil, fmt.Errorf("%w: %s", ErrDuplicateName, op.Name)
 		}
+		sourceKind := i < len(doc.Spec.Sources)
+		sinkKind := i >= len(doc.Spec.Sources)+len(doc.Spec.Transforms)
+		variants, named := 0, ""
+		if sourceKind {
+			if connectors.Sources[op.Type] != nil {
+				variants++
+			}
+			if connectors.SourceInstances[op.Type] != nil {
+				variants++
+			}
+			named = connectors.NamedSources[op.Type]
+		} else if sinkKind {
+			if connectors.Sinks[op.Type] != nil {
+				variants++
+			}
+			if connectors.SinkInstances[op.Type] != nil {
+				variants++
+			}
+			named = connectors.NamedSinks[op.Type]
+		}
+		if named != "" {
+			if strings.TrimSpace(named) == "" {
+				return nil, fmt.Errorf("%w: empty worker class", ErrInvalidConfig)
+			}
+			variants++
+		}
+		if variants > 1 {
+			return nil, fmt.Errorf("%w: ambiguous connector factories for %q", ErrInvalidConfig, op.Name)
+		}
 		byName[op.Name] = op
 		switch {
 		case i < len(doc.Spec.Sources):
 			kinds[op.Name] = NodeSource
-			if op.Input != "" || connectors.Sources[op.Type] == nil {
+			if op.Input != "" || (connectors.Sources[op.Type] == nil && connectors.SourceInstances[op.Type] == nil && connectors.NamedSources[op.Type] == "") {
 				return nil, fmt.Errorf("%w: invalid or unavailable source %q", ErrInvalidConfig, op.Name)
 			}
 		case i >= len(doc.Spec.Sources)+len(doc.Spec.Transforms):
 			kinds[op.Name] = NodeSink
-			if connectors.Sinks[op.Type] == nil {
+			if connectors.Sinks[op.Type] == nil && connectors.SinkInstances[op.Type] == nil && connectors.NamedSinks[op.Type] == "" {
 				return nil, fmt.Errorf("%w: unavailable sink type %q", ErrInvalidConfig, op.Type)
 			}
 		default:
@@ -273,6 +300,11 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 			if err := compilePipelineTransform(node, op, expressionEnv); err != nil {
 				return nil, fmt.Errorf("%w: transform %q: %v", ErrInvalidConfig, op.Name, err)
 			}
+			node.ClassName = pipelineClass(op.Type)
+			node.Config, err = encodePipelineTransform(op, variables)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if err := op.ErrorHandling.compile(node); err != nil {
 			return nil, fmt.Errorf("%w: error handling for %q: %v", ErrInvalidConfig, op.Name, err)
@@ -283,32 +315,64 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 		nodes[op.Name] = node
 	}
 	var dlq Sink
+	var namedDLQ *rpc.DLQSinkDescriptor
 	if dlqName != "" {
 		op := byName[dlqName]
-		destination, factoryErr := connectors.Sinks[op.Type](op.Config)
-		if factoryErr != nil || destination == nil {
-			return nil, fmt.Errorf("%w: DLQ connector %q: %v", ErrInvalidConfig, dlqName, factoryErr)
+		if name := connectors.NamedSinks[op.Type]; name != "" {
+			config, err := pipelineConnectorConfig(op.Config)
+			if err != nil {
+				return nil, err
+			}
+			namedDLQ = &rpc.DLQSinkDescriptor{ClassName: name, Config: config}
+		} else {
+			if connectors.Sinks[op.Type] == nil {
+				return nil, fmt.Errorf("%w: DLQ requires a shared or named sink factory", ErrInvalidConfig)
+			}
+			destination, factoryErr := connectors.Sinks[op.Type](op.Config)
+			if factoryErr != nil || destination == nil {
+				return nil, fmt.Errorf("%w: DLQ connector %q: %v", ErrInvalidConfig, dlqName, factoryErr)
+			}
+			if _, ok := destination.(engine.TransactionalSink); ok {
+				return nil, fmt.Errorf("%w: transactional sinks cannot be used as DLQ destinations", ErrInvalidConfig)
+			}
+			dlq = &sharedPipelineDLQSink{sink: destination}
 		}
-		if _, ok := destination.(engine.TransactionalSink); ok {
-			return nil, fmt.Errorf("%w: transactional sinks cannot be used as DLQ destinations", ErrInvalidConfig)
-		}
-		dlq = &sharedPipelineDLQSink{sink: destination}
 	}
 	for _, op := range ordered {
 		if op.Name == dlqName {
 			continue
 		}
 		node := nodes[op.Name]
-		if dlq != nil && node.ErrorPolicy != nil && node.ErrorPolicy.OnExhausted == "dlq" {
-			node.DLQSink = dlq
+		if node.ErrorPolicy != nil && node.ErrorPolicy.OnExhausted == "dlq" {
+			node.DLQSink, node.NamedDLQ = dlq, namedDLQ
 		}
 		switch node.Type {
 		case NodeSource:
+			if name := connectors.NamedSources[op.Type]; name != "" {
+				node.ClassName = name
+				node.Config, err = pipelineConnectorConfig(op.Config)
+				break
+			}
+			if factory := connectors.SourceInstances[op.Type]; factory != nil {
+				config := clonePipelineConfig(op.Config)
+				node.SourceFactory = func(instance InstanceContext) (Source, error) { return factory(clonePipelineConfig(config), instance) }
+				break
+			}
 			node.Source, err = connectors.Sources[op.Type](op.Config)
 			if err == nil && node.Source == nil {
 				err = fmt.Errorf("nil source")
 			}
 		case NodeSink:
+			if name := connectors.NamedSinks[op.Type]; name != "" {
+				node.ClassName = name
+				node.Config, err = pipelineConnectorConfig(op.Config)
+				break
+			}
+			if factory := connectors.SinkInstances[op.Type]; factory != nil {
+				config := clonePipelineConfig(op.Config)
+				node.SinkFactory = func(instance InstanceContext) (Sink, error) { return factory(clonePipelineConfig(config), instance) }
+				break
+			}
 			node.Sink, err = connectors.Sinks[op.Type](op.Config)
 			if err == nil && node.Sink == nil {
 				err = fmt.Errorf("nil sink")

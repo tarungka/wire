@@ -1,0 +1,106 @@
+package sdk
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestYAMLParallelKeyedWindowRuntime(t *testing.T) {
+	for _, backend := range []string{"hashmap", "pebble"} {
+		for _, checkpointed := range []bool{false, true} {
+			for _, window := range []struct {
+				kind, config string
+				outputs      int
+			}{
+				{"tumbling-window", "size: 10ms", 1},
+				{"sliding-window", "size: 10ms, slide: 5ms", 2},
+				{"session-window", "gap: 10ms", 1},
+			} {
+				t.Run(fmt.Sprintf("%s/checkpointed=%t/%s", backend, checkpointed, window.kind), func(t *testing.T) {
+					checkpoint := ""
+					if checkpointed {
+						checkpoint = "  checkpoint: {interval: 1h}\n"
+					}
+					data := fmt.Sprintf(`apiVersion: wire/v1
+kind: Pipeline
+metadata: {name: keyed-window}
+spec:
+  parallelism: 3
+  state_backend: {type: %s}
+%s  sources:
+    - {name: input, type: partitioned}
+  transforms:
+    - name: keyed
+      type: key-by
+      input: input
+      config: {key-expression: "value.group"}
+    - name: window
+      type: %s
+      input: keyed
+      config: {%s, aggregation: count}
+    - name: projected
+      type: select
+      input: window
+      config: {fields: [key, count, window_start, window_end, is_update]}
+  sinks:
+    - {name: output, type: collected, input: projected}
+`, backend, checkpoint, window.kind, window.config)
+					var mu sync.Mutex
+					var sinks []*collectSink
+					p, err := ParsePipelineYAML([]byte(data), PipelineConnectors{
+						SourceInstances: map[string]func(map[string]any, InstanceContext) (Source, error){"partitioned": func(_ map[string]any, instance InstanceContext) (Source, error) {
+							// The original record keys differ. Only the YAML-selected key can
+							// combine records from all source instances into one accumulator.
+							return &sliceSource{events: []Event{{Key: []byte(fmt.Sprint(instance.Index)), Value: []byte(`{"group":"shared"}`), EventTime: 1}}}, nil
+						}},
+						SinkInstances: map[string]func(map[string]any, InstanceContext) (Sink, error){"collected": func(map[string]any, InstanceContext) (Sink, error) {
+							sink := &collectSink{}
+							mu.Lock()
+							sinks = append(sinks, sink)
+							mu.Unlock()
+							return sink, nil
+						}},
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+					defer cancel()
+					if _, err := p.Execute(ctx); err != nil {
+						t.Fatal(err)
+					}
+					var results []Event
+					for _, sink := range sinks {
+						results = append(results, sink.Events()...)
+					}
+					if len(results) != window.outputs {
+						t.Fatalf("windows=%d want %d", len(results), window.outputs)
+					}
+					for _, event := range results {
+						var value struct {
+							Key    string `json:"key"`
+							Count  uint64 `json:"count"`
+							Start  int64  `json:"window_start"`
+							End    int64  `json:"window_end"`
+							Update bool   `json:"is_update"`
+						}
+						if err := json.Unmarshal(event.Value, &value); err != nil {
+							t.Fatal(err)
+						}
+						metadata, ok, err := DecodeWindowResult(event)
+						if err != nil || !ok {
+							t.Fatalf("window metadata missing: %v", err)
+						}
+						if string(event.Key) != "shared" || value.Key != "shared" || value.Count != 3 || value.Start != metadata.WindowStart || value.End != metadata.WindowEnd || value.Update != metadata.IsUpdate {
+							t.Fatalf("incorrect window result: %s metadata=%+v", event.Value, metadata)
+						}
+					}
+				})
+			}
+		}
+	}
+}

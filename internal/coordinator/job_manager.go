@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/tarungka/wire/internal/protocol"
@@ -133,6 +134,7 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 	// scheduleJob write.
 	c.mu.RLock()
 	snapshot := *job
+	snapshot.TransactionTaskIDs = maps.Clone(job.TransactionTaskIDs)
 	c.mu.RUnlock()
 
 	// Now wake the scheduler so it dispatches this job in the next
@@ -156,6 +158,7 @@ func (c *Coordinator) GetJob(jobID string) (*JobMeta, error) {
 	// after this method returns, outside the lock. Without this snapshot
 	// the read races with concurrent Status/UpdatedAt writes.
 	snapshot := *job
+	snapshot.TransactionTaskIDs = maps.Clone(job.TransactionTaskIDs)
 	return &snapshot, nil
 }
 
@@ -171,6 +174,7 @@ func (c *Coordinator) ListJobs(statusFilter *JobStatus) []*JobMeta {
 		}
 		// Snapshot per the same reasoning as GetJob.
 		snapshot := *j
+		snapshot.TransactionTaskIDs = maps.Clone(j.TransactionTaskIDs)
 		result = append(result, &snapshot)
 	}
 	return result
@@ -194,6 +198,7 @@ func (c *Coordinator) CancelJob(jobID string) (*JobMeta, error) {
 		}
 	}
 	snapshot := *job
+	snapshot.TransactionTaskIDs = maps.Clone(job.TransactionTaskIDs)
 	c.kickScheduler()
 	return &snapshot, nil
 }

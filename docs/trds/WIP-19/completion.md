@@ -1,0 +1,330 @@
+# WIP-19 completion audit
+
+This follow-up preserves the entire proposal, including hot reload and live
+configuration changes. It is not complete. It is stacked on WIP-18 to use the
+SDK, connector, security and state integrations from WIP-13 through WIP-18.
+
+| Requirement | Current evidence and remaining work |
+| --- | --- |
+| Strict YAML schema | Existing single-document, known-field parser and graph validation; schema field-coverage tests. Full original field and invalid-input audit remains. |
+| Transform types and expressions | All listed transforms compile through existing CEL and SDK graph code. YAML windows now format JSON aggregate results for downstream projection, and numeric aggregations validate JSON input through checked callbacks. The documented window→select shape is covered across all three window kinds, both backends and embedded/checkpoint-configured execution; numeric projection and atomic error tests cover sum/min/max. Distributed serialization, worker registration and execution remain required. |
+| Connector availability | Caller-provided source/sink factories are validated before construction. WIP-16 connector registry and worker factory integration remain required. |
+| Graph conversion | Existing SDK graph construction, forward references and cycle rejection. Validate shuffle semantics against current SDK and parallel execution. |
+| Pipeline state backend | `spec.state_backend` accepts WIP-18 nested HashMap/Pebble configuration. Validation runs before connector construction; omitted HashMap limit is 256 MiB and explicit zero is unlimited. SDK override has precedence. Full CLI/pipeline/system precedence remains open. |
+| Parallel/keyed/window execution | Instance-aware YAML factories now execute a three-partition CEL pipeline through embedded and local coordinator/worker runtimes. Private config copies, partition identity, factory errors and legacy guards have race tests. The 12-case `TestYAMLParallelKeyedWindowRuntime` matrix now verifies tumbling/sliding/session windows on HashMap/Pebble through embedded and checkpoint-configured worker execution. Every case combines three distinct original record keys under the CEL-selected key and verifies all accumulator contributions. Multiple-source/keyed-fan-out acceptance now passes with legacy factories, parallel instance factories and checkpoint-configured workers. Each branch receives every expected record once; selected keys remain in one partition. Recovery and mixed bounded/unbounded completion remain open. |
+| Checkpoint and restart | Configured policies reach local coordinator/worker execution with fresh-instance factories. `TestYAMLPeriodicCheckpointRecoversTransactionalOutput` completes a periodic checkpoint, fails a sink after staging new output, restores source offsets into fresh connectors, and verifies exactly one external commit of each expected result. Three race repetitions cover a CEL map and managed HashMap/Pebble windows. Mixed-source completion and broader external deployment/lifecycle acceptance remain open. |
+| File watching and validation | WatchPipelineFile detects stable content edits, validates the complete named-worker graph and invokes an application callback serially. Atomic replacement, invalid edits, reversion and fail-stop callback tests pass under race detection. Automatic migration callback and CLI watch integration remain required. |
+| Graceful switchover | Fenced same-job replacement joins old tasks before restore/deployment; real-worker ordinary/transactional success, rollback and no-restart cases pass. Multi-process crash timing remains unverified. |
+| Topology changes | Savepoint restore supports stateless insertion/removal within existing task chains, with YAML file-to-worker acceptance. Chain split/merge, route changes, stateful insertion/removal and redistribution remain incomplete. |
+| Configuration-only changes | Durable interval-only updates preserve deployment and use expected-interval conflict checks. Parallelism without job restart and full concurrent-edit reconciliation remain incomplete. |
+| CLI and operations | YAML submission and watch commands exist; stock worker HTTP/CEL execution and built-binary watch smoke pass. Full multi-process/security acceptance and precedence audit remain. |
+
+The historical Kafka/stdout example remains illustrative: it does not imply
+that those connectors are bundled. No requirement above is removed because
+another WIP already has a helper or because a parser test passes.
+
+## Open source lifecycle issue
+
+The existing worker sets `SourceExhausted` on every replicated source.
+`sourceCheckpointInput.finish` parks until a final trigger, and the coordinator
+requires every source to report FINISHING before allocating that trigger.
+Consequently a bounded branch in a checkpointed job with an unbounded source
+keeps its slot and output streams open indefinitely. Current multi-source
+acceptance uses finite sources; it does not prove independent branch completion.
+This must be resolved with correct treatment of finished tasks in later
+checkpoints, not by merely releasing EOF and omitting their restore state.
+
+## Implementation record
+
+The following entries record incremental implementation. Later entries supersede
+earlier descriptions of remaining work; the table above describes the current
+major gaps. Historical evidence does not certify later commits.
+
+## Periodic checkpoint recovery evidence
+
+The source emits its first record, then returns empty batches while waiting for
+a confirmed transactional commit. This ensures the failure happens after a
+completed periodic checkpoint rather than relying on a sleep. The sink stages
+new output and fails once; fresh source/sink instances must restore and finish.
+The mapped case commits exactly `[11, 12]`. Window cases for HashMap and Pebble
+commit one JSON count result containing both input records. A valid restored
+window source offset can be 1 or 2 depending on whether another completed
+checkpoint captured the unfired window before EOF; either case must preserve
+the accumulator and commit the result once. All three cases pass three runs
+under `-race` (14.340s total). This tests task recovery with live replica
+workers, not replacement of a crashed OS process.
+
+## Registered worker transform execution
+
+The YAML graph now carries versioned transform definitions. Workers explicitly
+register and compile all ten transform classes. Named source, sink and DLQ
+bindings pass JSON configuration to application worker factories. Regression
+coverage submits through coordinator HTTP and worker RPC, removes submitter
+closures, and checks parallel CEL/key-by/window/projection output. A separate
+case checks successful output plus malformed JSON delivered in a named DLQ
+envelope. Malformed, oversized and incompatible definitions are rejected.
+
+A separate HTTP YAML adapter now registers strict JSON factories under
+`http-api.yaml.v1`, preserving the original MessagePack class. A coordinator/worker
+integration test submits YAML with CEL and delivers to an HTTP endpoint.
+This does not prove process isolation,
+hot reload, CLI loading, state migration or live configuration updates.
+
+## CLI YAML submission
+
+`jobs submit --format yaml` uses an injected compiler to preserve the existing
+HTTP/security/mutation path. The stock binary maps public HTTP connector types
+to their JSON worker classes. The CLI regression decodes the submitted graph,
+checks the savepoint override and proves an invalid candidate sends no request.
+Stock node-mode workers install these factories in a private registry. An
+integration test uses the actual runWorker entry point, submits YAML through
+the CLI, sends an HTTP source record and verifies CEL-transformed HTTP output.
+Automatic watch/reload and migration are still outstanding; custom SDK workers
+explicitly register these classes.
+
+## Live checkpoint interval primitive
+
+The coordinator now accepts an authenticated operator-level PUT to a running
+job's checkpoint-interval endpoint. A synchronous batch persists the changed
+policy in both metadata and graph before publishing it in memory. Tests verify
+scheduler eligibility, disabling, unchanged assignments/commands, consistent
+persisted policy, failed-write rollback, strict HTTP input and role checks.
+WatchLiveUpdates now connects validated interval-only file edits to this API. Parallelism updates
+without restart, migration and rollback remain unimplemented.
+
+## Reload classification
+
+PlanUpdate distinguishes identical definitions and interval-only changes from
+other deployment edits. It validates both complete submission graphs and checks
+configured state backends, including stateless graphs where no backend appears
+in operator descriptors. Tests cover interval, timeout, parallelism, expression,
+connector, backend, name and combined changes without mutating the old pipeline.
+Automatic migration is not implemented by this classification primitive.
+
+## Replacement layout preflight
+
+The coordinator shares physical layout validation between actual savepoint
+restore and ValidateReplacementLayout. Preflight rejects incompatible task
+ownership, chain identity, backend kind or channel layout without stopping the
+running job or sending worker commands. Code/config changes can pass structural
+validation; this does not prove serializer compatibility or archive health.
+Actual restore still requires a completed durable savepoint and repeats checks.
+Preflight is exposed as POST /api/v1/jobs/{id}/replacement/validate and the SDK
+ValidateReplacement method, with HTTPS role acceptance coverage. It has not yet
+been connected to automatic reload, and topology-changing migration is not
+implemented by this unchanged-layout restore check.
+
+
+The live-file regression sends interval edits and reverts through the HTTP
+client, verifies invalid YAML causes no request, and verifies an expression edit
+stops with migration-required without sending a lifecycle mutation. Broader
+coordinator runtime tests separately prove interval updates leave deployments
+unchanged. Full automatic migration/rollback and concurrent external-update
+reconciliation remain open.
+
+## In-place same-layout replacement primitive
+
+ReplaceJobFromSavepoint now validates a latest completed savepoint and unchanged
+physical layout before persisting a replacement under the existing job identity.
+The fenced restart path joins old tasks first. A dedicated checkpoint pin keeps
+full task snapshot restore (including opaque source offsets) separate from
+key-group redistribution. Failed placement/deployment uses existing rollback
+handling and restores original graph/policies and resolves its secret bindings.
+A regression verifies full restore descriptors and policy rollback alongside
+rescale tests. End-to-end replacement execution, API/controller integration,
+changed-topology migration and bounded recovery failure handling still require
+acceptance evidence. This primitive does not prove full reload completion.
+
+Runtime replacement acceptance now covers real coordinator/worker execution:
+source offset 1 is restored, old source teardown precedes replacement, output
+changes from v1:first to v2:second, and the job ID stays unchanged. A failing new
+map factory rolls back and emits v1:second with an explicit recovery budget.
+A separate no-restart case ends FAILED with the original graph restored and no
+additional output. Rollback does not override configured recovery limits.
+Transactional external commit behavior and controller-driven migration still
+need dedicated acceptance coverage.
+
+The replacement runtime matrix now also uses the fenced transactional test
+sink. It waits for the savepoint's first external commit before replacing,
+then checks exactly two visible records after success/rollback, stable job/task
+transaction namespace and increased writer generation. With no restart budget,
+the external ledger keeps only the first committed record. The original matrix covers ordinary commit responses; lost-response coverage
+is recorded below. Process-crash timing remains unverified.
+
+The same-layout replacement operation is now exposed through operator-authorized
+HTTP and SDK ReplaceFromSavepoint. The real-worker matrix uses that SDK/HTTP path
+for all ordinary/transactional success, rollback and no-restart cases. HTTP 202
+is acceptance only. Strict request tests reject malformed input/name changes
+without changing the running job, and HTTPS role acceptance includes the route.
+Automatic savepoint selection/orchestration and changed-topology migration remain
+unfinished.
+
+## Same-layout reload orchestration
+
+The SDK Reload operation now sequences preflight, savepoint creation/polling,
+replacement and deployment outcome polling. The six real-worker ordinary and
+transactional success/rollback/no-restart cases run through this entire HTTP
+sequence. WatchLiveUpdates can opt in via AllowReplacement and advances its
+private baseline only on success; errors preserve the savepoint ID through
+OnReload. Savepoints remain retained. Changed-topology migration, concurrent
+external-edit reconciliation, process-crash acceptance and broader HTTP response ambiguity remain unfinished. TestYAMLFileReplacementThroughWorkers now covers the file-watcher opt-in with
+real workers and a fenced transactional sink. An invalid edit leaves status,
+deployment generation and source lifetime unchanged. A subsequent atomic CEL
+edit creates a savepoint, restores source offset 1, joins the old source and
+commits exactly v1:first followed by v2:second. Cancellation joins the watcher.
+
+## CLI watch integration
+
+`jobs watch JOB_ID --file pipeline.yaml` attaches to an existing job using the
+current file as its baseline. It validates endpoint/security/arguments, emits
+JSON confirmation events, and opts into same-layout reload with
+--allow-replacement. CLI race tests cover atomic interval edits through HTTP and
+cancellation. The SDK file-to-worker test covers replacement orchestration.
+A built-binary watch smoke test, external-edit reconciliation and remaining
+migration/crash requirements are still pending.
+
+Built CLI watch acceptance is reproducible with
+`python3 scripts/pipeline-watch-smoke.py /absolute/path/to/wire` after building
+`./cmd`. It uses a bounded fake coordinator and checks command routing, initial
+confirmation, invalid-edit isolation, exact interval PUT payload, confirmation
+and clean SIGINT exit without extra mutation. It exposed and fixed SIGINT being
+reported as a command failure. This does not replace the real-worker YAML reload
+test or prove full multi-process coordinator/worker crash recovery.
+
+Live interval watching now sends an expected-interval precondition. Coordinator
+race/HTTP tests prove a stale writer receives a conflict and cannot alter memory
+or persisted metadata; watcher tests check the baseline advances across edits
+and reverts. This addresses concurrent interval overwrites, not full graph
+revision conflicts or ABA detection; migration concurrency remains open.
+
+## Lost transactional commit replies during reload
+
+`TestSameJobReplacementLostCommitResponse` injects a successful external commit
+whose first response is an error. It covers the reload savepoint in success,
+rollback and no-restart cases, plus the final checkpoint after successful
+replacement or recovery to the old graph. The test verifies the injection was
+consumed and the external ledger contains each expected record exactly once;
+the no-restart case retains only the first committed record. Source offsets,
+job identity and writer generation retain the existing runtime assertions.
+The original six cases and these five cases pass three times under `-race`.
+This exercises a retryable commit reply loss, not coordinator/worker process
+crashes or a lost HTTP response to savepoint/replacement requests.
+
+## Lost replacement HTTP replies
+
+Reload now sends a unique replacement request ID. The coordinator persists it
+atomically with the accepted replacement and exposes it on job detail, retaining
+it through rollback. The SDK sends the mutation once, then uses this ID to
+reconcile a missing HTTP reply before interpreting job status. Missing or
+conflicting IDs fail rather than treating the old RUNNING job as success.
+The result and CLI reload event expose the ID for later reconciliation.
+
+Coordinator tests verify durable identity before/after rollback. HTTP tests
+cover accepted, rolled-back, unaccepted and conflicting requests with one
+mutation each. Three real-worker transactional cases drop the accepted reply
+at a reverse proxy and still verify successful replacement, rollback and
+no-restart behavior, source offsets and exact external output. Each passed
+three race-detected runs. This is not idempotent mutation replay, an external
+configuration lock or process-crash evidence. Savepoint POST reply recovery is
+covered separately below.
+
+## Lost savepoint creation replies
+
+Reload now chooses the savepoint identity before its creation POST. The optional
+HTTP savepoint_id uses the existing sp- plus 32 lowercase hex format. Requests
+with an ID are durably queued under the ownership lock; repeated IDs return the
+same request, while deleted IDs cannot be reused. Empty-body callers retain
+server-generated IDs. The SDK sends once and reconciles a lost response with a
+GET for the exact selected ID; an unsuccessful/mismatched read stops before
+replacement and returns the requested ID for inspection.
+
+Coordinator tests cover eight concurrent duplicate calls, queue recovery,
+activation/completion without reallocation, invalid IDs/bodies, tombstone reuse
+and failed persistence without queue publication. SDK negative tests cover a
+missing savepoint, a different identity and failed completion. A real-worker
+proxy drops the accepted savepoint reply for successful replacement, rollback
+and no-restart cases; the test verifies exactly one savepoint and the existing
+transactional output/offset invariants. These targeted cases pass three race
+runs. This does not prove OS-process crash recovery or retry failed readbacks;
+a returned request identity alone is not proof that the server accepted it.
+
+## Transient reload status failures
+
+Reload GETs now retry connection interruptions/timeouts, truncated HTTP bodies
+and HTTP 408/429/500/502/503/504 with exponential 100ms-to-2s backoff bounded by
+the caller context. POSTs remain single-attempt. Authentication, missing-resource,
+malformed JSON and identity errors stop the operation. Responses are size-bounded
+and decoded into fresh values; missing fields cannot inherit an earlier identity
+or completion status. Cancellation interrupts backoff.
+
+Focused race tests cover transient/permanent failure classification, cancellation
+and fresh decoding. Real-worker success/rollback/no-restart cases inject two 503
+responses into each savepoint/job polling path and verify transactional output,
+restore offsets, and exactly one savepoint POST and one replacement POST. These
+checks do not prove coordinator process crash recovery, topology migration or
+live parallelism; those requirements remain open.
+
+The full SDK package passes under `-race` with this polling change (160.887s);
+pinned golangci-lint reports zero issues. This supersedes the earlier full-SDK
+evidence for this branch, without explaining the older intermittent failures.
+
+## Initial changed-topology migration: stateless chain insertion
+
+Replacement preflight and deployment can now preserve the task/route layout
+while inserting map/filter/flat-map operators within a chain. A coordinator plan
+matches stable old operator IDs in order and generates target-to-snapshot index
+mapping. Worker archive integrity checks run before an in-memory remap; source
+state, original checkpoint identity, typed handles and prepared sink state are
+preserved. Every old operator must be consumed exactly once. Removal, reorder,
+stateful insertion, changed ownership and network topology remain rejected.
+
+Engine tests verify typed-state index movement, source/sink preservation and
+invalid mappings without archive mutation. Six real-worker ordinary/transactional
+success/rollback/no-restart cases insert an extra map. The YAML file-watcher
+acceptance also inserts a CEL transform and commits the expected old/new output
+exactly once. This starts the topology-migration requirement; it does not complete
+split/merge, routing, redistribution, stateful changes or live parallelism.
+
+Insertion validation passed three SDK race repetitions (19.216s). Full affected
+package race suites passed: engine 103.901s, coordinator 43.536s, worker 117.039s,
+RPC 4.221s. Lint reports zero issues. The last full SDK run predates insertion.
+
+## Stateless removal and topology reversion
+
+Compatible-layout reload now permits removing map/filter/flat-map transforms
+without changing task identity, ownership or routes. Retained operators keep
+their order and original snapshot indexes. The worker rejects omission of any
+nonempty checkpoint bytes or typed state handle; source state and a prepared
+sink must remain. Removal of stateful operators and general topology changes
+are still outside the implemented migration path.
+
+Six real-worker ordinary/transactional success, rollback and no-restart cases
+remove a transform. YAML file acceptance performs insertion then reversion under
+the same job ID, waits for each source teardown/offset restore, and verifies only
+the original two records commit externally. These cases pass three race runs
+(14.849s). Engine tests check hidden-state rejection without original checkpoint
+mutation and typed-handle index movement. This does not close general graph or
+parallelism migration requirements.
+
+Full engine/coordinator race suites pass with removal (74.912s / 37.410s);
+the additional typed-handle regression passes separately (1.569s).
+
+## Transaction namespace prerequisite for task identity changes
+
+Job metadata now stores an explicit map from each current task to its original
+external transaction task identity. Replacement and savepoint upgrade compose
+this mapping through the predecessor instead of deriving a fresh namespace from
+the new task name. Deployment sends the persisted namespace alongside the newer
+generation/attempt fence. Rollback restores the prior mapping with the graph;
+read-only job snapshots clone the map so callers cannot mutate live metadata.
+Legacy metadata without a map retains the existing derived identity.
+
+Tests cover composed task-name mappings, persisted metadata recovery, repeated
+upgrade lineage, rollback, snapshot isolation and serialized deployment commands.
+Existing real-worker reload cases remain covered. This is a prerequisite for
+renaming a physical task during migration, not permission to do so yet: the
+planner still rejects edits that change task identity until archive mapping and
+fetch authorization are extended together.
+
+Lineage verification passes under `-race`: full coordinator 36.397s, real-worker
+reload cases 16.005s, and single/repeated savepoint upgrades 7.685s. Lint is clean.

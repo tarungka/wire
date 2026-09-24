@@ -27,6 +27,12 @@ type WorkerRegistry struct{ registry *worker.Registry }
 
 func NewWorkerRegistry() *WorkerRegistry { return &WorkerRegistry{registry: worker.NewRegistry()} }
 
+// RuntimeRegistry exposes the internal registry for Wire's node-mode integration.
+// SDK applications should pass this WorkerRegistry directly to RunWorker.
+// Finish all registration before starting a runtime; callers must not mutate
+// either view while a worker is running.
+func (r *WorkerRegistry) RuntimeRegistry() *worker.Registry { return r.registry }
+
 type WorkerSourceFactory func(context.Context, []byte, WorkerTaskContext) (Source, error)
 type WorkerSinkFactory func(context.Context, []byte, WorkerTaskContext) (Sink, error)
 type WorkerMapFactory func(context.Context, []byte, WorkerTaskContext) (MapFunc, error)

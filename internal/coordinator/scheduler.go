@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -303,9 +302,8 @@ func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 	for _, workerTasks := range assignments {
 		for i := range workerTasks {
 			workerTasks[i].DeploymentGeneration = generation
-			if job.TransactionJobID != "" {
-				workerTasks[i].TransactionJobID = job.TransactionJobID
-				workerTasks[i].TransactionTaskID = job.TransactionJobID + "/" + strings.TrimPrefix(workerTasks[i].TaskID, job.ID+"/")
+			if job.TransactionJobID != "" || len(job.TransactionTaskIDs) > 0 {
+				workerTasks[i].TransactionJobID, workerTasks[i].TransactionTaskID = transactionIdentity(job, workerTasks[i].TaskID)
 			}
 		}
 	}

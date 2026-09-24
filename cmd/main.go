@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -51,7 +52,16 @@ func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "jobs" || os.Args[1] == "savepoints" || os.Args[1] == "cluster") {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		if err := jobcli.Run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		var err error
+		if len(os.Args) > 2 && os.Args[1] == "jobs" && os.Args[2] == "watch" {
+			err = runPipelineWatch(ctx, os.Args[3:], os.Stdout, os.Stderr)
+			if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+				err = nil
+			}
+		} else {
+			err = jobcli.RunWithPipelineCompiler(ctx, os.Args[1:], os.Stdout, os.Stderr, compileYAMLPipeline)
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -285,7 +295,7 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 	if err != nil {
 		return err
 	}
-	w := worker.New(worker.Config{
+	w := worker.NewWithRegistry(worker.Config{
 		PeerTLSConfig:        peerTLS,
 		MaxFrameSize:         wireCfg.MaxFrameSize,
 		EpochPath:            wireCfg.Worker.EpochPath,
@@ -301,7 +311,7 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 		CoordinatorAddr:      wireCfg.Worker.CoordinatorAddr,
 		ListenAddr:           wireCfg.Worker.ListenAddr,
 		TaskSlots:            wireCfg.Worker.TaskSlots,
-	}, log.Logger)
+	}, pipelineWorkerRegistry(), log.Logger)
 
 	g, gCtx := errgroup.WithContext(ctx)
 

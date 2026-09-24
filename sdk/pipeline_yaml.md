@@ -51,8 +51,8 @@ and Close belong to runtime execution, not parsing.
 - `rename`: simultaneously renames top-level fields using `mappings`. Duplicate
   targets, missing source fields, and overwriting untouched fields fail.
 - Window transforms populate the SDK window assigner and count/sum/min/max
-  aggregator. Positive durations are required. They are graph definitions only
-  until window execution is integrated.
+  aggregator. Positive durations are required. Window execution supports named
+  late outputs and the selected managed state backend.
 
 CEL variables are `key` (string), `value` (parsed JSON when valid, otherwise raw
 string), `event_time` (integer), `headers` (string map), and declared JSON parse
@@ -70,16 +70,34 @@ unavailable connector types, missing input references, cycles, invalid duration
 settings, and invalid expressions fail parsing. Forward input references are
 allowed. Connector-specific `config` validation is the factory's responsibility.
 
-`Graph()` exposes the compiled SDK graph for integration. `Execute` currently
-supports stateless linear pipelines with exactly one source, one sink, and
-parallelism one. It rejects branching, key-by/window execution, parallelism above
-one, periodic checkpoints, and restart policies because the underlying runtime
-cannot yet honor all of those contracts. Parsing their graph/configuration does
-not imply that execution is available. The SDK source lifecycle correction here
-is also present in the separate HTTP connector PR.
+`Graph()` exposes the compiled SDK graph for integration. Linear pipelines
+support parallel execution when every source and sink uses an instance-aware
+factory. The legacy `Sources`/`Sinks` factories remain limited to parallelism
+one. Graphs may contain multiple sources and fan-out branches; key-by can feed
+ordinary transforms or sinks without a window. Each `input` names one upstream
+operator; this schema does not yet expose a multi-input union/join field.
 
-There is no automatic reload, drain/switchover, savepoint migration, CLI loader,
-or cluster deployment of CEL programs yet. Invalid reload candidates can be
+`PipelineConnectors.SourceInstances` and `.SinkInstances` map type names to
+`func(map[string]any, InstanceContext) (Source, error)` and the corresponding
+sink function. `InstanceContext` contains `Index` and `Parallelism`; use these
+to partition source input instead of emitting the whole input from each copy.
+Each call receives a deep copy of its YAML configuration and must return a
+fresh, unopened connector. Instance factories run during execution after graph
+validation. Registering both legacy and instance factories for the same type is
+an error. Local named DLQ destinations require a legacy shared sink factory.
+
+Checkpoint and restart settings use the SDK's local coordinator/worker runtime
+and require instance-aware factories for every source and sink, including at
+parallelism one. This permits a fresh connector on each deployment attempt;
+sources must still implement the SDK checkpoint/restore contract for replay,
+and exactly-once external output requires transactional sinks. Factory support
+alone does not provide either guarantee. Checkpointed sources currently park at
+EOF until all job sources exhaust. Mixed bounded/unbounded jobs therefore keep
+the exhausted source task and its output streams open; independently finishing
+those branches is an open lifecycle requirement. Task recovery acceptance covers CEL and both window backends; process replacement
+and mixed-source completion remain in the completion audit.
+
+There is no automatic reload, drain/switchover or topology migration yet. Invalid reload candidates can be
 validated with ParsePipelineYAML, but callers must not infer a safe switchover
 protocol from that API. WIP-19 remains Partially Implemented.
 
@@ -102,3 +120,275 @@ timestamps with the ingestion clock. `max_ooo` is only valid for bounded-ooo;
 omitting it selects the five-second default. Explicit `0s` means zero
 tolerance, equivalent to `monotonic`. Invalid strategies, durations, unknown fields, and watermark settings
 on transforms or sinks are rejected before connector factories run.
+
+## State backend selection
+
+Pipeline YAML accepts the nested WIP-18 configuration under `spec`:
+
+```yaml
+state_backend:
+  type: hashmap
+  hashmap:
+    max_memory_mb: 256
+```
+
+For Pebble, use `type: pebble` and optional `pebble.data_dir` and
+`pebble.max_compaction_concurrency`. An omitted HashMap limit means 256 MiB;
+explicit zero means unlimited. Negative limits, overflow, unknown backend
+names and unknown nested fields are rejected before connector factories run.
+The limit applies to logical state payload per managed operator instance.
+
+`pipeline.SetStateBackend(sdk.NewHashMapStateBackend(64))` overrides the YAML
+selection. An omitted `state_backend` preserves the environment default;
+embedded Pebble uses temporary storage unless a directory is configured.
+The connector and deployment requirements above still apply. Full CLI/pipeline/system precedence and distributed YAML execution are
+tracked in the [WIP-19 completion audit](../docs/trds/WIP-19/completion.md).
+
+## Window values and projection
+
+YAML windows emit JSON objects so downstream `select`, `filter`, `map` and
+`rename` can consume their results. Every result contains `key`, `window_start`,
+`window_end`, `is_update`, and a numeric field named after its aggregation:
+`count`, `sum`, `min` or `max`. Window bounds are event-time milliseconds; the
+event retains its key, window-end timestamp and SDK window metadata headers.
+For example, the proposal's `fields: [key, count, window_start, window_end]`
+projection can follow a count window directly. Late-output records retain their
+original payload and do not become result objects.
+
+Count accepts any payload and produces an unsigned integer. Sum/min/max accept
+a JSON number as the entire input value; use an upstream map such as
+`expression: "value.amount"` to select an object field. These numeric aggregates
+use float64 arithmetic, including its rounding limits for large integers.
+Invalid JSON, nonnumeric values and non-finite aggregate results return errors
+without publishing partial window state. Count overflow is also rejected.
+
+Compatibility: earlier YAML windows exposed the Go SDK's binary aggregate
+bytes. YAML consumers must now read the named JSON aggregate field. Numeric
+YAML input is JSON rather than binary float bytes. Ordinary Go SDK window
+values and binary checkpoint accumulator formats are unchanged.
+
+### Registered worker execution
+
+Call `registry.RegisterPipelineTransforms()` once before starting workers. This
+registers the ten YAML transform types under versioned `wire.yaml.v1.*` classes.
+Workers independently validate and compile the serialized configuration; Go
+closures from the submitting process are not deployed. Definitions are bounded
+to 1 MiB and 1024 variable names, with the existing CEL parser limits applied.
+
+Supply `PipelineConnectors.NamedSources` and `.NamedSinks` maps from YAML type
+to application worker class, then call `pipeline.SetCoordinator(url).Execute(ctx)`.
+Use `SetCoordinatorSecurity` for HTTPS and credentials. Every selected class must
+be registered on every worker; each factory must create a fresh connector.
+Connector config is JSON, including for a named `__dlq__` sink. Such sinks receive
+the normal DLQ envelope with original event, error and operator attribution.
+Named bindings are remote-only and cannot overlap local factories for a type.
+
+For the public HTTP connector, call `httpworker.RegisterYAML(registry)` from
+`sdk/connectors/httpapi/worker` and bind type `http-api` to worker class
+`http-api.yaml.v1`. Its snake_case configuration matches `SourceConfig` and
+`SinkConfig`; sink `timeout`, `initial_delay` and `max_delay` use duration strings
+such as `30s`. Unknown fields are rejected. Registration does not open listeners
+or send requests. The original `http-api` MessagePack class remains unchanged.
+
+HTTP sources are unbounded and acknowledge in-memory acceptance, not durable
+checkpoint completion. Their sequence offsets do not make client replay
+automatic. HTTP sinks require receiver-side idempotency for replay-safe output.
+For multiple source instances, assign distinct listen addresses through custom
+worker factories; the shared YAML address is not partition-expanded.
+
+### CLI submission
+
+`wire jobs submit --file pipeline.yaml --format yaml --coordinator https://host:4001`
+compiles and submits a YAML pipeline and prints the coordinator's response without
+waiting for completion. The default format remains the existing REST JSON envelope.
+The same `--ca-cert`, client certificate, API key/password-file and `--savepoint`
+flags apply to either format. Both input and compiled request are limited to 4 MiB.
+Malformed graphs and CEL expressions are rejected before the HTTP request.
+
+The stock CLI maps `http-api` source and sink types to `http-api.yaml.v1`.
+Stock node-mode workers install YAML transforms and HTTP YAML factories in a
+private registry. Custom SDK workers must call `RegisterPipelineTransforms()`
+and `httpworker.RegisterYAML(registry)` before starting. Custom applications can use `ParsePipelineYAML` and
+`YAMLPipeline.ExportSubmission` with their own named bindings, then submit the
+exported JSON through the existing CLI. Worker factories
+validate connector configuration on deployment; compiling a named binding does
+not open or validate the target connector's runtime resources.
+
+### Watching validated candidates
+
+`WatchPipelineFile` reads a bounded regular file and compiles the initial
+pipeline plus stable content changes. It only accepts named-worker bindings,
+so candidate validation cannot construct local connectors. Changed bytes must
+match across two polls (250ms default), including atomic file replacements;
+size and modification timestamps are not used as change identities. Invalid
+edits are reported through `OnRejected` and never reach the apply callback.
+
+The callback is serialized and an error stops the watcher without retrying an
+uncertain mutation. It must implement the actual job replacement protocol.
+This API alone does **not** provide graceful switchover, savepoint migration,
+rollback or live updates; those remain unfinished. Cancellation stops polling
+and is passed to the callback. Prefer atomic file replacement when editing;
+two stable reads cannot prove a file writer has finished an in-place edit.
+
+The coordinator supports `PUT /api/v1/jobs/{id}/checkpoint-interval` with
+`{"interval":"5s"}` for a running job. This changes future periodic triggers
+without redeploying tasks; `0s` disables automatic triggers. Existing checkpoint
+operations retain their original settings, and manual savepoints remain enabled.
+The interval is persisted with both graph and job metadata. The schedule remains
+anchored to the previous trigger (or running time), so shortening an interval
+can make a checkpoint immediately due. WatchLiveUpdates connects interval-only edits to this endpoint. Automatic
+migration and live parallelism changes remain open.
+
+SDK controllers can call
+`pipeline.SetCoordinator(url).UpdateCheckpointInterval(ctx, jobID, interval)`.
+It uses the configured coordinator security, sends one request, and verifies the
+response identifies the job and requested duration. Job list/detail responses
+expose `checkpoint_interval` when the job has an explicit checkpoint policy.
+A failed request is not automatically retried; controllers must reconcile the
+job's current status before deciding what to do after an uncertain response.
+
+`current.PlanUpdate(candidate)` validates both named-worker deployments and
+classifies them as unchanged, checkpoint-interval-only, or migration-required.
+It compares complete submitted graphs and configured state backends, rather
+than matching a few YAML fields. A simultaneous expression/connector/backend
+edit cannot be sent through the interval-only path. Planning has no runtime
+side effects. Migration-required is a decision to perform further validation,
+not a guarantee that the existing savepoint restore path supports that change.
+
+Before stopping a predecessor, a controller can call
+`candidate.SetCoordinator(url).ValidateReplacement(ctx, jobID)`. This submits the
+candidate graph to `POST /api/v1/jobs/{id}/replacement/validate` and checks the
+current physical layout without changing the job. Operator authorization is
+required. A successful response is advisory: it does not reserve the current
+job, prove archive health or certify application state serializers. Restore
+must still validate the actual savepoint. Stateless insertion/removal within existing chains is supported as described below.
+Changed task ownership/routes and parallelism still require further migration work.
+
+`current.WatchLiveUpdates(ctx, path, jobID, bindings, config)` connects stable
+file edits to confirmed live interval updates for an existing job. It rejects
+invalid YAML without changing the job, advances a private baseline after each
+successful response, and supports reverting the interval. Expression, connector,
+backend or topology edits return `ErrPipelineMigrationRequired` without stopping
+the job unless `AllowReplacement` is enabled. The caller must supply the current definition and exclusively own job
+configuration changes; independent external edits are not reconciled yet.
+The opt-in replacement path below supports a subset of migration edits; full
+WIP-19 migration remains incomplete.
+
+For compatible replacements, `candidate.ReplaceFromSavepoint(ctx, jobID,
+savepointID)` calls `POST /api/v1/jobs/{id}/replacement`. The candidate preserves
+the job name and physical layout; the coordinator requires its latest completed
+savepoint and no active checkpoint. HTTP 202 means accepted for fenced teardown
+and redeployment, not that the new code is running. Inspect job status and
+`rescale_failure` to detect rollback. The SDK sends one request and verifies the
+returned job identity; reconcile ambiguous responses before another mutation.
+Rollback restores the prior graph/policies, but restarting it still requires
+remaining recovery budget. This API does not itself watch files. Supported topology edits are limited
+to stateless insertion/removal within existing task chains.
+
+`candidate.Reload(ctx, jobID)` orchestrates compatible-layout preflight, creation and
+completion of a savepoint, replacement acceptance, and status polling. It returns
+the savepoint ID even if a later step fails. `ErrPipelineReplacementRolledBack`
+means the previous configuration has been restored; its recovery may still be
+in progress or may exhaust the restart budget. A successful return means the
+replacement reached RUNNING or FINISHED. Bound this operation with a context.
+Each replacement carries a fresh `replacement_request_id`, persisted with its
+acceptance and retained across rollback. If its HTTP reply is lost, Reload reads
+job status and continues only when that ID matches. A missing/different ID or
+failed status read returns an error; no mutation is resent. The result exposes
+`ReplacementRequestID` for reconciliation. This is a correlation marker, not an
+idempotency key or a configuration lock.
+
+Reload also selects a random savepoint ID before creation and sends it as
+`{"savepoint_id":"sp-<32 lowercase hex digits>"}`. The coordinator durably queues
+this request before returning 202. Repeating that ID returns the same queued,
+active or completed savepoint; deleted IDs cannot be reused. Existing callers
+that send no ID retain server-generated IDs. After a lost creation reply, Reload
+reads only the selected ID and continues if it exists with the expected job
+identity. It never sends a second POST. If the request wasn't persisted or a read fails permanently, it stops with that
+ID in the result for manual reconciliation. Transient GET failures (connection
+interruptions/timeouts and HTTP 408, 429, 500, 502, 503 or 504) retry with
+exponential backoff from 100ms to 2s until the caller's context ends. Each HTTP
+request still has a 30s timeout. Supply an overall context deadline; without one,
+an unavailable coordinator can keep the operation waiting. Authentication,
+missing resources, malformed replies and identity mismatches are terminal.
+Every read decodes into fresh state so omitted fields cannot reuse an old
+identity or completion status. Mutation requests are never retried. An ID
+in the result is not proof of acceptance. This path requires a coordinator that
+supports caller-selected savepoint IDs; upgrade the coordinator before clients.
+
+Set `PipelineLiveWatchConfig.AllowReplacement` to enable this path for stable
+non-interval file edits. `OnReload` receives its result/error, including the
+retained savepoint ID. The watcher advances its baseline only on success and
+stops on rollback or uncertain requests. Savepoints are retained for explicit
+cleanup. Exclusive configuration ownership is still required; a periodic
+checkpoint that supersedes the savepoint can cause safe rejection and must be
+reconciled before another reload. Changes beyond stateless chain edits remain unsupported by this
+orchestration.
+
+### CLI watch
+
+After submitting the initial definition, attach with:
+
+```sh
+wire jobs watch JOB_ID --file pipeline.yaml --coordinator https://host:4001 \
+  --ca-cert ca.pem --api-key-file api-key.txt --allow-replacement
+```
+
+Without `--allow-replacement`, only interval edits are applied and other edits
+stop the watcher. `--poll-interval` defaults to 250ms. The supplied file must
+initially describe the running job, and this watcher must exclusively own its
+configuration updates. It does not submit an initial job or reconcile other
+controllers. Stdout contains JSON applied/reload events; reload events include
+the savepoint ID and replacement request ID for later inspection/reconciliation. Ctrl-C stops watching; it does
+not cancel the remote job or undo an already accepted replacement. Existing
+HTTPS/client-certificate/API-key/password-file settings are supported. The
+stock command binds public HTTP connectors; application-specific registries
+can use the SDK watch API.
+
+For a reproducible built-binary command smoke test, run
+`python3 scripts/pipeline-watch-smoke.py /absolute/path/to/wire`. It checks watch
+routing, invalid/valid edits and clean SIGINT shutdown against a fake coordinator;
+real-worker replacement coverage is in the SDK runtime tests.
+
+Watched interval requests include `expected_interval`, taken from the last
+confirmed definition. The coordinator compares it atomically before persisting;
+a concurrent interval change returns HTTP 409 and stops the watcher without
+overwriting it. Direct UpdateCheckpointInterval remains an unconditional
+explicit update. This precondition does not detect unrelated graph edits or
+an interval changed away and back, so it does not replace exclusive controller
+ownership for migration.
+
+### Editing stateless transforms during reload
+
+Reload can insert or remove map, filter or flat-map transforms within an existing
+physical operator chain. It maps saved operator positions by their stable IDs
+and preserves all retained operators in order. A removed transform must have
+empty checkpoint bytes and no typed state handle; otherwise restore fails and
+the original graph is eligible for rollback. Source offsets remain separate, typed
+state-handle indexes are adjusted, and prepared sink state stays at the final
+sink position. Archive checksums and original checkpoint identities are verified
+before remapping; the stored archive is not rewritten. Fresh transforms receive
+empty state. All participating workers must support the new restore mapping.
+
+This is one supported topology edit, not general graph migration. The task
+identity, subtask count, key-group ownership and network routes must stay the
+same. Inserting before the operator that names a task, splitting/merging chains,
+changing shuffles, removing stateful operators, reordering retained operators or introducing a stateful
+operator still fails preflight. Existing state serializers must remain compatible.
+Failure during restore/deployment retains the existing rollback and recovery
+budget behavior. The file-watcher acceptance test inserts a CEL map and verifies
+source offset 1 plus external transactional output exactly `v1:first` followed
+by `extra:v2:second`.
+
+The YAML watcher also supports reverting such an insertion. Its round-trip test
+keeps the source paused at offset 1, inserts a transform, reverts the file through
+a second savepoint, then releases the source. Both old attempts are joined and
+external output contains only the original first and second records, once each.
+A removed operator's unexpected saved state is never silently dropped.
+
+Sink transaction namespaces are now persisted separately from physical task
+names and carried through replacement, rollback and savepoint upgrades. This
+prepares task identity changes without treating a restored sink as a new writer;
+the current migration planner still rejects such edits. Successful migrations
+retain the namespace while increasing deployment generation and changing the
+attempt fence. Older metadata without a mapping keeps its previous behavior.

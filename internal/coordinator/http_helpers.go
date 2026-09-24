@@ -18,6 +18,7 @@ type errorResponse struct {
 
 // jobResponse is the API representation of a job.
 type jobResponse struct {
+	CheckpointInterval   string `json:"checkpoint_interval,omitempty"`
 	RestoreSavepointPath string `json:"restore_savepoint_path,omitempty"`
 	CancelAfterSavepoint bool   `json:"cancel_after_savepoint,omitempty"`
 	PauseSavepointID     string `json:"pause_savepoint_id,omitempty"`
@@ -34,7 +35,8 @@ type jobResponse struct {
 
 // jobDetailResponse includes full job details.
 type jobDetailResponse struct {
-	Checkpoints *jobCheckpointResponse `json:"checkpoints,omitempty"`
+	ReplacementRequestID string                 `json:"replacement_request_id,omitempty"`
+	Checkpoints          *jobCheckpointResponse `json:"checkpoints,omitempty"`
 	jobResponse
 	StartedAt        string            `json:"started_at,omitempty"`
 	FinishedAt       string            `json:"finished_at,omitempty"`
@@ -170,7 +172,12 @@ func jobResponseFromMeta(j *JobMeta) jobResponse {
 	if ref := j.RestoreSavepoint; ref != nil {
 		restorePath = fmt.Sprintf("jobs/%s/checkpoints/%d", ref.JobID, ref.CheckpointID)
 	}
+	interval := ""
+	if j.CheckpointPolicy != nil {
+		interval = j.CheckpointPolicy.Interval.String()
+	}
 	return jobResponse{
+		CheckpointInterval:   interval,
 		RestoreSavepointPath: restorePath,
 		CancelAfterSavepoint: j.CancelAfterSavepoint,
 		PauseSavepointID:     j.PauseSavepointID, PauseFailure: j.PauseFailure,
@@ -187,12 +194,13 @@ func jobResponseFromMeta(j *JobMeta) jobResponse {
 
 func jobDetailFromMeta(j *JobMeta) jobDetailResponse {
 	return jobDetailResponse{
-		jobResponse:      jobResponseFromMeta(j),
-		StartedAt:        formatTime(j.StartedAt),
-		FinishedAt:       formatTime(j.FinishedAt),
-		RestartCount:     j.RestartCount,
-		LatestCheckpoint: j.LatestCheckpoint,
-		SavepointPath:    j.SavepointPath,
+		jobResponse:          jobResponseFromMeta(j),
+		StartedAt:            formatTime(j.StartedAt),
+		FinishedAt:           formatTime(j.FinishedAt),
+		RestartCount:         j.RestartCount,
+		LatestCheckpoint:     j.LatestCheckpoint,
+		ReplacementRequestID: j.ReplacementRequestID,
+		SavepointPath:        j.SavepointPath,
 	}
 }
 

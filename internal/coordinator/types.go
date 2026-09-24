@@ -122,8 +122,11 @@ type SavepointRestoreReference struct {
 
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
-	TransactionJobID  string `codec:"transaction_job_id,omitempty"`
-	CheckpointIDFloor uint64 `codec:"checkpoint_id_floor,omitempty"`
+	// TransactionTaskIDs maps current task IDs to their original sink namespaces.
+	// Treat this map as immutable: publish a new map with each topology change.
+	TransactionTaskIDs map[string]string `codec:"transaction_task_ids,omitempty"`
+	TransactionJobID   string            `codec:"transaction_job_id,omitempty"`
+	CheckpointIDFloor  uint64            `codec:"checkpoint_id_floor,omitempty"`
 
 	RestoreSavepoint   *SavepointRestoreReference `codec:"restore_savepoint,omitempty"`
 	UpgradeSuccessorID string                     `codec:"upgrade_successor_id,omitempty"`
@@ -143,25 +146,28 @@ type JobMeta struct {
 	LastCheckpointCompletion      time.Time             `codec:"last_checkpoint_completion,omitempty"`
 	CheckpointFailure             string                `codec:"checkpoint_failure,omitempty"`
 	// RescaleCheckpoint selects a completed savepoint for changed ownership.
-	RescaleRollback   *RescaleRollback `codec:"rescale_rollback,omitempty"`
-	RescaleFailure    string           `codec:"rescale_failure,omitempty"`
-	RescaleRequested  bool             `codec:"rescale_requested,omitempty"`
-	RecoveryAttempts  int              `codec:"recovery_attempts,omitempty"`
-	RunningSince      time.Time        `codec:"running_since,omitempty"`
-	RescaleCheckpoint uint64           `codec:"rescale_checkpoint,omitempty"`
-	ID                string           `codec:"id"`
-	Name              string           `codec:"name"`
-	Status            JobStatus        `codec:"status"`
-	Parallelism       int              `codec:"parallelism"`
-	ConfigHash        string           `codec:"config_hash"`
-	CreatedAt         time.Time        `codec:"created_at"`
-	UpdatedAt         time.Time        `codec:"updated_at"`
-	StartedAt         time.Time        `codec:"started_at,omitempty"`
-	FinishedAt        time.Time        `codec:"finished_at,omitempty"`
-	RestartCount      int              `codec:"restart_count,omitempty"`
-	LatestCheckpoint  uint64           `codec:"latest_checkpoint,omitempty"`
-	Config            []byte           `codec:"config,omitempty"`
-	SavepointPath     string           `codec:"savepoint_path,omitempty"`
+	RescaleRollback  *RescaleRollback `codec:"rescale_rollback,omitempty"`
+	RescaleFailure   string           `codec:"rescale_failure,omitempty"`
+	RescaleRequested bool             `codec:"rescale_requested,omitempty"`
+	RecoveryAttempts int              `codec:"recovery_attempts,omitempty"`
+	RunningSince     time.Time        `codec:"running_since,omitempty"`
+	// ReplacementRequestID correlates the last accepted replacement, including rollback.
+	ReplacementRequestID  string    `codec:"replacement_request_id,omitempty"`
+	ReplacementCheckpoint uint64    `codec:"replacement_checkpoint,omitempty"`
+	RescaleCheckpoint     uint64    `codec:"rescale_checkpoint,omitempty"`
+	ID                    string    `codec:"id"`
+	Name                  string    `codec:"name"`
+	Status                JobStatus `codec:"status"`
+	Parallelism           int       `codec:"parallelism"`
+	ConfigHash            string    `codec:"config_hash"`
+	CreatedAt             time.Time `codec:"created_at"`
+	UpdatedAt             time.Time `codec:"updated_at"`
+	StartedAt             time.Time `codec:"started_at,omitempty"`
+	FinishedAt            time.Time `codec:"finished_at,omitempty"`
+	RestartCount          int       `codec:"restart_count,omitempty"`
+	LatestCheckpoint      uint64    `codec:"latest_checkpoint,omitempty"`
+	Config                []byte    `codec:"config,omitempty"`
+	SavepointPath         string    `codec:"savepoint_path,omitempty"`
 }
 
 // TaskAssignmentMap maps task IDs to the worker IDs they are assigned to.
@@ -290,9 +296,10 @@ type CoordinatorCommand struct {
 
 // RescaleRollback retains the last working topology until the new tasks all run.
 type RescaleRollback struct {
-	PlacementFailedSince time.Time `codec:"placement_failed_since,omitempty"`
-	Config               []byte    `codec:"config"`
-	Parallelism          int       `codec:"parallelism"`
-	Checkpoint           uint64    `codec:"checkpoint"`
-	Attempted            bool      `codec:"attempted"`
+	TransactionTaskIDs   map[string]string `codec:"transaction_task_ids,omitempty"`
+	PlacementFailedSince time.Time         `codec:"placement_failed_since,omitempty"`
+	Config               []byte            `codec:"config"`
+	Parallelism          int               `codec:"parallelism"`
+	Checkpoint           uint64            `codec:"checkpoint"`
+	Attempted            bool              `codec:"attempted"`
 }

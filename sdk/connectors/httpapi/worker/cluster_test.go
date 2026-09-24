@@ -3,6 +3,7 @@ package worker_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,7 +47,7 @@ func (s *channelSink) Write(ctx context.Context, e sdk.Event) error {
 }
 
 func TestPublicHTTPWorkerDeliveryAndNamedDLQ(t *testing.T) {
-	for _, scenario := range []string{"success", "retry", "permanent-dlq"} {
+	for _, scenario := range []string{"success", "retry", "permanent-dlq", "yaml"} {
 		t.Run(scenario, func(t *testing.T) {
 			var attempts atomic.Int32
 			var bodiesMu sync.Mutex
@@ -109,6 +110,8 @@ func TestPublicHTTPWorkerDeliveryAndNamedDLQ(t *testing.T) {
 			start(func() { _ = api.Serve() })
 			registry := sdk.NewWorkerRegistry()
 			httpworker.Register(registry)
+			httpworker.RegisterYAML(registry)
+			registry.RegisterPipelineTransforms()
 			registry.RegisterSource("single", func(context.Context, []byte, sdk.WorkerTaskContext) (sdk.Source, error) { return &singleSource{}, nil })
 			dead := make(chan sdk.Event, 2)
 			registry.RegisterSink("dead", func(context.Context, []byte, sdk.WorkerTaskContext) (sdk.Sink, error) {
@@ -129,7 +132,34 @@ func TestPublicHTTPWorkerDeliveryAndNamedDLQ(t *testing.T) {
 			if scenario == "permanent-dlq" {
 				sink.WithErrorHandler(sdk.ErrorHandler{OnExhausted: "dlq"}).WithDLQSinkNamed("dead", nil)
 			}
-			result, err := env.ExecuteWithName(ctx, "http-"+scenario)
+			var result *sdk.JobResult
+			if scenario == "yaml" {
+				document := fmt.Sprintf(`apiVersion: wire/v1
+kind: Pipeline
+metadata: {name: http-yaml}
+spec:
+  sources:
+    - {name: input, type: single}
+  transforms:
+    - {name: mapped, type: map, input: input, config: {expression: "value"}}
+  sinks:
+    - name: output
+      type: http-api
+      input: mapped
+      config:
+        url: %q
+        allow_insecure: true
+        timeout: 1s
+        idempotency_key_field: id
+`, target.URL)
+				pipeline, parseErr := sdk.ParsePipelineYAML([]byte(document), sdk.PipelineConnectors{NamedSources: map[string]string{"single": "single"}, NamedSinks: map[string]string{"http-api": "http-api.yaml.v1"}})
+				if parseErr != nil {
+					t.Fatal(parseErr)
+				}
+				result, err = pipeline.SetCoordinator("http://" + api.Addr()).Execute(ctx)
+			} else {
+				result, err = env.ExecuteWithName(ctx, "http-"+scenario)
+			}
 			if err != nil || result == nil {
 				t.Fatalf("execution: %v", err)
 			}

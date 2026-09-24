@@ -265,6 +265,7 @@ func compilePipelineTransform(node *StreamNode, op pipelineOperator, env *cel.En
 		default:
 			return fmt.Errorf("unknown aggregation %q", aggregation)
 		}
+		node.Aggregator = pipelineWindowAggregator{Aggregator: node.Aggregator, kind: aggregation}
 		node.Type = NodeWindow
 		switch op.Type {
 		case "tumbling-window":
