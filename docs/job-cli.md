@@ -199,4 +199,15 @@ attempt, `metrics` includes `records_in`, `records_out`, `bytes_in`, `bytes_out`
 attempt counters, not job-lifetime totals. Missing metrics are omitted rather
 than reported as zero. Lost or removed workers' reports are omitted. They are
 advisory and do not survive coordinator restart; use the timestamp when assessing
-freshness. Checkpoint summaries remain separate implementation work.
+freshness.
+
+Job details also include `checkpoints`: `latest_completed`, `total_completed`,
+`total_failed` and `in_progress`, calculated from durable checkpoint records.
+These include savepoints and final checkpoints; failed/aborted savepoints count
+here even though they are exempt from the automatic-checkpoint failure budget.
+`latest_duration_ms` is present when the latest completed record has a recorded
+completion time. Older records may lack it. `latest_completed` describes the
+newest completed boundary, whereas the existing top-level `latest_checkpoint`
+can identify an older boundary selected for recovery. Task and checkpoint
+sections are sampled separately; they are not a transaction across the whole API
+response. The history scan does not hold the coordinator's ownership lock.

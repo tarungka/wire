@@ -445,6 +445,7 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 	complete := len(checkpoint.StatePaths) == len(checkpoint.Tasks)
 	if complete {
 		checkpoint.Status = CheckpointCompleted
+		checkpoint.CompletedAt = time.Now().UTC()
 	}
 	encoded, err := protocol.EncodeMsgPack(checkpoint)
 	if err != nil {

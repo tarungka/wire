@@ -104,6 +104,10 @@ func TestCheckpointCompletesOnlyAfterEveryAssignedTask(t *testing.T) {
 	if err := c.AcknowledgeCheckpoint(req); err != nil {
 		t.Fatal(err)
 	}
+	summary, err := c.checkpointInspection("job")
+	if err != nil || summary.TotalCompleted != 1 || summary.LatestCompleted != cp.ID || summary.LatestDurationMs == nil {
+		t.Fatalf("durable summary after duplicate ACK: %+v, %v", summary, err)
+	}
 	req.State.Path = "different"
 	if err := c.AcknowledgeCheckpoint(req); err == nil {
 		t.Fatal("conflicting retry accepted")

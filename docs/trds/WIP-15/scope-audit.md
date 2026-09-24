@@ -7,7 +7,7 @@ branch builds on WIP-14's per-job policies and local worker runtime.
 | Requirement | Current evidence | Remaining acceptance work |
 | --- | --- | --- |
 | Complete durable job/task state machine | `job_state_machine.go`, transition and task-status tests | Fix lifecycle gaps below; verify all transitions under storage failures and recovery |
-| Submission, listing, inspection and filtering | Existing JSON graph-envelope handlers and CLI | YAML submission (WIP-19 integration); full detailed task/checkpoint response; malformed body/error audit |
+| Submission, listing, inspection and filtering | Existing JSON graph-envelope handlers and CLI | YAML submission (WIP-19 integration); final detailed response acceptance; malformed body/error audit |
 | Binary submission | `handleSubmitBinary` returns 501 | Implement actual compiled-application submission and execution contract, including limits and isolation; do not call the existing stub complete |
 | Cancel, including during deployment | Durable scheduler reconciliation, old-attempt fencing, CLI teardown and recovery tests | Final whole-workflow acceptance |
 | Pause and resume | Durable queued intent, atomic checkpoint/PAUSING decision, fenced teardown, RESUMING placement; live CLI restores offsets and keyed state | Final operational walkthrough and acceptance audit |
@@ -148,4 +148,14 @@ assignments return an error rather than silently hiding tasks. The HTTP and
 snapshot tests cover these fields. Per-task heartbeat metrics now include record/byte counters, backpressure and
 the receipt timestamp. Ownership-fence tests reject other workers, jobs, epochs
 and attempts, lost/removed workers and absent reports, and verify copied values.
-Checkpoint summaries remain open; missing metrics are not fabricated as zeros.
+Checkpoint summaries are described below; missing metrics are not fabricated as zeros.
+
+## Durable checkpoint inspection
+
+Job inspection reports persisted outcome counts and the highest completed ID,
+separately from the recovery-selected checkpoint. Completion timestamps are
+written with the checkpoint decision and duration is omitted for legacy records.
+Tests cover duplicate ACK accounting, savepoint aborts, in-progress records,
+manifest/pointer exclusion and corrupt history. The scan runs outside the global
+ownership lock. Historical metadata retention must preserve these counts when
+physical savepoint cleanup is added; final workflow acceptance remains open.

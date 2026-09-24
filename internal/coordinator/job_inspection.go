@@ -31,6 +31,20 @@ type jobTaskResponse struct {
 // jobInspection snapshots the job and its current assignment together. Statuses
 // are advisory: after leadership recovery a task remains UNKNOWN until reported.
 func (c *Coordinator) jobInspection(jobID string) (jobDetailResponse, error) {
+	result, err := c.jobTaskInspection(jobID)
+	if err != nil {
+		return jobDetailResponse{}, err
+	}
+	// Historical reads must not hold the ownership lock across an unbounded scan.
+	summary, err := c.checkpointInspection(jobID)
+	if err != nil {
+		return jobDetailResponse{}, err
+	}
+	result.Checkpoints = &summary
+	return result, nil
+}
+
+func (c *Coordinator) jobTaskInspection(jobID string) (jobDetailResponse, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	job := c.jobs[jobID]

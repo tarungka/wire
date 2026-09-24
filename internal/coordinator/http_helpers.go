@@ -34,6 +34,7 @@ type jobResponse struct {
 
 // jobDetailResponse includes full job details.
 type jobDetailResponse struct {
+	Checkpoints *jobCheckpointResponse `json:"checkpoints,omitempty"`
 	jobResponse
 	StartedAt        string            `json:"started_at,omitempty"`
 	FinishedAt       string            `json:"finished_at,omitempty"`
