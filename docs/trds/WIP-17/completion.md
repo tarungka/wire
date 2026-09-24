@@ -74,3 +74,13 @@ authentication methods, CLI flag propagation, unchanged caller headers, foreign
 origin/Host rejection, redirect isolation, plaintext refusal and invalid files.
 SDK submission and worker discovery still need this client configuration wired
 through; this increment does not claim those paths are secured.
+
+## SDK HTTP authentication
+
+`SetCoordinatorSecurity` now wires private trust roots, optional client
+certificates and file-backed Bearer/Basic credentials into remote submission and
+polling through one origin-bound client. Offline ExportSubmission neither reads
+nor exports credentials or their paths. Tests verify authenticated submission and
+completion polling, decoded-graph secret exclusion, plaintext rejection before
+network activity, and refusal to replay a redirected submission. Worker discovery
+configuration remains the next client integration gap.

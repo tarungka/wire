@@ -11,13 +11,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tarungka/wire/internal/apiclient"
 	"github.com/tarungka/wire/internal/protocol"
 )
 
 // clusterExecutor submits a graph to a remote Wire coordinator via HTTP and
 // polls for completion.
 type clusterExecutor struct {
-	env *StreamExecutionEnvironment
+	client *apiclient.Client
+	env    *StreamExecutionEnvironment
 }
 
 // submitJobRequest mirrors coordinator.submitJobRequest. Kept in the SDK as
@@ -40,6 +42,12 @@ func (ex *clusterExecutor) run(ctx context.Context, jobName string) (*JobResult,
 	if ex.env.coordinatorURL == "" {
 		return nil, fmt.Errorf("sdk: cluster mode requires env.SetCoordinator(url)")
 	}
+	client, err := apiclient.New(ex.env.coordinatorURL, apiclient.Config(ex.env.coordinatorSecurity), 30*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("sdk: coordinator client: %w", err)
+	}
+	ex.client = client
+	defer client.CloseIdleConnections()
 	start := time.Now()
 
 	submit, err := ex.env.submissionRequest(jobName)
@@ -95,7 +103,7 @@ func (ex *clusterExecutor) submit(ctx context.Context, body submitJobRequest) (s
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ex.doRequest(req)
 	if err != nil {
 		return "", fmt.Errorf("sdk: submit: %w", err)
 	}
@@ -146,7 +154,7 @@ func (ex *clusterExecutor) getStatus(ctx context.Context, url string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("sdk: build poll request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ex.doRequest(req)
 	if err != nil {
 		return "", fmt.Errorf("sdk: poll: %w", err)
 	}
@@ -225,4 +233,18 @@ func (env *StreamExecutionEnvironment) ExportSubmission(jobName string) ([]byte,
 		return nil, fmt.Errorf("%w: submission exceeds 4 MiB", ErrInvalidConfig)
 	}
 	return data, nil
+}
+
+// Standalone submission/status helpers use the same security policy as run,
+// with a request-scoped connection pool.
+func (ex *clusterExecutor) doRequest(req *http.Request) (*http.Response, error) {
+	if ex.client != nil {
+		return ex.client.Do(req)
+	}
+	client, err := apiclient.New(ex.env.coordinatorURL, apiclient.Config(ex.env.coordinatorSecurity), 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer client.CloseIdleConnections()
+	return client.Do(req)
 }

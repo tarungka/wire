@@ -54,3 +54,30 @@ TLS 1.3 is enforced on the HA listener too. An HTTPS request redirected to anoth
 coordinator keeps HTTPS; nodes in the same HA cluster must use compatible HTTP
 security settings. Auth files are loaded once at startup, not re-read on election.
 Changing credentials or certificates requires restarting each coordinator.
+
+## SDK submission client
+
+Configure the submitting application separately from coordinator/worker listeners:
+
+```go
+env := sdk.New().SetMode(sdk.Cluster).
+    SetCoordinator("https://coordinator.example:4001").
+    SetCoordinatorSecurity(sdk.CoordinatorSecurity{
+        CACert: "/etc/wire/ca.crt",
+        APIKeyFile: "/run/secrets/wire-api-key",
+    })
+```
+
+`ClientCert`/`ClientKey` optionally configure HTTPS client certificates. For Basic
+authentication use `Username` and `PasswordFile` instead of `APIKeyFile`.
+Credentials and CA files are loaded when execution begins. The same authenticated
+client handles submission and status polling. An HTTPS URL is required when any
+security option is supplied, hostname validation stays enabled, and TLS 1.3 is
+required. Requests have a 30-second client timeout in addition to caller context
+cancellation. Redirects are reported as errors, including after leadership loss;
+submissions are not automatically replayed against a different node.
+
+`ExportSubmission` stays offline and does not read these credential files.
+Neither credential contents nor their paths are serialized into the job graph.
+These options secure the submitting application's HTTP requests only; they do
+not configure worker discovery, RPC TLS or operator HTTP connectors.
