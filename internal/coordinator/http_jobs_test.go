@@ -302,6 +302,7 @@ func TestHTTP_PauseResumeJob(t *testing.T) {
 
 func TestHTTPSubmitRejectsAmbiguousBodiesBeforePublication(t *testing.T) {
 	for _, body := range []string{
+		`null`, `[]`, `{"name":"new","parallelism":1,"graph_bytes":"%%%"}`, `{"name":"new","parallelism":1,"graph_bytes":"YWJj"}`,
 		`{"name":"new","parallelism":1,"config":"legacy"} {}`,
 		`{"name":"new","parallelism":1,"config":"legacy","unknown":true}`,
 		`{"name":"new","parallelism":1,"config":"legacy","graph_bytes":"YWJj"}`,

@@ -159,3 +159,13 @@ Tests cover duplicate ACK accounting, savepoint aborts, in-progress records,
 manifest/pointer exclusion and corrupt history. The scan runs outside the global
 ownership lock. Historical metadata retention must preserve these counts when
 physical savepoint cleanup is added; final workflow acceptance remains open.
+
+## Checkpoint API error envelope
+
+Checkpoint/savepoint replica-unavailable responses now use the standard JSON
+error envelope with CHECKPOINT_UNAVAILABLE and HTTP 503. Checkpoint lookup uses
+INVALID_REQUEST (400), CHECKPOINT_NOT_FOUND (404) and INTERNAL_ERROR (500),
+including corrupt metadata. Tests verify content type, machine-readable codes
+and that unavailable triggers do not start a checkpoint. Submission rejection
+also covers null/array bodies and malformed base64/msgpack without publishing a
+job. The broader lifecycle acceptance and binary/YAML submission remain open.
