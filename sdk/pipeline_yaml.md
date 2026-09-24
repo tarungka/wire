@@ -303,8 +303,15 @@ this request before returning 202. Repeating that ID returns the same queued,
 active or completed savepoint; deleted IDs cannot be reused. Existing callers
 that send no ID retain server-generated IDs. After a lost creation reply, Reload
 reads only the selected ID and continues if it exists with the expected job
-identity. It never sends a second POST. If the read fails or the request wasn't
-persisted, it stops with that ID in the result for manual reconciliation. An ID
+identity. It never sends a second POST. If the request wasn't persisted or a read fails permanently, it stops with that
+ID in the result for manual reconciliation. Transient GET failures (connection
+interruptions/timeouts and HTTP 408, 429, 500, 502, 503 or 504) retry with
+exponential backoff from 100ms to 2s until the caller's context ends. Each HTTP
+request still has a 30s timeout. Supply an overall context deadline; without one,
+an unavailable coordinator can keep the operation waiting. Authentication,
+missing resources, malformed replies and identity mismatches are terminal.
+Every read decodes into fresh state so omitted fields cannot reuse an old
+identity or completion status. Mutation requests are never retried. An ID
 in the result is not proof of acceptance. This path requires a coordinator that
 supports caller-selected savepoint IDs; upgrade the coordinator before clients.
 

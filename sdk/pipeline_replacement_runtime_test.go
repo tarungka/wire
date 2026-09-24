@@ -3,10 +3,12 @@ package sdk
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -41,6 +43,14 @@ func TestSameJobReplacementLostSavepointHTTPResponse(t *testing.T) {
 	for _, scenario := range []string{"success", "rollback", "no-restart"} {
 		t.Run(scenario, func(t *testing.T) {
 			testSameJobReplacement(t, scenario != "success", scenario != "no-restart", true, "savepoint-http")
+		})
+	}
+}
+
+func TestSameJobReplacementTransientStatusReads(t *testing.T) {
+	for _, scenario := range []string{"success", "rollback", "no-restart"} {
+		t.Run(scenario, func(t *testing.T) {
+			testSameJobReplacement(t, scenario != "success", scenario != "no-restart", true, "poll")
 		})
 	}
 }
@@ -117,18 +127,49 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, re
 		candidateEnv.SetRestartStrategy(FixedDelay(3, 0))
 	}
 	candidateEnv.AddSourceNamed("source", "replay", nil).MapNamed("map", "v2", nil).AddSinkNamed("sink", "output", nil)
-	if responseLoss == "http" || responseLoss == "savepoint-http" {
+	if responseLoss == "http" || responseLoss == "savepoint-http" || responseLoss == "poll" {
 		target, err := url.Parse(endpoint)
 		if err != nil {
 			t.Fatal(err)
 		}
 		proxy := httputil.NewSingleHostReverseProxy(target)
-		var dropped atomic.Int32
+		var dropped, savepointReads, jobReads, savepointPosts, replacementPosts atomic.Int32
+		director := proxy.Director
+		proxy.Director = func(request *http.Request) {
+			director(request)
+			if request.Method == http.MethodPost {
+				switch request.URL.Path {
+				case "/api/v1/jobs/" + jobID + "/savepoints":
+					savepointPosts.Add(1)
+				case "/api/v1/jobs/" + jobID + "/replacement":
+					replacementPosts.Add(1)
+				}
+			}
+		}
 		dropPath := "/api/v1/jobs/" + jobID + "/replacement"
 		if responseLoss == "savepoint-http" {
 			dropPath = "/api/v1/jobs/" + jobID + "/savepoints"
 		}
 		proxy.ModifyResponse = func(response *http.Response) error {
+			if responseLoss == "poll" {
+				fail := false
+				if response.Request.Method == http.MethodGet {
+					if strings.HasPrefix(response.Request.URL.Path, "/api/v1/jobs/"+jobID+"/savepoints/") {
+						fail = savepointReads.Add(1) <= 2
+					}
+					if response.Request.URL.Path == "/api/v1/jobs/"+jobID {
+						fail = jobReads.Add(1) <= 2
+					}
+				}
+				if fail {
+					_ = response.Body.Close()
+					response.Body = io.NopCloser(strings.NewReader(""))
+					response.ContentLength = 0
+					response.Header.Del("Content-Length")
+					response.StatusCode = http.StatusServiceUnavailable
+				}
+				return nil
+			}
 			if response.Request.URL.Path == dropPath && response.StatusCode == http.StatusAccepted {
 				dropped.Add(1)
 				return errors.New("injected lost accepted replacement reply")
@@ -146,7 +187,14 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, re
 		server := httptest.NewServer(proxy)
 		t.Cleanup(func() {
 			server.Close()
-			if dropped.Load() != 1 {
+			if savepointPosts.Load() != 1 || replacementPosts.Load() != 1 {
+				t.Errorf("mutation retries: savepoint=%d replacement=%d", savepointPosts.Load(), replacementPosts.Load())
+			}
+			if responseLoss == "poll" {
+				if savepointReads.Load() < 3 || jobReads.Load() < 3 {
+					t.Errorf("read failures not exercised: savepoint=%d job=%d", savepointReads.Load(), jobReads.Load())
+				}
+			} else if dropped.Load() != 1 {
 				t.Errorf("dropped replies=%d", dropped.Load())
 			}
 		})

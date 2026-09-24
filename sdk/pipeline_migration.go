@@ -1,13 +1,11 @@
 package sdk
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,8 +28,8 @@ type PipelineReloadResult struct {
 // replacement, and waits for RUNNING/FINISHED or failure/rollback. The caller
 // must exclusively own job configuration changes and bound the operation with
 // ctx. Mutations are sent once. Lost replies are reconciled by reading the
-// selected savepoint identity or persisted replacement request ID. Failed reads
-// may still require manual reconciliation. Returned IDs identify requests, not
+// selected savepoint identity or persisted replacement request ID. Transient
+// reads retry with backoff until ctx ends; permanent failures require reconciliation. Returned IDs identify requests, not
 // proof of acceptance. Savepoints are retained. Changed topology is not supported.
 func (p *YAMLPipeline) Reload(ctx context.Context, jobID string) (PipelineReloadResult, error) {
 	result := PipelineReloadResult{JobID: jobID}
@@ -44,33 +42,7 @@ func (p *YAMLPipeline) Reload(ctx context.Context, jobID string) (PipelineReload
 	}
 	defer client.CloseIdleConnections()
 	base := strings.TrimRight(p.env.coordinatorURL, "/") + "/api/v1/jobs/" + url.PathEscape(jobID)
-	requestJSON := func(method, target string, status int, out any) error {
-		var body io.Reader
-		if method == http.MethodPost {
-			data, err := json.Marshal(map[string]string{"savepoint_id": result.SavepointID})
-			if err != nil {
-				return err
-			}
-			body = bytes.NewReader(data)
-		}
-		request, err := http.NewRequestWithContext(ctx, method, target, body)
-		if err != nil {
-			return err
-		}
-		if body != nil {
-			request.Header.Set("Content-Type", "application/json")
-		}
-		response, err := client.Do(request)
-		if err != nil {
-			return err
-		}
-		defer response.Body.Close()
-		if response.StatusCode != status {
-			return fmt.Errorf("sdk: reload %s: HTTP %d", method, response.StatusCode)
-		}
-		return json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(out)
-	}
-	var saved struct {
+	type savepointStatus struct {
 		ID     string `json:"id"`
 		JobID  string `json:"job_id"`
 		Status string `json:"status"`
@@ -80,10 +52,15 @@ func (p *YAMLPipeline) Reload(ctx context.Context, jobID string) (PipelineReload
 		return result, err
 	}
 	result.SavepointID = fmt.Sprintf("sp-%x", idBytes)
-	if createErr := requestJSON(http.MethodPost, base+"/savepoints", http.StatusAccepted, &saved); createErr != nil {
-		// The request may have been persisted before its reply disappeared.
-		// Read that exact identity, never issue another creation request.
-		if err := requestJSON(http.MethodGet, base+"/savepoints/"+result.SavepointID, http.StatusOK, &saved); err != nil {
+	data, err := json.Marshal(map[string]string{"savepoint_id": result.SavepointID})
+	if err != nil {
+		return result, err
+	}
+	saved, createErr := reloadRequestJSON[savepointStatus](ctx, client, http.MethodPost, base+"/savepoints", http.StatusAccepted, data)
+	if createErr != nil {
+		// Read the exact identity after an uncertain reply, never create again.
+		saved, err = reloadReadJSON[savepointStatus](ctx, client, base+"/savepoints/"+result.SavepointID)
+		if err != nil {
 			return result, errors.Join(createErr, err)
 		}
 	}
@@ -110,7 +87,8 @@ func (p *YAMLPipeline) Reload(ctx context.Context, jobID string) (PipelineReload
 		if err := wait(); err != nil {
 			return result, err
 		}
-		if err := requestJSON(http.MethodGet, base+"/savepoints/"+url.PathEscape(result.SavepointID), http.StatusOK, &saved); err != nil {
+		saved, err = reloadReadJSON[savepointStatus](ctx, client, base+"/savepoints/"+url.PathEscape(result.SavepointID))
+		if err != nil {
 			return result, err
 		}
 		if saved.ID != result.SavepointID || saved.JobID != jobID {
@@ -122,13 +100,14 @@ func (p *YAMLPipeline) Reload(ctx context.Context, jobID string) (PipelineReload
 	// but the reply was lost; only the persisted correlation ID proves that.
 	replaceErr := p.replaceFromSavepoint(ctx, jobID, result.SavepointID, result.ReplacementRequestID)
 	for {
-		var job struct {
+		type jobStatus struct {
 			ID        string `json:"id"`
 			RequestID string `json:"replacement_request_id"`
 			Status    string `json:"status"`
 			Failure   string `json:"rescale_failure"`
 		}
-		if err := requestJSON(http.MethodGet, base, http.StatusOK, &job); err != nil {
+		job, err := reloadReadJSON[jobStatus](ctx, client, base)
+		if err != nil {
 			return result, errors.Join(replaceErr, err)
 		}
 		if job.ID != jobID {

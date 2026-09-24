@@ -241,3 +241,23 @@ and no-restart cases; the test verifies exactly one savepoint and the existing
 transactional output/offset invariants. These targeted cases pass three race
 runs. This does not prove OS-process crash recovery or retry failed readbacks;
 a returned request identity alone is not proof that the server accepted it.
+
+## Transient reload status failures
+
+Reload GETs now retry connection interruptions/timeouts, truncated HTTP bodies
+and HTTP 408/429/500/502/503/504 with exponential 100ms-to-2s backoff bounded by
+the caller context. POSTs remain single-attempt. Authentication, missing-resource,
+malformed JSON and identity errors stop the operation. Responses are size-bounded
+and decoded into fresh values; missing fields cannot inherit an earlier identity
+or completion status. Cancellation interrupts backoff.
+
+Focused race tests cover transient/permanent failure classification, cancellation
+and fresh decoding. Real-worker success/rollback/no-restart cases inject two 503
+responses into each savepoint/job polling path and verify transactional output,
+restore offsets, and exactly one savepoint POST and one replacement POST. These
+checks do not prove coordinator process crash recovery, topology migration or
+live parallelism; those requirements remain open.
+
+The full SDK package passes under `-race` with this polling change (160.887s);
+pinned golangci-lint reports zero issues. This supersedes the earlier full-SDK
+evidence for this branch, without explaining the older intermittent failures.
