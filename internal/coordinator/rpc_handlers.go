@@ -66,7 +66,7 @@ func (c *Coordinator) HandleHeartbeat(ctx context.Context, _ uint64, payload []b
 		c.mu.Unlock()
 		return &rpc.HeartbeatResponse{Accepted: false, EpochID: epoch}, nil
 	}
-	if w.Lost || w.LastHeartbeat.IsZero() || time.Since(w.LastHeartbeat) >= c.config.WorkerTimeout {
+	if w.Removed || w.Lost || w.LastHeartbeat.IsZero() || time.Since(w.LastHeartbeat) >= c.config.WorkerTimeout {
 		c.mu.Unlock()
 		c.expireTaskWorkers()
 		c.kickScheduler()

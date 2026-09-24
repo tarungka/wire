@@ -24,6 +24,7 @@ func TestCommands(t *testing.T) {
 		{[]string{"jobs", "cancel", "job-1"}, "POST", "/api/v1/jobs/job-1/cancel"},
 		{[]string{"savepoints", "get", "job-1", "sp-1"}, "GET", "/api/v1/jobs/job-1/savepoints/sp-1"},
 		{[]string{"savepoints", "delete", "job-1", "sp-1"}, "DELETE", "/api/v1/jobs/job-1/savepoints/sp-1"},
+		{[]string{"cluster", "remove", "node-1"}, "DELETE", "/api/v1/cluster/nodes/node-1"},
 		{[]string{"cluster", "status"}, "GET", "/api/v1/cluster"},
 	} {
 		t.Run(strings.Join(tc.args, "_"), func(t *testing.T) {

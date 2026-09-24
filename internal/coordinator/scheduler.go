@@ -410,7 +410,7 @@ func (c *Coordinator) checkpointPeerLocked(sourceID string, now time.Time) strin
 	}
 	var candidates []string
 	for id, worker := range c.workers {
-		if id != sourceID && worker.CheckpointAddress != "" && worker.CheckpointAddress != source.CheckpointAddress && !worker.LastHeartbeat.IsZero() && now.Sub(worker.LastHeartbeat) < c.config.WorkerTimeout {
+		if !worker.Removed && id != sourceID && worker.CheckpointAddress != "" && worker.CheckpointAddress != source.CheckpointAddress && !worker.LastHeartbeat.IsZero() && now.Sub(worker.LastHeartbeat) < c.config.WorkerTimeout {
 			candidates = append(candidates, id)
 		}
 	}
@@ -512,7 +512,7 @@ func (c *Coordinator) assignTasks(tasks []rpc.TaskDescriptor) (map[string][]rpc.
 	var eligible []workerSlot
 	totalAvail := 0
 	for _, w := range c.workers {
-		if w.TaskSlotsAvailable > 0 && !w.LastHeartbeat.IsZero() && time.Since(w.LastHeartbeat) < c.config.WorkerTimeout {
+		if !w.Removed && w.TaskSlotsAvailable > 0 && !w.LastHeartbeat.IsZero() && time.Since(w.LastHeartbeat) < c.config.WorkerTimeout {
 			eligible = append(eligible, workerSlot{id: w.ID, avail: w.TaskSlotsAvailable})
 			totalAvail += w.TaskSlotsAvailable
 		}
@@ -541,7 +541,7 @@ func (c *Coordinator) assignTasks(tasks []rpc.TaskDescriptor) (map[string][]rpc.
 func (c *Coordinator) assignmentsLiveLocked(assignments map[string][]rpc.TaskDescriptor, now time.Time, reserved ...map[string]*rpc.Client) bool {
 	for id, tasks := range assignments {
 		worker := c.workers[id]
-		if worker == nil || worker.LastHeartbeat.IsZero() || now.Sub(worker.LastHeartbeat) >= c.config.WorkerTimeout || (worker.TaskSlotsAvailable < len(tasks) && (len(reserved) == 0 || reserved[0][id] == nil)) {
+		if worker == nil || worker.Removed || worker.LastHeartbeat.IsZero() || now.Sub(worker.LastHeartbeat) >= c.config.WorkerTimeout || (worker.TaskSlotsAvailable < len(tasks) && (len(reserved) == 0 || reserved[0][id] == nil)) {
 			return false
 		}
 	}

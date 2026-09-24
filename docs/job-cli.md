@@ -9,6 +9,7 @@ wire jobs get JOB_ID
 wire jobs submit --file submission.json
 wire jobs cancel JOB_ID
 wire cluster status
+wire cluster remove NODE_ID
 wire savepoints list JOB_ID
 wire savepoints get JOB_ID SAVEPOINT_ID
 wire savepoints trigger JOB_ID
@@ -125,3 +126,11 @@ Upgrade coordinators before using these new lifecycle states; older coordinators
 do not understand persisted `PAUSING`/`RESUMING` values. Legacy metadata-only
 PAUSED jobs with no pinned checkpoint are rejected on resume rather than restarted
 from empty state.
+
+### Node removal
+
+`wire cluster remove NODE_ID` durably revokes a worker's admission. The response
+acknowledges the request; affected jobs recover only after their old tasks stop
+or their authority expires. `wire cluster status` retains a REMOVED entry.
+Restart policy and checkpoint availability still determine recovery. Use a new
+worker ID for a replacement; a removed identity cannot re-register.

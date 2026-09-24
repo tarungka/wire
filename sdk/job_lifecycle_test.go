@@ -16,15 +16,16 @@ import (
 
 	"github.com/tarungka/wire/internal/coordinator"
 	"github.com/tarungka/wire/internal/jobcli"
+	"github.com/tarungka/wire/internal/worker"
 )
 
 // lifecycleCluster runs the production HTTP, RPC, scheduler and public worker
 // API. Each test owns and joins its services and can inspect coordinator state.
-func lifecycleCluster(t *testing.T, registry *WorkerRegistry) (context.Context, *coordinator.Coordinator, string) {
+func lifecycleCluster(t *testing.T, registry *WorkerRegistry, allowRemoval ...bool) (context.Context, *coordinator.Coordinator, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	store := coordinator.NewMemoryStore()
-	coord := coordinator.New(coordinator.CoordinatorConfig{NodeID: "lifecycle", HeartbeatInterval: 100 * time.Millisecond}, store, nil, zerolog.Nop())
+	coord := coordinator.New(coordinator.CoordinatorConfig{NodeID: "lifecycle", WorkerTimeout: time.Second, HeartbeatInterval: 100 * time.Millisecond}, store, nil, zerolog.Nop())
 	var joined sync.WaitGroup
 	start := func(fn func()) { joined.Add(1); go func() { defer joined.Done(); fn() }() }
 	rpcServer := coordinator.NewTransportServer(coord, "127.0.0.1:0", zerolog.Nop())
@@ -49,10 +50,12 @@ func lifecycleCluster(t *testing.T, registry *WorkerRegistry) (context.Context, 
 	}
 	start(func() { _ = httpServer.Serve() })
 	for i := 0; i < 2; i++ {
-		cfg := WorkerConfig{WorkerID: fmt.Sprint("lifecycle-", i), CoordinatorAddr: rpcServer.Addr(), TaskSlots: 4, HeartbeatInterval: 100 * time.Millisecond, CheckpointDirectory: t.TempDir()}
+		cfg := WorkerConfig{WorkerID: fmt.Sprint("lifecycle-", i), CoordinatorAddr: rpcServer.Addr(), TaskSlots: 4, HeartbeatInterval: 100 * time.Millisecond, HeartbeatTimeout: time.Second, CheckpointDirectory: t.TempDir()}
 		start(func() {
 			if err := RunWorker(ctx, cfg, registry); err != nil && ctx.Err() == nil {
-				t.Error(err)
+				if len(allowRemoval) == 0 || !allowRemoval[0] || !errors.Is(err, worker.ErrCoordinatorContactLost) {
+					t.Error(err)
+				}
 			}
 		})
 	}
@@ -349,5 +352,65 @@ func TestCLICancelWithSavepointPersistsBeforeStopping(t *testing.T) {
 	}
 	if job.RecoveryAttempts != 0 || job.RestartCount != 0 {
 		t.Fatalf("cancellation consumed recovery: %+v", job)
+	}
+}
+
+func TestCLINodeRemovalRecoversOnRemainingWorker(t *testing.T) {
+	release := make(chan struct{})
+	var closed, starts atomic.Int32
+	registry := NewWorkerRegistry()
+	registry.RegisterSource("replay", func(context.Context, []byte, WorkerTaskContext) (Source, error) {
+		if starts.Add(1) > 1 && closed.Load() == 0 {
+			t.Error("new source started before old source stopped")
+		}
+		return &pauseReplaySource{release: release, restored: make(chan uint64, 2), closed: &closed}, nil
+	})
+	sink := &collectSink{}
+	registry.RegisterSink("collect", func(context.Context, []byte, WorkerTaskContext) (Sink, error) { return sink, nil })
+	ctx, coord, url := lifecycleCluster(t, registry, true)
+	env := New().SetMode(Cluster).SetCoordinator(url).SetRestartStrategy(FixedDelay(3, 0))
+	env.AddSourceNamed("source", "replay", nil).AddSinkNamed("sink", "collect", nil)
+	done := make(chan error, 1)
+	go func() { _, err := env.ExecuteWithName(ctx, "remove-node"); done <- err }()
+	var removed string
+	lifecycleWait(t, ctx, func() bool {
+		if len(sink.Events()) != 1 {
+			return false
+		}
+		for _, w := range coord.ListWorkers() {
+			if len(w.RunningTasks) != 0 {
+				removed = w.ID
+				return true
+			}
+		}
+		return false
+	})
+	var response bytes.Buffer
+	if err := jobcli.Run(ctx, []string{"cluster", "remove", removed, "--coordinator", url}, &response, &response); err != nil {
+		t.Fatal(err)
+	}
+	lifecycleWait(t, ctx, func() bool { return starts.Load() == 2 && len(sink.Events()) >= 2 })
+	for _, w := range coord.ListWorkers() {
+		if w.ID == removed && !w.Removed {
+			t.Fatal("removed worker regained admission")
+		}
+	}
+	jobs := coord.ListJobs(nil)
+	if len(jobs) != 1 || jobs[0].RestartCount != 1 {
+		t.Fatalf("expected one recovery: %+v", jobs)
+	}
+	// The original source starts again from zero because no checkpoint preceded
+	// removal. Keep the job unbounded until cancellation: with one replica worker
+	// left, a final checkpoint would correctly have no independent replica.
+	if _, err := coord.CancelJob(jobs[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancellation reported normal completion")
+		}
+	case <-ctx.Done():
+		t.Fatal("recovered job never stopped")
 	}
 }

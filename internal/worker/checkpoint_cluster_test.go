@@ -223,7 +223,9 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 			// There is no completed checkpoint in this fixture to restore.
 			waitFor(t, 3*time.Second, func() bool {
 				current, err := coord.GetJob(job.ID)
-				return err == nil && (current.Status == coordinator.JobFailing || current.Status == coordinator.JobFailed)
+				// FAILING can be shorter than the poll interval. A recorded restart
+				// is durable evidence that failure policy initiated recovery.
+				return err == nil && (current.Status == coordinator.JobFailing || current.Status == coordinator.JobFailed || current.RestartCount > 0)
 			})
 			if committed.Load() != 0 {
 				t.Fatal("failed checkpoint committed transaction")
@@ -231,7 +233,7 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 			return
 		}
 		current, err := coord.GetJob(job.ID)
-		if err != nil || current.Status != coordinator.JobRunning {
+		if err != nil || current.Status != coordinator.JobRunning || current.RestartCount != 0 {
 			t.Fatalf("first non-transactional checkpoint failure killed job: %+v, %v", current, err)
 		}
 		if _, err := coord.TriggerCheckpoint(job.ID); err != nil {
@@ -239,7 +241,9 @@ func testClusterCheckpoint(t *testing.T, fail bool, transactional ...bool) {
 		}
 		waitFor(t, 3*time.Second, func() bool {
 			current, err := coord.GetJob(job.ID)
-			return err == nil && (current.Status == coordinator.JobFailing || current.Status == coordinator.JobFailed)
+			// FAILING can be shorter than the poll interval. A recorded restart
+			// is durable evidence that failure policy initiated recovery.
+			return err == nil && (current.Status == coordinator.JobFailing || current.Status == coordinator.JobFailed || current.RestartCount > 0)
 		})
 		return
 	}

@@ -38,6 +38,9 @@ func (c *Coordinator) registerWorker(req RegisterWorkerRequest, peer *rpc.Client
 	if !c.readyLocked() {
 		return nil, ErrNotLeader
 	}
+	if worker := c.workers[req.WorkerID]; worker != nil && worker.Removed {
+		return nil, fmt.Errorf("worker %s was removed; register a replacement with a new worker ID", req.WorkerID)
+	}
 	currentEpoch := c.epoch
 
 	// Epoch fencing: reject if the worker has seen a newer epoch.

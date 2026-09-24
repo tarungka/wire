@@ -15,7 +15,7 @@ branch builds on WIP-14's per-job policies and local worker runtime.
 | Savepoint lifetime | Explicit metadata deletion exists | Delete replica data safely; protect all live restore references; unfinished savepoint cleanup |
 | Concurrent checkpoint and savepoint requests | Durable FIFO queue, HTTP 202, actual runner, deletion/race/recovery tests | None identified in queue behavior; final acceptance remains |
 | Automatic recovery | Worker-loss and checkpoint selection tests; WIP-14 per-job restart policy | End-to-end REST/CLI evidence, bounded budget and all-workers-lost cases; retain explicit FAILED status for exhaustion |
-| Cluster status and node removal | Existing cluster routes | Removal must stop/fence execution and recover affected jobs safely; current removal only deletes worker metadata |
+| Cluster status and node removal | Durable removed identities, admission fencing, lease-aware recovery and live HTTP removal test | Final operational walkthrough |
 | Health, readiness and metrics | Existing endpoints and metrics listener | Include actual addresses/status semantics in the final API reference and walkthrough |
 | Authenticated REST and protected secrets | WIP-17/WIP-19 dependencies | Verify all private routes and ensure resolved credentials never persist or appear in responses |
 | CLI and operational walkthrough | Existing JSON submission and management commands | YAML/binary/restore support; run complete documented lifecycle against live workers |
@@ -96,3 +96,20 @@ HTTP query validation, snapshot failure, and a live CLI/worker/replica run that
 verifies a completed savepoint and source teardown before terminal cancellation.
 Cross-job restore and transactional reconciliation remain part of the broader
 restore/upgrade acceptance work above.
+
+## Safe node removal
+
+Node deletion persists a removal marker before updating admission. The marker
+survives leadership recovery, rejects registration/heartbeats and excludes the
+worker from new placements and replica selection. Retaining its last contact
+lease prevents a replacement from racing execution on the removed process.
+The scheduler fails affected active jobs and cancels their old assignments;
+recovery waits for terminal reports or authority expiry. Removed identities
+remain visible and require a new ID for a replacement process.
+
+Unit tests cover write failure, idempotence, heartbeat and registration rejection,
+stale plans, task acknowledgements, contact expiry and the previous epoch fence.
+A live CLI/HTTP removal test recovers onto the remaining real worker, asserts source
+teardown before replacement, and verifies exactly one recovery attempt. It uses
+no checkpoint, so initial-position replay is expected; archive migration is not
+claimed by node removal.

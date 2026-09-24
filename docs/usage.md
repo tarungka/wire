@@ -335,6 +335,20 @@ Response:
 curl -s -X DELETE http://localhost:4001/api/v1/cluster/nodes/{node_id} | jq
 ```
 
+The equivalent CLI command is `wire cluster remove NODE_ID`.
+
+Removal durably revokes admission for that worker ID. Cluster status retains a
+`REMOVED` entry; it is excluded from placement and checkpoint replica selection.
+The ID cannot re-register after removal, including after coordinator recovery.
+Start a replacement using a new worker ID. Repeating DELETE is idempotent.
+
+The response acknowledges removal intent, not completion of task teardown.
+Affected active jobs enter `FAILING`. The coordinator cancels their old tasks
+and waits for terminal reports or the last execution lease to expire before
+redeployment. Jobs follow their configured recovery policy: `NoRestart` or an
+exhausted budget results in `FAILED`. Checkpoint recovery still requires an
+available valid replica; removal does not migrate archived state automatically.
+
 ## 9. Job Lifecycle
 
 Jobs follow this state machine:

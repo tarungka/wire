@@ -27,7 +27,7 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	flags.Usage = func() {
 		_, _ = fmt.Fprintln(errOut, "Usage: wire jobs list|get|submit|cancel|pause|resume [job-id] [flags]")
 		_, _ = fmt.Fprintln(errOut, "       wire savepoints list|get|trigger|delete job-id [savepoint-id] [flags]")
-		_, _ = fmt.Fprintln(errOut, "       wire cluster status [flags]")
+		_, _ = fmt.Fprintln(errOut, "       wire cluster status|remove [node-id] [flags]")
 		flags.PrintDefaults()
 	}
 	endpoint := flags.String("coordinator", "http://localhost:4001", "coordinator HTTP URL")
@@ -43,7 +43,7 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	}
 	words := flags.Args()
 	if len(words) < 2 {
-		return fmt.Errorf("usage: wire jobs list|get|submit|cancel|pause|resume; wire savepoints list|get|trigger|delete; wire cluster status")
+		return fmt.Errorf("usage: wire jobs list|get|submit|cancel|pause|resume; wire savepoints list|get|trigger|delete; wire cluster status|remove")
 	}
 	if *timeout <= 0 {
 		return fmt.Errorf("timeout must be positive")
@@ -76,6 +76,9 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 		want = 4
 	case "cluster status":
 		path = "/api/v1/cluster"
+	case "cluster remove":
+		method = http.MethodDelete
+		want = 3
 	default:
 		return fmt.Errorf("unknown management command %q", strings.Join(words[:2], " "))
 	}
@@ -87,7 +90,9 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 			return fmt.Errorf("invalid identifier")
 		}
 	}
-	if want >= 3 {
+	if words[0] == "cluster" && words[1] == "remove" {
+		path = "/api/v1/cluster/nodes/" + url.PathEscape(words[2])
+	} else if want >= 3 {
 		path = "/api/v1/jobs/" + url.PathEscape(words[2])
 		if words[0] == "savepoints" {
 			path += "/savepoints"

@@ -514,28 +514,34 @@ func (c *Coordinator) ListWorkers() []WorkerMeta {
 	return result
 }
 
-// RemoveWorker removes a worker from the in-memory cache and metadata store
-// atomically under the lock.
+// RemoveWorker durably revokes admission without discarding the last execution
+// lease. Recovery must wait for task teardown or that lease before redeployment.
 func (c *Coordinator) RemoveWorker(nodeID string) error {
 	c.mu.Lock()
-	worker, ok := c.workers[nodeID]
-	if !ok {
-		c.mu.Unlock()
+	defer c.mu.Unlock()
+	if !c.readyLocked() {
+		return ErrNotLeader
+	}
+	worker := c.workers[nodeID]
+	if worker == nil {
 		return ErrWorkerNotFound
 	}
-	delete(c.workers, nodeID)
-	c.mu.Unlock()
-
-	// Delete from store. On failure, restore the in-memory entry so
-	// cache and store remain consistent.
-	if err := c.store.Delete(WorkerMetaKey(nodeID)); err != nil {
-		c.mu.Lock()
-		c.workers[nodeID] = worker
-		c.mu.Unlock()
-		return fmt.Errorf("deleting worker %s from store: %w", nodeID, err)
+	if worker.Removed {
+		return nil
 	}
-
-	c.log.Info().Str("node_id", nodeID).Msg("worker node removed")
+	next := *worker
+	next.Removed = true
+	next.TaskSlotsAvailable = 0
+	data, err := protocol.EncodeMsgPack(&next)
+	if err != nil {
+		return err
+	}
+	if err := c.store.Set(WorkerMetaKey(nodeID), data); err != nil {
+		return fmt.Errorf("removing worker %s: %w", nodeID, err)
+	}
+	*worker = next
+	c.kickScheduler()
+	c.log.Info().Str("node_id", nodeID).Msg("worker admission removed; task teardown pending")
 	return nil
 }
 
@@ -659,7 +665,7 @@ func (c *Coordinator) aliveWorkerCount() int {
 	defer c.mu.RUnlock()
 	n := 0
 	for _, w := range c.workers {
-		if !w.Lost && !w.LastHeartbeat.IsZero() && time.Since(w.LastHeartbeat) < c.config.WorkerTimeout {
+		if !w.Removed && !w.Lost && !w.LastHeartbeat.IsZero() && time.Since(w.LastHeartbeat) < c.config.WorkerTimeout {
 			n++
 		}
 	}

@@ -223,6 +223,7 @@ type SavepointMeta struct {
 
 // WorkerMeta holds persisted metadata for a registered worker.
 type WorkerMeta struct {
+	Removed              bool                     `codec:"removed,omitempty"`
 	Lost                 bool                     `codec:"-" json:"-"`
 	Resources            *rpc.ResourceReport      `codec:"-" json:"-"`
 	TaskReports          []rpc.RunningTaskSummary `codec:"-" json:"-"`
