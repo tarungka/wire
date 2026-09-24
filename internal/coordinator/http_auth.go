@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,6 +78,8 @@ func readAPIAuth(r io.Reader) (*apiAuth, error) {
 		return nil, errors.New("authentication file requires 1–100 users")
 	}
 	names, keys := map[string]bool{}, map[string]bool{}
+	var dummy []byte
+	maxCost := 0
 	for i := range file.Users {
 		u := &file.Users[i]
 		if u.Username == "" || len(u.Username) > 128 || names[u.Username] {
@@ -91,8 +94,15 @@ func readAPIAuth(r io.Reader) (*apiAuth, error) {
 		}
 		if u.PasswordHash != "" {
 			cost, err := bcrypt.Cost([]byte(u.PasswordHash))
-			if err != nil || cost < 10 {
-				return nil, fmt.Errorf("authentication user %d requires a bcrypt hash with cost >= 10", i)
+			if err != nil || cost < 10 || !validBcryptEncoding(u.PasswordHash) {
+				return nil, fmt.Errorf("authentication user %d requires a valid bcrypt hash with cost >= 10", i)
+			}
+			// Reuse the highest-cost configured hash for unknown-user checks. The
+			// candidate identity still must match, even if its password matches this
+			// hash. No extra password/hash or startup randomness is needed.
+			if cost > maxCost {
+				dummy = []byte(u.PasswordHash)
+				maxCost = cost
 			}
 		} else {
 			if len(u.APIKey) != 40 || !strings.HasPrefix(u.APIKey, "wk_live_") || keys[u.APIKey] {
@@ -108,11 +118,28 @@ func readAPIAuth(r io.Reader) (*apiAuth, error) {
 			u.APIKey = ""
 		}
 	}
-	dummy, err := bcrypt.GenerateFromPassword([]byte("non-user timing equalizer"), 10)
-	if err != nil {
-		return nil, err
-	}
 	return &apiAuth{users: file.Users, dummyHash: dummy, tokens: 20, last: time.Now()}, nil
+}
+
+var bcryptEncoding = base64.NewEncoding("./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789").WithPadding(base64.NoPadding).Strict()
+
+// bcrypt.Cost checks the header, but does not decode the salt or check the
+// digest's length/alphabet. Reject unusable credentials before installing auth.
+func validBcryptEncoding(hash string) bool {
+	parts := strings.Split(hash, "$")
+	if len(parts) != 4 || parts[0] != "" || len(parts[2]) != 2 || len(parts[3]) != 53 {
+		return false
+	}
+	switch parts[1] {
+	case "2", "2a", "2b", "2y":
+	default:
+		return false
+	}
+	if _, err := bcryptEncoding.DecodeString(parts[3][:22]); err != nil {
+		return false
+	}
+	_, err := bcryptEncoding.DecodeString(parts[3][22:])
+	return err == nil
 }
 
 // Global bounded admission prevents password checks from creating unbounded CPU

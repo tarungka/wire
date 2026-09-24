@@ -19,7 +19,7 @@ The existing PR is #197. Other merged TRDs will use linked follow-up PRs.
 | Certificate/auth revocation (§4.2, §8.1) | Pending: restart/revocation integration tests and operational instructions. Rotation automation is explicitly out of scope. |
 | Encryption at rest strategy (§1.3) | Documented in [storage security](../../storage-security.md): all runtime storage surfaces, temporary files, backups, key rotation and operator acceptance checks. Actual encrypted-volume deployment remains an operator verification requirement. |
 | Flag/config documentation (§1.4) | Pending: cross-reference every existing security flag and supply tested example files and certificate commands. |
-| Unit coverage (§8) | Pending: achieve the specified 100% coverage of authentication logic, without treating route-only tests as full system validation. |
+| Unit coverage (§8) | Measured 100% statement coverage of every function in http_auth.go in the race-enabled authentication acceptance run. This is not a claim of full-system coverage. |
 | Integration/negative/security tests (§8) | Pending: all roles/endpoints, invalid credentials/certificates, revocation, missing secrets, and protocol/cipher verification. |
 
 Proposal discrepancies must be recorded explicitly rather than silently deleting
@@ -369,3 +369,19 @@ canonical-path redirect followed by another authorization check. These tests and
 the live HA authentication/takeover test pass with the race detector; coordinator
 lint is clean. The separate metrics listener and remaining certificate/auth
 combinations still need their own acceptance evidence.
+
+### Authentication loader correctness and coverage target
+
+Header-only bcrypt validation accepted unusable salts/digests. The loader now
+checks canonical bcrypt encoding and supported 2/2a/2b/2y formats before installing
+credentials. Regression fixtures demonstrate those malformed hashes pass
+bcrypt.Cost but are rejected by the loader. Unknown-user password checks reuse
+the highest-cost configured password hash instead of generating an unrelated
+startup hash; matching that hash's password never authenticates an unknown
+identity. An API-key-only file has no valid Basic identities.
+
+The race-enabled authentication acceptance run now measures 100% statement
+coverage for every function in http_auth.go: ConfigureAuth, readAPIAuth,
+validBcryptEncoding, allow, user, apiRoleAllowed and authenticate. This satisfies
+the authentication-logic statement target, not whole-package coverage or the
+remaining end-to-end certificate/recovery acceptance requirements.
