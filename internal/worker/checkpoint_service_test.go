@@ -18,6 +18,9 @@ func TestCheckpointReplicaServicePublishesAndJoins(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	addr, closeService, err := startCheckpointReplicaService(ctx, CheckpointReplicaConfig{ListenAddr: "127.0.0.1:0", StoreRoot: root, ArtifactRoot: t.TempDir(), StagingRoot: t.TempDir(), Concurrency: 1, AuthorizeFetch: func(_ context.Context, request rpc.FetchCheckpointRequest) error {
+		if request.TargetJobID != "" && (request.TargetJobID != "new-job" || request.TargetTaskID != "new-task" || request.JobID != "job" || request.TaskID != "task") {
+			return errors.New("wrong upgrade identities")
+		}
 		if request.WorkerID != "recovery-worker" {
 			return errors.New("unassigned recovery")
 		}
@@ -82,6 +85,13 @@ func TestCheckpointReplicaServicePublishesAndJoins(t *testing.T) {
 	}
 	if len(recovered.Operators) != 1 || string(recovered.Operators[0]) != "state" {
 		t.Fatalf("worker recovery: %+v", recovered)
+	}
+	upgraded, err := recovery.fetchTaskCheckpoint(ctx, "new-job", "new-task", rpc.TaskDescriptor{EpochID: 3, RestoreCheckpoint: &rpc.CheckpointRestoreDescriptor{SourceJobID: "job", SourceTaskID: "task", CheckpointID: 7, EpochID: 2, ReplicaAddress: addr}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upgraded.TaskID != "task" || string(upgraded.Operators[0]) != "state" {
+		t.Fatalf("upgrade rewrote archive identity or state: %+v", upgraded)
 	}
 	request.WorkerID = "unassigned"
 	fetched.Reset()

@@ -156,89 +156,24 @@ func (c *Coordinator) ListJobs(statusFilter *JobStatus) []*JobMeta {
 	return result
 }
 
-// CancelJob transitions a job to the CANCELING state.
+// CancelJob durably requests cancellation. The scheduler retries cancellation
+// until all old tasks have stopped; only then does it publish CANCELED.
 func (c *Coordinator) CancelJob(jobID string) (*JobMeta, error) {
-	if !c.IsReady() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.readyLocked() {
 		return nil, ErrNotLeader
 	}
-
-	c.mu.RLock()
-	job, ok := c.jobs[jobID]
-	c.mu.RUnlock()
-	if !ok {
+	job := c.jobs[jobID]
+	if job == nil {
 		return nil, ErrJobNotFound
 	}
-
-	if err := c.transitionJob(job, JobCanceling); err != nil {
-		return nil, err
-	}
-
-	c.log.Info().Str("job_id", jobID).Msg("job canceling")
-
-	// Load task assignments and enqueue cancel commands to workers.
-	data, err := c.store.Get(JobAssignmentsKey(jobID))
-	if err == nil && data != nil {
-		var tam TaskAssignmentMap
-		if err := protocol.DecodeMsgPack(data, &tam); err == nil {
-			for taskID, workerID := range tam.Assignments {
-				c.EnqueueCommand(workerID, rpc.WorkerCommand{
-					Type:      rpc.CommandTypeCancelTask,
-					AttemptID: tam.AttemptID,
-					EpochID:   tam.EpochID,
-					JobID:     jobID,
-					TaskID:    taskID,
-				})
-			}
+	if job.Status != JobCanceling {
+		if err := c.transitionJobLocked(job, JobCanceling); err != nil {
+			return nil, err
 		}
 	}
-
-	return job, nil
-}
-
-// PauseJob pauses a running job by triggering a savepoint and transitioning to PAUSED.
-func (c *Coordinator) PauseJob(jobID string) (*JobMeta, *SavepointMeta, error) {
-	if !c.IsReady() {
-		return nil, nil, ErrNotLeader
-	}
-
-	c.mu.RLock()
-	job, ok := c.jobs[jobID]
-	c.mu.RUnlock()
-	if !ok {
-		return nil, nil, ErrJobNotFound
-	}
-
-	sp, err := c.TriggerSavepoint(jobID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("triggering savepoint for pause: %w", err)
-	}
-
-	if err := c.transitionJob(job, JobPaused); err != nil {
-		return nil, nil, err
-	}
-
-	c.log.Info().Str("job_id", jobID).Str("savepoint_id", sp.ID).Msg("job paused")
-	return job, sp, nil
-}
-
-// ResumeJob resumes a paused job by transitioning back to DEPLOYING.
-func (c *Coordinator) ResumeJob(jobID string) (*JobMeta, error) {
-	if !c.IsReady() {
-		return nil, ErrNotLeader
-	}
-
-	c.mu.RLock()
-	job, ok := c.jobs[jobID]
-	c.mu.RUnlock()
-	if !ok {
-		return nil, ErrJobNotFound
-	}
-
-	if err := c.transitionJob(job, JobDeploying); err != nil {
-		return nil, err
-	}
-
-	c.log.Info().Str("job_id", jobID).Msg("job resumed")
-	// TODO: re-deploy from savepoint
-	return job, nil
+	snapshot := *job
+	c.kickScheduler()
+	return &snapshot, nil
 }

@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 const maxStoredCheckpointBytes = 64 * 1024 * 1024
@@ -24,7 +25,14 @@ var ErrCheckpointFileCorrupt = errors.New("checkpoint file corrupt")
 // existing, durably created directory owned by the worker. This is the storage
 // endpoint for replication, not itself evidence of a remote replica. Referenced
 // state-backend files must be transferred separately before acknowledging them.
-type FileCheckpointStore struct{ root string }
+type FileCheckpointStore struct {
+	root        string
+	artifactsMu *sync.RWMutex
+}
+
+// Worker-owned roots may be reopened by fetch and cleanup paths. Share the
+// publication/collection gate across those handles for the process lifetime.
+var checkpointRootLocks sync.Map
 
 // Import validates a received task snapshot before using the same durable
 // publication path as Put. The transfer layer must first verify its checksum
@@ -87,7 +95,12 @@ func NewFileCheckpointStore(root string) (*FileCheckpointStore, error) {
 	if !info.IsDir() {
 		return nil, errors.New("checkpoint root must be a directory")
 	}
-	return &FileCheckpointStore{root: root}, nil
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
+	lock, _ := checkpointRootLocks.LoadOrStore(root, &sync.RWMutex{})
+	return &FileCheckpointStore{root: root, artifactsMu: lock.(*sync.RWMutex)}, nil
 }
 
 func (s *FileCheckpointStore) path(jobID, taskID string, id, epoch uint64) (string, error) {
@@ -102,6 +115,12 @@ func (s *FileCheckpointStore) path(jobID, taskID string, id, epoch uint64) (stri
 // Put publishes a checksummed, fsynced snapshot atomically without overwriting
 // another value for the same identity. Identical retries are idempotent.
 func (s *FileCheckpointStore) Put(ctx context.Context, jobID string, snapshot TaskCheckpoint) error {
+	s.artifactsMu.RLock()
+	defer s.artifactsMu.RUnlock()
+	return s.put(ctx, jobID, snapshot)
+}
+
+func (s *FileCheckpointStore) put(ctx context.Context, jobID string, snapshot TaskCheckpoint) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -113,6 +132,9 @@ func (s *FileCheckpointStore) Put(ctx context.Context, jobID string, snapshot Ta
 	}
 	destination, err := s.path(jobID, snapshot.TaskID, snapshot.CheckpointID, snapshot.EpochID)
 	if err != nil {
+		return err
+	}
+	if err := checkpointNotDeleted(destination); err != nil {
 		return err
 	}
 	size := uint64(len(snapshot.Operators))*4 + uint64(len(snapshot.Source))
@@ -170,6 +192,13 @@ func (s *FileCheckpointStore) Put(ctx context.Context, jobID string, snapshot Ta
 			return ErrCheckpointConflict
 		}
 	}
+	// A delete can race the link; never acknowledge resurrection after its fence.
+	if err := checkpointNotDeleted(destination); err != nil {
+		if errors.Is(err, ErrCheckpointDeleted) {
+			_ = os.Remove(destination)
+		}
+		return err
+	}
 	// Remove the staging link before syncing the directory so successful writes
 	// persist both publication and cleanup. The deferred remove covers failures.
 	if err := os.Remove(file.Name()); err != nil {
@@ -223,6 +252,9 @@ func (s *FileCheckpointStore) Get(ctx context.Context, jobID, taskID string, id,
 	}
 	path, err := s.path(jobID, taskID, id, epoch)
 	if err != nil {
+		return TaskCheckpoint{}, err
+	}
+	if err := checkpointNotDeleted(path); err != nil {
 		return TaskCheckpoint{}, err
 	}
 	payload, err := s.read(path)

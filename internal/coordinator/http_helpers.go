@@ -18,24 +18,30 @@ type errorResponse struct {
 
 // jobResponse is the API representation of a job.
 type jobResponse struct {
-	CheckpointFailure string `json:"checkpoint_failure,omitempty"`
-	RescaleFailure    string `json:"rescale_failure,omitempty"`
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	Status            string `json:"status"`
-	Parallelism       int    `json:"parallelism"`
-	CreatedAt         string `json:"created_at"`
-	UpdatedAt         string `json:"updated_at"`
+	RestoreSavepointPath string `json:"restore_savepoint_path,omitempty"`
+	CancelAfterSavepoint bool   `json:"cancel_after_savepoint,omitempty"`
+	PauseSavepointID     string `json:"pause_savepoint_id,omitempty"`
+	PauseFailure         string `json:"pause_failure,omitempty"`
+	CheckpointFailure    string `json:"checkpoint_failure,omitempty"`
+	RescaleFailure       string `json:"rescale_failure,omitempty"`
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	Status               string `json:"status"`
+	Parallelism          int    `json:"parallelism"`
+	CreatedAt            string `json:"created_at"`
+	UpdatedAt            string `json:"updated_at"`
 }
 
 // jobDetailResponse includes full job details.
 type jobDetailResponse struct {
+	Checkpoints *jobCheckpointResponse `json:"checkpoints,omitempty"`
 	jobResponse
-	StartedAt        string `json:"started_at,omitempty"`
-	FinishedAt       string `json:"finished_at,omitempty"`
-	RestartCount     int    `json:"restart_count"`
-	LatestCheckpoint uint64 `json:"latest_checkpoint"`
-	SavepointPath    string `json:"savepoint_path,omitempty"`
+	StartedAt        string            `json:"started_at,omitempty"`
+	FinishedAt       string            `json:"finished_at,omitempty"`
+	RestartCount     int               `json:"restart_count"`
+	LatestCheckpoint uint64            `json:"latest_checkpoint"`
+	Tasks            []jobTaskResponse `json:"tasks,omitempty"`
+	SavepointPath    string            `json:"savepoint_path,omitempty"`
 }
 
 // pauseJobResponse includes the job and the savepoint created on pause.
@@ -51,6 +57,7 @@ type jobListResponse struct {
 
 // savepointResponse is the API representation of a savepoint.
 type savepointResponse struct {
+	Queued         bool   `json:"queued,omitempty"`
 	ID             string `json:"id"`
 	JobID          string `json:"job_id"`
 	Status         string `json:"status"`
@@ -91,6 +98,8 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 func writeJobError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, ErrCheckpointUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "CHECKPOINT_UNAVAILABLE", err.Error())
 	case errors.Is(err, ErrSavepointInUse):
 		writeError(w, http.StatusConflict, "SAVEPOINT_IN_USE", err.Error())
 	case errors.Is(err, ErrCheckpointMinPause):
@@ -138,6 +147,10 @@ func parseJobStatus(s string) (JobStatus, error) {
 		return JobCanceling, nil
 	case "CANCELED":
 		return JobCanceled, nil
+	case "PAUSING":
+		return JobPausing, nil
+	case "RESUMING":
+		return JobResuming, nil
 	case "PAUSED":
 		return JobPaused, nil
 	default:
@@ -153,7 +166,14 @@ func formatTime(t time.Time) string {
 }
 
 func jobResponseFromMeta(j *JobMeta) jobResponse {
+	restorePath := ""
+	if ref := j.RestoreSavepoint; ref != nil {
+		restorePath = fmt.Sprintf("jobs/%s/checkpoints/%d", ref.JobID, ref.CheckpointID)
+	}
 	return jobResponse{
+		RestoreSavepointPath: restorePath,
+		CancelAfterSavepoint: j.CancelAfterSavepoint,
+		PauseSavepointID:     j.PauseSavepointID, PauseFailure: j.PauseFailure,
 		CheckpointFailure: j.CheckpointFailure,
 		RescaleFailure:    j.RescaleFailure,
 		ID:                j.ID,
@@ -178,6 +198,7 @@ func jobDetailFromMeta(j *JobMeta) jobDetailResponse {
 
 func savepointResponseFromMeta(sp *SavepointMeta) savepointResponse {
 	return savepointResponse{
+		Queued:         sp.Queued,
 		ID:             sp.ID,
 		JobID:          sp.JobID,
 		Status:         sp.Status.String(),

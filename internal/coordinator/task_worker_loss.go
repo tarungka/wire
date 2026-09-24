@@ -20,7 +20,7 @@ func (c *Coordinator) detectLostTaskWorkers() bool {
 	changed := c.expireWorkersLocked(now)
 	failed := make(map[*JobMeta]bool)
 	for _, job := range c.jobs {
-		if job.Status != JobRunning && job.Status != JobDeploying && job.Status != JobFailing {
+		if job.Status != JobRunning && job.Status != JobDeploying && job.Status != JobFailing && job.Status != JobFinishing {
 			continue
 		}
 		data, err := c.store.Get(JobAssignmentsKey(job.ID))
@@ -34,6 +34,11 @@ func (c *Coordinator) detectLostTaskWorkers() bool {
 				continue
 			}
 			worker := c.workers[owner]
+			if worker != nil && worker.Removed && job.Status != JobFailing {
+				// Removal requests cancellation, but is not proof execution stopped.
+				// Keep nonterminal task status until its report or lease expiry.
+				failed[job] = true
+			}
 			if worker == nil || worker.Lost {
 				c.taskStatuses[task] = rpc.TaskStatusFailed
 				if job.Status != JobFailing {

@@ -72,12 +72,12 @@ func TestHTTP_RemoveNode(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	// Verify worker is gone.
+	// Verify durable admission revocation; retain the lease for safe teardown.
 	c.mu.RLock()
-	_, ok := c.workers["w1"]
+	worker := c.workers["w1"]
 	c.mu.RUnlock()
-	if ok {
-		t.Fatal("expected worker w1 to be removed")
+	if worker == nil || !worker.Removed {
+		t.Fatal("expected worker w1 removal tombstone")
 	}
 }
 

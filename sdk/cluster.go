@@ -42,33 +42,9 @@ func (ex *clusterExecutor) run(ctx context.Context, jobName string) (*JobResult,
 	}
 	start := time.Now()
 
-	// Encode the graph.
-	graph := ex.env.graph.toJobGraph(ex.env.parallelism)
-	graph.NumKeyGroups = ex.env.numKeyGroups
-	ex.env.configureGraphStateBackend(&graph)
-	restartPolicy, err := ex.env.restartPolicy()
+	submit, err := ex.env.submissionRequest(jobName)
 	if err != nil {
 		return nil, err
-	}
-	graph.RestartPolicy = restartPolicy
-	graph.CheckpointPolicy = ex.env.checkpointPolicy()
-	if err := graph.CheckpointPolicy.Validate(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
-	}
-	graphBytes, err := protocol.EncodeMsgPack(&graph)
-	if err != nil {
-		return nil, fmt.Errorf("sdk: encode job graph: %w", err)
-	}
-
-	if jobName == "" {
-		jobName = fmt.Sprintf("sdk-job-%d", time.Now().UnixNano())
-	}
-
-	// Submit.
-	submit := submitJobRequest{
-		Name:        jobName,
-		Parallelism: ex.env.parallelism,
-		GraphBytes:  base64.StdEncoding.EncodeToString(graphBytes),
 	}
 	jobID, err := ex.submit(ctx, submit)
 	if err != nil {
@@ -185,4 +161,68 @@ func (ex *clusterExecutor) getStatus(ctx context.Context, url string) (string, e
 		return "", fmt.Errorf("sdk: decode poll response: %w", err)
 	}
 	return s.Status, nil
+}
+
+func (env *StreamExecutionEnvironment) submissionRequest(jobName string) (submitJobRequest, error) {
+	if err := env.graph.validate(); err != nil {
+		return submitJobRequest{}, err
+	}
+	if err := env.graph.validateForCluster(); err != nil {
+		return submitJobRequest{}, err
+	}
+	if err := env.validateKeyGroups(); err != nil {
+		return submitJobRequest{}, err
+	}
+	if err := env.stateBackend.validate(); err != nil {
+		return submitJobRequest{}, err
+	}
+	// Encode the graph.
+	graph := env.graph.toJobGraph(env.parallelism)
+	graph.NumKeyGroups = env.numKeyGroups
+	env.configureGraphStateBackend(&graph)
+	restartPolicy, err := env.restartPolicy()
+	if err != nil {
+		return submitJobRequest{}, err
+	}
+	graph.RestartPolicy = restartPolicy
+	graph.CheckpointPolicy = env.checkpointPolicy()
+	if err := graph.CheckpointPolicy.Validate(); err != nil {
+		return submitJobRequest{}, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	}
+	graphBytes, err := protocol.EncodeMsgPack(&graph)
+	if err != nil {
+		return submitJobRequest{}, fmt.Errorf("sdk: encode job graph: %w", err)
+	}
+
+	if jobName == "" {
+		jobName = fmt.Sprintf("sdk-job-%d", time.Now().UnixNano())
+	}
+
+	return submitJobRequest{
+		Name:        jobName,
+		Parallelism: env.parallelism,
+		GraphBytes:  base64.StdEncoding.EncodeToString(graphBytes),
+	}, nil
+}
+
+// ExportSubmission returns a REST/CLI submission JSON envelope for this graph.
+// It validates named cluster operators without starting a job or opening a
+// connector. Repeated exports do not consume the environment's Execute call.
+func (env *StreamExecutionEnvironment) ExportSubmission(jobName string) ([]byte, error) {
+	if jobName == "" {
+		return nil, fmt.Errorf("%w: export requires a job name", ErrInvalidConfig)
+	}
+	request, err := env.submissionRequest(jobName)
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.MarshalIndent(request, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	data = append(data, '\n')
+	if len(data) > 4<<20 {
+		return nil, fmt.Errorf("%w: submission exceeds 4 MiB", ErrInvalidConfig)
+	}
+	return data, nil
 }

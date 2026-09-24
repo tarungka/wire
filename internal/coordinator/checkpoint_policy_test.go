@@ -130,8 +130,9 @@ func TestSavepointBypassesCheckpointMinPause(t *testing.T) {
 	if sp.Status != SavepointInProgress {
 		t.Fatalf("savepoint status: %v", sp.Status)
 	}
-	if _, err := c.TriggerSavepoint("job"); !errors.Is(err, ErrCheckpointInProgress) {
-		t.Fatalf("savepoints must still enforce one in-flight checkpoint: %v", err)
+	queued, err := c.TriggerSavepoint("job")
+	if err != nil || !queued.Queued || queued.CheckpointID != 0 || c.activeCheckpoints["job"].ID != sp.CheckpointID {
+		t.Fatalf("queued savepoint must not overlap active checkpoint: %+v %v", queued, err)
 	}
 }
 

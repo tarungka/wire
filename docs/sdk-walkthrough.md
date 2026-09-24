@@ -200,3 +200,36 @@ backend paths are scoped to the job, operator, instance and attempt.
 configure distinct retained `CheckpointDirectory` roots on at least two workers.
 `RPCTLSConfig` secures coordinator RPC only; this API does not imply HTTP,
 data-plane or replica TLS. Those broader security requirements remain in WIP-17.
+
+### Export an application for the management CLI
+
+The registered-worker example can emit its submission envelope without contacting
+a coordinator:
+
+```bash
+go run ./sdk/examples/registered-worker -mode export > submission.json
+./wire jobs submit --file submission.json --coordinator http://localhost:4001
+```
+
+Run this with the coordinator and registered worker described above. It executes
+the same graph as `-mode submit` and prints `HELLO` and `WORLD` on the worker.
+The example integration test runs both submission paths against real services.
+
+In your own application, build named operators and call:
+
+```go
+payload, err := env.ExportSubmission("application-v2")
+if err != nil {
+    return err
+}
+return os.WriteFile("submission-v2.json", payload, 0600)
+```
+
+`ExportSubmission` returns the same graph and policies used by remote execution,
+validates the cluster graph, and enforces the REST 4 MiB envelope limit. It requires
+an explicit job name, performs no network I/O, and can be called repeatedly before
+`Execute`. Use the exported application file with
+`wire jobs submit --file submission-v2.json --savepoint PATH` for the
+[savepoint upgrade workflow](job-cli.md#upgrade-from-a-savepoint). The words example
+is a short bounded job; use a checkpoint-capable application and replica-enabled
+workers for a savepoint upgrade.

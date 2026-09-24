@@ -1,7 +1,6 @@
 package coordinator
 
 import (
-	"errors"
 	"net/http"
 )
 
@@ -9,10 +8,6 @@ func (s *HTTPServer) handleTriggerSavepoint(w http.ResponseWriter, r *http.Reque
 	jobID := r.PathValue("job_id")
 	sp, err := s.coord.TriggerSavepoint(jobID)
 	if err != nil {
-		if errors.Is(err, ErrCheckpointUnavailable) {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
 		writeJobError(w, err)
 		return
 	}

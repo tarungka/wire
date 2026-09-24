@@ -20,6 +20,23 @@ func (c *Coordinator) attachCheckpointRestoreLocked(job *JobMeta, assignments ma
 	if err != nil {
 		return err
 	}
+	if job.RestoreSavepoint != nil {
+		var targets []rpc.TaskDescriptor
+		for _, tasks := range assignments {
+			targets = append(targets, tasks...)
+		}
+		sources, err := planSavepointTaskRestore(checkpoint, targets)
+		if err != nil {
+			return err
+		}
+		for _, tasks := range assignments {
+			for i := range tasks {
+				source := sources[tasks[i].TaskID]
+				tasks[i].RestoreCheckpoint = &rpc.CheckpointRestoreDescriptor{SourceJobID: checkpoint.JobID, SourceTaskID: source, CheckpointID: checkpoint.ID, EpochID: checkpoint.EpochID, ReplicaAddress: checkpoint.StatePaths[source], ArchiveSize: inventory[source].StateSizeBytes, ArchiveSHA256: inventory[source].StateSHA256["checkpoint.archive"]}
+			}
+		}
+		return nil
+	}
 	if job.RescaleCheckpoint != 0 && job.RescaleCheckpoint == checkpoint.ID {
 		if checkpoint.SavepointID == "" {
 			return fmt.Errorf("rescale requires a savepoint")

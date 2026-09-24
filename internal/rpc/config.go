@@ -71,7 +71,7 @@ func (c Config) methodTimeout(method MethodID) time.Duration {
 		return c.UpdateTaskStatusTimeout
 	case MethodTriggerCheckpoint:
 		return c.TriggerCheckpointTimeout
-	case MethodAcknowledgeCheckpoint:
+	case MethodAcknowledgeCheckpoint, MethodAcknowledgeCheckpointCleanup:
 		return c.AcknowledgeCheckpointTimeout
 	case MethodRequestTaskSlots:
 		return c.RequestTaskSlotsTimeout

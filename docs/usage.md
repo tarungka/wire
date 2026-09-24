@@ -163,6 +163,13 @@ Response:
 }
 ```
 
+To restore a compatible upgraded graph, add `"savepoint":
+"jobs/OLD_JOB_ID/checkpoints/1"` to the submission envelope. The predecessor must
+be stopped, have no accepted successor, and the path must name its latest
+completed savepoint. The new job receives a distinct runtime ID. See the
+[CLI upgrade workflow](job-cli.md#upgrade-from-a-savepoint) for reference protection,
+transaction identity and polling semantics.
+
 ### List Jobs
 
 ```bash
@@ -218,9 +225,20 @@ Response:
 curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/cancel | jq
 ```
 
+To create a savepoint before stopping a running job:
+
+```bash
+curl -s -X POST 'http://localhost:4001/api/v1/jobs/{job_id}/cancel?savepoint=true' | jq
+```
+
+This returns 202 with the accepted job and savepoint. Poll until the savepoint is
+completed and the job is `CANCELED`. Snapshot failure leaves the job running;
+see [cancellation details](job-cli.md#cancellation-completion).
+
 ### Pause a Job
 
-Pausing a job triggers an automatic savepoint before suspending execution.
+Pause returns HTTP 202 after persisting a savepoint request. Poll the job until
+`PAUSED`: it remains `RUNNING` during the snapshot and `PAUSING` during teardown.
 
 ```bash
 curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/pause | jq
@@ -233,7 +251,8 @@ Response:
   "job": {
     "id": "job_abc123",
     "name": "my-pipeline",
-    "status": "PAUSED",
+    "status": "RUNNING",
+    "pause_savepoint_id": "sp_xyz789",
     "parallelism": 4,
     "created_at": "2025-01-01T00:00:00Z",
     "updated_at": "2025-01-01T00:00:05Z",
@@ -244,15 +263,17 @@ Response:
   "savepoint": {
     "id": "sp_xyz789",
     "job_id": "job_abc123",
-    "status": "COMPLETED",
-    "path": "data/savepoints/sp_xyz789",
-    "trigger_time": "2025-01-01T00:00:05Z",
-    "completion_time": "2025-01-01T00:00:05Z"
+    "status": "IN_PROGRESS",
+    "queued": true,
+    "trigger_time": "2025-01-01T00:00:05Z"
   }
 }
 ```
 
 ### Resume a Job
+
+Resume a `PAUSED` job from its pinned savepoint. `RESUMING` waits for capacity,
+then proceeds through `DEPLOYING` to `RUNNING`. See [pause and resume details](job-cli.md#pause-and-resume-from-a-savepoint).
 
 ```bash
 curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/resume | jq
@@ -321,6 +342,20 @@ Response:
 curl -s -X DELETE http://localhost:4001/api/v1/cluster/nodes/{node_id} | jq
 ```
 
+The equivalent CLI command is `wire cluster remove NODE_ID`.
+
+Removal durably revokes admission for that worker ID. Cluster status retains a
+`REMOVED` entry; it is excluded from placement and checkpoint replica selection.
+The ID cannot re-register after removal, including after coordinator recovery.
+Start a replacement using a new worker ID. Repeating DELETE is idempotent.
+
+The response acknowledges removal intent, not completion of task teardown.
+Affected active jobs enter `FAILING`. The coordinator cancels their old tasks
+and waits for terminal reports or the last execution lease to expire before
+redeployment. Jobs follow their configured recovery policy: `NoRestart` or an
+exhausted budget results in `FAILED`. Checkpoint recovery still requires an
+available valid replica; removal does not migrate archived state automatically.
+
 ## 9. Job Lifecycle
 
 Jobs follow this state machine:
@@ -332,7 +367,7 @@ CREATED -> DEPLOYING -> RUNNING -> FINISHING -> FINISHED
    |          |            |
    |          |            +-> CANCELING -> CANCELED
    |          |            |
-   |          |            +-> PAUSED -> (DEPLOYING, resumes)
+   |          |            +-> PAUSING -> PAUSED -> RESUMING -> DEPLOYING
    |          |
    |          +-> CANCELING -> CANCELED
    |          |
@@ -352,7 +387,9 @@ CREATED -> DEPLOYING -> RUNNING -> FINISHING -> FINISHED
 * **FAILED** — Terminated due to error (terminal)
 * **CANCELING** — Cancellation requested
 * **CANCELED** — Canceled by user (terminal)
-* **PAUSED** — Suspended with savepoint taken
+* **PAUSING** — Savepoint completed; stopping the old tasks
+* **PAUSED** — Savepoint pinned and old tasks stopped
+* **RESUMING** — Manual restore requested; waiting for placement
 
 Terminal states: `FINISHED`, `FAILED`, `CANCELED`.
 

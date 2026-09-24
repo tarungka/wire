@@ -120,3 +120,26 @@ func TestFetchCancellationReleasesLoaderAndKeepsSession(t *testing.T) {
 	}
 	_ = sibling.Close()
 }
+
+func TestCrossJobFetchIdentityValidation(t *testing.T) {
+	request := FetchCheckpointRequest{WorkerID: "worker", DeploymentEpoch: 3, JobID: "old", TaskID: "old-task", CheckpointID: 7, EpochID: 2}
+	if err := request.Validate(); err != nil {
+		t.Fatal("legacy same-job request rejected", err)
+	}
+	request.TargetJobID = "new"
+	if err := request.Validate(); err == nil {
+		t.Fatal("cross-job request accepted without target task")
+	}
+	request.TargetTaskID = "new-task"
+	if err := request.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	source := ReplicateCheckpointRequest{Format: CheckpointFormatArchive, JobID: "old", TaskID: "old-task", CheckpointID: 7, EpochID: 2}
+	if !request.matches(source) {
+		t.Fatal("original archive identity rejected")
+	}
+	source.JobID, source.TaskID = "new", "new-task"
+	if request.matches(source) {
+		t.Fatal("rewritten archive identity accepted")
+	}
+}

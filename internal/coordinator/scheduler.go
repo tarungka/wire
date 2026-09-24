@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -106,13 +107,15 @@ func (c *Coordinator) schedulePending(ctx context.Context, dispatch func(*JobMet
 		return
 	}
 	c.detectLostTaskWorkers()
+	c.scheduleCancellations()
+	c.schedulePauses()
 	c.scheduleFinalCheckpoints(ctx)
 
 	// Snapshot CREATED jobs under RLock.
 	c.mu.RLock()
 	var createdJobs []*JobMeta
 	for _, job := range c.jobs {
-		if job.Status == JobCreated || job.Status == JobFailing {
+		if job.Status == JobCreated || job.Status == JobFailing || job.Status == JobResuming {
 			createdJobs = append(createdJobs, job)
 		}
 	}
@@ -199,7 +202,7 @@ func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 	// Transition CREATED → DEPLOYING and persist assignments under Lock.
 	c.mu.Lock()
 	// Re-check status under lock (another tick may have grabbed it).
-	if ctx.Err() != nil || !c.readyLocked() || (job.Status != JobCreated && job.Status != JobFailing) || !c.assignmentsLiveLocked(assignments, time.Now(), peers) {
+	if ctx.Err() != nil || !c.readyLocked() || (job.Status != JobCreated && job.Status != JobFailing && job.Status != JobResuming) || !c.assignmentsLiveLocked(assignments, time.Now(), peers) {
 		c.mu.Unlock()
 		return
 	}
@@ -267,6 +270,10 @@ func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 	for _, workerTasks := range assignments {
 		for i := range workerTasks {
 			workerTasks[i].DeploymentGeneration = generation
+			if job.TransactionJobID != "" {
+				workerTasks[i].TransactionJobID = job.TransactionJobID
+				workerTasks[i].TransactionTaskID = job.TransactionJobID + "/" + strings.TrimPrefix(workerTasks[i].TaskID, job.ID+"/")
+			}
 		}
 	}
 
@@ -408,7 +415,7 @@ func (c *Coordinator) checkpointPeerLocked(sourceID string, now time.Time) strin
 	}
 	var candidates []string
 	for id, worker := range c.workers {
-		if id != sourceID && worker.CheckpointAddress != "" && worker.CheckpointAddress != source.CheckpointAddress && !worker.LastHeartbeat.IsZero() && now.Sub(worker.LastHeartbeat) < c.config.WorkerTimeout {
+		if !worker.Removed && id != sourceID && worker.CheckpointAddress != "" && worker.CheckpointAddress != source.CheckpointAddress && !worker.LastHeartbeat.IsZero() && now.Sub(worker.LastHeartbeat) < c.config.WorkerTimeout {
 			candidates = append(candidates, id)
 		}
 	}
@@ -510,7 +517,7 @@ func (c *Coordinator) assignTasks(tasks []rpc.TaskDescriptor) (map[string][]rpc.
 	var eligible []workerSlot
 	totalAvail := 0
 	for _, w := range c.workers {
-		if w.TaskSlotsAvailable > 0 && !w.LastHeartbeat.IsZero() && time.Since(w.LastHeartbeat) < c.config.WorkerTimeout {
+		if !w.Removed && w.TaskSlotsAvailable > 0 && !w.LastHeartbeat.IsZero() && time.Since(w.LastHeartbeat) < c.config.WorkerTimeout {
 			eligible = append(eligible, workerSlot{id: w.ID, avail: w.TaskSlotsAvailable})
 			totalAvail += w.TaskSlotsAvailable
 		}
@@ -539,7 +546,7 @@ func (c *Coordinator) assignTasks(tasks []rpc.TaskDescriptor) (map[string][]rpc.
 func (c *Coordinator) assignmentsLiveLocked(assignments map[string][]rpc.TaskDescriptor, now time.Time, reserved ...map[string]*rpc.Client) bool {
 	for id, tasks := range assignments {
 		worker := c.workers[id]
-		if worker == nil || worker.LastHeartbeat.IsZero() || now.Sub(worker.LastHeartbeat) >= c.config.WorkerTimeout || (worker.TaskSlotsAvailable < len(tasks) && (len(reserved) == 0 || reserved[0][id] == nil)) {
+		if worker == nil || worker.Removed || worker.LastHeartbeat.IsZero() || now.Sub(worker.LastHeartbeat) >= c.config.WorkerTimeout || (worker.TaskSlotsAvailable < len(tasks) && (len(reserved) == 0 || reserved[0][id] == nil)) {
 			return false
 		}
 	}

@@ -12,7 +12,8 @@ import (
 // FetchCheckpointRequest names a stored snapshot and the deployment requesting
 // recovery. EpochID belongs to the snapshot; DeploymentEpoch fences its reader.
 type FetchCheckpointRequest struct {
-	RequireArchive bool `codec:"require_archive,omitempty"`
+	TargetJobID    string `codec:"target_job_id,omitempty"`
+	RequireArchive bool   `codec:"require_archive,omitempty"`
 	// TargetTaskID identifies the new owner during rescale; TaskID names the stored source.
 	TargetTaskID    string `codec:"target_task_id,omitempty"`
 	AttemptID       string `codec:"attempt_id,omitempty"`
@@ -25,6 +26,9 @@ type FetchCheckpointRequest struct {
 }
 
 func (r FetchCheckpointRequest) Validate() error {
+	if len(r.TargetJobID) > 4096 || (r.TargetJobID != "" && r.TargetTaskID == "") {
+		return errors.New("invalid cross-job recovery target identity")
+	}
 	if len(r.TargetTaskID) > 4096 {
 		return errors.New("invalid rescale target identity")
 	}

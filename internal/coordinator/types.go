@@ -45,6 +45,8 @@ const (
 	JobCanceling                  // Job cancellation was requested.
 	JobCanceled                   // Job was canceled by the user.
 	JobPaused                     // Job is paused (savepoint taken).
+	JobPausing                    // Savepoint completed; waiting for task teardown.
+	JobResuming                   // Resume requested; waiting for placement.
 )
 
 func (s JobStatus) String() string {
@@ -69,6 +71,10 @@ func (s JobStatus) String() string {
 		return "CANCELED"
 	case JobPaused:
 		return "PAUSED"
+	case JobPausing:
+		return "PAUSING"
+	case JobResuming:
+		return "RESUMING"
 	default:
 		return "UNKNOWN"
 	}
@@ -107,8 +113,25 @@ func (s CheckpointStatus) String() string {
 	}
 }
 
+// SavepointRestoreReference pins an original archive while a successor starts.
+type SavepointRestoreReference struct {
+	JobID        string `codec:"job_id"`
+	SavepointID  string `codec:"savepoint_id"`
+	CheckpointID uint64 `codec:"checkpoint_id"`
+}
+
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
+	TransactionJobID  string `codec:"transaction_job_id,omitempty"`
+	CheckpointIDFloor uint64 `codec:"checkpoint_id_floor,omitempty"`
+
+	RestoreSavepoint   *SavepointRestoreReference `codec:"restore_savepoint,omitempty"`
+	UpgradeSuccessorID string                     `codec:"upgrade_successor_id,omitempty"`
+
+	CancelAfterSavepoint          bool                  `codec:"cancel_after_savepoint,omitempty"`
+	PauseSavepointID              string                `codec:"pause_savepoint_id,omitempty"`
+	PauseCheckpoint               uint64                `codec:"pause_checkpoint,omitempty"`
+	PauseFailure                  string                `codec:"pause_failure,omitempty"`
 	RestartPolicy                 *rpc.RestartPolicy    `codec:"restart_policy,omitempty"`
 	LastCheckpointTrigger         time.Time             `codec:"last_checkpoint_trigger,omitempty"`
 	CheckpointPolicy              *rpc.CheckpointPolicy `codec:"checkpoint_policy,omitempty"`
@@ -156,6 +179,7 @@ type TaskAssignmentMap struct {
 
 // CheckpointMeta holds persisted metadata for a single checkpoint.
 type CheckpointMeta struct {
+	CompletedAt     time.Time            `codec:"completed_at,omitempty"`
 	Final           bool                 `codec:"final,omitempty"`
 	AttemptID       string               `codec:"attempt_id,omitempty"`
 	InvalidReason   string               `codec:"invalid_reason,omitempty"`
@@ -199,6 +223,8 @@ func (s SavepointStatus) String() string {
 
 // SavepointMeta holds persisted metadata for a single savepoint.
 type SavepointMeta struct {
+	Deleted        bool            `codec:"deleted,omitempty"`
+	Queued         bool            `codec:"queued,omitempty"`
 	NumKeyGroups   int             `codec:"key_groups,omitempty"`
 	CheckpointID   uint64          `codec:"checkpoint_id,omitempty"`
 	EpochID        uint64          `codec:"epoch_id,omitempty"`
@@ -212,6 +238,7 @@ type SavepointMeta struct {
 
 // WorkerMeta holds persisted metadata for a registered worker.
 type WorkerMeta struct {
+	Removed              bool                     `codec:"removed,omitempty"`
 	Lost                 bool                     `codec:"-" json:"-"`
 	Resources            *rpc.ResourceReport      `codec:"-" json:"-"`
 	TaskReports          []rpc.RunningTaskSummary `codec:"-" json:"-"`

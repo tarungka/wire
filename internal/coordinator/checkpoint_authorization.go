@@ -60,9 +60,25 @@ func (c *Coordinator) HandleAuthorizeCheckpointFetch(_ context.Context, _ uint64
 		return denied, nil
 	}
 	replica := c.workers[request.ReplicaWorkerID]
-	job := c.jobs[fetch.JobID]
+	targetJobID := fetch.JobID
+	crossJob := fetch.TargetJobID != "" && fetch.TargetJobID != fetch.JobID
+	if crossJob {
+		targetJobID = fetch.TargetJobID
+	}
+	job := c.jobs[targetJobID]
 	if replica == nil || replica.CheckpointAddress == "" || job == nil || job.LatestCheckpoint != fetch.CheckpointID || (job.Status != JobDeploying && job.Status != JobRunning) {
 		return denied, nil
+	}
+	if crossJob {
+		source := c.jobs[fetch.JobID]
+		ref := job.RestoreSavepoint
+		if source == nil || !source.Status.IsTerminal() || source.UpgradeSuccessorID != targetJobID || source.LatestCheckpoint != fetch.CheckpointID || ref == nil || ref.JobID != fetch.JobID || ref.CheckpointID != fetch.CheckpointID {
+			return denied, nil
+		}
+		sp, err := c.GetSavepoint(ref.JobID, ref.SavepointID)
+		if err != nil || sp.JobID != ref.JobID || sp.ID != ref.SavepointID || sp.Status != SavepointCompleted || sp.CheckpointID != fetch.CheckpointID || sp.EpochID != fetch.EpochID {
+			return denied, nil
+		}
 	}
 	data, err := c.store.Get(CheckpointKey(fetch.JobID, fetch.CheckpointID))
 	if err != nil {
@@ -72,10 +88,13 @@ func (c *Coordinator) HandleAuthorizeCheckpointFetch(_ context.Context, _ uint64
 	if err := protocol.DecodeMsgPack(data, &checkpoint); err != nil {
 		return denied, nil
 	}
-	if checkpoint.JobID != fetch.JobID || checkpoint.ID != fetch.CheckpointID || checkpoint.EpochID != fetch.EpochID || checkpoint.Status != CheckpointCompleted || checkpoint.Tasks[fetch.TaskID] == "" || checkpoint.StatePaths[fetch.TaskID] != replica.CheckpointAddress || checkpoint.Replicas[fetch.TaskID] != replica.CheckpointAddress {
+	if checkpoint.JobID != fetch.JobID || checkpoint.ID != fetch.CheckpointID || checkpoint.EpochID != fetch.EpochID || checkpoint.Status != CheckpointCompleted || checkpoint.InvalidReason != "" || checkpoint.Tasks[fetch.TaskID] == "" || checkpoint.StatePaths[fetch.TaskID] != replica.CheckpointAddress || checkpoint.Replicas[fetch.TaskID] != replica.CheckpointAddress {
 		return denied, nil
 	}
-	data, err = c.store.Get(JobAssignmentsKey(fetch.JobID))
+	if crossJob && checkpoint.SavepointID != job.RestoreSavepoint.SavepointID {
+		return denied, nil
+	}
+	data, err = c.store.Get(JobAssignmentsKey(targetJobID))
 	if err != nil {
 		return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, err.Error())
 	}
@@ -87,8 +106,15 @@ func (c *Coordinator) HandleAuthorizeCheckpointFetch(_ context.Context, _ uint64
 	if fetch.TargetTaskID != "" {
 		target = fetch.TargetTaskID
 	}
-	if assignment.JobID != fetch.JobID || assignment.Assignments[target] != fetch.WorkerID || assignment.AttemptID != fetch.AttemptID {
+	if assignment.JobID != targetJobID || assignment.Assignments[target] != fetch.WorkerID || assignment.AttemptID != fetch.AttemptID {
 		return denied, nil
+	}
+	if crossJob {
+		restore, ok := assignment.RestoreCheckpoints[target]
+		if !ok || !fetch.RequireArchive || restore.ArchiveSHA256 == "" || restore.ArchiveSize <= 0 || restore.SourceJobID != fetch.JobID || restore.SourceTaskID != fetch.TaskID || restore.CheckpointID != fetch.CheckpointID || restore.EpochID != fetch.EpochID || restore.ReplicaAddress != replica.CheckpointAddress || assignment.EpochID != fetch.DeploymentEpoch {
+			return denied, nil
+		}
+		return &rpc.AcknowledgeCheckpointResponse{Accepted: true}, nil
 	}
 	if fetch.TargetTaskID != "" {
 		permitted := false

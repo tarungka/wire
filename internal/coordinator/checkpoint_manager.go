@@ -30,6 +30,10 @@ func (c *Coordinator) triggerCheckpoint(jobID, savepointID string) (*CheckpointM
 }
 
 func (c *Coordinator) triggerCheckpointBoundary(jobID, savepointID string, final bool) (*CheckpointMeta, error) {
+	return c.triggerCheckpointWithQueue(jobID, savepointID, final, false)
+}
+
+func (c *Coordinator) triggerCheckpointWithQueue(jobID, savepointID string, final, queuedOnly bool) (*CheckpointMeta, error) {
 	c.mu.Lock()
 	if !c.readyLocked() {
 		c.mu.Unlock()
@@ -43,6 +47,36 @@ func (c *Coordinator) triggerCheckpointBoundary(jobID, savepointID string, final
 	if job.Status != JobRunning {
 		c.mu.Unlock()
 		return nil, ErrJobNotRunning
+	}
+	// User savepoints have priority over periodic/final checkpoints. Dispatch
+	// only the oldest queued ID, keeping concurrent triggers from overtaking it.
+	queued, err := c.queuedSavepointsLocked(jobID)
+	if err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
+	if len(queued) > 0 && queued[0].ID != savepointID {
+		c.mu.Unlock()
+		return nil, ErrCheckpointInProgress
+	}
+	var queuedRequest *SavepointMeta
+	if len(queued) > 0 {
+		queuedRequest = queued[0]
+	}
+	if queuedOnly && queuedRequest == nil {
+		c.mu.Unlock()
+		return nil, ErrSavepointNotFound
+	}
+	if savepointID != "" && queuedRequest == nil {
+		existing, err := c.store.Get(SavepointKey(jobID, savepointID))
+		if err != nil {
+			c.mu.Unlock()
+			return nil, err
+		}
+		if existing != nil {
+			c.mu.Unlock()
+			return nil, ErrCheckpointInProgress
+		}
 	}
 	data, err := c.store.Get(JobAssignmentsKey(jobID))
 	if err != nil {
@@ -81,7 +115,7 @@ func (c *Coordinator) triggerCheckpointBoundary(jobID, savepointID string, final
 			return nil, fmt.Errorf("%w: task %s has no assigned replica", ErrCheckpointUnavailable, taskID)
 		}
 	}
-	var highest uint64
+	highest := job.CheckpointIDFloor
 	var scanErr error
 	err = c.store.PrefixScan([]byte(fmt.Sprintf("jobs/%s/checkpoints/", jobID)), func(key, value []byte) bool {
 		if bytes.Equal(key, LatestCheckpointKey(jobID)) || bytes.HasSuffix(key, []byte("/metadata.json")) {
@@ -150,6 +184,9 @@ func (c *Coordinator) triggerCheckpointBoundary(jobID, savepointID string, final
 	batch := []KVPair{{Key: JobMetaKey(jobID), Value: jobData}, {Key: CheckpointKey(jobID, checkpoint.ID), Value: encoded}}
 	if savepointID != "" {
 		savepoint := SavepointMeta{NumKeyGroups: count, ID: savepointID, JobID: jobID, CheckpointID: checkpoint.ID, EpochID: checkpoint.EpochID, Status: SavepointInProgress, TriggerTime: checkpoint.Timestamp}
+		if queuedRequest != nil {
+			savepoint.TriggerTime = queuedRequest.TriggerTime
+		}
 		raw, err := protocol.EncodeMsgPack(savepoint)
 		if err != nil {
 			c.mu.Unlock()
@@ -160,6 +197,9 @@ func (c *Coordinator) triggerCheckpointBoundary(jobID, savepointID string, final
 	if err := c.store.WriteBatch(batch); err != nil {
 		c.mu.Unlock()
 		return nil, err
+	}
+	if queuedRequest != nil && len(queued) == 1 {
+		delete(c.queuedSavepointJobs, jobID)
 	}
 	job.CheckpointAttempts = nextJob.CheckpointAttempts
 	job.LastCheckpointTrigger = nextJob.LastCheckpointTrigger
@@ -319,6 +359,7 @@ func (c *Coordinator) abortCheckpoint(jobID string, id, epoch uint64, failure st
 	for taskID, workerID := range checkpoint.Tasks {
 		c.enqueueCommandLocked(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeAbortCheckpoint, JobID: jobID, TaskID: taskID, Data: command})
 	}
+	c.kickScheduler()
 	c.mu.Unlock()
 	return nil
 }
@@ -334,10 +375,12 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 	var notify map[string]string
 	c.mu.Lock()
 	defer func() {
-		c.mu.Unlock()
+		// Queue the durable commit before pause/cancel reconciliation can enqueue
+		// teardown for the same attempt. enqueueCommandLocked never blocks.
 		for taskID, workerID := range notify {
-			c.EnqueueCommand(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeCommitCheckpoint, JobID: request.JobID, TaskID: taskID, Data: decision})
+			c.enqueueCommandLocked(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeCommitCheckpoint, JobID: request.JobID, TaskID: taskID, Data: decision})
 		}
+		c.mu.Unlock()
 	}()
 	if !c.readyLocked() {
 		return ErrNotLeader
@@ -402,6 +445,7 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 	complete := len(checkpoint.StatePaths) == len(checkpoint.Tasks)
 	if complete {
 		checkpoint.Status = CheckpointCompleted
+		checkpoint.CompletedAt = time.Now().UTC()
 	}
 	encoded, err := protocol.EncodeMsgPack(checkpoint)
 	if err != nil {
@@ -435,6 +479,29 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 		}
 		next = *job
 		next.LatestCheckpoint = checkpoint.ID
+		next.RestoreSavepoint = nil
+		if checkpoint.SavepointID != "" && checkpoint.SavepointID == job.PauseSavepointID && job.Status == JobRunning {
+			next.Status = JobPausing
+			if job.CancelAfterSavepoint {
+				next.Status = JobCanceling
+			}
+			next.UpdatedAt = time.Now().UTC()
+			next.PauseCheckpoint = checkpoint.ID
+			next.SavepointPath = fmt.Sprintf("jobs/%s/checkpoints/%d", job.ID, checkpoint.ID)
+		} else if job.PauseCheckpoint != 0 && checkpoint.ID > job.PauseCheckpoint {
+			next.PauseCheckpoint = 0
+			// A newer completed boundary now protects recovery after resume.
+			if job.PauseSavepointID != "" {
+				sp, e := c.GetSavepoint(job.ID, job.PauseSavepointID)
+				if e != nil {
+					return e
+				}
+				if sp.Status == SavepointCompleted {
+					next.PauseSavepointID = ""
+				}
+			}
+		}
+
 		next.LastCheckpointCompletion = time.Now().UTC()
 		if checkpoint.SavepointID == "" {
 			next.CheckpointOutcomes = checkpointpolicy.Record(next.CheckpointOutcomes, false)
@@ -459,13 +526,10 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 	}
 	if complete {
 		job := c.jobs[request.JobID]
-		job.LatestCheckpoint = next.LatestCheckpoint
-		job.LastCheckpointCompletion = next.LastCheckpointCompletion
-		job.CheckpointOutcomes = next.CheckpointOutcomes
-		job.ConsecutiveCheckpointFailures = next.ConsecutiveCheckpointFailures
-		job.CheckpointFailure = next.CheckpointFailure
+		*job = next
 		delete(c.activeCheckpoints, request.JobID)
 		notify = checkpoint.Tasks
+		c.kickScheduler()
 	}
 	return nil
 }
