@@ -285,6 +285,7 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 	}
 	w := worker.New(worker.Config{
 		PeerTLSConfig:        peerTLS,
+		MaxFrameSize:         wireCfg.MaxFrameSize,
 		EpochPath:            wireCfg.Worker.EpochPath,
 		CoordinatorSeeds:     wireCfg.Worker.CoordinatorSeeds,
 		DiscoverySecurity:    apiclient.Config(wireCfg.Worker.DiscoveryHTTP),

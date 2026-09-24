@@ -471,3 +471,14 @@ factory is never called. Full metadata scans before and after restart reject
 either plaintext credential. This verifies runtime reconstruction, not just
 helper-level resolution; it does not promise stable credentials across leaders
 with inconsistent environments or erase application-owned secret copies.
+
+### WIP-13 dependency integration
+
+The WIP-18 configuration audit found that the earlier WIP-14–17 stack had not
+actually incorporated WIP-13's separate branch. This merge brings in typed
+`WIRE_*` overrides, complete string substitution, authoring schemas and the
+worker frame-size fix from #226/#228. Conflict resolution retains HTTP auth/TLS
+flags, worker peer TLS and discovery credentials, source ownership, current
+savepoint lifecycle documentation and WIP-12 late-data behavior. The node schema
+and reference are regenerated from the combined config types. This corrects the
+earlier integration assumption rather than treating branch names as evidence.

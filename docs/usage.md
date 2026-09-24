@@ -8,7 +8,7 @@
 
 ## 1. Prerequisites
 
-* Go 1.21 or later
+* Go 1.25.0 or later
 * `make`
 * `jq` (optional, for pretty-printing JSON responses)
 
@@ -36,7 +36,7 @@ This produces the `wire` binary in the project root.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--mode` | | Node mode: `coordinator` or `worker` |
+| `--mode` | `coordinator` | Node mode: `coordinator` or `worker` |
 | `--http-listen` | `:4001` | HTTP API listen address |
 | `--listen` | `:4002` | Wire protocol listen address |
 | `--coordinator-data-dir` | `data/coordinator` | Coordinator metadata storage directory |
@@ -45,11 +45,13 @@ This produces the `wire` binary in the project root.
 | `--election-lock-path` | `data/coordinator/leader.lock` | File path for the filelock election backend |
 | `--config` | `.config/config.json` | Path to one or more config files (merged in order) |
 | `--debug` | `false` | Enable verbose debug logging |
-| `--max-frame-size` | `16777216` | Max wire protocol frame size in bytes |
+| `--metrics-enabled` | `true` | Expose the Prometheus metrics endpoint (both modes) |
+| `--metrics-addr` | `:9090` | Metrics listen address (both modes) |
+| `--version` | `false` | Print build/version information and exit |
 
 ### TLS Flags
 
-Node TLS flags configure coordinator-worker RPC connections (TLS 1.3 minimum). For mTLS, configure the coordinator certificate/key and CA with `--node-verify-client`, and give each worker a client certificate whose Common Name matches its worker ID. Workers verify the coordinator hostname or `--node-verify-server-name` override. These flags do not secure HTTP, data streams or checkpoint replica transfers; see [WIP-07's runtime contract](trds/WIP-07/runtime-contract.md#tls-and-identity).
+Node TLS flags configure coordinator-worker RPC connections (TLS 1.3 minimum). For mTLS, configure the coordinator certificate/key and CA with `--node-verify-client`, and give each worker a client certificate whose Common Name matches its worker ID. Workers verify the coordinator hostname. Override the expected name in a config file with `node_tls.verify_server_name`; there is no CLI flag for that field. These flags do not secure HTTP, data streams or checkpoint replica transfers; see [WIP-07's runtime contract](trds/WIP-07/runtime-contract.md#tls-and-identity).
 
 
 | Flag | Default | Description |
@@ -61,67 +63,85 @@ Node TLS flags configure coordinator-worker RPC connections (TLS 1.3 minimum). F
 
 ## 3b. Running a Worker
 
-Workers connect to the coordinator, register, and receive task deployments via heartbeat.
+Workers connect to the coordinator, register, and open a `WatchCommands` stream for pushed task deployments. Heartbeats provide liveness and a fallback command-delivery path.
 
 ```bash
 ./wire \
   --mode worker \
   --coordinator-addr localhost:4002 \
   --task-slots 4 \
+  --metrics-addr :9091 \
   --debug
 ```
+
+The metrics override avoids conflicting with the coordinator on the same host.
 
 ### Worker Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--mode` | | Must be `worker` |
+| `--mode` | `coordinator` | Set explicitly to `worker` |
 | `--coordinator-addr` | | Address of the coordinator's wire protocol listener |
 | `--worker-id` | hostname | Worker node ID |
 | `--task-slots` | `4` | Number of concurrent task slots |
+| `--worker-listen` | `:4003` | Worker data-plane listen address |
+| `--max-frame-size` | `16777216` | Maximum worker data-frame length in bytes (type, CRC and payload) |
 | `--debug` | `false` | Enable verbose debug logging |
+
+Workers also accept the shared `--config`, metrics, version and node TLS flags listed above.
+
+`--max-frame-size` (config: `max_frame_size`) applies to the worker data mux,
+including its framed session controls. It has no effect on coordinator RPC,
+RPC payload limits or checkpoint archive limits. Configure compatible limits on
+both workers; peers do not negotiate a smaller frame size. Values below the
+five-byte type/CRC minimum are rejected. Very small limits can prevent data
+session handshakes from fitting.
 
 ### Task Deployment Flow
 
 1. Submit a job via the HTTP API — job enters `CREATED` state
 2. The coordinator scheduler (runs every 2s) picks up `CREATED` jobs
 3. Scheduler generates task descriptors, assigns tasks to workers with available slots, transitions job to `DEPLOYING`
-4. Workers receive `DeployTask` commands in the next heartbeat response
+4. Workers receive `DeployTask` commands through `WatchCommands`, with heartbeat delivery as a fallback
 5. Workers process the command and send `UpdateTaskStatus(RUNNING)` back to the coordinator
 6. When all tasks report `RUNNING`, the coordinator transitions the job to `RUNNING`
 
-### Example End-to-End
+### Starting a cluster and submitting work
+
+Start the coordinator and worker with the commands above. Cluster jobs require
+an encoded graph and matching operator factories registered in the worker.
+The SDK cluster executor submits `graph_bytes` automatically; Go function
+closures cannot be shipped to another process. Use named operators and register
+their implementations in the worker application.
+
+For an existing JSON graph submission envelope:
 
 ```bash
-# Terminal 1: coordinator
-./wire --mode coordinator --listen :4002 --http-listen :4001 \
-  --coordinator-data-dir ./data/coordinator/ --election-backend noop --debug
-
-# Terminal 2: worker
-./wire --mode worker --coordinator-addr localhost:4002 --task-slots 4 --debug
-
-# Terminal 3: submit and observe
-curl -s -X POST localhost:4001/api/v1/jobs \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"test-pipeline","parallelism":2,"config":"test"}' | jq
-
-# Wait ~7s (scheduler tick + heartbeat), then check status:
-curl -s localhost:4001/api/v1/jobs | jq
-# Expected: job status is "RUNNING"
-
-# Cancel the job:
-curl -s -X POST localhost:4001/api/v1/jobs/{job_id}/cancel | jq
+./wire jobs submit --file submission.json --coordinator http://localhost:4001
+./wire jobs list --coordinator http://localhost:4001
+./wire jobs cancel JOB_ID --coordinator http://localhost:4001
 ```
+
+See [job CLI](job-cli.md) for the envelope and command reference. Submission
+acceptance does not imply deployment success; inspect the job status. Arbitrary
+`config` strings such as `"test"` are accepted by the legacy HTTP field but fail
+when the scheduler decodes the graph. For a runnable local pipeline, use the
+embedded SDK example below.
 
 ## 4. Configuration
 
 Instead of flags, you can use a YAML or JSON config file via `--config`:
 
 ```bash
-./wire --config .config/config.yaml
+./wire --config .config/node.example.yaml
 ```
 
-See [`.config/config.yaml`](../.config/config.yaml) for an example that defines sources (Mon
+The checked-in [node example](../.config/node.example.yaml) uses the current node schema.
+The old `.config/config.yaml` and `.config/config.json` contain pre-rewrite
+connector pipelines; do not use them as node configuration examples. Unknown
+fields are currently ignored.
+
+See the generated [configuration reference](configuration-reference.md) for fields, defaults, and CLI mappings, and [configuration validation](configuration-validation.md) for runtime limits. Node configuration is separate from the [YAML pipeline format](../sdk/pipeline_yaml.md).
 
 ## 5. Health & Readiness
 
@@ -140,27 +160,21 @@ curl http://localhost:4001/api/v1/cluster/leader
 
 ### Submit a Job
 
+The JSON request accepts `name`, `parallelism`, and `graph_bytes` (a base64-encoded
+msgpack `rpc.JobGraph`). The SDK cluster executor creates this envelope. Operators
+must name factories available on the workers; an embedded function closure is
+not a distributed operator implementation.
+
 ```bash
 curl -s -X POST http://localhost:4001/api/v1/jobs \
   -H 'Content-Type: application/json' \
-  -d '{
-    "name": "my-pipeline",
-    "parallelism": 4,
-    "config": "{\"sources\":[],\"sinks\":[]}"
-  }' | jq
+  --data-binary @submission.json | jq
 ```
 
-Response:
+`submission.json` has this shape; the graph value is a placeholder, not runnable data:
 
 ```json
-{
-  "id": "job_abc123",
-  "name": "my-pipeline",
-  "status": "CREATED",
-  "parallelism": 4,
-  "created_at": "2025-01-01T00:00:00Z",
-  "updated_at": "2025-01-01T00:00:00Z"
-}
+{"name":"my-pipeline","parallelism":4,"graph_bytes":"BASE64_MSGPACK_JOB_GRAPH"}
 ```
 
 To restore a compatible upgraded graph, add `"savepoint":
@@ -287,6 +301,9 @@ curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/resume | jq
 curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/savepoints | jq
 ```
 
+Savepoint creation is asynchronous. Poll the get endpoint until status is
+`COMPLETED` before using the snapshot; handle failure explicitly.
+
 ### List Savepoints
 
 ```bash
@@ -305,6 +322,22 @@ curl -s http://localhost:4001/api/v1/jobs/{job_id}/savepoints/{savepoint_id} | j
 curl -s -X DELETE http://localhost:4001/api/v1/jobs/{job_id}/savepoints/{savepoint_id} | jq
 ```
 
+### Rescale a job
+
+After a savepoint completes, request a stop-start rescale:
+
+```bash
+curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/rescale \
+  -H 'Content-Type: application/json' \
+  -d '{"savepoint_id":"SAVEPOINT_ID","operators":{"map-operator":8}}' | jq
+```
+
+Replace the IDs and operator name with values from your job. Use either
+`operators` or global `parallelism`, never both. Global rescale preserves source,
+sink, and Forward-connected boundary counts; an all-Forward graph cannot change
+through global rescale. Follow the job status and `rescale_failure`, and read
+[rescale safety](rescale-safety.md) for state redistribution and rollback limits.
+
 ## 8. Cluster API
 
 ### Cluster Status
@@ -318,6 +351,8 @@ Response:
 ```json
 {
   "leader": {
+    "ready": true,
+    "leader_rpc_addr": "10.0.0.1:4002",
     "leader_id": "node-1",
     "leader_http_addr": ":4001",
     "leader_epoch": 1,
@@ -326,7 +361,8 @@ Response:
   "workers": [
     {
       "id": "worker-1",
-      "address": "10.0.0.2:4002",
+      "status": "ALIVE",
+      "address": "10.0.0.2:4003",
       "task_slots_total": 8,
       "task_slots_available": 4,
       "last_heartbeat": "2025-01-01T00:00:10Z",
@@ -395,44 +431,56 @@ Terminal states: `FINISHED`, `FAILED`, `CANCELED`.
 
 ## 10. SDK Quick Start
 
-Wire includes an embedded SDK for building pipelines in Go:
+Wire includes an embedded SDK for building pipelines in Go. Save this as
+`main.go` in a Go module that depends on Wire, then run `go run .`. It prints
+`hello!` and `world!`. The source and sink below are application-defined; the
+example does not provide durable replay or transactional output.
 
 ```go
 package main
 
 import (
-    "context"
-    "fmt"
+	"context"
+	"fmt"
 
-    "github.com/widmogrod/wire/sdk"
+	"github.com/tarungka/wire/sdk"
 )
 
+type sliceSource struct{ events []sdk.Event }
+
+func (s *sliceSource) Open(context.Context) error { return nil }
+func (s *sliceSource) ReadBatch(context.Context) ([]sdk.Event, error) {
+	events := s.events
+	s.events = nil
+	return events, nil
+}
+func (s *sliceSource) Close() error { return nil }
+
+// Required for interface compatibility; runtime strategies generate watermarks.
+func (s *sliceSource) GenerateWatermark() int64 { return 0 }
+
+type printSink struct{}
+
+func (*printSink) Open(context.Context) error { return nil }
+func (*printSink) Write(_ context.Context, e sdk.Event) error {
+	fmt.Println(string(e.Value))
+	return nil
+}
+func (*printSink) Close() error { return nil }
+
 func main() {
-    env := sdk.New()
-
-    sink := &sdk.CollectSink{}
-
-    env.AddSource(&sdk.SliceSource{
-        Events: []sdk.Event{
-            {Value: []byte("hello")},
-            {Value: []byte("world")},
-        },
-    }).
-        Map(func(e sdk.Event) (sdk.Event, error) {
-            e.Value = append(e.Value, '!')
-            return e, nil
-        }).
-        Filter(func(e sdk.Event) (bool, error) {
-            return len(e.Value) > 0, nil
-        }).
-        AddSink(sink)
-
-    result, err := env.Execute(context.Background())
-    if err != nil {
-        panic(err)
-    }
-    fmt.Printf("Processed %d records in %s\n",
-        result.Metrics.RecordsOut, result.Metrics.Duration)
+	env := sdk.New()
+	env.AddSource(&sliceSource{events: []sdk.Event{
+		{Value: []byte("hello")}, {Value: []byte("world")},
+	}}).
+		Map(func(e sdk.Event) (sdk.Event, error) {
+			e.Value = append(e.Value, '!')
+			return e, nil
+		}).
+		AddSink(&printSink{})
+	if _, err := env.Execute(context.Background()); err != nil {
+		panic(err)
+	}
 }
 ```
 

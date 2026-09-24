@@ -6,11 +6,12 @@ import "time"
 // These defaults match the current pflag defaults in cmd/init.go.
 func DefaultConfig() WireConfig {
 	return WireConfig{
-		Heartbeat:  HeartbeatConfig{Interval: Duration{5 * time.Second}, Timeout: Duration{30 * time.Second}},
-		Checkpoint: CheckpointConfig{Timeout: Duration{10 * time.Minute}},
-		TaskSlot:   TaskSlotConfig{InputBufferSize: 1024, OutputBufferSize: 1024, AlignmentBufferSize: 4096, CheckpointUploadConcurrency: 1, DrainTimeout: Duration{5 * time.Second}},
-		Mode:       "coordinator",
-		Listen:     ":4002",
+		MaxFrameSize: 16 * 1024 * 1024,
+		Heartbeat:    HeartbeatConfig{Interval: Duration{5 * time.Second}, Timeout: Duration{30 * time.Second}},
+		Checkpoint:   CheckpointConfig{Timeout: Duration{10 * time.Minute}},
+		TaskSlot:     TaskSlotConfig{InputBufferSize: 1024, OutputBufferSize: 1024, AlignmentBufferSize: 4096, CheckpointUploadConcurrency: 1, DrainTimeout: Duration{5 * time.Second}},
+		Mode:         "coordinator",
+		Listen:       ":4002",
 		Node: NodeConfig{
 			DataDir: "data/coordinator",
 			StoreDB: "pebble",

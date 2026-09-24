@@ -3,18 +3,20 @@ package config
 // WireConfig is the top-level configuration for a Wire node.
 // It maps directly to the wire.yaml schema.
 type WireConfig struct {
-	Heartbeat  HeartbeatConfig  `yaml:"heartbeat" json:"heartbeat" koanf:"heartbeat"`
-	Checkpoint CheckpointConfig `yaml:"checkpoint" json:"checkpoint" koanf:"checkpoint"`
-	TaskSlot   TaskSlotConfig   `yaml:"task_slot" json:"task_slot" koanf:"task_slot"`
-	Mode       string           `yaml:"mode"        json:"mode"        koanf:"mode"`
-	Listen     string           `yaml:"listen"      json:"listen"      koanf:"listen"`
-	Node       NodeConfig       `yaml:"node"        json:"node"        koanf:"node"`
-	HTTP       HTTPConfig       `yaml:"http"        json:"http"        koanf:"http"`
-	NodeTLS    TLSConfig        `yaml:"node_tls"    json:"node_tls"    koanf:"node_tls"`
-	Auth       AuthConfig       `yaml:"auth"        json:"auth"        koanf:"auth"`
-	WriteQueue WriteQueueConfig `yaml:"write_queue" json:"write_queue" koanf:"write_queue"`
-	Election   ElectionConfig   `yaml:"election"    json:"election"    koanf:"election"`
-	Worker     WorkerConfig     `yaml:"worker"      json:"worker"      koanf:"worker"`
+	// MaxFrameSize limits worker data-plane frames, not coordinator RPC payloads.
+	MaxFrameSize uint32           `yaml:"max_frame_size" json:"max_frame_size" koanf:"max_frame_size"`
+	Heartbeat    HeartbeatConfig  `yaml:"heartbeat" json:"heartbeat" koanf:"heartbeat"`
+	Checkpoint   CheckpointConfig `yaml:"checkpoint" json:"checkpoint" koanf:"checkpoint"`
+	TaskSlot     TaskSlotConfig   `yaml:"task_slot" json:"task_slot" koanf:"task_slot"`
+	Mode         string           `yaml:"mode"        json:"mode"        koanf:"mode"`
+	Listen       string           `yaml:"listen"      json:"listen"      koanf:"listen"`
+	Node         NodeConfig       `yaml:"node"        json:"node"        koanf:"node"`
+	HTTP         HTTPConfig       `yaml:"http"        json:"http"        koanf:"http"`
+	NodeTLS      TLSConfig        `yaml:"node_tls"    json:"node_tls"    koanf:"node_tls"`
+	Auth         AuthConfig       `yaml:"auth"        json:"auth"        koanf:"auth"`
+	WriteQueue   WriteQueueConfig `yaml:"write_queue" json:"write_queue" koanf:"write_queue"`
+	Election     ElectionConfig   `yaml:"election"    json:"election"    koanf:"election"`
+	Worker       WorkerConfig     `yaml:"worker"      json:"worker"      koanf:"worker"`
 }
 
 type CheckpointConfig struct {

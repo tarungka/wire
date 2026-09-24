@@ -1,0 +1,277 @@
+{
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "const": "wire/v1"
+    },
+    "kind": {
+      "const": "Pipeline"
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "spec": {
+      "type": "object",
+      "properties": {
+        "parallelism": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "checkpoint": {
+          "type": "object",
+          "properties": {
+            "interval": {
+              "type": "string",
+              "description": "Go duration string, for example 200ms or 5m."
+            },
+            "timeout": {
+              "type": "string",
+              "description": "Go duration string, for example 200ms or 5m."
+            }
+          },
+          "additionalProperties": false
+        },
+        "restart": {
+          "type": "object",
+          "properties": {
+            "strategy": {
+              "enum": [
+                "none",
+                "fixed-delay"
+              ]
+            },
+            "max-attempts": {
+              "type": "integer"
+            },
+            "delay": {
+              "type": "string",
+              "description": "Go duration string, for example 200ms or 5m."
+            }
+          },
+          "additionalProperties": false
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "config": {
+                "type": "object"
+              },
+              "error_handling": {
+                "type": "object",
+                "properties": {
+                  "max_retries": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "backoff": {
+                    "type": "string"
+                  },
+                  "initial_delay": {
+                    "type": "string",
+                    "description": "Go duration string, for example 200ms or 5m."
+                  },
+                  "max_delay": {
+                    "type": "string",
+                    "description": "Go duration string, for example 200ms or 5m."
+                  },
+                  "multiplier": {
+                    "type": "number"
+                  },
+                  "on_exhausted": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "watermark": {
+                "type": "object",
+                "properties": {
+                  "strategy": {
+                    "enum": [
+                      "bounded-ooo",
+                      "monotonic",
+                      "ingestion-time"
+                    ]
+                  },
+                  "max_ooo": {
+                    "type": "string",
+                    "description": "Go duration string, for example 200ms or 5m."
+                  },
+                  "emit_interval": {
+                    "type": "string",
+                    "description": "Go duration string, for example 200ms or 5m."
+                  },
+                  "idle_timeout": {
+                    "type": "string",
+                    "description": "Go duration string, for example 200ms or 5m."
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "type"
+            ]
+          },
+          "minItems": 1
+        },
+        "transforms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "config": {
+                "type": "object"
+              },
+              "error_handling": {
+                "type": "object",
+                "properties": {
+                  "max_retries": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "backoff": {
+                    "type": "string"
+                  },
+                  "initial_delay": {
+                    "type": "string",
+                    "description": "Go duration string, for example 200ms or 5m."
+                  },
+                  "max_delay": {
+                    "type": "string",
+                    "description": "Go duration string, for example 200ms or 5m."
+                  },
+                  "multiplier": {
+                    "type": "number"
+                  },
+                  "on_exhausted": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "input": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "type",
+              "input"
+            ]
+          }
+        },
+        "sinks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "config": {
+                "type": "object"
+              },
+              "error_handling": {
+                "type": "object",
+                "properties": {
+                  "max_retries": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "backoff": {
+                    "type": "string"
+                  },
+                  "initial_delay": {
+                    "type": "string",
+                    "description": "Go duration string, for example 200ms or 5m."
+                  },
+                  "max_delay": {
+                    "type": "string",
+                    "description": "Go duration string, for example 200ms or 5m."
+                  },
+                  "multiplier": {
+                    "type": "number"
+                  },
+                  "on_exhausted": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "input": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "type",
+              "input"
+            ]
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sources",
+        "sinks"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Wire pipeline document",
+  "description": "Structural authoring schema. ParsePipelineYAML additionally validates graph references, cycles, transform options, expression types, connector factories and supported execution capabilities. Arbitrary connector config is factory-specific. This document does not enable runtime capabilities."
+}

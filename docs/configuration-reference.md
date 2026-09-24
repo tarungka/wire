@@ -3,7 +3,7 @@
 Generated from the current config types, defaults, and CLI mapping. Regenerate with
 `go test ./internal/config -run TestConfigurationReference -update-config-reference`.
 
-Load order is built-in defaults, configuration files in argument order, string
+Load order is built-in defaults, configuration files in argument order, WIRE_* environment overrides, string
 environment substitution, then explicitly supplied CLI flags. Only the missing
 default `.config/config.json` file is ignored. Other missing files are errors.
 Duration values are strings such as `50ms`; bare numeric durations are rejected.
@@ -17,6 +17,7 @@ Write-queue settings include fields that are not wired into the runtime.
 
 | Field | Type | Default | CLI override |
 | --- | --- | --- | --- |
+| `max_frame_size` | uint32 | `16777216` | `--max-frame-size` |
 | `heartbeat.interval` | duration string | `5s` | — |
 | `heartbeat.timeout` | duration string | `30s` | — |
 | `heartbeat.max_failures` | int | `0` | — |

@@ -113,7 +113,7 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, *pflag.FlagSet, er
 	f.StringVar(&config.NodeKey, "node-key", "", "TLS private key file")
 	f.StringVar(&config.NodeCA, "node-ca", "", "CA certificate for peer verification")
 	f.BoolVar(&config.NodeVerifyClient, "node-verify-client", false, "require mutual TLS")
-	f.Uint32Var(&config.MaxFrameSize, "max-frame-size", 16777216, "max wire protocol frame size")
+	f.Uint32Var(&config.MaxFrameSize, "max-frame-size", 16777216, "max worker data-plane frame length in bytes (type, CRC and payload)")
 
 	f.StringVar(&config.HTTPAuthFile, "auth", "", "HTTP authentication JSON file")
 	f.StringVar(&config.HTTPCert, "http-cert", "", "HTTPS server certificate file")

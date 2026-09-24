@@ -16,6 +16,7 @@ var flagToKey = map[string]string{
 	"http-key":             "http.tls.key",
 	"http-ca-cert":         "http.tls.ca_cert",
 	"http-verify-client":   "http.tls.verify_client",
+	"max-frame-size":       "max_frame_size",
 	"mode":                 "mode",
 	"listen":               "listen",
 	"debug":                "node.debug",

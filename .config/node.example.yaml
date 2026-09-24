@@ -1,0 +1,19 @@
+# Current node configuration; these loopback listeners are for local development.
+# The HTTP API has no built-in authentication. RPC TLS is configured separately.
+mode: coordinator
+listen: "127.0.0.1:4002"
+node:
+  data_dir: data/coordinator
+http:
+  addr: "127.0.0.1:4001"
+election:
+  backend: noop
+# A worker can override mode/addresses using CLI flags, or use a separate file.
+worker:
+  coordinator_addr: "127.0.0.1:4002"
+  listen_addr: "127.0.0.1:4003"
+  task_slots: 4
+# For TLS name overrides in a TLS-enabled worker configuration:
+# node_tls:
+#   ca_cert: /path/to/ca.pem
+#   verify_server_name: coordinator.example.com

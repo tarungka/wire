@@ -11,7 +11,7 @@
 In Wire, the atomic unit of processing is the **Event**.
 
 An Event is:
-*   **Immutable:** Once created, it cannot be changed.
+*   **Mutable Go value:** `sdk.Event` aliases the engine event struct. Operators can produce modified values; do not mutate payloads concurrently or after handing them downstream.
 *   **Timestamped:** Every event carries an explicit `EventTime` (int64).
 *   **Keyed (Optional):** Events may have a Partition Key which determines their routing.
 
@@ -27,13 +27,13 @@ Wire strictly separates the "When it happened" from "When we saw it".
 
 ### 2.1 The Two Clocks
 1.  **Event Time:** The timestamp embedded in the record (e.g., `click_time`). This determines results.
-2.  **Processing Time:** The wall clock of the worker. Used *only* for timeouts or metrics, never for correctness.
+2.  **Processing Time:** The wall clock of the worker. Used for runtime timeouts, metrics, and the optional ingestion-time timestamp strategy.
 
 ### 2.2 Watermarks
 A **Watermark(T)** is a control packet flowing through the stream that declares:
 > "No more events with timestamp < T will arrive."
 
-*   **Generation:** Source Connectors generate watermarks based on observed data (monotonically increasing).
+*   **Generation:** Runtime watermark strategies observe event timestamps and emit ordered periodic boundaries. The SDK defaults to bounded out-of-orderness with a five-second tolerance; `SetWatermarkStrategy` selects another strategy. The source interface retains `GenerateWatermark` for compatibility, but execution does not call it. See [WIP-04](trds/WIP-04/README.md).
 *   **Propagation:**
     *   Operators forward the *minimum* watermark received from all upstream inputs.
     *   `OutputWatermark = Min(InputWatermark_1, InputWatermark_2, ...)`
@@ -65,7 +65,7 @@ Windowing assigns events to finite temporal buckets.
 
 ### 3.2 State Scope
 *   **Window State:** State is scoped to `(Key, WindowID)`.
-*   **Cleanup:** When `Watermark > Window_End + Lateness`, the window state is automatically purged from Pebble.
+*   **Cleanup:** Retained window accumulators are removed when their lateness deadline is reached. The current window processor maintains accumulators in memory and supports snapshots; this is not a direct Pebble range-delete operation. YAML window graph parsing does not imply YAML window execution support. See [WIP-12](trds/WIP-12/README.md) and [YAML limits](../sdk/pipeline_yaml.md).
 
 ---
 
@@ -107,8 +107,8 @@ This alignment ensures the snapshot captures **exactly** the state of "All event
 
 ### 5.3 Snapshot Lifecycle
 1.  **Trigger:** Coordinator sends `TriggerCheckpoint(N)` to Sources.
-2.  **Local Snapshot:** Each operator creates an async **Pebble Checkpoint** (hard link) of its local state.
-3.  **Persist:** Background workers replicate the checkpoint data to the durable store (replicated PebbleDB on peer nodes).
+2.  **Local Snapshot:** The aligned operator chain captures immutable state through snapshot hooks. Pebble-backed state creates a consistent local checkpoint and manifest; other backends/operators serialize their state.
+3.  **Persist:** Background workers replicate the checkpoint data to the durable store (checkpoint artifact replicas on peer workers).
 4.  **Acknowledge:** Workers notify the Coordinator.
 5.  **Complete:** When all tasks ACK Checkpoint N, it is marked "Global Complete".
 
@@ -129,7 +129,7 @@ This alignment ensures the snapshot captures **exactly** the state of "All event
 6.  **Resume:** Processing restarts from Epoch N+1.
 
 ### 6.3 Exactly-Once vs At-Least-Once
-*   **Internal State:** Always Exactly-Once (due to rollback).
+*   **Internal State:** Checkpoint-managed state can be restored to a consistent completed snapshot. Application state outside checkpoint hooks is not covered, and embedded execution does not provide the distributed durable checkpoint service.
 *   **Sink Output:**
     *   **Idempotent Sinks (KV Store):** Naturally Exactly-Once.
     *   **Transactional Sinks:** Use checkpoint-driven two-phase commit. Preparation precedes snapshot capture and replication; a durable global decision authorizes idempotent commit. Recovery fences prior writers, resolves orphan transactions and finishes the selected commit before replay. Aborts require task recovery, and bounded sources coordinate a final checkpoint. See the [WIP-10 runtime contract](trds/WIP-10/runtime-contract.md) for the public SDK interface, connector obligations and runtime limits.

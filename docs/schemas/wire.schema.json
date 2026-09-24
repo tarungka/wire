@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Partial node configuration file; defaults and later files supply omitted fields. This schema rejects unknown keys for authoring safety; the runtime loader retains compatibility by ignoring them. After merging and environment substitution, WireConfig.Validate performs semantic and filesystem checks. Acceptance of a field does not imply runtime feature availability.",
+  "properties": {
+    "auth": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "checkpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "max_consecutive_failures": {
+          "type": "integer"
+        },
+        "min_pause": {
+          "description": "Go duration, for example 50ms, 10s or 5m; numeric durations are rejected.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration, for example 50ms, 10s or 5m; numeric durations are rejected.",
+          "type": "string"
+        },
+        "tolerable_failure_rate": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "election": {
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "type": "string"
+        },
+        "kubernetes": {
+          "additionalProperties": false,
+          "properties": {
+            "api_server": {
+              "type": "string"
+            },
+            "ca_file": {
+              "type": "string"
+            },
+            "lease_duration": {
+              "description": "Go duration, for example 50ms, 10s or 5m; numeric durations are rejected.",
+              "type": "string"
+            },
+            "lease_name": {
+              "type": "string"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "renew_deadline": {
+              "description": "Go duration, for example 50ms, 10s or 5m; numeric durations are rejected.",
+              "type": "string"
+            },
+            "retry_period": {
+              "description": "Go duration, for example 50ms, 10s or 5m; numeric durations are rejected.",
+              "type": "string"
+            },
+            "token_file": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "lock_path": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "heartbeat": {
+      "additionalProperties": false,
+      "properties": {
+        "interval": {
+          "description": "Go duration, for example 50ms, 10s or 5m; numeric durations are rejected.",
+          "type": "string"
+        },
+        "max_failures": {
+          "type": "integer"
+        },
+        "timeout": {
+          "description": "Go duration, for example 50ms, 10s or 5m; numeric durations are rejected.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "http": {
+      "additionalProperties": false,
+      "properties": {
+        "addr": {
+          "type": "string"
+        },
+        "adv_addr": {
+          "type": "string"
+        },
+        "allow_origin": {
+          "type": "string"
+        },
+        "tls": {
+          "additionalProperties": false,
+          "properties": {
+            "ca_cert": {
+              "type": "string"
+            },
+            "cert": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "verify_client": {
+              "type": "boolean"
+            },
+            "verify_server_name": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "listen": {
+      "type": "string"
+    },
+    "max_frame_size": {
+      "type": "integer"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "node": {
+      "additionalProperties": false,
+      "properties": {
+        "data_dir": {
+          "type": "string"
+        },
+        "debug": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "rpc_advertise_addr": {
+          "type": "string"
+        },
+        "store_db": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "node_tls": {
+      "additionalProperties": false,
+      "properties": {
+        "ca_cert": {
+          "type": "string"
+        },
+        "cert": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "verify_client": {
+          "type": "boolean"
+        },
+        "verify_server_name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "task_slot": {
+      "additionalProperties": false,
+      "properties": {
+        "alignment_buffer_size": {
+          "type": "integer"
+        },
+        "checkpoint_upload_concurrency": {
+          "type": "integer"
+        },
+        "drain_timeout": {
+          "description": "Go duration, for example 50ms, 10s or 5m; numeric durations are rejected.",
+          "type": "string"
+        },
+        "input_buffer_size": {
+          "type": "integer"
+        },
+        "output_buffer_size": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "worker": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_replica": {
+          "additionalProperties": false,
+          "properties": {
+            "advertise_addr": {
+              "type": "string"
+            },
+            "artifact_root": {
+              "type": "string"
+            },
+            "concurrency": {
+              "type": "integer"
+            },
+            "listen_addr": {
+              "type": "string"
+            },
+            "staging_root": {
+              "type": "string"
+            },
+            "store_root": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "coordinator_addr": {
+          "type": "string"
+        },
+        "coordinator_seeds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "discovery_http": {
+          "additionalProperties": false,
+          "properties": {
+            "api_key_file": {
+              "type": "string"
+            },
+            "ca_cert": {
+              "type": "string"
+            },
+            "client_cert": {
+              "type": "string"
+            },
+            "client_key": {
+              "type": "string"
+            },
+            "password_file": {
+              "type": "string"
+            },
+            "username": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "epoch_path": {
+          "type": "string"
+        },
+        "listen_addr": {
+          "type": "string"
+        },
+        "peer_tls": {
+          "additionalProperties": false,
+          "properties": {
+            "ca_cert": {
+              "type": "string"
+            },
+            "cert": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "task_slots": {
+          "type": "integer"
+        },
+        "worker_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "write_queue": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_size": {
+          "type": "integer"
+        },
+        "capacity": {
+          "type": "integer"
+        },
+        "timeout": {
+          "description": "Go duration, for example 50ms, 10s or 5m; numeric durations are rejected.",
+          "type": "string"
+        },
+        "transactional": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "title": "Wire node configuration",
+  "type": "object"
+}
