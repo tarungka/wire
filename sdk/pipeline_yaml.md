@@ -319,3 +319,8 @@ not cancel the remote job or undo an already accepted replacement. Existing
 HTTPS/client-certificate/API-key/password-file settings are supported. The
 stock command binds public HTTP connectors; application-specific registries
 can use the SDK watch API.
+
+For a reproducible built-binary command smoke test, run
+`python3 scripts/pipeline-watch-smoke.py /absolute/path/to/wire`. It checks watch
+routing, invalid/valid edits and clean SIGINT shutdown against a fake coordinator;
+real-worker replacement coverage is in the SDK runtime tests.

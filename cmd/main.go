@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -54,6 +55,9 @@ func main() {
 		var err error
 		if len(os.Args) > 2 && os.Args[1] == "jobs" && os.Args[2] == "watch" {
 			err = runPipelineWatch(ctx, os.Args[3:], os.Stdout, os.Stderr)
+			if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+				err = nil
+			}
 		} else {
 			err = jobcli.RunWithPipelineCompiler(ctx, os.Args[1:], os.Stdout, os.Stderr, compileYAMLPipeline)
 		}

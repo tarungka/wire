@@ -178,3 +178,11 @@ JSON confirmation events, and opts into same-layout reload with
 cancellation. The SDK file-to-worker test covers replacement orchestration.
 A built-binary watch smoke test, external-edit reconciliation and remaining
 migration/crash requirements are still pending.
+
+Built CLI watch acceptance is reproducible with
+`python3 scripts/pipeline-watch-smoke.py /absolute/path/to/wire` after building
+`./cmd`. It uses a bounded fake coordinator and checks command routing, initial
+confirmation, invalid-edit isolation, exact interval PUT payload, confirmation
+and clean SIGINT exit without extra mutation. It exposed and fixed SIGINT being
+reported as a command failure. This does not replace the real-worker YAML reload
+test or prove full multi-process coordinator/worker crash recovery.
