@@ -5,12 +5,12 @@ claim. It builds on the public worker runtime and recovery work in WIP-14/15.
 
 | Requirement | Evidence | Remaining work |
 | --- | --- | --- |
-| Source lifecycle, offsets, replay and watermarks | Source/CheckpointedSource, HTTP consumed sequence, existing HTTP tests | Real worker restart/offset acceptance; document sender-owned HTTP replay without claiming durable ingress |
-| Sink batching | BatchSink and explicit HTTP WriteBatch | Automatic runtime batching, checkpoint/end-of-input flush and error handling |
+| Source lifecycle, offsets, replay and watermarks | Source/CheckpointedSource, pre-open restoration, real-worker pause/resume and worker-loss offset tests | Sender-owned replay contract and custom connector guide; HTTP acceptance remains volatile |
+| Sink batching | Automatic bounded runtime batches, idle/checkpoint/watermark/end flushes, failure and transaction-prepare tests | Final integration/coverage audit |
 | Transactional sink integration | Public TransactionalSink and worker adapters | Connector contract/recovery acceptance and development guide |
 | Connector registration | Internal factories and new public HTTP worker factories | Live public-registry cluster example and YAML integration with WIP-19 |
-| HTTP ingress/delivery | Existing auth/TLS, bounded ingress, retry/idempotency tests | Source/restore cluster acceptance; permanent delivery failure to a named DLQ now has a real-worker test |
-| Custom connector guide | Existing connector README | Executable public-only example and recorded developer trial against the under-one-hour target |
+| HTTP ingress/delivery | Auth/TLS, bounded ingress, retry/idempotency, live source restore and permanent-error named DLQ tests | Final coverage and numbered-scenario audit |
+| Custom connector guide | [Development guide](../../connector-development.md), HTTP README and public registered-worker example | Complete replayable custom example and recorded developer trial against the under-one-hour target |
 | Quality gates | Existing HTTP tests | Final race suite, coverage against the 90% target, vet/lint, evidence for each numbered WIP scenario |
 
 ## Public worker registration
@@ -76,3 +76,25 @@ a runtime batch into smaller requests; it does not force a minimum fill level.
 Engine regressions cover bounds, ordering, partial flush, payload ownership,
 boundary failures and per-record policy behavior. The SDK HTTP runtime acceptance
 expands one record to 205 and checks ordered requests of 100, 100 and 5 records.
+
+
+## HTTP source worker-loss recovery
+
+`TestPublicHTTPSourceWorkerLossRestoresSequence` runs two public workers, sends
+and consumes sequence 1, waits for a completed replicated checkpoint, then stops
+the source's worker. The coordinator detects its lost authority and redeploys on
+the remaining worker. The test verifies a new source instance, sequence 2 on its
+next request, delivery to the sink and exactly one job restart. It runs alongside
+the pause/resume variant with the race detector. This tests worker-process
+shutdown/contact loss, not an OS-level kill or replay of uncheckpointed HTTP data.
+
+HTTP 200 means in-memory acceptance. Producers requiring recovery must retain
+records until an application-level durable acknowledgement and arrange replay;
+the connector does not supply that protocol. Sequence numbers alone do not
+identify producer records or deduplicate resubmissions. A restored offset does
+not prove that requests accepted after the last checkpoint can be recovered.
+
+The worker-loss and pause/resume variants passed three runs each with `-race`;
+worker connector lint reports zero issues. The development guide now describes
+source cursor ownership, idle checkpoint boundaries, batch error attribution,
+transaction fencing/recovery and public factory registration.

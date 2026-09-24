@@ -135,3 +135,6 @@ can produce smaller requests. Configured record-level retry/DLQ/drop policies us
 single-record `Write` to preserve precise error attribution. Connector HTTP
 retries still apply within each request. Partial external delivery remains
 possible if a later request fails; receivers need replay-safe handling.
+
+For custom connector lifecycle, replay and transactional contracts, see the
+[connector development guide](../../../docs/connector-development.md).

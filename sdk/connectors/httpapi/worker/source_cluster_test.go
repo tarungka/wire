@@ -19,6 +19,15 @@ import (
 )
 
 func TestPublicHTTPSourcePauseResumeRestoresSequence(t *testing.T) {
+	testPublicHTTPSourceRestore(t, false)
+}
+
+func TestPublicHTTPSourceWorkerLossRestoresSequence(t *testing.T) {
+	testPublicHTTPSourceRestore(t, true)
+}
+
+func testPublicHTTPSourceRestore(t *testing.T, workerLoss bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	store := coordinator.NewMemoryStore()
@@ -56,24 +65,28 @@ func TestPublicHTTPSourcePauseResumeRestoresSequence(t *testing.T) {
 	}
 	start(func() { _ = rpcServer.Serve(ctx) })
 	start(func() { _ = api.Serve() })
-	registry := sdk.NewWorkerRegistry()
 	sources := make(chan *httpapi.Source, 4)
-	factory := httpworker.SourceFactory()
-	registry.RegisterSource("http-api", func(ctx context.Context, data []byte, tc sdk.WorkerTaskContext) (sdk.Source, error) {
-		source, err := factory(ctx, data, tc)
-		if err == nil {
-			sources <- source.(*httpapi.Source)
-		}
-		return source, err
-	})
+	var owners sync.Map
 	events := make(chan sdk.Event, 4)
-	registry.RegisterSink("collect", func(context.Context, []byte, sdk.WorkerTaskContext) (sdk.Sink, error) {
-		return &channelSink{events: events}, nil
-	})
 	for i := range 2 {
+		workerCtx, stopWorker := context.WithCancel(ctx)
+		defer stopWorker()
+		registry := sdk.NewWorkerRegistry()
+		factory := httpworker.SourceFactory()
+		registry.RegisterSource("http-api", func(ctx context.Context, data []byte, tc sdk.WorkerTaskContext) (sdk.Source, error) {
+			source, err := factory(ctx, data, tc)
+			if err == nil {
+				owners.Store(source.(*httpapi.Source), stopWorker)
+				sources <- source.(*httpapi.Source)
+			}
+			return source, err
+		})
+		registry.RegisterSink("collect", func(context.Context, []byte, sdk.WorkerTaskContext) (sdk.Sink, error) {
+			return &channelSink{events: events}, nil
+		})
 		cfg := sdk.WorkerConfig{WorkerID: fmt.Sprint("worker-", i), CoordinatorAddr: rpcServer.Addr(), TaskSlots: 2, HeartbeatInterval: 100 * time.Millisecond, HeartbeatTimeout: 3 * time.Second, CheckpointDirectory: t.TempDir()}
 		start(func() {
-			if err := sdk.RunWorker(ctx, cfg, registry); err != nil && ctx.Err() == nil {
+			if err := sdk.RunWorker(workerCtx, cfg, registry); err != nil && workerCtx.Err() == nil {
 				t.Error(err)
 			}
 		})
@@ -83,7 +96,7 @@ func TestPublicHTTPSourcePauseResumeRestoresSequence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := sdk.New().SetMode(sdk.Cluster).SetCoordinator("http://" + api.Addr())
+	env := sdk.New().SetMode(sdk.Cluster).SetCoordinator("http://" + api.Addr()).SetRestartStrategy(sdk.FixedDelay(3, 0))
 	env.AddSourceNamed("ingress", "http-api", config).AddSinkNamed("sink", "collect", nil)
 	execution := make(chan error, 1)
 	go func() { _, err := env.ExecuteWithName(ctx, "http-restore"); execution <- err }()
@@ -136,18 +149,43 @@ func TestPublicHTTPSourcePauseResumeRestoresSequence(t *testing.T) {
 		}
 		return false
 	})
-	if _, _, err := coord.PauseJob(jobID); err != nil {
-		t.Fatal(err)
-	}
-	wait(func() bool { job, err := coord.GetJob(jobID); return err == nil && job.Status == coordinator.JobPaused })
-	if _, err := coord.ResumeJob(jobID); err != nil {
-		t.Fatal(err)
+	if workerLoss {
+		checkpoint, err := coord.TriggerCheckpoint(jobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wait(func() bool {
+			job, err := coord.GetJob(jobID)
+			return err == nil && job.LatestCheckpoint == checkpoint.ID
+		})
+		stop, ok := owners.Load(first)
+		if !ok {
+			t.Fatal("source worker ownership missing")
+		}
+		stop.(context.CancelFunc)()
+	} else {
+		if _, _, err := coord.PauseJob(jobID); err != nil {
+			t.Fatal(err)
+		}
+		wait(func() bool { job, err := coord.GetJob(jobID); return err == nil && job.Status == coordinator.JobPaused })
+		if _, err := coord.ResumeJob(jobID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	restored := nextSource()
 	if restored == first {
-		t.Fatal("resume reused source instance")
+		t.Fatal("recovery reused source instance")
 	}
 	send(restored, "after", 2)
+	if workerLoss {
+		job, err := coord.GetJob(jobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.RestartCount != 1 {
+			t.Fatalf("worker loss caused %d restarts, want 1", job.RestartCount)
+		}
+	}
 	if _, err := coord.CancelJob(jobID); err != nil {
 		t.Fatal(err)
 	}
