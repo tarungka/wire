@@ -29,10 +29,10 @@ type RegisterWorkerResponse struct {
 // RegisterWorker handles a worker (re-)registration request.
 // It validates epoch fencing, persists the worker, and reconciles tasks.
 func (c *Coordinator) RegisterWorker(req RegisterWorkerRequest) (*RegisterWorkerResponse, error) {
-	return c.registerWorker(req, nil, nil)
+	return c.registerWorker(req, nil, nil, "")
 }
 
-func (c *Coordinator) registerWorker(req RegisterWorkerRequest, peer *rpc.Client, done <-chan struct{}) (*RegisterWorkerResponse, error) {
+func (c *Coordinator) registerWorker(req RegisterWorkerRequest, peer *rpc.Client, done <-chan struct{}, verifiedIdentity string) (*RegisterWorkerResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.readyLocked() {
@@ -51,6 +51,7 @@ func (c *Coordinator) registerWorker(req RegisterWorkerRequest, peer *rpc.Client
 
 	worker := &WorkerMeta{
 		RPCClient: peer, RPCPeerEpoch: currentEpoch,
+		RPCAuthenticated:     peer != nil && done != nil && verifiedIdentity != "" && verifiedIdentity == req.WorkerID,
 		SupportsReservations: req.SupportsReservations,
 		CheckpointAddress:    req.CheckpointAddress,
 		ID:                   req.WorkerID,
@@ -78,6 +79,7 @@ func (c *Coordinator) registerWorker(req RegisterWorkerRequest, peer *rpc.Client
 			c.mu.Lock()
 			if current := c.workers[worker.ID]; current == worker {
 				current.RPCClient = nil
+				current.RPCAuthenticated = false
 			}
 			c.mu.Unlock()
 		}()

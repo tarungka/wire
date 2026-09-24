@@ -224,3 +224,16 @@ buffers. Tests verify reconstruction, missing-variable failure, unchanged job
 metadata, and that clearing one delivery copy changes neither sibling tasks nor
 the runtime cache. The helper is not yet used to send credentials: authenticated
 connection binding and worker error redaction must be completed first.
+
+### Worker connection provenance
+
+Worker registration now retains whether the current reverse RPC connection was
+bound to the same nonempty verified client-certificate identity. This state is
+installed under the registration ownership lock, excluded from metadata and
+JSON, and cleared when that exact connection disconnects. A new plaintext
+registration replaces rather than inherits the earlier connection's verified
+state. Tests cover replacement, disconnect, metadata round-trip, wrong identity,
+missing connection and missing session lifetime.
+
+This is provenance for the upcoming credential-delivery gate; it does not yet
+send resolved configurations or claim worker-side redaction is complete.
