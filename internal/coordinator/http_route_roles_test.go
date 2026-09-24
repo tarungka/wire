@@ -25,6 +25,7 @@ func TestHTTPSRolesCoverRegisteredRoutes(t *testing.T) {
 	// 0=public, 1=viewer, 2=operator, 3=admin. The API intentionally reserves
 	// savepoint inspection for operators, while checkpoint inspection is readable.
 	routes := map[string]int{
+		"PUT /api/v1/jobs/{job_id}/checkpoint-interval": 2,
 		"GET /healthz": 0, "GET /readyz": 0,
 		"GET /api/v1/cluster/leader": 1, "GET /api/v1/cluster": 1,
 		"DELETE /api/v1/cluster/nodes/{node_id}": 3,

@@ -26,6 +26,23 @@ func planSavepointTaskRestore(cp CheckpointMeta, targets []rpc.TaskDescriptor) (
 	if len(cp.TaskDescriptors) == 0 || len(cp.TaskDescriptors) != len(cp.Tasks) || len(targets) != len(cp.Tasks) {
 		return invalid("task inventory differs")
 	}
+	for _, source := range cp.TaskDescriptors {
+		if cp.Tasks[source.TaskID] == "" || cp.Replicas[source.TaskID] == "" || cp.StatePaths[source.TaskID] != cp.Replicas[source.TaskID] {
+			return invalid("source has no durable replica")
+		}
+	}
+	return planTaskLayoutRestore(cp.NumKeyGroups, cp.TaskDescriptors, targets)
+}
+
+// planTaskLayoutRestore checks structural restore compatibility without claiming
+// that a savepoint exists or that application state serializers are compatible.
+func planTaskLayoutRestore(numKeyGroups int, descriptors, targets []rpc.TaskDescriptor) (map[string]string, error) {
+	invalid := func(reason string) (map[string]string, error) {
+		return nil, fmt.Errorf("%w: savepoint incompatible with job graph: %s", ErrInvalidConfig, reason)
+	}
+	if len(descriptors) == 0 || len(descriptors) != len(targets) {
+		return invalid("task inventory differs")
+	}
 	type identity struct {
 		operator string
 		index    int32
@@ -33,16 +50,13 @@ func planSavepointTaskRestore(cp CheckpointMeta, targets []rpc.TaskDescriptor) (
 	sources := make(map[identity]rpc.TaskDescriptor)
 	sourceIDs := make(map[string]bool)
 	counts := make(map[string]int)
-	for _, source := range cp.TaskDescriptors {
+	for _, source := range descriptors {
 		id := identity{source.OperatorID, source.SubtaskIndex}
 		if source.TaskID == "" || sourceIDs[source.TaskID] || source.OperatorID == "" {
 			return invalid("invalid source identity")
 		}
 		if _, duplicate := sources[id]; duplicate {
 			return invalid("duplicate source operator instance")
-		}
-		if cp.Tasks[source.TaskID] == "" || cp.Replicas[source.TaskID] == "" || cp.StatePaths[source.TaskID] != cp.Replicas[source.TaskID] {
-			return invalid("source has no durable replica")
 		}
 		sources[id] = source
 		sourceIDs[source.TaskID] = true
@@ -61,10 +75,10 @@ func planSavepointTaskRestore(cp CheckpointMeta, targets []rpc.TaskDescriptor) (
 		if !exists || consumed[id] || target.TaskID == "" || result[target.TaskID] != "" {
 			return invalid("target operator identities differ")
 		}
-		if source.NumKeyGroups != cp.NumKeyGroups || target.NumKeyGroups != cp.NumKeyGroups || source.Parallelism < 1 || source.SubtaskIndex < 0 || source.SubtaskIndex >= source.Parallelism || source.Parallelism != target.Parallelism || source.KeyGroup != target.KeyGroup {
+		if source.NumKeyGroups != numKeyGroups || target.NumKeyGroups != numKeyGroups || source.Parallelism < 1 || source.SubtaskIndex < 0 || source.SubtaskIndex >= source.Parallelism || source.Parallelism != target.Parallelism || source.KeyGroup != target.KeyGroup {
 			return invalid("state ownership changed; redistribute state before upgrading")
 		}
-		groups, err := keygroup.AllTaskRanges(cp.NumKeyGroups, int(source.Parallelism))
+		groups, err := keygroup.AllTaskRanges(numKeyGroups, int(source.Parallelism))
 		if err != nil || source.KeyGroup.Start != int32(groups[source.SubtaskIndex].Start) || source.KeyGroup.End != int32(groups[source.SubtaskIndex].End)-1 {
 			return invalid("invalid saved ownership")
 		}

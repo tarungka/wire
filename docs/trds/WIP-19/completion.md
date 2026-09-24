@@ -94,3 +94,14 @@ configured state backends, including stateless graphs where no backend appears
 in operator descriptors. Tests cover interval, timeout, parallelism, expression,
 connector, backend, name and combined changes without mutating the old pipeline.
 Automatic migration is not implemented by this classification primitive.
+
+## Replacement layout preflight
+
+The coordinator shares physical layout validation between actual savepoint
+restore and ValidateReplacementLayout. Preflight rejects incompatible task
+ownership, chain identity, backend kind or channel layout without stopping the
+running job or sending worker commands. Code/config changes can pass structural
+validation; this does not prove serializer compatibility or archive health.
+Actual restore still requires a completed durable savepoint and repeats checks.
+The preflight is not yet exposed to the reload controller, and topology-changing
+migration is not implemented by this unchanged-layout restore check.
