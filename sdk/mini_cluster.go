@@ -33,9 +33,11 @@ func NewMiniCluster(config MiniClusterConfig) *MiniCluster {
 }
 
 // GetExecutionEnvironment returns a pre-configured StreamExecutionEnvironment
-// for running pipelines on this MiniCluster.
+// for running pipelines on this MiniCluster. Managed Process/window state
+// defaults to HashMap with a 256 MiB logical payload limit per instance. Call
+// SetStateBackend on the returned environment to select another backend.
 func (mc *MiniCluster) GetExecutionEnvironment() *StreamExecutionEnvironment {
-	env := New()
+	env := New().SetStateBackend(NewHashMapStateBackend(256))
 	env.SetParallelism(mc.config.NumTaskSlots)
 	env.SetMode(Embedded)
 	env.miniCluster = mc

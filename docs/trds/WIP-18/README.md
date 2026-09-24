@@ -20,7 +20,15 @@
 
 ---
 
-## Implementation Status — 2026-09-12
+## Follow-up implementation status
+
+The active follow-up audit is [completion.md](completion.md). MiniCluster now
+defaults managed Process/window state to HashMap with a 256 MiB logical payload
+limit per instance; explicit SDK selection still overrides it. The remaining
+original configuration, resource, recovery, rescale and benchmark requirements
+are tracked there. WIP-18 remains partially implemented.
+
+## Historical implementation assessment — 2026-09-12
 
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
 
