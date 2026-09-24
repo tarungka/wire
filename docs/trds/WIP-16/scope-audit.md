@@ -111,3 +111,11 @@ output. Production files built and ran in a separate Go module, printing its two
 input records. This is an executable onboarding artifact, not evidence of a
 human developer completing a new connector within one hour. That trial and YAML
 acceptance remain required.
+
+## Current connector coverage
+
+`go test -race -coverprofile=... ./sdk/connectors/httpapi/...` passes at the
+current connector implementation: HTTP core statement coverage is 94.0%; public
+worker-factory coverage is 95.2%. Both exceed the proposal's 90% unit target.
+This does not replace the remaining YAML, transactional connector acceptance or
+developer-trial requirements.
