@@ -385,3 +385,19 @@ coverage for every function in http_auth.go: ConfigureAuth, readAPIAuth,
 validBcryptEncoding, allow, user, apiRoleAllowed and authenticate. This satisfies
 the authentication-logic statement target, not whole-package coverage or the
 remaining end-to-end certificate/recovery acceptance requirements.
+
+### HTTPS certificate acceptance
+
+Real HTTPServer listeners now verify certificate and API authentication as
+independent layers: a valid client certificate without valid API credentials
+gets 401, while missing, expired, untrusted or wrong-purpose client certificates
+fail TLS even with a valid API key. Client-side checks reject expired/untrusted
+server certificates and hostname mismatches. TLS 1.2 is refused and successful
+requests assert TLS 1.3 with an allowed TLS 1.3 cipher suite.
+
+A listener replacement test admits the old client issuer before restart and
+only the new issuer afterwards, while keeping server identity unchanged. This
+is trust-anchor replacement, not CRL/OCSP or individual-certificate revocation.
+The runtime guide explicitly describes that boundary and existing-session
+handling. These HTTPS tests do not prove the separate RPC/data/replica expiry
+or credential recovery requirements; those acceptance gates remain open.

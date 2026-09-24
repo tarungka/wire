@@ -40,7 +40,16 @@ node_tls:
 Workers verify the server certificate against the configured roots, or system
 roots when no CA file is specified. The server name defaults to the connection
 hostname; `verify_server_name` overrides it without disabling verification.
-Certificate rotation requires a restart.
+Certificate rotation requires a restart. Wire does not perform CRL or OCSP
+checks and does not offer individual certificate serial-number revocation.
+Removing a compromised issuer from a CA file takes effect only after every
+listener/client using that trust store restarts. Replace affected certificates
+with ones signed by the replacement issuer and restart the relevant nodes;
+leaving the old issuer trusted continues to admit its unexpired certificates.
+Restart also terminates existing sessions, whose prior handshakes are not
+revalidated by editing certificate files. Plan capacity and availability for
+this operation; normal rolling renewal with overlapping trust is different
+from immediately removing a compromised issuer.
 
 Coordinator HTTPS and worker-to-coordinator RPC TLS apply on this branch.
 RPC registration also checks verified worker certificate identity. File-backed
