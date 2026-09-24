@@ -212,9 +212,17 @@ request. Existing assignment and deployment checks still apply.
 
 Upgrade coordinators before enabling this peer policy on workers: old coordinators
 do not enforce the added uploader identity field. Plaintext development replicas
-retain the prior authorization format. Data-stream task-assignment authorization
-beyond the negotiated worker identity and the complete security acceptance matrix
-remain tracked work.
+retain the prior authorization format. Data-stream registrations now carry the coordinator's upstream task, partition
+and assigned worker identity. A secured receiver verifies those values against
+the certificate-bound session identity before queueing a stream. Invalid claims
+are rejected without consuming task input capacity or closing the shared session.
+Ownership is replaced when the task is unregistered and redeployed. Coordinators
+must be upgraded before peer-TLS workers: a secure receiving worker rejects
+descriptors that omit upstream ownership. Plaintext development streams still
+validate task/partition membership but provide no authenticated worker identity.
+This authorizes a worker process, not mutually isolated operators inside it;
+trusted application code on that worker shares its certificate authority.
+The remaining security acceptance matrix is tracked in WIP-17.
 
 ## Connector environment references
 

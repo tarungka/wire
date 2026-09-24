@@ -22,6 +22,9 @@ func TestTaskAddressResolutionIsAtomic(t *testing.T) {
 	if err := c.attachTaskAddressesLocked(assignments); err != nil {
 		t.Fatal(err)
 	}
+	if assignments["b"][0].Upstream[0].WorkerID != "a" {
+		t.Fatal("source ownership missing")
+	}
 	if assignments["a"][0].Downstream[0].Address != "b:4001" || assignments["b"][0].Upstream[0].Address != "a:4001" {
 		t.Fatal("incorrect resolved endpoint")
 	}

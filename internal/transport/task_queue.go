@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/tarungka/wire/internal/protocol"
 )
 
 // taskQueue belongs to one registration generation. Removing a task closes its
 // generation so late streams cannot enter a restarted task with the same ID.
 type taskQueue struct {
+	authorize      func(string, protocol.StreamHeaderMsg) bool
 	rejectOverflow bool
 	mu             sync.Mutex
 	streams        chan *FrameStream

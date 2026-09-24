@@ -645,7 +645,7 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 			w.reportTaskFailed(jobID, taskID, fmt.Errorf("task inputs require data mux"))
 			return
 		}
-		if err := w.executor.data.RegisterTaskInputs(taskID, len(desc.Upstream)); err != nil {
+		if err := registerTaskSources(w.executor.data, jobID, taskID, desc); err != nil {
 			w.reportTaskFailed(jobID, taskID, err)
 			return
 		}

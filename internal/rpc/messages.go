@@ -375,6 +375,7 @@ type KeyGroupRange struct {
 
 // UpstreamChannelInfo describes a task's upstream data source.
 type UpstreamChannelInfo struct {
+	WorkerID       string        `codec:"worker_id,omitempty"`
 	IdleTimeout    time.Duration `codec:"idle_timeout,omitempty"`
 	TaskID         string        `codec:"tid,omitempty"`
 	PartitionIndex uint16        `codec:"pi,omitempty"`

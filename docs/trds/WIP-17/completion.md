@@ -439,3 +439,19 @@ This is startup/transport evidence, not an archive upload or data-frame test.
 The full testssl.sh cipher scan and remaining recovery/authorization acceptance
 gates remain open. Generated keys, binary, logs and runtime data stay outside
 the repository; the retained acceptance record contains no credentials.
+
+### Authenticated upstream ownership
+
+The coordinator now includes each upstream task's assigned worker ID while
+resolving deployment addresses under the placement lock. Both early worker
+registration (before checkpoint fetch) and direct task-executor registration
+install an immutable task/partition/worker policy on the receiving queue.
+Peer-TLS deployments require ownership metadata; an old coordinator's missing
+field is rejected instead of weakening the policy. Plaintext mode retains
+task/partition validation without claiming authenticated ownership.
+
+A real mTLS mux test uses a valid client certificate to claim a source assigned
+to another worker, an unexpected partition and an unknown source. Each is
+rejected before input queueing, then a legitimate source succeeds on the same
+connection. Re-registering the target with a different owner rejects the old
+worker. Address-resolution tests also assert the coordinator supplies ownership.
