@@ -22,6 +22,7 @@ func (c *Coordinator) HandleRegisterWorker(ctx context.Context, _ uint64, payloa
 	// Map RPC request to coordinator domain request.
 	coordReq := RegisterWorkerRequest{
 		SupportsReservations: rpcReq.SupportsReservations,
+		SupportsSecretConfig: rpcReq.SupportsSecretConfig,
 		CheckpointAddress:    rpcReq.CheckpointAddress,
 		WorkerID:             rpcReq.WorkerID,
 		Address:              rpcReq.Address,

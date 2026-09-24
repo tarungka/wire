@@ -14,7 +14,7 @@ The existing PR is #197. Other merged TRDs will use linked follow-up PRs.
 | Endpoint RBAC (§3.6) | Admin/operator/viewer matrix tested in middleware. Verify every actual registered endpoint, including redirects, escaped paths, metrics, and probes. |
 | Brute-force protection (§6) | Bounded global authentication admission added (20 burst, 10 checks/second). Document operational behavior and test concurrent admission. |
 | Authentication logs (§7.3) | Successful identity and failed source/Basic username logging added. Add capture tests proving passwords and API keys never appear. |
-| Connector secret substitution (§3.7) | Pending: coordinator-time resolution, missing-variable rejection, unresolved references persisted, resolved credentials kept only in memory and delivered to workers. |
+| Connector secret substitution (§3.7) | Implemented for structured JSON connector settings: submission-time snapshots, missing-variable rejection, reference-only metadata, recovery reconstruction and mTLS/capability-gated worker delivery. Live worker acceptance passes; complete recovery acceptance remains. |
 | Credential redaction (§3.7) | Pending: verify job API, persistence, recovery, errors, and logs cannot expose resolved secrets. |
 | Certificate/auth revocation (§4.2, §8.1) | Pending: restart/revocation integration tests and operational instructions. Rotation automation is explicitly out of scope. |
 | Encryption at rest strategy (§1.3) | Documented in [storage security](../../storage-security.md): all runtime storage surfaces, temporary files, backups, key rotation and operator acceptance checks. Actual encrypted-volume deployment remains an operator verification requirement. |
@@ -308,3 +308,27 @@ code; they must not independently emit credentials. This filtering cannot
 protect a connector that deliberately writes raw configuration through an
 unrelated logger. Secure deployment gating and capability negotiation are still
 pending, so resolved configurations remain undispatched.
+
+### Secure connector credential delivery
+
+Resolved task copies are now dispatched after reference-only assignment metadata
+is durable. Each affected worker must have a current certificate-bound RPC peer,
+reservation support and the new secret-config capability. Capability state is
+not recovered from metadata. The scheduler places restricted tasks first on
+eligible secure capacity, respects per-worker slot counts, and rechecks session
+ownership before publishing. Secret payloads never enter fallback command queues.
+Only each task's actual substituted values accompany its runtime config for
+redaction, in deterministic order. Deployment RPC errors and checkpoint failure
+reports are filtered too.
+
+The live mutual-TLS acceptance test now runs a real worker factory with a
+coordinator-resolved credential and completes its job. It inspects job, config
+and assignment records for plaintext leaks. Scheduler/RPC tests reject plaintext,
+old-capability and command-fallback workers; verify submission-time snapshot
+values survive environment changes; and check constrained mixed-cluster placement.
+The runtime guide documents required environments, rolling upgrades, pending jobs
+without eligible capacity, and trusted connector/logging responsibilities.
+
+Remaining security work includes the complete HTTP endpoint/credential/certificate
+acceptance matrix, API credential-field redaction, authentication coverage and
+end-to-end recovery/revocation verification. This is not full WIP-17 completion.

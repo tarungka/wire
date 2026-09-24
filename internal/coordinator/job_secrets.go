@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/tarungka/wire/internal/protocol"
@@ -13,7 +14,11 @@ import (
 
 // jobSecretValues is runtime-only. Its keys are unresolved configuration bytes;
 // values must never be included in persisted JobMeta or task descriptors.
-type jobSecretValues map[string][]byte
+type resolvedJobConfig struct {
+	data    []byte
+	secrets []string
+}
+type jobSecretValues map[string]resolvedJobConfig
 
 func resolveJobSecretReferences(graph rpc.JobGraph) (jobSecretValues, error) {
 	// Take one snapshot so repeated references in this submission agree.
@@ -32,13 +37,17 @@ func resolveJobSecretReferences(graph rpc.JobGraph) (jobSecretValues, error) {
 			configs = append(configs, op.DLQSink.Config)
 		}
 		for _, config := range configs {
-			resolved, err := secretconfig.Resolve(config, lookup)
+			resolved, secrets, err := secretconfig.ResolveWithSecrets(config, lookup)
 			if err != nil {
 				values.clear()
 				return nil, fmt.Errorf("%w: operator %d secret configuration: %v", ErrInvalidConfig, i, err)
 			}
-			if !bytes.Equal(config, resolved) {
-				values[string(config)] = resolved
+			if !bytes.Equal(config, resolved) || len(secrets) > 0 {
+				if old, ok := values[string(config)]; ok {
+					clear(old.data)
+					clear(old.secrets)
+				}
+				values[string(config)] = resolvedJobConfig{data: resolved, secrets: secrets}
 			} else {
 				clear(resolved)
 			}
@@ -49,7 +58,8 @@ func resolveJobSecretReferences(graph rpc.JobGraph) (jobSecretValues, error) {
 
 func (values jobSecretValues) clear() {
 	for key, value := range values {
-		clear(value)
+		clear(value.data)
+		clear(value.secrets)
 		delete(values, key)
 	}
 }
@@ -95,14 +105,18 @@ func (c *Coordinator) ensureJobSecretsLocked(job *JobMeta) error {
 // factory or cleanup may mutate metadata or the coordinator's credential cache.
 func (c *Coordinator) resolvedTaskCopiesLocked(jobID string, tasks []rpc.TaskDescriptor) []rpc.TaskDescriptor {
 	values := c.jobSecrets[jobID]
-	copyConfig := func(raw []byte) []byte {
-		if value, ok := values[string(raw)]; ok {
-			return bytes.Clone(value)
-		}
-		return bytes.Clone(raw)
-	}
 	result := append([]rpc.TaskDescriptor(nil), tasks...)
 	for i := range result {
+		sensitive := make(map[string]bool)
+		copyConfig := func(raw []byte) []byte {
+			if value, ok := values[string(raw)]; ok {
+				for _, secret := range value.secrets {
+					sensitive[secret] = true
+				}
+				return bytes.Clone(value.data)
+			}
+			return bytes.Clone(raw)
+		}
 		result[i].OperatorChain = append([]rpc.OperatorDescriptor(nil), tasks[i].OperatorChain...)
 		for j := range result[i].OperatorChain {
 			op := &result[i].OperatorChain[j]
@@ -113,6 +127,35 @@ func (c *Coordinator) resolvedTaskCopiesLocked(jobID string, tasks []rpc.TaskDes
 				op.DLQSink = &dlq
 			}
 		}
+		result[i].SecretValues = nil
+		for secret := range sensitive {
+			result[i].SecretValues = append(result[i].SecretValues, secret)
+		}
+		sort.Strings(result[i].SecretValues)
 	}
 	return result
+}
+
+func (c *Coordinator) tasksNeedSecretsLocked(jobID string, tasks []rpc.TaskDescriptor) bool {
+	values := c.jobSecrets[jobID]
+	for _, task := range tasks {
+		for _, op := range task.OperatorChain {
+			if _, ok := values[string(op.Config)]; ok {
+				return true
+			}
+			if op.DLQSink != nil {
+				if _, ok := values[string(op.DLQSink.Config)]; ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// Secret payloads never enter the heartbeat/WatchCommands fallback: that queue
+// may outlive the authenticated session and be consumed by its replacement.
+func (c *Coordinator) secretDeploymentAllowedLocked(workerID string, peer *rpc.Client) bool {
+	worker := c.workers[workerID]
+	return worker != nil && peer != nil && worker.RPCClient == peer && worker.RPCAuthenticated && worker.SupportsSecretConfig && worker.RPCPeerEpoch == c.epoch && !worker.Lost && !worker.Removed
 }

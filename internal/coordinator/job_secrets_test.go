@@ -111,7 +111,7 @@ func TestSubmissionSecretSnapshotLifetime(t *testing.T) {
 	}
 	t.Setenv(variable, "later-value")
 	c.mu.RLock()
-	cached := c.jobSecrets[job.ID][string(config)]
+	cached := c.jobSecrets[job.ID][string(config)].data
 	contents := string(cached)
 	ownedJob := c.jobs[job.ID]
 	c.mu.RUnlock()

@@ -181,3 +181,43 @@ do not enforce the added uploader identity field. Plaintext development replicas
 retain the prior authorization format. Data-stream task-assignment authorization
 beyond the negotiated worker identity and the complete security acceptance matrix
 remain tracked work.
+
+## Connector environment references
+
+Structured connector configurations can contain coordinator-side references in
+JSON string values, including nested arrays and objects:
+
+```json
+{"url":"https://example.invalid/events","headers":{"Authorization":"Bearer ${API_TOKEN}"}}
+```
+
+Provision `API_TOKEN` in each coordinator's environment before starting it.
+`${NAME}` is required; `${NAME:-default}` uses the default only when the variable
+is absent (an explicitly empty value stays empty). Defaults are part of the
+submitted configuration, so use them for nonconfidential settings. References
+in object keys and nested reference expressions are rejected. Other opaque
+connector configuration formats remain supported without secret substitution.
+
+The coordinator validates references before accepting a job and keeps its
+resolved snapshot in memory for retries. Job graphs and assignment metadata
+retain the references. After coordinator recovery, the new leader resolves its
+own environment; provision the same values on every eligible coordinator.
+Missing variables fail the recovered job before it is deployed. Changing an
+environment value does not rotate credentials within an already running leader's
+job snapshot.
+
+Secret-bearing tasks require a live mutually authenticated coordinator-worker
+RPC session and a worker advertising secret-config support. Upgrade workers
+before submitting such jobs. The scheduler uses eligible secure slots and keeps
+the job pending if none are available. It sends runtime copies directly over the
+captured RPC connection; it never places credentials in the heartbeat command
+queue. Workers receive only the substituted values needed by that task for
+filtering factory/runtime logs, failure reports, panic stacks and DLQ diagnostic
+text. Ordinary record payloads are not rewritten.
+
+Connector factories must not persist credentials in their checkpoint state or
+emit them through independent loggers. Custom logger hooks, diagnostic observers
+and output destinations are trusted application code; do not unwrap sanitized
+errors and serialize the original fields. Arbitrary application encodings cannot
+be made safe merely by filtering known credential representations. TLS and these
+runtime protections do not encrypt local state or external sink contents.

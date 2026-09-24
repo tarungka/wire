@@ -10,6 +10,7 @@ import (
 
 // RegisterWorkerRequest is the request payload for worker registration.
 type RegisterWorkerRequest struct {
+	SupportsSecretConfig bool     `codec:"secret_config,omitempty"`
 	SupportsReservations bool     `codec:"slot_reservations,omitempty"`
 	CheckpointAddress    string   `codec:"checkpoint_address,omitempty"`
 	WorkerID             string   `codec:"worker_id"`
@@ -53,6 +54,7 @@ func (c *Coordinator) registerWorker(req RegisterWorkerRequest, peer *rpc.Client
 		RPCClient: peer, RPCPeerEpoch: currentEpoch,
 		RPCAuthenticated:     peer != nil && done != nil && verifiedIdentity != "" && verifiedIdentity == req.WorkerID,
 		SupportsReservations: req.SupportsReservations,
+		SupportsSecretConfig: req.SupportsSecretConfig,
 		CheckpointAddress:    req.CheckpointAddress,
 		ID:                   req.WorkerID,
 		Address:              req.Address,

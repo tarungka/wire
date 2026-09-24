@@ -242,6 +242,7 @@ type WorkerMeta struct {
 	Lost                 bool                     `codec:"-" json:"-"`
 	Resources            *rpc.ResourceReport      `codec:"-" json:"-"`
 	TaskReports          []rpc.RunningTaskSummary `codec:"-" json:"-"`
+	SupportsSecretConfig bool                     `codec:"-" json:"-"`
 	RPCAuthenticated     bool                     `codec:"-" json:"-"`
 	RPCPeerEpoch         uint64                   `codec:"-" json:"-"`
 	RPCClient            *rpc.Client              `codec:"-" json:"-"`

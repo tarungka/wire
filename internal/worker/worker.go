@@ -308,6 +308,7 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 	w.mu.RUnlock()
 	regReq := &rpc.RegisterWorkerRequest{
 		SupportsReservations: true,
+		SupportsSecretConfig: true,
 		HighestSeenEpoch:     highestEpoch,
 		CheckpointAddress:    checkpointAddress,
 		WorkerID:             workerID,

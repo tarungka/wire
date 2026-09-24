@@ -626,6 +626,7 @@ type RunningTaskSummary struct {
 
 // RegisterWorkerRequest is sent from Worker to Coordinator to register or re-register.
 type RegisterWorkerRequest struct {
+	SupportsSecretConfig bool     `codec:"secret_config,omitempty"`
 	SupportsReservations bool     `codec:"slot_reservations,omitempty"`
 	CheckpointAddress    string   `codec:"checkpoint_addr,omitempty"`
 	WorkerID             string   `codec:"wid"`
