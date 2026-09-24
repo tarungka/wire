@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"github.com/tidwall/btree"
+
+	"github.com/tarungka/wire/internal/observability"
 )
 
 // hashMapSnapshotVersion is the binary format version for HashMap snapshots.
@@ -23,6 +25,7 @@ const hashMapSnapshotMagic = "WHSB"
 // Memory accounting: Put operations track curMemBytes and reject writes that
 // would exceed memLimit (0 = unlimited).
 type HashMapStateBackend struct {
+	metrics     *observability.StateBackendRecorder
 	mu          sync.RWMutex
 	entries     *btree.BTreeG[kvEntry] // ordered by key; guarded by mu
 	curMemBytes int64
@@ -207,16 +210,16 @@ func (h *HashMapStateBackend) Restore(handle SnapshotHandle) error {
 // Close releases resources and marks the backend as closed.
 func (h *HashMapStateBackend) Close() error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	if h.closed {
+		h.mu.Unlock()
 		return ErrBackendClosed
 	}
-
 	h.closed = true
 	h.entries = nil
 	h.curMemBytes = 0
-	return nil
+	h.mu.Unlock()
+	// Unregister outside the state lock: an in-flight scrape may need it.
+	return h.metrics.Close()
 }
 
 // MemUsage returns the current memory usage in bytes. Safe for concurrent use.

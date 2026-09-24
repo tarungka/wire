@@ -135,7 +135,7 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 				return fmt.Errorf("worker: operator %q cannot configure state backend", od.OperatorID)
 			}
 			s := od.StateBackend
-			cfg := engine.StateBackendConfig{Type: engine.StateBackendType(s.Type), PebbleDataDir: s.DataDir, HashMapMemLimit: s.MaxMemoryBytes, PebbleMaxCompactionConcurrency: s.MaxCompactionConcurrency}
+			cfg := engine.StateBackendConfig{MetricTaskID: taskID, Type: engine.StateBackendType(s.Type), PebbleDataDir: s.DataDir, HashMapMemLimit: s.MaxMemoryBytes, PebbleMaxCompactionConcurrency: s.MaxCompactionConcurrency}
 			target.SetStateBackendFactory(engine.ScopedStateBackendFactory(cfg, jobID, od.OperatorID, desc.AttemptID, int(desc.SubtaskIndex)))
 		}
 		if od.Window != nil {

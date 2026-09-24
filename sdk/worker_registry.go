@@ -199,5 +199,5 @@ func (r *WorkerRegistry) RegisterWindow(name string, factory WorkerWindowFactory
 }
 
 func workerBackendFactory(c StateBackendConfig, tc worker.TaskContext) func() (engine.StateBackend, func(), error) {
-	return engine.ScopedStateBackendFactory(engine.StateBackendConfig{Type: engine.StateBackendType(c.Type), HashMapMemLimit: int64(c.MaxMemoryMB) * 1024 * 1024, PebbleDataDir: c.DataDir, PebbleMaxCompactionConcurrency: c.MaxCompactionConcurrency}, tc.JobID, tc.OperatorID, tc.AttemptID, int(tc.SubtaskIndex))
+	return engine.ScopedStateBackendFactory(engine.StateBackendConfig{MetricTaskID: tc.TaskID, Type: engine.StateBackendType(c.Type), HashMapMemLimit: int64(c.MaxMemoryMB) * 1024 * 1024, PebbleDataDir: c.DataDir, PebbleMaxCompactionConcurrency: c.MaxCompactionConcurrency}, tc.JobID, tc.OperatorID, tc.AttemptID, int(tc.SubtaskIndex))
 }

@@ -53,6 +53,10 @@ runtime suspension and redeployment from a savepoint.
 
 ## 3. Monitoring & Metrics
 
+Managed HashMap state exposes `wire_state_backend_memory_bytes` per backend,
+operator and task. It counts logical key/value payload, not RSS; see
+[backend memory accounting](state-backend-selection.md#hashmap-memory-metric).
+
 Wire exposes a Prometheus-compatible `/metrics` endpoint on a separate server
 (default `:9090`, controlled by `--metrics-enabled` and `--metrics-addr`). Assign
 unique metrics ports when running multiple nodes on one host.

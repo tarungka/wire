@@ -129,3 +129,13 @@ checkpoint's replicas available. This tests runtime loss and reassignment; it
 does not simulate an OS crash or guarantee recovery after the only checkpoint
 archive is lost. Unknown job/worker IDs return an error; stopped worker controls
 are removed with the execution.
+
+## HashMap memory metric
+
+Managed worker HashMap backends export `wire_state_backend_memory_bytes` with
+`backend="hashmap"`, `operator` and `task_id` labels. The gauge measures the same
+logical key/value bytes used by the backend limit. It excludes B-tree/runtime
+overhead, iterator copies and temporary checkpoint/restore allocations; it is
+not process RSS or an aggregate worker memory budget. Backend close unregisters
+the callback. Temporary restore stores and standalone backends without metric
+identity do not emit unattributed series.
