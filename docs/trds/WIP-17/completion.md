@@ -255,3 +255,21 @@ Callers must separately sanitize panic stacks or other unwrapped fields.
 This remains groundwork: worker logger, task-status and DLQ integration is not
 yet enabled. Arbitrary custom connector transformations or independent logging
 cannot be covered merely by filtering known representations.
+
+### Structured log filtering and task logger propagation
+
+Task slots now accept the worker's task-scoped logger instead of silently
+creating a separate unfiltered runtime logger. The worker executor passes the
+same logger used for factory contexts into its task slot. A real source-failure
+regression test confirms runtime diagnostics go through the supplied credential
+filter while retaining task identity.
+
+`Redactor.LogWriter` filters decoded structured fields (including context,
+nested values and messages), preserves exact JSON numbers and log severity,
+and emits a constant safe diagnostic for malformed input. It reports destination
+write failures. Filtering decoded values avoids corrupting JSON when credentials
+contain quotes, newlines or backslashes.
+
+Automatic construction of per-task filtered loggers from delivered credentials
+is still pending, along with task-status, panic-stack and DLQ redaction. No
+resolved credentials are being dispatched yet.

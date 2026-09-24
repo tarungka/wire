@@ -207,6 +207,7 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		config.Watermark = *watermark
 	}
 	slot := engine.NewTaskSlot(config, inputs, outputs, operators, sourceOp)
+	slot.SetLogger(log)
 	slot.TaskID = taskID
 	if desc.RestoreCheckpoint != nil && desc.RestoreCheckpoint.SourceJobID != "" {
 		slot.RestoreTaskID = desc.RestoreCheckpoint.SourceTaskID
