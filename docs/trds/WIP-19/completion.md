@@ -128,3 +128,12 @@ A regression verifies full restore descriptors and policy rollback alongside
 rescale tests. End-to-end replacement execution, API/controller integration,
 changed-topology migration and bounded recovery failure handling still require
 acceptance evidence. This primitive does not prove full reload completion.
+
+Runtime replacement acceptance now covers real coordinator/worker execution:
+source offset 1 is restored, old source teardown precedes replacement, output
+changes from v1:first to v2:second, and the job ID stays unchanged. A failing new
+map factory rolls back and emits v1:second with an explicit recovery budget.
+A separate no-restart case ends FAILED with the original graph restored and no
+additional output. Rollback does not override configured recovery limits.
+Transactional external commit behavior and controller-driven migration still
+need dedicated acceptance coverage.
