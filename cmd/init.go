@@ -10,6 +10,11 @@ import (
 
 // Config represents the configuration as set by command-line flags.
 type Config struct {
+	HTTPAuthFile     string
+	HTTPCert         string
+	HTTPKey          string
+	HTTPCA           string
+	HTTPVerifyClient bool
 	// ConfigPath is the path to the config file. May not be set.
 	ConfigPath []string
 
@@ -108,7 +113,13 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, *pflag.FlagSet, er
 	f.StringVar(&config.NodeKey, "node-key", "", "TLS private key file")
 	f.StringVar(&config.NodeCA, "node-ca", "", "CA certificate for peer verification")
 	f.BoolVar(&config.NodeVerifyClient, "node-verify-client", false, "require mutual TLS")
-	f.Uint32Var(&config.MaxFrameSize, "max-frame-size", 16777216, "max wire protocol frame size")
+	f.Uint32Var(&config.MaxFrameSize, "max-frame-size", 16777216, "max worker data-plane frame length in bytes (type, CRC and payload)")
+
+	f.StringVar(&config.HTTPAuthFile, "auth", "", "HTTP authentication JSON file")
+	f.StringVar(&config.HTTPCert, "http-cert", "", "HTTPS server certificate file")
+	f.StringVar(&config.HTTPKey, "http-key", "", "HTTPS server private key file")
+	f.StringVar(&config.HTTPCA, "http-ca-cert", "", "CA certificate for HTTPS client verification")
+	f.BoolVar(&config.HTTPVerifyClient, "http-verify-client", false, "require HTTPS client certificates")
 
 	// Coordinator flags
 	f.StringVar(&config.CoordinatorDataDir, "coordinator-data-dir", "data/coordinator", "coordinator metadata storage directory")

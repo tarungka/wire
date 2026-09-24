@@ -81,3 +81,18 @@ func TestSavepointUpgradePlanRejectsIncompatibleStateLayout(t *testing.T) {
 		})
 	}
 }
+
+func TestSavepointRoutesIgnorePlacementButRetainTopology(t *testing.T) {
+	source := rpc.TaskDescriptor{Upstream: []rpc.UpstreamChannelInfo{{TaskID: "old-task", WorkerID: "old-worker", Address: "old:1", OperatorID: "source", PartitionIndex: 2}}}
+	target := rpc.TaskDescriptor{Upstream: []rpc.UpstreamChannelInfo{{TaskID: "new-task", WorkerID: "new-worker", Address: "new:2", OperatorID: "source", PartitionIndex: 2}}}
+	if !sameSavepointRoutes(source, target) {
+		t.Fatal("worker replacement changed logical topology")
+	}
+	target.Upstream[0].PartitionIndex++
+	if sameSavepointRoutes(source, target) {
+		t.Fatal("partition change accepted")
+	}
+	if source.Upstream[0].WorkerID != "old-worker" {
+		t.Fatal("comparison mutated stored ownership")
+	}
+}

@@ -81,6 +81,7 @@ type Coordinator struct {
 	log      zerolog.Logger
 
 	// In-memory caches (write-through to store).
+	jobSecrets          map[string]jobSecretValues // Runtime only; never persisted.
 	jobs                map[string]*JobMeta
 	workers             map[string]*WorkerMeta
 	activeCheckpoints   map[string]CheckpointMeta
@@ -213,6 +214,9 @@ func (c *Coordinator) recover() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	for id := range c.jobSecrets {
+		c.forgetJobSecretsLocked(id)
+	}
 	c.jobs = state.jobs
 	// All in-flight checkpoint decisions were aborted above. Do not retain
 	// grants cached by an earlier leadership term on this coordinator object.

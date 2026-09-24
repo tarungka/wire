@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/tarungka/wire/internal/apiclient"
 )
 
 type discoveredLeader struct {
@@ -28,17 +30,38 @@ func (w *Worker) discoverCoordinator(ctx context.Context) (string, error) {
 	w.mu.RLock()
 	minimum := w.epoch
 	w.mu.RUnlock()
-	client := &http.Client{Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	var failures []error
+	allowed := make(map[string]bool)
 	for _, seed := range w.cfg.CoordinatorSeeds {
+		if origin, err := discoveryOrigin(seed, "http"); err == nil {
+			allowed[origin] = true
+		}
+	}
+	var failures []error
+	for index, seed := range w.cfg.CoordinatorSeeds {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		leader, err := queryLeader(ctx, client, seed)
+		origin, err := discoveryOrigin(seed, "http")
+		var leader discoveredLeader
+		if err == nil {
+			leader, err = w.queryConfiguredLeader(ctx, origin)
+		}
 		if err == nil && !leader.IsSelf && leader.HTTPAddr != "" {
 			// A standby's discovery record is only a hint. Ask the advertised node
 			// itself; readiness must be established after durable recovery.
-			leader, err = queryLeader(ctx, client, leader.HTTPAddr)
+			scheme := "http"
+			if strings.HasPrefix(origin, "https://") {
+				scheme = "https"
+			}
+			target, parseErr := discoveryOrigin(leader.HTTPAddr, scheme)
+			secure := scheme == "https" || w.cfg.DiscoverySecurity != (apiclient.Config{})
+			if parseErr != nil {
+				err = parseErr
+			} else if secure && (!allowed[target] || !strings.HasPrefix(target, "https://")) {
+				err = fmt.Errorf("secure leader hint is not a configured HTTPS seed")
+			} else {
+				leader, err = w.queryConfiguredLeader(ctx, target)
+			}
 		}
 		if err == nil {
 			host, _, addressErr := net.SplitHostPort(leader.RPCAddr)
@@ -49,12 +72,14 @@ func (w *Worker) discoverCoordinator(ctx context.Context) (string, error) {
 		if err == nil {
 			return leader.RPCAddr, nil
 		}
-		failures = append(failures, fmt.Errorf("seed %s: %w", seed, err))
+		failures = append(failures, fmt.Errorf("coordinator seed %d: %w", index, err))
 	}
 	return "", errors.Join(failures...)
 }
 
-func queryLeader(ctx context.Context, client *http.Client, address string) (discoveredLeader, error) {
+func queryLeader(ctx context.Context, client interface {
+	Do(*http.Request) (*http.Response, error)
+}, address string) (discoveredLeader, error) {
 	var result discoveredLeader
 	if !strings.Contains(address, "://") {
 		address = "http://" + address
@@ -79,4 +104,24 @@ func queryLeader(ctx context.Context, client *http.Client, address string) (disc
 	}
 	err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&result)
 	return result, err
+}
+
+func discoveryOrigin(address, defaultScheme string) (string, error) {
+	if !strings.Contains(address, "://") {
+		address = defaultScheme + "://" + address
+	}
+	base, err := url.Parse(address)
+	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" || base.User != nil || (base.Path != "" && base.Path != "/") || base.RawQuery != "" || base.Fragment != "" {
+		return "", fmt.Errorf("invalid coordinator discovery address")
+	}
+	return base.Scheme + "://" + base.Host, nil
+}
+
+func (w *Worker) queryConfiguredLeader(ctx context.Context, origin string) (discoveredLeader, error) {
+	client, err := apiclient.New(origin, w.cfg.DiscoverySecurity, time.Second)
+	if err != nil {
+		return discoveredLeader{}, err
+	}
+	defer client.CloseIdleConnections()
+	return queryLeader(ctx, client, origin)
 }

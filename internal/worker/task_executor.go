@@ -10,6 +10,7 @@ import (
 	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/keygroup"
 	"github.com/tarungka/wire/internal/rpc"
+	"github.com/tarungka/wire/internal/secretconfig"
 	"github.com/tarungka/wire/internal/transport"
 )
 
@@ -30,6 +31,9 @@ func newTaskExecutor(reg *Registry) *taskExecutor {
 // channels, and drives execution until ctx is cancelled or the source ends.
 // Explicit upstream/downstream descriptors connect separate worker tasks.
 func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor, log zerolog.Logger, onRunning func(), checkpoints ...*taskCheckpointRuntime) (retErr error) {
+	if len(desc.SecretValues) > 0 {
+		log = secretconfig.NewRedactor(desc.SecretValues).Logger(log)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = &engine.OperatorPanicError{Value: r, Stack: string(debug.Stack())}
@@ -61,6 +65,10 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		Log:                  log,
 	}
 
+	var diagnosticRedactor *secretconfig.Redactor
+	if len(desc.SecretValues) > 0 {
+		diagnosticRedactor = secretconfig.NewRedactor(desc.SecretValues)
+	}
 	var sourceOp engine.SourceOperator
 	var operators []engine.Operator
 	var errorConfigs []engine.ErrorHandlerConfig
@@ -183,6 +191,9 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 			defer destination.Close()
 			cfg.DLQWriter = destination.Write
 		}
+		if diagnosticRedactor != nil {
+			cfg.SanitizeDiagnostic = diagnosticRedactor.String
+		}
 		errorConfigs = append(errorConfigs, cfg)
 	}
 
@@ -207,6 +218,7 @@ func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.
 		config.Watermark = *watermark
 	}
 	slot := engine.NewTaskSlot(config, inputs, outputs, operators, sourceOp)
+	slot.SetLogger(log)
 	slot.TaskID = taskID
 	if desc.RestoreCheckpoint != nil && desc.RestoreCheckpoint.SourceJobID != "" {
 		slot.RestoreTaskID = desc.RestoreCheckpoint.SourceTaskID

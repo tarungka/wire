@@ -3,18 +3,20 @@ package config
 // WireConfig is the top-level configuration for a Wire node.
 // It maps directly to the wire.yaml schema.
 type WireConfig struct {
-	Heartbeat  HeartbeatConfig  `yaml:"heartbeat" json:"heartbeat" koanf:"heartbeat"`
-	Checkpoint CheckpointConfig `yaml:"checkpoint" json:"checkpoint" koanf:"checkpoint"`
-	TaskSlot   TaskSlotConfig   `yaml:"task_slot" json:"task_slot" koanf:"task_slot"`
-	Mode       string           `yaml:"mode"        json:"mode"        koanf:"mode"`
-	Listen     string           `yaml:"listen"      json:"listen"      koanf:"listen"`
-	Node       NodeConfig       `yaml:"node"        json:"node"        koanf:"node"`
-	HTTP       HTTPConfig       `yaml:"http"        json:"http"        koanf:"http"`
-	NodeTLS    TLSConfig        `yaml:"node_tls"    json:"node_tls"    koanf:"node_tls"`
-	Auth       AuthConfig       `yaml:"auth"        json:"auth"        koanf:"auth"`
-	WriteQueue WriteQueueConfig `yaml:"write_queue" json:"write_queue" koanf:"write_queue"`
-	Election   ElectionConfig   `yaml:"election"    json:"election"    koanf:"election"`
-	Worker     WorkerConfig     `yaml:"worker"      json:"worker"      koanf:"worker"`
+	// MaxFrameSize limits worker data-plane frames, not coordinator RPC payloads.
+	MaxFrameSize uint32           `yaml:"max_frame_size" json:"max_frame_size" koanf:"max_frame_size"`
+	Heartbeat    HeartbeatConfig  `yaml:"heartbeat" json:"heartbeat" koanf:"heartbeat"`
+	Checkpoint   CheckpointConfig `yaml:"checkpoint" json:"checkpoint" koanf:"checkpoint"`
+	TaskSlot     TaskSlotConfig   `yaml:"task_slot" json:"task_slot" koanf:"task_slot"`
+	Mode         string           `yaml:"mode"        json:"mode"        koanf:"mode"`
+	Listen       string           `yaml:"listen"      json:"listen"      koanf:"listen"`
+	Node         NodeConfig       `yaml:"node"        json:"node"        koanf:"node"`
+	HTTP         HTTPConfig       `yaml:"http"        json:"http"        koanf:"http"`
+	NodeTLS      TLSConfig        `yaml:"node_tls"    json:"node_tls"    koanf:"node_tls"`
+	Auth         AuthConfig       `yaml:"auth"        json:"auth"        koanf:"auth"`
+	WriteQueue   WriteQueueConfig `yaml:"write_queue" json:"write_queue" koanf:"write_queue"`
+	Election     ElectionConfig   `yaml:"election"    json:"election"    koanf:"election"`
+	Worker       WorkerConfig     `yaml:"worker"      json:"worker"      koanf:"worker"`
 }
 
 type CheckpointConfig struct {
@@ -26,6 +28,8 @@ type CheckpointConfig struct {
 
 // WorkerConfig holds settings for running in worker mode.
 type WorkerConfig struct {
+	PeerTLS           PeerTLSConfig           `yaml:"peer_tls" json:"peer_tls" koanf:"peer_tls"`
+	DiscoveryHTTP     HTTPClientConfig        `yaml:"discovery_http" json:"discovery_http" koanf:"discovery_http"`
 	CoordinatorSeeds  []string                `yaml:"coordinator_seeds" json:"coordinator_seeds" koanf:"coordinator_seeds"`
 	EpochPath         string                  `yaml:"epoch_path" json:"epoch_path" koanf:"epoch_path"`
 	CheckpointReplica CheckpointReplicaConfig `yaml:"checkpoint_replica" json:"checkpoint_replica" koanf:"checkpoint_replica"`
@@ -118,4 +122,21 @@ type KubernetesElectionConfig struct {
 	LeaseDuration Duration `yaml:"lease_duration" json:"lease_duration" koanf:"lease_duration"`
 	RenewDeadline Duration `yaml:"renew_deadline" json:"renew_deadline" koanf:"renew_deadline"`
 	RetryPeriod   Duration `yaml:"retry_period" json:"retry_period" koanf:"retry_period"`
+}
+
+// HTTPClientConfig is process-local discovery trust and credential configuration.
+type HTTPClientConfig struct {
+	CACert       string `yaml:"ca_cert" json:"ca_cert" koanf:"ca_cert"`
+	ClientCert   string `yaml:"client_cert" json:"client_cert" koanf:"client_cert"`
+	ClientKey    string `yaml:"client_key" json:"client_key" koanf:"client_key"`
+	APIKeyFile   string `yaml:"api_key_file" json:"api_key_file" koanf:"api_key_file"`
+	Username     string `yaml:"username" json:"username" koanf:"username"`
+	PasswordFile string `yaml:"password_file" json:"password_file" koanf:"password_file"`
+}
+
+// PeerTLSConfig enables mutual TLS for both worker data and replica transports.
+type PeerTLSConfig struct {
+	Cert   string `yaml:"cert" json:"cert" koanf:"cert"`
+	Key    string `yaml:"key" json:"key" koanf:"key"`
+	CACert string `yaml:"ca_cert" json:"ca_cert" koanf:"ca_cert"`
 }

@@ -61,7 +61,7 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 		maxFailures = w.executor.taskConfig.Checkpoint.MaxConsecutiveFailures
 	}
 	consecutiveFailures := 0
-	replicator := &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: &reconnectingCheckpointClient{address: desc.CheckpointReplicaAddress}}
+	replicator := &archiveCheckpointReplicator{jobID: jobID, taskID: taskID, epoch: desc.EpochID, stagingRoot: w.cfg.CheckpointReplica.StagingRoot, client: &reconnectingCheckpointClient{address: desc.CheckpointReplicaAddress, tlsConfig: w.cfg.PeerTLSConfig}}
 	runtime.replicator = replicator
 	runtime.sourceExhausted = func(ctx context.Context) error {
 		w.mu.Lock()
@@ -83,7 +83,7 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 	runtime.report = func(ctx context.Context, id, epoch uint64, uploadErr error) error {
 		request := &rpc.AcknowledgeCheckpointRequest{AttemptID: desc.AttemptID, WorkerID: w.cfg.WorkerID, JobID: jobID, TaskID: taskID, CheckpointID: id, EpochID: epoch}
 		if uploadErr != nil {
-			request.Failure = uploadErr.Error()
+			request.Failure = handle.redactor.String(uploadErr.Error())
 		} else {
 			request.State = &rpc.StateHandle{TaskID: taskID, Path: desc.CheckpointReplicaAddress, Manifest: replicator.manifest(id)}
 		}
@@ -92,7 +92,7 @@ func (w *Worker) prepareTaskCheckpoint(ctx context.Context, jobID, taskID string
 			err = fmt.Errorf("checkpoint report rejected: %s", response.Message)
 		}
 		if err != nil {
-			w.log.Warn().Err(err).Uint64("checkpoint_id", id).Msg("checkpoint report failed")
+			w.log.Warn().Err(handle.redactor.Error(err)).Uint64("checkpoint_id", id).Msg("checkpoint report failed")
 			if uploadErr == nil {
 				uploadErr = err
 			}

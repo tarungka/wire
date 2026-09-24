@@ -87,12 +87,12 @@ func planSavepointTaskRestore(cp CheckpointMeta, targets []rpc.TaskDescriptor) (
 }
 
 func sameSavepointRoutes(source, target rpc.TaskDescriptor) bool {
-	// Task IDs and addresses change across jobs/deployments, while operator
+	// Task IDs, worker ownership and addresses change across deployments, while operator
 	// identities and channel indexes determine saved barrier/input semantics.
 	normalize := func(task rpc.TaskDescriptor) rpc.TaskDescriptor {
 		result := rpc.TaskDescriptor{OutputKeyGroups: task.OutputKeyGroups, OutputGroups: task.OutputGroups}
 		for _, input := range task.Upstream {
-			input.TaskID, input.Address, input.IdleTimeout = "", "", 0
+			input.TaskID, input.WorkerID, input.Address, input.IdleTimeout = "", "", "", 0
 			result.Upstream = append(result.Upstream, input)
 		}
 		for _, output := range task.Downstream {

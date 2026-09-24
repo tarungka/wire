@@ -11,9 +11,9 @@
 Wire supports two primary deployment models.
 
 ### 1.1 Standalone Cluster
-*   Manual start of `wire coordinator` and `wire worker`.
+*   Manual start of `wire --mode coordinator` and `wire --mode worker`.
 *   Best for bare-metal or VM-based deployments.
-*   Configuration via `wire.yaml`.
+*   Configuration via `--config PATH` (YAML or JSON; default `.config/config.json`) and CLI overrides. See the [configuration reference](configuration-reference.md).
 
 ### 1.2 Kubernetes Native
 *   **Wire Operator:** (Future) Manages the lifecycle.
@@ -27,30 +27,47 @@ Wire supports two primary deployment models.
 Scaling in Wire implies changing the parallelism of the Job Graph.
 
 ### 2.1 The Rescaling Process
-Wire does **not** support "hot" dynamic scaling. Rescaling is a stop-start action:
 
-1.  **Trigger Savepoint:** Operator triggers a manual global checkpoint (Savepoint).
-2.  **Stop Job:** The job is cancelled.
-3.  **Update Config:** Change parallelism (e.g., 4 -> 8).
-4.  **Restart:** Submit the job pointing to the Savepoint path.
-5.  **State Rebalancing:**
-    *   The Coordinator recalculates Key Group assignments.
-    *   New workers download the specific Key Groups they now own from the Savepoint.
+Rescaling is a stop-start operation through the existing job's REST endpoint:
 
----
+1. Trigger a savepoint and poll until it is `COMPLETED`.
+2. Submit `POST /api/v1/jobs/{job_id}/rescale` with a savepoint ID and either a
+   global `parallelism` or an `operators` map.
+3. The coordinator validates the topology, cancels the old attempt, redistributes
+   supported keyed state, and deploys the new attempt. Observe job status and
+   `rescale_failure`; acceptance is not completion.
+
+```json
+{"savepoint_id":"saved-id","operators":{"map-operator":8}}
+```
+
+Global rescale preserves source/sink counts and their Forward-connected groups.
+Explicit changes must satisfy Forward-edge equality. Opaque state without a
+redistribution contract and transactional state without a transaction-handle
+mapping are not supported. Failed deployments can roll back subject to the
+restart budget. See [rescale safety](rescale-safety.md) and the
+[transaction contract](trds/WIP-10/runtime-contract.md).
+
+Pause/resume endpoints are not a substitute: they do not yet implement completed
+runtime suspension and redeployment from a savepoint.
 
 ## 3. Monitoring & Metrics
 
-Wire exposes a Prometheus-compatible `/metrics` endpoint on all nodes.
+Wire exposes a Prometheus-compatible `/metrics` endpoint on a separate server
+(default `:9090`, controlled by `--metrics-enabled` and `--metrics-addr`). Assign
+unique metrics ports when running multiple nodes on one host.
 
 ### 3.1 Key Metrics
-*   **Throughput:** `wire_records_processed_total` (per operator).
-*   **Latency:** `wire_end_to_end_latency_ms` (time from Source timestamp to Sink).
-*   **Backpressure:** `wire_buffer_usage_ratio` (if > 0.9, downstream is slow).
-*   **Checkpointing:**
-    *   `wire_checkpoint_duration_ms` (Async upload time).
-    *   `wire_checkpoint_alignment_time_ms` (Time spent waiting for barriers).
-    *   `wire_last_completed_checkpoint_id`.
+
+* **Backpressure:** `wire_task_backpressure_time_ms_total` records cumulative output wait.
+* **Queue occupancy:** `wire_task_input_channel_usage` and `wire_task_output_channel_usage` report queued events, not utilization ratios.
+* **Checkpoint replication:** `wire_task_checkpoint_upload_duration_ms` is a histogram of replication I/O duration.
+* **Alignment:** `wire_checkpoint_alignment_time_ms` is a histogram; `wire_checkpoint_alignment_buffered_bytes` reports retained payload bytes.
+* **Liveness:** `wire_workers_alive`, `wire_workers_lost_total`, and `wire_heartbeat_failures_total`.
+
+Histograms expose `_bucket`, `_sum`, and `_count` series. See the
+[observability guide](observability.md) for API/RPC/store instruments. Dedicated
+end-to-end latency and records-processed metrics are not currently implemented.
 
 ### 3.2 Alerts
 Critical alerts for production:

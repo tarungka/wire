@@ -70,6 +70,11 @@ func NewTaskSlot(cfg TaskSlotConfig, inputs []*transport.FrameStream, outputs []
 	}
 }
 
+// SetLogger installs the task-scoped logger before Run starts. Worker callers
+// supply the same logger used by connector factories so runtime diagnostics do
+// not bypass task identity or credential filtering. Do not call during Run.
+func (ts *TaskSlot) SetLogger(log zerolog.Logger) { ts.log = log }
+
 // Run executes the task slot. It launches all goroutines via errgroup and
 // blocks until completion or failure.
 func (ts *TaskSlot) Run(ctx context.Context) error {

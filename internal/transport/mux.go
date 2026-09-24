@@ -128,7 +128,7 @@ func (m *Mux) Dial(ctx context.Context, addr string, routing ...protocol.StreamH
 // RegisterTask creates a bounded incoming-stream queue for a task. Register
 // before upstream connections are opened. Repeated registrations are rejected.
 func (m *Mux) RegisterTask(taskID string) error {
-	return m.registerTask(taskID, 64, false)
+	return m.registerTask(taskID, 64, false, nil)
 }
 
 // RegisterTaskInputs reserves room for the deployment's expected inputs before
@@ -137,10 +137,10 @@ func (m *Mux) RegisterTaskInputs(taskID string, inputs int) error {
 	if inputs < 1 {
 		return fmt.Errorf("transport: positive input count required")
 	}
-	return m.registerTask(taskID, inputs, true)
+	return m.registerTask(taskID, inputs, true, nil)
 }
 
-func (m *Mux) registerTask(taskID string, capacity int, rejectOverflow bool) error {
+func (m *Mux) registerTask(taskID string, capacity int, rejectOverflow bool, authorize func(string, protocol.StreamHeaderMsg) bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.ctx.Err() != nil {
@@ -155,6 +155,7 @@ func (m *Mux) registerTask(taskID string, capacity int, rejectOverflow bool) err
 	queue := newTaskQueue()
 	queue.streams = make(chan *FrameStream, capacity)
 	queue.rejectOverflow = rejectOverflow
+	queue.authorize = authorize
 	m.tasks[taskID] = queue
 	close(m.taskChanged)
 	m.taskChanged = make(chan struct{})
@@ -278,7 +279,11 @@ func (m *Mux) sessionAcceptLoop(ctx context.Context, sess *Session) {
 				return true
 			}
 			target = m.waitForTask(ctx, sess, header.TargetTaskID)
-			return target != nil
+			if target == nil {
+				return false
+			}
+			_, peerID, negotiated := sess.SessionParameters()
+			return negotiated && (target.authorize == nil || target.authorize(peerID, header))
 		})
 		if err != nil {
 			if !sess.IsClosed() && m.ctx.Err() == nil && ctx.Err() == nil {

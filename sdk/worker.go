@@ -11,16 +11,21 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/tarungka/wire/internal/apiclient"
 	"github.com/tarungka/wire/internal/worker"
 )
 
 // WorkerConfig configures a worker that executes registered SDK operators.
 // CoordinatorAddr is the wire RPC address, not the coordinator HTTP URL.
 type WorkerConfig struct {
+	CoordinatorSeeds                      []string
+	EpochPath                             string
+	DiscoverySecurity                     CoordinatorSecurity
 	WorkerID, CoordinatorAddr, ListenAddr string
 	TaskSlots                             int
 	HeartbeatInterval, HeartbeatTimeout   time.Duration
 	RPCTLSConfig                          *tls.Config
+	PeerTLSConfig                         *tls.Config
 	// CheckpointDirectory enables replica storage. At least two configured
 	// workers are needed to checkpoint a job. This directory is retained.
 	CheckpointDirectory                     string
@@ -37,7 +42,7 @@ func RunWorker(ctx context.Context, config WorkerConfig, registry *WorkerRegistr
 	if registry == nil || registry.registry == nil {
 		return fmt.Errorf("sdk: worker registry is required")
 	}
-	if config.CoordinatorAddr == "" {
+	if config.CoordinatorAddr == "" && len(config.CoordinatorSeeds) == 0 {
 		return fmt.Errorf("sdk: coordinator RPC address is required")
 	}
 	if config.TaskSlots < 0 || config.CheckpointConcurrency < 0 || config.ShutdownTimeout < 0 || config.HeartbeatInterval < 0 || config.HeartbeatTimeout < 0 {
@@ -52,7 +57,10 @@ func RunWorker(ctx context.Context, config WorkerConfig, registry *WorkerRegistr
 	if config.ShutdownTimeout == 0 {
 		config.ShutdownTimeout = 30 * time.Second
 	}
-	cfg := worker.Config{WorkerID: config.WorkerID, CoordinatorAddr: config.CoordinatorAddr, ListenAddr: config.ListenAddr, TaskSlots: config.TaskSlots, HeartbeatInterval: config.HeartbeatInterval, HeartbeatTimeout: config.HeartbeatTimeout}
+	cfg := worker.Config{CoordinatorSeeds: append([]string(nil), config.CoordinatorSeeds...), EpochPath: config.EpochPath, DiscoverySecurity: apiclient.Config(config.DiscoverySecurity), WorkerID: config.WorkerID, CoordinatorAddr: config.CoordinatorAddr, ListenAddr: config.ListenAddr, TaskSlots: config.TaskSlots, HeartbeatInterval: config.HeartbeatInterval, HeartbeatTimeout: config.HeartbeatTimeout}
+	if config.PeerTLSConfig != nil {
+		cfg.PeerTLSConfig = config.PeerTLSConfig.Clone()
+	}
 	if config.RPCTLSConfig != nil {
 		cfg.RPCTLSConfig = config.RPCTLSConfig.Clone()
 	}

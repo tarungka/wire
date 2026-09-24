@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	_ "go.uber.org/automaxprocs" // Apply Linux CPU quotas before starting task goroutines.
 	"golang.org/x/sync/errgroup"
 
+	"github.com/tarungka/wire/internal/apiclient"
 	"github.com/tarungka/wire/internal/cmd"
 	"github.com/tarungka/wire/internal/config"
 	"github.com/tarungka/wire/internal/coordinator"
@@ -21,6 +23,7 @@ import (
 	"github.com/tarungka/wire/internal/jobcli"
 	"github.com/tarungka/wire/internal/logger"
 	"github.com/tarungka/wire/internal/observability"
+	"github.com/tarungka/wire/internal/transport"
 	"github.com/tarungka/wire/internal/worker"
 )
 
@@ -193,10 +196,22 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 	if err != nil {
 		return err
 	}
+	// Load configured HTTPS credentials before starting any server.
+	var httpTLS *tls.Config
+	if wireCfg.HTTP.TLS.Cert != "" || wireCfg.HTTP.TLS.Key != "" || wireCfg.HTTP.TLS.VerifyClient || wireCfg.HTTP.TLS.CACert != "" {
+		var err error
+		httpTLS, err = transport.LoadTLSConfig(wireCfg.HTTP.TLS.Cert, wireCfg.HTTP.TLS.Key, wireCfg.HTTP.TLS.VerifyClient, wireCfg.HTTP.TLS.CACert)
+		if err != nil {
+			return fmt.Errorf("HTTP TLS: %w", err)
+		}
+	}
 	if election != nil {
 		service := coordinator.NewHAService(coordCfg, wireCfg.Listen, election, func() (coordinator.MetadataStore, error) {
 			return coordinator.NewPebbleStore(wireCfg.Node.DataDir)
 		}, rpcTLS, log.Logger)
+		if err := service.ConfigureHTTP(httpTLS, wireCfg.Auth.File); err != nil {
+			return fmt.Errorf("HA HTTP security: %w", err)
+		}
 		return service.Run(ctx)
 	}
 	store, err := coordinator.NewPebbleStore(wireCfg.Node.DataDir)
@@ -206,8 +221,10 @@ func runCoordinator(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.L
 	defer func() { _ = store.Close() }()
 	coord := coordinator.New(coordCfg, store, election, log.Logger)
 
-	// Create HTTP server.
-	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger)
+	httpSrv := coordinator.NewHTTPServer(coord, wireCfg.HTTP.Addr, log.Logger, httpTLS)
+	if err := httpSrv.ConfigureAuth(wireCfg.Auth.File); err != nil {
+		return fmt.Errorf("HTTP authentication: %w", err)
+	}
 
 	// Create transport server for worker RPC connections.
 	transportSrv := coordinator.NewTransportServer(coord, wireCfg.Listen, log.Logger, rpcTLS)
@@ -262,9 +279,16 @@ func runWorker(ctx context.Context, wireCfg *config.WireConfig, _ zerolog.Logger
 	if err != nil {
 		return err
 	}
+	peerTLS, err := workerPeerTLS(wireCfg.Worker.PeerTLS)
+	if err != nil {
+		return err
+	}
 	w := worker.New(worker.Config{
+		PeerTLSConfig:        peerTLS,
+		MaxFrameSize:         wireCfg.MaxFrameSize,
 		EpochPath:            wireCfg.Worker.EpochPath,
 		CoordinatorSeeds:     wireCfg.Worker.CoordinatorSeeds,
+		DiscoverySecurity:    apiclient.Config(wireCfg.Worker.DiscoveryHTTP),
 		HeartbeatInterval:    wireCfg.Heartbeat.Interval.Duration,
 		HeartbeatTimeout:     wireCfg.Heartbeat.Timeout.Duration,
 		HeartbeatMaxFailures: wireCfg.Heartbeat.MaxFailures,

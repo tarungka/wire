@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+
+	"github.com/tarungka/wire/internal/apiclient"
 )
 
 const maxBody = 4 << 20
@@ -31,6 +33,13 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 		flags.PrintDefaults()
 	}
 	endpoint := flags.String("coordinator", "http://localhost:4001", "coordinator HTTP URL")
+	var security apiclient.Config
+	flags.StringVar(&security.CACert, "ca-cert", "", "CA certificate for coordinator HTTPS")
+	flags.StringVar(&security.ClientCert, "client-cert", "", "HTTPS client certificate")
+	flags.StringVar(&security.ClientKey, "client-key", "", "HTTPS client private key")
+	flags.StringVar(&security.APIKeyFile, "api-key-file", "", "file containing coordinator API key (HTTPS required)")
+	flags.StringVar(&security.Username, "username", "", "Basic authentication username")
+	flags.StringVar(&security.PasswordFile, "password-file", "", "file containing Basic authentication password (HTTPS required)")
 	timeout := flags.Duration("timeout", 30*time.Second, "request timeout")
 	file := flags.String("file", "", "submission JSON file")
 	status := flags.String("status", "", "job-list status filter")
@@ -166,7 +175,11 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	client := &http.Client{Timeout: *timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client, err := apiclient.New(base.String(), security, *timeout)
+	if err != nil {
+		return err
+	}
+	defer client.CloseIdleConnections()
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

@@ -11,25 +11,30 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/tarungka/wire/internal/apiclient"
 	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/observability"
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
+	"github.com/tarungka/wire/internal/secretconfig"
 	"github.com/tarungka/wire/internal/transport"
 )
 
 // Config holds worker configuration.
 type Config struct {
+	MaxFrameSize uint32 // Zero keeps the transport default.
 	// TaskFailureObserver receives task errors before reporting them. It must not block.
 	// Local SDK execution uses it to preserve Go error identities across its RPC boundary.
 	TaskFailureObserver func(jobID, taskID string, err error)
 	CoordinatorSeeds    []string
+	DiscoverySecurity   apiclient.Config
 	// EpochPath enables durable fencing across process restarts; required for HA discovery.
 	EpochPath            string
 	HeartbeatInterval    time.Duration
 	HeartbeatTimeout     time.Duration
 	HeartbeatMaxFailures int
 	RPCTLSConfig         *tls.Config
+	PeerTLSConfig        *tls.Config
 	CheckpointReplica    *CheckpointReplicaConfig
 	TaskSlot             *engine.TaskSlotConfig // Nil selects engine defaults.
 	WorkerID             string
@@ -41,6 +46,7 @@ type Config struct {
 // taskHandle tracks a running task so it can be cancelled on demand or
 // on worker shutdown.
 type taskHandle struct {
+	redactor           *secretconfig.Redactor
 	status             rpc.TaskStatus
 	started            time.Time
 	statistics         *engine.TaskStatistics
@@ -109,6 +115,9 @@ func NewWithRegistry(cfg Config, reg *Registry, log zerolog.Logger) *Worker {
 // Run connects to the coordinator, registers, and starts the heartbeat loop.
 // It blocks until ctx is canceled or an unrecoverable error occurs.
 func (w *Worker) Run(ctx context.Context) (retErr error) {
+	if err := validatePeerTLS(w.cfg.PeerTLSConfig); err != nil {
+		return err
+	}
 	if len(w.cfg.CoordinatorSeeds) > 0 && w.cfg.EpochPath == "" {
 		return fmt.Errorf("HA discovery requires a durable worker epoch path")
 	}
@@ -145,6 +154,7 @@ func (w *Worker) Run(ctx context.Context) (retErr error) {
 	var checkpointAddress string
 	if w.cfg.CheckpointReplica != nil {
 		replicaConfig := *w.cfg.CheckpointReplica
+		replicaConfig.TLSConfig = w.cfg.PeerTLSConfig
 		if replicaConfig.AuthorizeFetch == nil {
 			replicaConfig.AuthorizeFetch = w.authorizeCheckpointFetch
 		}
@@ -166,7 +176,10 @@ func (w *Worker) Run(ctx context.Context) (retErr error) {
 		checkpointAddress = addr
 		w.log.Info().Str("addr", addr).Msg("checkpoint replica listener started")
 	}
-	dataConfig := transport.DefaultConfig()
+	dataConfig := w.peerTransportConfig()
+	if w.cfg.MaxFrameSize != 0 {
+		dataConfig.MaxFrameSize = w.cfg.MaxFrameSize
+	}
 	dataConfig.TaskRegistrationTimeout = 5 * time.Second
 	dataConfig.NodeID = workerID
 	dataConfig.ListenAddr = w.cfg.ListenAddr
@@ -299,6 +312,7 @@ func (w *Worker) runCoordinatorSession(ctx context.Context, workerID, checkpoint
 	w.mu.RUnlock()
 	regReq := &rpc.RegisterWorkerRequest{
 		SupportsReservations: true,
+		SupportsSecretConfig: true,
 		HighestSeenEpoch:     highestEpoch,
 		CheckpointAddress:    checkpointAddress,
 		WorkerID:             workerID,
@@ -609,6 +623,10 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 // runTask reports Running after initialization, drives the executor, and reports
 // Finished/Failed on exit. Always removes the task from w.tasks when done.
 func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor, log zerolog.Logger) {
+	executorLog := log
+	if len(desc.SecretValues) > 0 {
+		log = secretconfig.NewRedactor(desc.SecretValues).Logger(log)
+	}
 	w.mu.RLock()
 	handle := w.tasks[taskID]
 	w.mu.RUnlock()
@@ -631,7 +649,7 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 			w.reportTaskFailed(jobID, taskID, fmt.Errorf("task inputs require data mux"))
 			return
 		}
-		if err := w.executor.data.RegisterTaskInputs(taskID, len(desc.Upstream)); err != nil {
+		if err := registerTaskSources(w.executor.data, jobID, taskID, desc); err != nil {
 			w.reportTaskFailed(jobID, taskID, err)
 			return
 		}
@@ -644,7 +662,7 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 		return
 	}
 	defer cleanup()
-	err = w.executor.run(ctx, jobID, taskID, desc, log, func() {
+	err = w.executor.run(ctx, jobID, taskID, desc, executorLog, func() {
 		w.reportTaskStatus(jobID, taskID, rpc.TaskStatusRunning, nil)
 	}, checkpoint)
 
@@ -656,6 +674,9 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 		log.Info().Msg("task finished")
 		w.reportTaskStatus(jobID, taskID, rpc.TaskStatusFinished, nil)
 	default:
+		if handle != nil {
+			err = handle.redactor.Error(err)
+		}
 		log.Error().Err(err).Msg("task failed")
 		w.reportTaskFailed(jobID, taskID, err)
 	}
@@ -693,8 +714,14 @@ func (w *Worker) reportTaskStatus(jobID, taskID string, status rpc.TaskStatus, f
 // reportTaskFailed sends an UpdateTaskStatus RPC with status=Failed and the
 // error message populated in the failure info.
 func (w *Worker) reportTaskFailed(jobID, taskID string, err error) {
+	w.mu.RLock()
+	var redactor *secretconfig.Redactor
+	if handle := w.tasks[taskID]; handle != nil && handle.jobID == jobID {
+		redactor = handle.redactor
+	}
+	w.mu.RUnlock()
 	if w.cfg.TaskFailureObserver != nil {
-		w.cfg.TaskFailureObserver(jobID, taskID, err)
+		w.cfg.TaskFailureObserver(jobID, taskID, redactor.Error(err))
 	}
 	var panicErr *engine.OperatorPanicError
 	var stack string
@@ -706,9 +733,9 @@ func (w *Worker) reportTaskFailed(jobID, taskID string, err error) {
 		stack = panicErr.Stack
 	}
 	w.reportTaskStatus(jobID, taskID, rpc.TaskStatusFailed, &rpc.TaskFailureInfo{
-		ErrorMessage: err.Error(),
+		ErrorMessage: redactor.String(err.Error()),
 		ErrorClass:   class,
-		StackTrace:   stack,
+		StackTrace:   redactor.String(stack),
 		Timestamp:    time.Now().UnixMilli(),
 	})
 }
@@ -788,6 +815,9 @@ func (w *Worker) joinTasksForReconnect() error {
 func (w *Worker) installTaskLocked(jobID, taskID string, desc rpc.TaskDescriptor, cancel context.CancelFunc) {
 	handle := &taskHandle{
 		status: rpc.TaskStatusDeploying, started: time.Now(), statistics: &engine.TaskStatistics{}, done: make(chan struct{}), cancel: cancel, jobID: jobID, epoch: desc.EpochID, attemptID: desc.AttemptID}
+	if len(desc.SecretValues) > 0 {
+		handle.redactor = secretconfig.NewRedactor(desc.SecretValues)
+	}
 	if desc.CheckpointReplicaAddress != "" || desc.RestoreCheckpoint != nil || desc.RestoreRescale != nil {
 		handle.checkpoint = &taskCheckpointRuntime{triggers: make(chan engine.CheckpointTrigger, 1), decisions: make(chan engine.ControlMsg, 16)}
 		for _, operator := range desc.OperatorChain {
@@ -828,4 +858,11 @@ func (w *Worker) acknowledgeAbsentCancellation(client *rpc.Client, cmd rpc.Worke
 			w.log.Warn().Err(err).Msg("cannot acknowledge absent task cancellation")
 		}
 	}()
+}
+
+func (w *Worker) peerTransportConfig() transport.Config {
+	cfg := transport.DefaultConfig()
+	cfg.TLSConfig = w.cfg.PeerTLSConfig
+	cfg.RequirePeerIdentity = w.cfg.PeerTLSConfig != nil
+	return cfg
 }

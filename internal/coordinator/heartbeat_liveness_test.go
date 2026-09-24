@@ -107,7 +107,7 @@ func TestRegistrationBindsLegacyAndCurrentSessionsAtomically(t *testing.T) {
 	// Registration and session ownership share one lock for legacy workers too.
 	peers := []*rpc.Client{rpc.NewClient(nil, rpc.DefaultConfig()), rpc.NewClient(nil, rpc.DefaultConfig())}
 	for i, peer := range peers {
-		if _, err := c.registerWorker(RegisterWorkerRequest{WorkerID: "worker", Address: "worker:1", TaskSlotsTotal: 1, HighestSeenEpoch: c.epoch, SupportsReservations: i == 1}, peer, nil); err != nil {
+		if _, err := c.registerWorker(RegisterWorkerRequest{WorkerID: "worker", Address: "worker:1", TaskSlotsTotal: 1, HighestSeenEpoch: c.epoch, SupportsReservations: i == 1}, peer, nil, ""); err != nil {
 			t.Fatal(err)
 		}
 		c.mu.RLock()

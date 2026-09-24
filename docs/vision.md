@@ -29,7 +29,7 @@ Wire provides the following non-negotiable guarantees to the user:
 
 ### 3.1 Exactly-Once Semantics (EOS)
 In the event of a failure (node crash, network partition), the effect of processing a record on the system state and output will be reflected **exactly once**.
-*   *Note:* This requires compliant sources (replayable) and sinks (transactional or idempotent).
+*   *Scope:* This requires the distributed checkpoint/recovery path, checkpoint-managed state, replayable sources, and transactional or idempotent sinks. Basic Source/Sink interfaces alone do not provide these properties. Embedded execution has no durable global checkpoint service and rejects transactional sinks. See the [transaction contract](trds/WIP-10/runtime-contract.md) and [HTTP connector limits](../sdk/connectors/httpapi/README.md).
 
 ### 3.2 Deterministic Recovery
 Recovery is **mechanistic**, not probabilistic.
@@ -38,7 +38,10 @@ Recovery is **mechanistic**, not probabilistic.
 *   Input streams are rewound to the offsets recorded in that snapshot.
 
 ### 3.3 Strict Event Ordering
-Within a single keyed partition, events are processed in order. Wire strictly respects `(Key, Timestamp)` causality.
+Routing and ordered channels preserve stream order within a keyed partition.
+The runtime does not sort records by timestamp: out-of-order event times are
+handled through watermark and lateness policies. Ordering across independent
+upstream streams is not a global timestamp-order guarantee.
 
 ## 4. Execution Time Semantics
 

@@ -369,3 +369,14 @@ func TestTLS_AllMessageTypes(t *testing.T) {
 		}
 	}
 }
+
+func TestTLSRejectsIncompleteConfiguration(t *testing.T) {
+	if _, err := LoadTLSConfig("cert", "key", true, ""); err == nil {
+		t.Fatal("client verification accepted without trust roots")
+	}
+	for _, pair := range [][2]string{{"cert", ""}, {"", "key"}} {
+		if _, err := NewTLSClientConfig(pair[0], pair[1], ""); err == nil {
+			t.Fatal("accepted incomplete client certificate pair")
+		}
+	}
+}

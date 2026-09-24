@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -8,6 +9,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
+	"fmt"
 	"math/big"
 	"net"
 	"testing"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/tarungka/wire/internal/engine"
 	"github.com/tarungka/wire/internal/rpc"
 	"github.com/tarungka/wire/internal/transport"
 	"github.com/tarungka/wire/internal/worker"
@@ -83,7 +87,8 @@ func TestCoordinatorRPCMutualTLSAndWorkerIdentity(t *testing.T) {
 }
 
 func TestReservedJobRunsOverMutualTLS(t *testing.T) {
-	c, _ := newTestCoordinator(t)
+	t.Setenv("WIRE_TLS_JOB_SECRET", "tls-private-token")
+	c, store := newTestCoordinator(t)
 	serverTLS, clientTLS := rpcTestTLS(t)
 	srv := NewTransportServer(c, "127.0.0.1:0", zerolog.Nop(), serverTLS)
 	if err := srv.Listen(); err != nil {
@@ -93,7 +98,21 @@ func TestReservedJobRunsOverMutualTLS(t *testing.T) {
 	serverDone := make(chan struct{})
 	go func() { defer close(serverDone); _ = srv.Serve(ctx) }()
 	registry := worker.NewRegistry()
-	registry.RegisterSource("memory-source", memory.SourceFactory())
+	sourceConfig := encode(t, memory.SourceConfig{Events: [][]byte{[]byte("record")}})
+	receivedSecret := make(chan string, 1)
+	registry.RegisterSource("memory-source", func(ctx context.Context, cfg []byte, tc worker.TaskContext) (engine.SourceOperator, error) {
+		var config struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(cfg, &config); err != nil {
+			return nil, fmt.Errorf("invalid source configuration")
+		}
+		receivedSecret <- config.Token
+		if config.Token != "tls-private-token" {
+			return nil, fmt.Errorf("source credential not resolved")
+		}
+		return memory.SourceFactory()(ctx, sourceConfig, tc)
+	})
 	registry.RegisterSink("memory-sink", memory.SinkFactory())
 	w := worker.NewWithRegistry(worker.Config{WorkerID: "worker", TaskSlots: 1, CoordinatorAddr: srv.Addr(), RPCTLSConfig: clientTLS}, registry, zerolog.Nop())
 	workerDone := make(chan error, 1)
@@ -128,20 +147,40 @@ func TestReservedJobRunsOverMutualTLS(t *testing.T) {
 		// worker. WatchCommands starts only after the worker accepts/persists
 		// the epoch, so reservations are then ready. This test schedules once;
 		// unlike the production scheduler it cannot retry an early refusal.
-		return c.workers["worker"] != nil && c.workers["worker"].RPCClient != nil && c.cmdStreams["worker"] != nil
+		return c.workers["worker"] != nil && c.workers["worker"].RPCClient != nil && c.cmdStreams["worker"] != nil && c.workers["worker"].RPCAuthenticated && c.workers["worker"].SupportsSecretConfig
 	})
 	sinkID := t.Name()
 	defer memory.Reset(sinkID)
 	graph := rpc.JobGraph{Operators: []rpc.OperatorDescriptor{
-		{OperatorID: "source", Type: rpc.OperatorTypeSource, Parallelism: 1, ClassName: "memory-source", Config: encode(t, memory.SourceConfig{Events: [][]byte{[]byte("record")}})},
+		{OperatorID: "source", Type: rpc.OperatorTypeSource, Parallelism: 1, ClassName: "memory-source", Config: []byte(`{"token":"${WIRE_TLS_JOB_SECRET}"}`)},
 		{OperatorID: "sink", Type: rpc.OperatorTypeSink, Parallelism: 1, ClassName: "memory-sink", Config: encode(t, memory.SinkConfig{SinkID: sinkID})},
 	}, Edges: []rpc.EdgeDescriptor{{SourceOperatorID: "source", TargetOperatorID: "sink", Shuffle: rpc.ShuffleStrategyForward}}}
-	job := &JobMeta{ID: "tls-job", Status: JobCreated, Parallelism: 1, Config: encode(t, graph)}
-	c.mu.Lock()
-	c.jobs[job.ID] = job
-	c.mu.Unlock()
+	submitted, err := c.SubmitJob("tls-job", 1, encode(t, graph))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.RLock()
+	job := c.jobs[submitted.ID]
+	c.mu.RUnlock()
 	c.scheduleJob(job)
 	wait(func() bool { c.mu.RLock(); defer c.mu.RUnlock(); return job.Status == JobFinished })
+	select {
+	case value := <-receivedSecret:
+		if value != "tls-private-token" {
+			t.Fatal("wrong credential received")
+		}
+	default:
+		t.Fatal("factory did not receive credential")
+	}
+	for _, key := range [][]byte{JobMetaKey(job.ID), JobConfigKey(job.ID), JobAssignmentsKey(job.ID)} {
+		raw, err := store.Get(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(raw, []byte("tls-private-token")) {
+			t.Fatal("mTLS deployment persisted plaintext credentials")
+		}
+	}
 	records := memory.Collected(sinkID)
 	if len(records) != 1 || string(records[0].Value) != "record" {
 		t.Fatalf("incorrect output: %v", records)

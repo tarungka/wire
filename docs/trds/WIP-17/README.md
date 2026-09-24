@@ -24,8 +24,8 @@
 
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.
 
-- **Implemented:** Configuration structures, transport TLS utilities/tests, and environment substitution exist. WIP-07 now wires node TLS into coordinator-worker RPCs, including verified client-certificate identity checks.
-- **Remaining:** HTTP authentication/RBAC, HTTPS, and data-plane/checkpoint-replica TLS remain separate runtime work. Securing coordinator-worker RPCs does not establish a secured entire cluster.
+- **Implemented on this branch:** Coordinator HTTPS, file-backed HTTP authentication/roles, and coordinator-worker RPC TLS with certificate identity checks. Integration with the current HA, lifecycle and SDK stack is being validated.
+- **Remaining:** HA HTTP security integration, data-plane/checkpoint-replica TLS, client credential propagation, complete secret management and original security acceptance gates. Existing TLS/authentication code alone does not establish a fully secured cluster.
 - **Evidence:** [config.go](../../../internal/config/config.go), [tls.go](../../../internal/transport/tls.go), [main.go](../../../cmd/main.go).
 
 ---

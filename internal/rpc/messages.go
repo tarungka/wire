@@ -341,8 +341,11 @@ type OutputGroupDescriptor struct {
 }
 
 type TaskDescriptor struct {
-	TransactionJobID  string `codec:"transaction_job_id,omitempty"`
-	TransactionTaskID string `codec:"transaction_task_id,omitempty"`
+	// SecretValues is runtime-only redaction material, sent only with secure
+	// deployment copies; it must never be persisted in assignment metadata.
+	SecretValues      []string `codec:"secret_values,omitempty" json:"-"`
+	TransactionJobID  string   `codec:"transaction_job_id,omitempty"`
+	TransactionTaskID string   `codec:"transaction_task_id,omitempty"`
 
 	OutputGroups             []OutputGroupDescriptor      `codec:"output_groups,omitempty"`
 	DeploymentGeneration     uint64                       `codec:"deployment_generation,omitempty"`
@@ -372,6 +375,7 @@ type KeyGroupRange struct {
 
 // UpstreamChannelInfo describes a task's upstream data source.
 type UpstreamChannelInfo struct {
+	WorkerID       string        `codec:"worker_id,omitempty"`
 	IdleTimeout    time.Duration `codec:"idle_timeout,omitempty"`
 	TaskID         string        `codec:"tid,omitempty"`
 	PartitionIndex uint16        `codec:"pi,omitempty"`
@@ -623,6 +627,7 @@ type RunningTaskSummary struct {
 
 // RegisterWorkerRequest is sent from Worker to Coordinator to register or re-register.
 type RegisterWorkerRequest struct {
+	SupportsSecretConfig bool     `codec:"secret_config,omitempty"`
 	SupportsReservations bool     `codec:"slot_reservations,omitempty"`
 	CheckpointAddress    string   `codec:"checkpoint_addr,omitempty"`
 	WorkerID             string   `codec:"wid"`

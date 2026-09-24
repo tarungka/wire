@@ -109,6 +109,7 @@ func (c *Coordinator) transitionJobLocked(job *JobMeta, to JobStatus) error {
 	c.jobs[job.ID] = job
 	if to.IsTerminal() {
 		delete(c.activeJobNames, job.Name)
+		c.forgetJobSecretsLocked(job.ID)
 	}
 
 	// Record end-to-end job duration when the job reaches a terminal

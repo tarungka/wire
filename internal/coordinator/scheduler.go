@@ -15,6 +15,7 @@ import (
 
 	"github.com/tarungka/wire/internal/protocol"
 	"github.com/tarungka/wire/internal/rpc"
+	"github.com/tarungka/wire/internal/secretconfig"
 )
 
 const (
@@ -167,7 +168,32 @@ func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 		return
 	}
 
-	assignments, err := c.assignTasks(tasks)
+	c.mu.Lock()
+	if !c.readyLocked() || (job.Status != JobCreated && job.Status != JobFailing && job.Status != JobResuming) {
+		c.mu.Unlock()
+		return
+	}
+	if err := c.ensureJobSecretsLocked(job); err != nil {
+		failing := job.Status == JobFailing
+		c.mu.Unlock()
+		c.log.Error().Err(err).Str("job_id", jobID).Msg("cannot resolve recovered job credentials")
+		if !failing {
+			if transitionErr := c.transitionJob(job, JobFailing); transitionErr != nil {
+				return
+			}
+		}
+		if transitionErr := c.transitionJob(job, JobFailed); transitionErr != nil {
+			c.log.Warn().Err(transitionErr).Str("job_id", jobID).Msg("cannot fail unresolved job")
+		}
+		return
+	}
+
+	secretTasks := make(map[string]bool)
+	for _, task := range tasks {
+		secretTasks[task.TaskID] = c.tasksNeedSecretsLocked(jobID, []rpc.TaskDescriptor{task})
+	}
+	c.mu.Unlock()
+	assignments, err := c.assignTasks(tasks, secretTasks)
 	if err != nil {
 		c.recordRescalePlacementFailure(job, time.Now())
 		c.log.Debug().Err(err).Str("job_id", jobID).Msg("cannot schedule job, will retry")
@@ -220,6 +246,13 @@ func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 		return
 	}
 
+	for workerID, workerTasks := range assignments {
+		if c.tasksNeedSecretsLocked(jobID, workerTasks) && !c.secretDeploymentAllowedLocked(workerID, peers[workerID]) {
+			c.mu.Unlock()
+			c.log.Warn().Str("job_id", jobID).Str("worker_id", workerID).Msg("secret deployment requires a current mTLS session and secret-config capability")
+			return
+		}
+	}
 	if err := c.attachTaskAddressesLocked(assignments); err != nil {
 		c.mu.Unlock()
 		c.log.Error().Err(err).Str("job_id", jobID).Msg("cannot resolve task streams")
@@ -360,6 +393,13 @@ func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 			w.TaskSlotsAvailable = max(0, w.TaskSlotsAvailable-1)
 		}
 	}
+	// Only create secret-bearing copies after reference-only metadata is durable.
+	// These copies are sent on the captured authenticated peer, never queued.
+	for workerID, workerTasks := range assignments {
+		if c.tasksNeedSecretsLocked(jobID, workerTasks) {
+			assignments[workerID] = c.resolvedTaskCopiesLocked(jobID, workerTasks)
+		}
+	}
 	c.mu.Unlock()
 
 	// Enqueue DeployTask commands (outside lock).
@@ -371,6 +411,13 @@ func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 			err := peer.CallWithRetry(ctx, rpc.MethodSubmitJob, req, &resp, 1)
 			cancel()
 			if err != nil || !resp.Accepted {
+				var secrets []string
+				for _, task := range wTasks {
+					secrets = append(secrets, task.SecretValues...)
+				}
+				if len(secrets) > 0 {
+					err = secretconfig.NewRedactor(secrets).Error(err)
+				}
 				c.log.Warn().Err(err).Str("job_id", jobID).Msg("reserved deployment failed; cancelling attempt")
 				if err := c.transitionJob(job, JobFailing); err != nil {
 					c.log.Warn().Err(err).Msg("cannot fail deployment")
@@ -508,17 +555,18 @@ func topoSortOperators(graph rpc.JobGraph) ([]rpc.OperatorDescriptor, error) {
 }
 
 // assignTasks distributes tasks across available workers.
-func (c *Coordinator) assignTasks(tasks []rpc.TaskDescriptor) (map[string][]rpc.TaskDescriptor, error) {
+func (c *Coordinator) assignTasks(tasks []rpc.TaskDescriptor, secretTaskSets ...map[string]bool) (map[string][]rpc.TaskDescriptor, error) {
 	c.mu.RLock()
 	type workerSlot struct {
-		id    string
-		avail int
+		id     string
+		avail  int
+		secure bool
 	}
 	var eligible []workerSlot
 	totalAvail := 0
 	for _, w := range c.workers {
 		if !w.Removed && w.TaskSlotsAvailable > 0 && !w.LastHeartbeat.IsZero() && time.Since(w.LastHeartbeat) < c.config.WorkerTimeout {
-			eligible = append(eligible, workerSlot{id: w.ID, avail: w.TaskSlotsAvailable})
+			eligible = append(eligible, workerSlot{id: w.ID, avail: w.TaskSlotsAvailable, secure: w.SupportsReservations && c.secretDeploymentAllowedLocked(w.ID, w.RPCClient)})
 			totalAvail += w.TaskSlotsAvailable
 		}
 	}
@@ -533,11 +581,34 @@ func (c *Coordinator) assignTasks(tasks []rpc.TaskDescriptor) (map[string][]rpc.
 		return eligible[i].avail > eligible[j].avail
 	})
 
-	result := make(map[string][]rpc.TaskDescriptor)
-	for i, task := range tasks {
-		w := eligible[i%len(eligible)]
-		result[w.id] = append(result[w.id], task)
+	var secretTasks map[string]bool
+	if len(secretTaskSets) > 0 {
+		secretTasks = secretTaskSets[0]
 	}
+	ordered := append([]rpc.TaskDescriptor(nil), tasks...)
+	// Allocate restricted tasks first so ordinary tasks cannot consume their
+	// only eligible slots. Never exceed an individual worker's available count.
+	sort.SliceStable(ordered, func(i, j int) bool { return secretTasks[ordered[i].TaskID] && !secretTasks[ordered[j].TaskID] })
+	result := make(map[string][]rpc.TaskDescriptor)
+	next := 0
+	for _, task := range ordered {
+		selected := -1
+		for offset := 0; offset < len(eligible); offset++ {
+			candidate := (next + offset) % len(eligible)
+			if eligible[candidate].avail > 0 && (!secretTasks[task.TaskID] || eligible[candidate].secure) {
+				selected = candidate
+				break
+			}
+		}
+		if selected < 0 {
+			return nil, fmt.Errorf("insufficient eligible slots for task deployment")
+		}
+		worker := &eligible[selected]
+		result[worker.id] = append(result[worker.id], task)
+		worker.avail--
+		next = (selected + 1) % len(eligible)
+	}
+
 	return result, nil
 }
 

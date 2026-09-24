@@ -1,10 +1,10 @@
 # Observability
 
 Wire ships an OpenTelemetry meter provider with a Prometheus scrape
-exporter. Metrics are recorded at four subsystem boundaries — HTTP API,
-PebbleDB metadata store, RPC server dispatch, and process runtime — with
-strictly-bounded label cardinality so the series count stays flat under
-load.
+exporter. Metrics cover the HTTP API, PebbleDB metadata store, RPC server dispatch,
+process runtime, task execution, checkpoints, heartbeats, and error policies.
+API/store/RPC labels use bounded enums; task instruments include task IDs and
+therefore need retention and cardinality planning for long-running clusters.
 
 Traces are wired through the same OTel SDK but no exporter is attached
 yet; that's the next phase.
@@ -44,18 +44,24 @@ Plus the standard process metrics from the Go runtime collector:
 `process_cpu_seconds_total`, `process_resident_memory_bytes`,
 `go_goroutines`, `go_memstats_*`, etc.
 
+## Task, checkpoint, and heartbeat metrics
+
+See [operations](operations.md#31-key-metrics) for the current task and checkpoint
+instrument names. Task queue gauges count events; they are not capacity ratios.
+`wire_task_goroutine_count` counts active engine-owned goroutines/callbacks.
+Heartbeat instruments include `wire_heartbeat_latency_ms` (histogram),
+`wire_heartbeat_failures_total`, `wire_workers_lost_total`, and `wire_workers_alive`.
+
 ## Cardinality discipline
 
-Every label value comes from a fixed enum:
-- `method` — the eight `MethodID` names from `internal/rpc/codec.go`
-- `route` — patterns registered on the HTTP mux (15 today)
-- `op` — five PebbleStore op names
-- `status_class` — `1xx` / `2xx` / `3xx` / `4xx` / `5xx`
-- `method` (HTTP) — the seven HTTP verbs
+API/store/RPC labels use method names, registered route patterns, operation
+names, and status classes rather than raw URLs. Their counts grow as new methods
+and routes are added; there is no fixed eight-method or fifteen-route limit.
 
-Worst case: 15 × 7 × 5 = 525 HTTP series, 5 PebbleStore series, 8 RPC
-series. Total stays well under 1 K series. **No raw user input ever
-becomes a label.** Adding new instruments should follow the same rule.
+Task instruments use `task_id`. Observable task gauges unregister on task exit,
+but historical series and cumulative instrument label sets still need monitoring.
+Error-policy metrics also have operator labels; see [error handling](sdk/error_handling.md).
+Avoid adding unbounded event keys or payload values as metric labels.
 
 ## Histogram bucket choice
 
@@ -119,5 +125,5 @@ go_goroutines
   request ID) so worker → coordinator traces stitch together.
 - **Engine per-record metrics.** Per-batch counter in the operator
   chain drain loop; histogram for batch size.
-- **Worker metrics.** Heartbeat success/failure, task slot utilization,
-  active job count.
+- **Additional worker metrics.** Task slot utilization and active job count;
+  heartbeat latency/failure and worker liveness instruments already exist.

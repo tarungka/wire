@@ -29,16 +29,18 @@ type Config struct {
 	NodeID                  string
 	ListenAddr              string
 	TLSConfig               *tls.Config
-	MaxFrameSize            uint32
-	HandshakeTimeout        time.Duration
-	FrameReadTimeout        time.Duration
-	DialTimeout             time.Duration
-	KeepAliveInterval       time.Duration
-	ConnectionWriteTimeout  time.Duration
-	MaxStreamWindowSize     uint32
-	LocalProtocolVersion    uint16
-	LocalMinVersion         uint16
-	LocalFeatures           uint32
+	// RequirePeerIdentity binds the session NodeID to the verified certificate CN.
+	RequirePeerIdentity    bool
+	MaxFrameSize           uint32
+	HandshakeTimeout       time.Duration
+	FrameReadTimeout       time.Duration
+	DialTimeout            time.Duration
+	KeepAliveInterval      time.Duration
+	ConnectionWriteTimeout time.Duration
+	MaxStreamWindowSize    uint32
+	LocalProtocolVersion   uint16
+	LocalMinVersion        uint16
+	LocalFeatures          uint32
 }
 
 // DefaultConfig returns a Config populated with default values.

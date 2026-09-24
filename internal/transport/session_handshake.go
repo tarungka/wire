@@ -79,6 +79,12 @@ func (s *Session) NegotiateSession(ctx context.Context, cfg Config, initiator bo
 	if remote.NodeID == "" || remote.MinVersion == 0 || remote.ProtocolVersion < remote.MinVersion {
 		return NegotiatedParams{}, fmt.Errorf("transport: invalid remote session identity or version range")
 	}
+	if cfg.RequirePeerIdentity {
+		state, secure := s.TLSConnectionState()
+		if !secure || len(state.VerifiedChains) == 0 || len(state.PeerCertificates) == 0 || state.PeerCertificates[0].Subject.CommonName != remote.NodeID {
+			return NegotiatedParams{}, fmt.Errorf("transport: session node identity does not match verified peer certificate")
+		}
+	}
 	effective := min(local.ProtocolVersion, remote.ProtocolVersion)
 	incompatible := effective < local.MinVersion || effective < remote.MinVersion
 	// Respond before rejecting an incompatible range so both peers can diagnose it.

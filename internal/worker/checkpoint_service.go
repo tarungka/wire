@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ import (
 // exist and be owned by this worker. Authorize must validate current assignment
 // ownership before a verified transfer can be published.
 type CheckpointReplicaConfig struct {
+	TLSConfig      *tls.Config
 	ListenAddr     string
 	AdvertiseAddr  string
 	StoreRoot      string
@@ -29,6 +31,9 @@ type CheckpointReplicaConfig struct {
 }
 
 func startCheckpointReplicaService(ctx context.Context, cfg CheckpointReplicaConfig) (string, func(), error) {
+	if err := validatePeerTLS(cfg.TLSConfig); err != nil {
+		return "", nil, err
+	}
 	if cfg.Authorize == nil {
 		return "", nil, fmt.Errorf("checkpoint replica authorization is required")
 	}
@@ -71,7 +76,15 @@ func startCheckpointReplicaService(ctx context.Context, cfg CheckpointReplicaCon
 	server := rpc.NewServer(rpc.DefaultConfig())
 	server.RegisterStream(rpc.MethodReplicateCheckpoint, handler)
 	if cfg.AuthorizeFetch != nil {
-		fetchHandler, err := rpc.NewCheckpointFetchHandler(cfg.Concurrency, checkpointArchiveLoader(store, cfg.StagingRoot, cfg.AuthorizeFetch))
+		fetchHandler, err := rpc.NewCheckpointFetchHandler(cfg.Concurrency, checkpointArchiveLoader(store, cfg.StagingRoot, func(ctx context.Context, request rpc.FetchCheckpointRequest) error {
+			if cfg.TLSConfig != nil {
+				name, ok := ctx.Value(checkpointPeerIdentityKey{}).(string)
+				if !ok || name == "" || name != request.WorkerID {
+					return fmt.Errorf("checkpoint fetch worker does not match verified certificate")
+				}
+			}
+			return cfg.AuthorizeFetch(ctx, request)
+		}))
 		if err != nil {
 			cancel()
 			_ = listener.Close()
@@ -97,12 +110,22 @@ func startCheckpointReplicaService(ctx context.Context, cfg CheckpointReplicaCon
 				defer conn.Close()
 				stop := context.AfterFunc(serviceCtx, func() { _ = conn.Close() })
 				defer stop()
-				session, err := transport.NewServerSession(conn, transport.DefaultConfig())
+				transportConfig := transport.DefaultConfig()
+				transportConfig.TLSConfig = cfg.TLSConfig
+				session, err := transport.NewServerSession(conn, transportConfig)
 				if err != nil {
 					return
 				}
 				defer session.Close()
-				server.ServeSession(serviceCtx, session.YamuxSession())
+				sessionCtx := serviceCtx
+				if cfg.TLSConfig != nil {
+					state, ok := session.TLSConnectionState()
+					if !ok || len(state.VerifiedChains) == 0 || len(state.PeerCertificates) == 0 || state.PeerCertificates[0].Subject.CommonName == "" {
+						return
+					}
+					sessionCtx = context.WithValue(serviceCtx, checkpointPeerIdentityKey{}, state.PeerCertificates[0].Subject.CommonName)
+				}
+				server.ServeSession(sessionCtx, session.YamuxSession())
 			}()
 		}
 	}()
@@ -118,8 +141,12 @@ func (w *Worker) authorizeCheckpointReplica(ctx context.Context, snapshot rpc.Re
 	if client == nil {
 		return fmt.Errorf("checkpoint coordinator connection is unavailable")
 	}
+	source, _ := ctx.Value(checkpointPeerIdentityKey{}).(string)
+	if w.cfg.PeerTLSConfig != nil && source == "" {
+		return fmt.Errorf("checkpoint upload has no verified worker identity")
+	}
 	var response rpc.AcknowledgeCheckpointResponse
-	if err := client.Call(ctx, rpc.MethodAuthorizeCheckpointReplica, rpc.AuthorizeCheckpointReplicaRequest{WorkerID: w.cfg.WorkerID, Snapshot: snapshot}, &response); err != nil {
+	if err := client.Call(ctx, rpc.MethodAuthorizeCheckpointReplica, rpc.AuthorizeCheckpointReplicaRequest{WorkerID: w.cfg.WorkerID, SourceWorkerID: source, Snapshot: snapshot}, &response); err != nil {
 		return err
 	}
 	if !response.Accepted {
@@ -144,3 +171,5 @@ func (w *Worker) authorizeCheckpointFetch(ctx context.Context, fetch rpc.FetchCh
 	}
 	return nil
 }
+
+type checkpointPeerIdentityKey struct{}

@@ -62,7 +62,7 @@ func connectTaskStreams(ctx context.Context, mux *transport.Mux, jobID, taskID s
 		expected[key] = index
 	}
 	if len(desc.Upstream) > 0 && ctx.Value(registeredTaskContextKey{}) != taskID {
-		if err = mux.RegisterTaskInputs(taskID, len(desc.Upstream)); err != nil {
+		if err = registerTaskSources(mux, jobID, taskID, desc); err != nil {
 			return
 		}
 		registered = true
@@ -99,4 +99,13 @@ func connectTaskStreams(ctx context.Context, mux *transport.Mux, jobID, taskID s
 		remaining--
 	}
 	return
+}
+
+// Register the coordinator's source ownership before restore can queue inputs.
+func registerTaskSources(mux *transport.Mux, jobID, taskID string, desc rpc.TaskDescriptor) error {
+	sources := make([]transport.TaskSource, 0, len(desc.Upstream))
+	for _, upstream := range desc.Upstream {
+		sources = append(sources, transport.TaskSource{TaskID: channelTaskID(jobID, upstream.TaskID, upstream.OperatorID, upstream.SubtaskIndex), WorkerID: upstream.WorkerID, PartitionIndex: upstream.PartitionIndex})
+	}
+	return mux.RegisterTaskSources(taskID, sources)
 }

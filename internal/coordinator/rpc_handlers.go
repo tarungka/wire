@@ -22,6 +22,7 @@ func (c *Coordinator) HandleRegisterWorker(ctx context.Context, _ uint64, payloa
 	// Map RPC request to coordinator domain request.
 	coordReq := RegisterWorkerRequest{
 		SupportsReservations: rpcReq.SupportsReservations,
+		SupportsSecretConfig: rpcReq.SupportsSecretConfig,
 		CheckpointAddress:    rpcReq.CheckpointAddress,
 		WorkerID:             rpcReq.WorkerID,
 		Address:              rpcReq.Address,
@@ -31,7 +32,8 @@ func (c *Coordinator) HandleRegisterWorker(ctx context.Context, _ uint64, payloa
 	}
 
 	peer, done := rpc.SessionPeer(ctx)
-	resp, err := c.registerWorker(coordReq, peer, done)
+	verifiedIdentity, _ := ctx.Value(workerCertificateKey{}).(string)
+	resp, err := c.registerWorker(coordReq, peer, done, verifiedIdentity)
 	if err != nil {
 		return nil, rpc.NewRPCError(rpc.ErrCodeInternalError, fmt.Sprintf("register worker: %v", err))
 	}

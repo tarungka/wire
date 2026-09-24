@@ -11,19 +11,20 @@ import (
 // StreamExecutionEnvironment is the entry point for building and executing
 // streaming pipelines. It holds configuration and the logical stream graph.
 type StreamExecutionEnvironment struct {
-	miniCluster        *MiniCluster
-	parallelism        int
-	numKeyGroups       int
-	checkpointInterval time.Duration
-	checkpointTimeout  time.Duration
-	checkpointMinPause time.Duration
-	restartStrategy    RestartStrategy
-	mode               ExecutionMode
-	coordinatorURL     string
-	graph              *StreamGraph
-	executed           bool
-	stateBackend       StateBackendConfig
-	stateBackendSet    bool
+	miniCluster         *MiniCluster
+	parallelism         int
+	numKeyGroups        int
+	checkpointInterval  time.Duration
+	checkpointTimeout   time.Duration
+	checkpointMinPause  time.Duration
+	restartStrategy     RestartStrategy
+	mode                ExecutionMode
+	coordinatorURL      string
+	coordinatorSecurity CoordinatorSecurity
+	graph               *StreamGraph
+	executed            bool
+	stateBackend        StateBackendConfig
+	stateBackendSet     bool
 }
 
 // New creates a new StreamExecutionEnvironment with default settings.
