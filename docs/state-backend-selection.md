@@ -139,3 +139,27 @@ overhead, iterator copies and temporary checkpoint/restore allocations; it is
 not process RSS or an aggregate worker memory budget. Backend close unregisters
 the callback. Temporary restore stores and standalone backends without metric
 identity do not emit unattributed series.
+
+## Worker aggregate admission
+
+Before starting a deployment, the worker sums the finite HashMap limits for
+every operator in every incoming task and adds the limits of tasks already
+admitted. A task stays counted until its executor completes teardown, even
+after a terminal status report. Reserved batches are accepted or rejected as a
+whole; the legacy push path applies the same check. Rejected batches retain
+their slot lease for explicit release or expiry and start no operators.
+
+The worker compares that sum with a fresh available-system-memory sample,
+obtained outside its ownership lock. Sampling failure rejects finite HashMap
+admission. A deployment waiting for previous-attempt teardown samples again
+before retrying admission. Accounting and installation share the same lock,
+so concurrent deployments cannot independently spend the same finite budget.
+
+This is conservative admission, not a physical memory reservation: already
+resident state is not credited back to available memory. Other processes may
+allocate after the sample; tree/runtime overhead and temporary restore,
+iterator and snapshot copies are additional. The system sample describes the
+host visible to the worker, not a container memory quota. Explicit zero
+(unlimited) HashMap limits and Pebble allocations are outside this finite
+budget. Slot reservation still reserves slots only; memory is checked when
+full task descriptors arrive for deployment.

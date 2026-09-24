@@ -14,7 +14,7 @@ are not evidence that every requirement is implemented.
 | MiniCluster startup below 100 ms | Lifecycle benchmark measures construction through the first actual stateful invocation, plus total completion/shutdown separately. Record local measurements; do not use constructor-only timing or promise this target for every host. |
 | Node configuration, CLI and environment defaults | Node state settings, both CLI flags and environment names now resolve omitted managed-operator choices at submission and persist them. Tests cover node precedence, explicit SDK choices, validation and recovery stability. Full pipeline precedence remains below. |
 | Pipeline YAML and full selection precedence | Preserve the original pipeline field and SDK/CLI/pipeline/system/default ordering. Integration with WIP-19 remains required; not removed from scope. |
-| Memory limits and safeguards | Existing logical payload accounting and errors need full boundary/overflow/restore audit. Worker aggregate admission against available memory remains open. Runtime overhead and snapshot/iterator copies must be documented accurately. |
+| Memory limits and safeguards | Existing logical payload accounting and errors need full boundary/overflow/restore audit. Worker deployment admission now sums finite HashMap limits across incoming chains and live tasks, compares them with available system memory, and rejects batches atomically. Tests cover overflow, teardown ownership, concurrent admission, sampling failures and both deployment paths. Container quota awareness and reservation-time resource placement remain limitations to audit. Runtime overhead and snapshot/iterator copies must be documented accurately. |
 | Memory observability | `wire_state_backend_memory_bytes` reports managed HashMap logical key/value bytes with backend, operator and task attribution. Engine tests cover mutation, rejected writes, restore and close; a real MiniCluster test verifies both task instances and cleanup; a Prometheus exporter test verifies the public series name and labels. Temporary restore stores do not register series. |
 | Checkpoint format and metadata | HashMap writes `WHSB`, version 1, length-prefixed entries and CRC32, and reads legacy unframed version-1 snapshots. Fixed byte fixtures verify upgrade compatibility and malformed-header rejection. Backend-tagged handles exist; backend mismatch, native Pebble semantics and durable manifest evidence remain in the final audit. |
 | Replication, restore and retention | Current worker archive transport and retention code exist from earlier WIPs. Prove both backends through actual completed-checkpoint recovery and cleanup; helper round trips alone are insufficient. |
@@ -74,8 +74,9 @@ uses 256 MiB unless explicitly overridden, including zero for unlimited.
 Config/command/coordinator race suites pass. Targeted tests exercise actual CLI
 parsing, file→environment→explicit-flag precedence, alias conflicts, overflow,
 immutable caller bytes, no persistence on invalid selection and recovered graph
-stability. The complete YAML/CLI/SDK precedence and aggregate worker memory
-admission are still required before marking this WIP implemented.
+stability. Complete YAML/CLI/SDK precedence remains required before marking
+this WIP implemented. Aggregate finite HashMap admission is now implemented at
+deployment; see the requirement table and backend selection guide for limits.
 
 ## B-tree index validation
 
