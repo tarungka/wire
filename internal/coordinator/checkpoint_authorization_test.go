@@ -9,13 +9,17 @@ import (
 )
 
 func TestCheckpointReplicaAuthorizationFencesAssignment(t *testing.T) {
-	for _, mode := range []string{"valid", "wrong-worker", "wrong-task", "stale-epoch", "aborted", "wrong-destination"} {
+	for _, mode := range []string{"valid", "verified-source", "wrong-source", "wrong-worker", "wrong-task", "stale-epoch", "aborted", "wrong-destination"} {
 		t.Run(mode, func(t *testing.T) {
 			c, store := newTestCoordinator(t)
 			c.workers["replica"] = &WorkerMeta{ID: "replica", CheckpointAddress: "replica:1"}
 			checkpoint := CheckpointMeta{ID: 7, JobID: "job", EpochID: 5, Status: CheckpointInProgress, Tasks: map[string]string{"task": "source"}, Replicas: map[string]string{"task": "replica:1"}}
 			request := rpc.AuthorizeCheckpointReplicaRequest{WorkerID: "replica", Snapshot: rpc.ReplicateCheckpointRequest{JobID: "job", TaskID: "task", CheckpointID: 7, EpochID: 5, Size: 1}}
 			switch mode {
+			case "verified-source":
+				request.SourceWorkerID = "source"
+			case "wrong-source":
+				request.SourceWorkerID = "impostor"
 			case "wrong-worker":
 				request.WorkerID = "source"
 			case "wrong-task":
@@ -43,7 +47,7 @@ func TestCheckpointReplicaAuthorizationFencesAssignment(t *testing.T) {
 				t.Fatal(rpcErr)
 			}
 			response, ok := result.(*rpc.AcknowledgeCheckpointResponse)
-			if !ok || response.Accepted != (mode == "valid") {
+			if !ok || response.Accepted != (mode == "valid" || mode == "verified-source") {
 				t.Fatalf("authorization: %+v", result)
 			}
 		})

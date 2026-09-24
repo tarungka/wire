@@ -131,3 +131,22 @@ certificate rejection and successful mutual-TLS frame exchange.
 Checkpoint RPCs do not use this session negotiation. Their certificate-to-request
 identity/assignment binding remains separate work, as does the complete original
 security acceptance matrix. This increment does not claim those paths are done.
+
+
+## Checkpoint certificate identities
+
+Replica sessions now carry the verified nonempty certificate Common Name in a
+private connection context. Secure fetches reject a mismatched WorkerID before
+archive lookup/assignment authorization. Upload publication authorization sends a
+new SourceWorkerID attestation, derived by the receiving replica from that context,
+to the coordinator; it must match the checkpoint task owner. This does not add
+an uploader-controlled identity field to the archive/receipt. Secure replicas
+reject missing connection identity before making the authorization RPC.
+
+Tests exercise the real TLS replica service forwarding the verified uploader,
+coordinator rejection of a different task owner, missing-context rejection and
+fetch impersonation despite an otherwise-permissive test authorizer. The latter
+asserts no authorization callback and no returned bytes; streaming rejection may
+surface as EOF. Coordinators must be upgraded before enabling this peer policy
+because legacy coordinators ignore the additional attestation field. Other
+original security gates remain open.

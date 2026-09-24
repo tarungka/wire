@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,18 +19,22 @@ func TestCheckpointReplicaServicePublishesAndJoins(t *testing.T) {
 	testCheckpointReplicaService(t, nil)
 }
 func TestCheckpointReplicaServiceMutualTLS(t *testing.T) {
-	testCheckpointReplicaService(t, testPeerTLS(t))
+	testCheckpointReplicaService(t, testPeerTLSForWorker(t, "recovery-worker"))
 }
 func testCheckpointReplicaService(t *testing.T, peerTLS *tls.Config) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	root := t.TempDir()
+	var impersonatedFetchAuthorizations atomic.Int32
 	addr, closeService, err := startCheckpointReplicaService(ctx, CheckpointReplicaConfig{TLSConfig: peerTLS, ListenAddr: "127.0.0.1:0", StoreRoot: root, ArtifactRoot: t.TempDir(), StagingRoot: t.TempDir(), Concurrency: 1, AuthorizeFetch: func(_ context.Context, request rpc.FetchCheckpointRequest) error {
 		if request.TargetJobID != "" && (request.TargetJobID != "new-job" || request.TargetTaskID != "new-task" || request.JobID != "job" || request.TaskID != "task") {
 			return errors.New("wrong upgrade identities")
 		}
-		if request.WorkerID != "recovery-worker" {
+		if request.WorkerID == "certificate-impostor" {
+			impersonatedFetchAuthorizations.Add(1)
+		}
+		if request.WorkerID != "recovery-worker" && request.WorkerID != "certificate-impostor" {
 			return errors.New("unassigned recovery")
 		}
 		return nil
@@ -125,6 +130,14 @@ func testCheckpointReplicaService(t *testing.T, peerTLS *tls.Config) {
 	}
 	if upgraded.TaskID != "task" || string(upgraded.Operators[0]) != "state" {
 		t.Fatalf("upgrade rewrote archive identity or state: %+v", upgraded)
+	}
+	if peerTLS != nil {
+		request.WorkerID = "certificate-impostor"
+		fetched.Reset()
+		err := client.FetchCheckpoint(ctx, request, &fetched)
+		if err == nil || fetched.Len() != 0 || impersonatedFetchAuthorizations.Load() != 0 {
+			t.Fatalf("certificate identity bypass: bytes=%d err=%v", fetched.Len(), err)
+		}
 	}
 	request.WorkerID = "unassigned"
 	fetched.Reset()

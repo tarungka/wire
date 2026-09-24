@@ -128,6 +128,8 @@ func (c *Client) ReplicateCheckpoint(ctx context.Context, request ReplicateCheck
 // AuthorizeCheckpointReplicaRequest identifies the receiving worker and the
 // checkpoint it is about to publish under the coordinator's assignment.
 type AuthorizeCheckpointReplicaRequest struct {
-	WorkerID string                     `codec:"wid"`
-	Snapshot ReplicateCheckpointRequest `codec:"snapshot"`
+	// SourceWorkerID is supplied by the receiving replica from verified TLS, not by the uploader.
+	SourceWorkerID string                     `codec:"source_wid,omitempty"`
+	WorkerID       string                     `codec:"wid"`
+	Snapshot       ReplicateCheckpointRequest `codec:"snapshot"`
 }

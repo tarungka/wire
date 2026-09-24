@@ -39,6 +39,9 @@ func (c *Coordinator) HandleAuthorizeCheckpointReplica(_ context.Context, _ uint
 	if checkpoint.Replicas[request.Snapshot.TaskID] != worker.CheckpointAddress || checkpoint.Tasks[request.Snapshot.TaskID] == request.WorkerID || checkpoint.Tasks[request.Snapshot.TaskID] == "" {
 		return denied, nil
 	}
+	if request.SourceWorkerID != "" && checkpoint.Tasks[request.Snapshot.TaskID] != request.SourceWorkerID {
+		return denied, nil
+	}
 	return &rpc.AcknowledgeCheckpointResponse{Accepted: true}, nil
 }
 

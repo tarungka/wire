@@ -166,6 +166,15 @@ credentials. Data-session negotiation also requires the verified certificate's
 Common Name to equal the peer's claimed worker NodeID, in both connection
 directions. Set the certificate Common Name to the configured worker ID. This
 check runs before the negotiated identity or advertised peer address is trusted.
-Checkpoint RPC identity binding and task-assignment authorization beyond this
-node identity check remain tracked work; CA membership alone does not establish
-which task a worker may act for.
+Checkpoint replica services also require a nonempty verified certificate Common
+Name. Fetch requests must name that same worker before archive lookup or
+assignment authorization. For uploads, the receiving replica supplies the
+certificate-derived source worker ID to the coordinator, which checks it against
+the checkpoint's task owner. The uploader cannot set this identity in the archive
+request. Existing assignment and deployment checks still apply.
+
+Upgrade coordinators before enabling this peer policy on workers: old coordinators
+do not enforce the added uploader identity field. Plaintext development replicas
+retain the prior authorization format. Data-stream task-assignment authorization
+beyond the negotiated worker identity and the complete security acceptance matrix
+remain tracked work.
