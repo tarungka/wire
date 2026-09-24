@@ -117,3 +117,17 @@ untrusted data peers and incomplete mutual-TLS configurations. The full cmd,
 config, worker and SDK race suites passed. This establishes transport wiring,
 not full peer certificate-to-claimed-worker identity binding or the remaining
 revocation/security matrix; those requirements remain open.
+
+
+## Data-session certificate identity binding
+
+Worker peer TLS enables transport RequirePeerIdentity. Session negotiation now
+requires a verified chain and a leaf certificate Common Name matching the claimed
+NodeID, before publishing negotiated peer identity/address state. The same check
+runs on client and server handshakes. Worker data tests cover trusted-certificate
+client impersonation and server identity mismatch, alongside plaintext/untrusted
+certificate rejection and successful mutual-TLS frame exchange.
+
+Checkpoint RPCs do not use this session negotiation. Their certificate-to-request
+identity/assignment binding remains separate work, as does the complete original
+security acceptance matrix. This increment does not claim those paths are done.

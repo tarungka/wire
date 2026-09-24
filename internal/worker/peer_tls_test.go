@@ -60,12 +60,15 @@ func TestWorkerPeerDataTransportUsesMutualTLS(t *testing.T) {
 	worker := &Worker{cfg: Config{PeerTLSConfig: testPeerTLS(t)}}
 	cfg := worker.peerTransportConfig()
 	cfg.ListenAddr = "127.0.0.1:0"
+	cfg.NodeID = "worker"
 	server := transport.NewMux(cfg)
 	defer server.Close()
 	if err := server.Listen(ctx); err != nil {
 		t.Fatal(err)
 	}
-	client := transport.NewMux(worker.peerTransportConfig())
+	clientConfig := worker.peerTransportConfig()
+	clientConfig.NodeID = "worker"
+	client := transport.NewMux(clientConfig)
 	defer client.Close()
 	sender, err := client.Dial(ctx, server.ListenAddr())
 	if err != nil {
@@ -91,11 +94,15 @@ func TestWorkerPeerDataTransportUsesMutualTLS(t *testing.T) {
 	if !ok || string(record.Value) != "secret-record" {
 		t.Fatalf("record=%v", message)
 	}
-	for _, kind := range []string{"plaintext", "untrusted"} {
+	for _, kind := range []string{"plaintext", "untrusted", "wrong-identity"} {
 		t.Run(kind, func(t *testing.T) {
 			rejected := transport.DefaultConfig()
 			if kind == "untrusted" {
 				rejected.TLSConfig = testPeerTLS(t)
+			}
+			if kind == "wrong-identity" {
+				rejected = worker.peerTransportConfig()
+				rejected.NodeID = "impostor"
 			}
 			mux := transport.NewMux(rejected)
 			defer mux.Close()
@@ -106,5 +113,27 @@ func TestWorkerPeerDataTransportUsesMutualTLS(t *testing.T) {
 				t.Fatal("unauthenticated data connection accepted")
 			}
 		})
+	}
+}
+
+func TestWorkerPeerRejectsServerIdentityMismatch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	worker := &Worker{cfg: Config{PeerTLSConfig: testPeerTLS(t)}}
+	serverConfig := worker.peerTransportConfig()
+	serverConfig.NodeID = "wrong-server"
+	serverConfig.ListenAddr = "127.0.0.1:0"
+	server := transport.NewMux(serverConfig)
+	defer server.Close()
+	if err := server.Listen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	clientConfig := worker.peerTransportConfig()
+	clientConfig.NodeID = "worker"
+	client := transport.NewMux(clientConfig)
+	defer client.Close()
+	if stream, err := client.Dial(ctx, server.ListenAddr()); err == nil {
+		stream.Close()
+		t.Fatal("accepted server identity not certified by its certificate")
 	}
 }

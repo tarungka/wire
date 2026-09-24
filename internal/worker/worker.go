@@ -840,5 +840,6 @@ func (w *Worker) acknowledgeAbsentCancellation(client *rpc.Client, cmd rpc.Worke
 func (w *Worker) peerTransportConfig() transport.Config {
 	cfg := transport.DefaultConfig()
 	cfg.TLSConfig = w.cfg.PeerTLSConfig
+	cfg.RequirePeerIdentity = w.cfg.PeerTLSConfig != nil
 	return cfg
 }

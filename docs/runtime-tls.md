@@ -162,6 +162,10 @@ SDK workers can supply `WorkerConfig.PeerTLSConfig` with certificate/key,
 `RootCAs`, `ClientCAs`, and `ClientAuth: tls.RequireAndVerifyClientCert`.
 `InsecureSkipVerify` is rejected. RPC TLS and HTTP discovery security remain
 separate settings. Certificates are loaded at startup; restart workers to rotate
-credentials. Full certificate-to-claimed-peer identity binding and revocation
-acceptance remain tracked requirements; CA membership alone is not proof of a
-specific worker's assignment identity.
+credentials. Data-session negotiation also requires the verified certificate's
+Common Name to equal the peer's claimed worker NodeID, in both connection
+directions. Set the certificate Common Name to the configured worker ID. This
+check runs before the negotiated identity or advertised peer address is trusted.
+Checkpoint RPC identity binding and task-assignment authorization beyond this
+node identity check remain tracked work; CA membership alone does not establish
+which task a worker may act for.
