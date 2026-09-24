@@ -236,8 +236,8 @@ without redeploying tasks; `0s` disables automatic triggers. Existing checkpoint
 operations retain their original settings, and manual savepoints remain enabled.
 The interval is persisted with both graph and job metadata. The schedule remains
 anchored to the previous trigger (or running time), so shortening an interval
-can make a checkpoint immediately due. This endpoint is not yet connected to
-YAML file watching; automatic live updates and parallelism changes remain open.
+can make a checkpoint immediately due. WatchLiveUpdates connects interval-only edits to this endpoint. Automatic
+migration and live parallelism changes remain open.
 
 SDK controllers can call
 `pipeline.SetCoordinator(url).UpdateCheckpointInterval(ctx, jobID, interval)`.
@@ -263,3 +263,12 @@ required. A successful response is advisory: it does not reserve the current
 job, prove archive health or certify application state serializers. Restore
 must still validate the actual savepoint. Changed topology/parallelism requires
 a migration implementation beyond this existing-layout check.
+
+`current.WatchLiveUpdates(ctx, path, jobID, bindings, config)` connects stable
+file edits to confirmed live interval updates for an existing job. It rejects
+invalid YAML without changing the job, advances a private baseline after each
+successful response, and supports reverting the interval. Expression, connector,
+backend or topology edits return `ErrPipelineMigrationRequired` without stopping
+the job. The caller must supply the current definition and exclusively own job
+configuration changes; independent external edits are not reconciled yet.
+This remains interval-only reload support, not full WIP-19 migration.

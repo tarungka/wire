@@ -83,7 +83,7 @@ job's checkpoint-interval endpoint. A synchronous batch persists the changed
 policy in both metadata and graph before publishing it in memory. Tests verify
 scheduler eligibility, disabling, unchanged assignments/commands, consistent
 persisted policy, failed-write rollback, strict HTTP input and role checks.
-This is not yet connected to the YAML reload controller. Parallelism updates
+WatchLiveUpdates now connects validated interval-only file edits to this API. Parallelism updates
 without restart, migration and rollback remain unimplemented.
 
 ## Reload classification
@@ -107,3 +107,11 @@ Preflight is exposed as POST /api/v1/jobs/{id}/replacement/validate and the SDK
 ValidateReplacement method, with HTTPS role acceptance coverage. It has not yet
 been connected to automatic reload, and topology-changing migration is not
 implemented by this unchanged-layout restore check.
+
+
+The live-file regression sends interval edits and reverts through the HTTP
+client, verifies invalid YAML causes no request, and verifies an expression edit
+stops with migration-required without sending a lifecycle mutation. Broader
+coordinator runtime tests separately prove interval updates leave deployments
+unchanged. Full automatic migration/rollback and concurrent external-update
+reconciliation remain open.
