@@ -10,7 +10,7 @@ claim. It builds on the public worker runtime and recovery work in WIP-14/15.
 | Transactional sink integration | Public TransactionalSink and worker adapters | Connector contract/recovery acceptance and development guide |
 | Connector registration | Internal factories and new public HTTP worker factories | Live public-registry cluster example and YAML integration with WIP-19 |
 | HTTP ingress/delivery | Auth/TLS, bounded ingress, retry/idempotency, live source restore and permanent-error named DLQ tests | Final coverage and numbered-scenario audit |
-| Custom connector guide | [Development guide](../../connector-development.md), HTTP README and public registered-worker example | Complete replayable custom example and recorded developer trial against the under-one-hour target |
+| Custom connector guide | [Development guide](../../connector-development.md), HTTP README and public registered-worker example | Recorded developer trial against the under-one-hour target; YAML binding with WIP-19 |
 | Quality gates | Existing HTTP tests | Final race suite, coverage against the 90% target, vet/lint, evidence for each numbered WIP scenario |
 
 ## Public worker registration
@@ -98,3 +98,16 @@ The worker-loss and pause/resume variants passed three runs each with `-race`;
 worker connector lint reports zero issues. The development guide now describes
 source cursor ownership, idle checkpoint boundaries, batch error attribution,
 transaction fencing/recovery and public factory registration.
+
+
+## Replayable custom connector example
+
+`sdk/examples/file-connector` implements a bounded immutable-file source using
+only public SDK imports. It persists a versioned consumed-line cursor and content
+hash, rejects incompatible replay data, and provides embedded, registered-worker,
+remote submission and export modes. Tests demonstrate replay of records read
+past a checkpoint, changed-file/malformed-state rejection and executable embedded
+output. Production files built and ran in a separate Go module, printing its two
+input records. This is an executable onboarding artifact, not evidence of a
+human developer completing a new connector within one hour. That trial and YAML
+acceptance remain required.

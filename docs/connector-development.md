@@ -118,6 +118,9 @@ Build graphs with `AddSourceNamed` and `AddSinkNamed`, using the exact class nam
 registered on the workers. The [registered-worker example](../sdk/examples/registered-worker/main.go)
 shows public factories, `RunWorker`, remote submission and export for the job CLI.
 It is a minimal execution example, not a replayable production connector.
+The [file connector example](../sdk/examples/file-connector/README.md) adds a
+versioned consumed cursor and content-hash validation, with replay tests and
+public-only worker/submission code.
 The [HTTP connector guide](../sdk/connectors/httpapi/README.md) shows typed HTTP
 configuration encoders and registration through `sdk/connectors/httpapi/worker`.
 YAML custom-connector binding remains part of WIP-19 and is not established by a
