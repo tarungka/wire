@@ -1,5 +1,7 @@
 # Runtime TLS
 
+For a runnable two-worker setup, see the [secure cluster walkthrough](secure-cluster.md).
+
 TLS protects data in transit. For local state, checkpoint archives and backups,
 see [storage security](storage-security.md). Wire does not encrypt files itself.
 

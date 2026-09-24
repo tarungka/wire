@@ -18,7 +18,7 @@ The existing PR is #197. Other merged TRDs will use linked follow-up PRs.
 | Credential redaction (§3.7) | Implemented runtime diagnostic filters and reference-only persistence; authenticated HTTPS tests verify submission/list/detail/task projections omit configs and credentials. Complete recovery and broader diagnostic acceptance remain. |
 | Certificate/auth revocation (§4.2, §8.1) | Pending: restart/revocation integration tests and operational instructions. Rotation automation is explicitly out of scope. |
 | Encryption at rest strategy (§1.3) | Documented in [storage security](../../storage-security.md): all runtime storage surfaces, temporary files, backups, key rotation and operator acceptance checks. Actual encrypted-volume deployment remains an operator verification requirement. |
-| Flag/config documentation (§1.4) | Pending: cross-reference every existing security flag and supply tested example files and certificate commands. |
+| Flag/config documentation (§1.4) | Runtime guide maps actual security flags and config-only fields. The secure-cluster script generates certificate/config files and verifies a real two-worker startup with OpenSSL; HA takeover and data/recovery acceptance are separate tests. |
 | Unit coverage (§8) | Measured 100% statement coverage of every function in http_auth.go in the race-enabled authentication acceptance run. This is not a claim of full-system coverage. |
 | Integration/negative/security tests (§8) | Pending: all roles/endpoints, invalid credentials/certificates, revocation, missing secrets, and protocol/cipher verification. |
 
@@ -423,3 +423,19 @@ and explicit values override them, including an explicit false boolean.
 The generated reference and runtime guide list the actual security flags and
 config-only fields, and distinguish historical nonexistent node flags.
 The full multi-node walkthrough is still pending.
+
+### Reproducible secured cluster startup
+
+[The walkthrough](../../secure-cluster.md) builds the real command binary and
+runs a coordinator with file-lock election plus two workers, using separate
+HTTP/node CAs and unique worker identities. The Python standard-library script
+generates private test files, configures HTTPS credentialed discovery, RPC mTLS
+and worker data/replica mTLS, and waits for both workers to register ALIVE.
+OpenSSL s_client verifies IP SANs, trust and TLS 1.3 on all six listeners, checks
+TLS 1.2 protocol rejection and missing-client-certificate rejection. The API
+returns 401 with a valid client certificate but no API credential.
+
+This is startup/transport evidence, not an archive upload or data-frame test.
+The full testssl.sh cipher scan and remaining recovery/authorization acceptance
+gates remain open. Generated keys, binary, logs and runtime data stay outside
+the repository; the retained acceptance record contains no credentials.
