@@ -34,10 +34,19 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 	// Legacy opaque configurations remain accepted. Structured graphs are
 	// validated before reserving a job name or writing any metadata.
 	var graph rpc.JobGraph
+	var secrets jobSecretValues
+	installed := false
+	defer func() {
+		if !installed {
+			secrets.clear()
+		}
+	}()
 	var checkpointPolicy *rpc.CheckpointPolicy
 	var restartPolicy *rpc.RestartPolicy
 	if err := protocol.DecodeMsgPack(config, &graph); err == nil {
-		if err := validateJobSecretReferences(graph); err != nil {
+		var err error
+		secrets, err = resolveJobSecretReferences(graph)
+		if err != nil {
 			return nil, err
 		}
 		if err := graph.RestartPolicy.Validate(); err != nil {
@@ -89,6 +98,8 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 	}
 	c.activeJobNames[name] = job.ID
 	c.jobs[job.ID] = job
+	c.installJobSecretsLocked(job.ID, secrets)
+	installed = true
 	c.mu.Unlock()
 
 	// Persist meta + config in a single WriteBatch so the submit pays
@@ -103,6 +114,7 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 		// in-memory state stays consistent with disk.
 		c.mu.Lock()
 		delete(c.jobs, job.ID)
+		c.forgetJobSecretsLocked(job.ID)
 		delete(c.activeJobNames, name)
 		c.mu.Unlock()
 		return nil, fmt.Errorf("persisting job %s: %w", job.ID, err)

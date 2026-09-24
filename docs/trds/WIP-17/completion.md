@@ -193,3 +193,19 @@ Deployment-time delivery is still pending. This change validates references but
 does not yet supply resolved configurations to worker factories; do not treat it
 as end-to-end secret support. Recovery must reconstruct runtime-only credentials
 without modifying persisted task descriptors, and worker errors need redaction.
+
+### Runtime credential snapshot lifetime
+
+Submission now retains a coordinator-local snapshot of expanded configurations,
+separate from `JobMeta`, so later retries can use submission-time values. The
+lookup reads one environment snapshot per submission. Normal and savepoint
+submissions install the cache only with their in-memory job ownership; rejected
+submissions and failed persistence clear temporary values. Terminal transitions
+and leadership recovery clear the cached byte slices. A regression test changes
+the environment after submission, verifies the original cached value, then
+checks terminal cleanup removes the entry and zeroes its owned bytes.
+
+Worker deployment does not consume this cache yet. Reconstruction after
+coordinator recovery and secure delivery/redaction remain required. Clearing
+owned byte slices is lifecycle hygiene, not a guarantee that Go runtime memory,
+environment strings or operating-system dumps contain no other copies.
