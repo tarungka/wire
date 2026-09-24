@@ -28,8 +28,19 @@ Submission takes the REST API JSON envelope, not a YAML pipeline or binary:
 {"name":"example","parallelism":1,"graph_bytes":"BASE64_MSGPACK_JOB_GRAPH"}
 ```
 
-Use an encoded `rpc.JobGraph` with registered worker operator factories. The
-placeholder above is not runnable graph data. A successful submission reports
+Generate the envelope with the public SDK's `env.ExportSubmission("job-name")`.
+All operators must use named classes registered on workers; anonymous closures
+cannot be exported. The method validates without starting a job or opening a
+connector and leaves `Execute` available. The placeholder above is not runnable
+graph data. A runnable example is:
+
+```bash
+go run ./sdk/examples/registered-worker -mode export > submission.json
+wire jobs submit --file submission.json
+```
+
+Start the coordinator and example worker first as described in the
+[SDK walkthrough](sdk-walkthrough.md#registering-operators-in-an-application-worker). A successful submission reports
 acceptance, not successful deployment or completion. The server still accepts
 legacy `config` bytes, but the scheduler does not interpret those as a graph.
 

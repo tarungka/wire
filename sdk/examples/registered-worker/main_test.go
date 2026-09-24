@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -11,11 +13,14 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/tarungka/wire/internal/coordinator"
+	"github.com/tarungka/wire/internal/jobcli"
 )
 
 // Exercise the same paths the two documented commands call, including network
 // submission, named factory lookup, bounded completion and worker shutdown.
-func TestRegisteredWorkerExample(t *testing.T) {
+func TestRegisteredWorkerExample(t *testing.T)         { testRegisteredWorkerExample(t, false) }
+func TestExportedRegisteredWorkerExample(t *testing.T) { testRegisteredWorkerExample(t, true) }
+func testRegisteredWorkerExample(t *testing.T, export bool) {
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	store := coordinator.NewMemoryStore()
@@ -52,7 +57,26 @@ func TestRegisteredWorkerExample(t *testing.T) {
 	stopped := make(chan error, 1)
 	start(func() { stopped <- run(ctx, "worker", rpc.Addr(), "", &output) })
 	wait(func() bool { return len(coord.ListWorkers()) == 1 })
-	if err := run(ctx, "submit", "", "http://"+http.Addr(), io.Discard); err != nil {
+	if export {
+		var payload bytes.Buffer
+		if err := run(ctx, "export", "", "", &payload); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "submission.json")
+		if err := os.WriteFile(path, payload.Bytes(), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := jobcli.Run(ctx, []string{"jobs", "submit", "--file", path, "--coordinator", "http://" + http.Addr()}, io.Discard, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		wait(func() bool {
+			jobs := coord.ListJobs(nil)
+			if len(jobs) == 1 && jobs[0].Status == coordinator.JobFailed {
+				t.Fatal("exported graph failed")
+			}
+			return len(jobs) == 1 && jobs[0].Status == coordinator.JobFinished
+		})
+	} else if err := run(ctx, "submit", "", "http://"+http.Addr(), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	cancel()

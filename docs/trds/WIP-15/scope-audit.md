@@ -126,3 +126,15 @@ A real-worker upgrade restores offsets and keyed state while changing a Process
 class; a transactional variant covers a lost commit response. HTTP/CLI submission, repeated transactional upgrades and deletion/submission
 races now have tests. Additional crash-point acceptance and the full executable
 walkthrough remain open. These checks do not establish complete upgrade acceptance.
+
+## Public submission export
+
+`StreamExecutionEnvironment.ExportSubmission` exposes the same validated envelope
+builder as remote execution without executing or consuming the environment.
+The registered-worker example's export mode produces a real CLI input file, and
+its integration test submits that file through the CLI to real services. Tests
+also compare exported and directly submitted graph/policy bytes, reject anonymous
+operators and oversized envelopes, and verify repeated export leaves execution
+available. This removes the need for applications to import internal RPC types
+just to generate a CLI submission; the full savepoint deployment walkthrough
+remains a separate acceptance item.

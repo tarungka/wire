@@ -43,7 +43,9 @@ func TestClusterSubmissionCarriesCheckpointPolicy(t *testing.T) {
 	}))
 	defer server.Close()
 	env := New().SetCoordinator(server.URL).SetCheckpointInterval(time.Second).SetCheckpointTimeout(time.Minute).SetCheckpointMinPause(2 * time.Second).SetRestartStrategy(ExponentialBackoff(7, time.Second, time.Minute, 1.5))
-	if _, err := (&clusterExecutor{env: env}).run(t.Context(), "policy"); err != nil {
+	env.SetMode(Cluster)
+	env.AddSourceNamed("source", "source", nil).AddSinkNamed("sink", "sink", nil)
+	if _, err := env.ExecuteWithName(t.Context(), "policy"); err != nil {
 		t.Fatal(err)
 	}
 	wantRestart, err := env.restartPolicy()

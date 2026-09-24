@@ -41,7 +41,7 @@ func (s *sink) Write(_ context.Context, event sdk.Event) error {
 	return err
 }
 func main() {
-	mode := flag.String("mode", "worker", "worker or submit")
+	mode := flag.String("mode", "worker", "worker, submit or export")
 	rpc := flag.String("rpc", "localhost:4002", "coordinator RPC address")
 	http := flag.String("http", "http://localhost:4001", "coordinator HTTP URL")
 	flag.Parse()
@@ -70,10 +70,18 @@ func run(ctx context.Context, mode, rpc, http string, output io.Writer) error {
 			return &sink{output: output}, nil
 		})
 		err = sdk.RunWorker(ctx, sdk.WorkerConfig{WorkerID: "example", CoordinatorAddr: rpc, TaskSlots: 4}, registry)
-	case "submit":
+	case "submit", "export":
 		env := sdk.NewStreamExecutionEnvironment().SetMode(sdk.Cluster).SetCoordinator(http).SetParallelism(1)
 		env.AddSourceNamed("words", "words", nil).MapNamed("uppercase", "uppercase", nil).AddSinkNamed("stdout", "stdout", nil)
-		_, err = env.ExecuteWithName(ctx, "registered-example")
+		if mode == "export" {
+			var payload []byte
+			payload, err = env.ExportSubmission("registered-example")
+			if err == nil {
+				_, err = output.Write(payload)
+			}
+		} else {
+			_, err = env.ExecuteWithName(ctx, "registered-example")
+		}
 	default:
 		err = fmt.Errorf("unknown mode %q", mode)
 	}
