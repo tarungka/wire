@@ -261,7 +261,7 @@ candidate graph to `POST /api/v1/jobs/{id}/replacement/validate` and checks the
 current physical layout without changing the job. Operator authorization is
 required. A successful response is advisory: it does not reserve the current
 job, prove archive health or certify application state serializers. Restore
-must still validate the actual savepoint. Stateless insertion within existing chains is supported as described below.
+must still validate the actual savepoint. Stateless insertion/removal within existing chains is supported as described below.
 Changed task ownership/routes and parallelism still require further migration work.
 
 `current.WatchLiveUpdates(ctx, path, jobID, bindings, config)` connects stable
@@ -283,7 +283,7 @@ and redeployment, not that the new code is running. Inspect job status and
 returned job identity; reconcile ambiguous responses before another mutation.
 Rollback restores the prior graph/policies, but restarting it still requires
 remaining recovery budget. This API does not itself watch files. Supported topology edits are limited
-to stateless insertion within existing task chains.
+to stateless insertion/removal within existing task chains.
 
 `candidate.Reload(ctx, jobID)` orchestrates compatible-layout preflight, creation and
 completion of a savepoint, replacement acceptance, and status polling. It returns
@@ -322,7 +322,7 @@ retained savepoint ID. The watcher advances its baseline only on success and
 stops on rollback or uncertain requests. Savepoints are retained for explicit
 cleanup. Exclusive configuration ownership is still required; a periodic
 checkpoint that supersedes the savepoint can cause safe rejection and must be
-reconciled before another reload. Changes beyond stateless chain insertion remain unsupported by this
+reconciled before another reload. Changes beyond stateless chain edits remain unsupported by this
 orchestration.
 
 ### CLI watch
@@ -358,11 +358,13 @@ explicit update. This precondition does not detect unrelated graph edits or
 an interval changed away and back, so it does not replace exclusive controller
 ownership for migration.
 
-### Inserting stateless transforms during reload
+### Editing stateless transforms during reload
 
-Reload can now insert map, filter or flat-map transforms within an existing
+Reload can insert or remove map, filter or flat-map transforms within an existing
 physical operator chain. It maps saved operator positions by their stable IDs
-and preserves all old operators in order. Source offsets remain separate, typed
+and preserves all retained operators in order. A removed transform must have
+empty checkpoint bytes and no typed state handle; otherwise restore fails and
+the original graph is eligible for rollback. Source offsets remain separate, typed
 state-handle indexes are adjusted, and prepared sink state stays at the final
 sink position. Archive checksums and original checkpoint identities are verified
 before remapping; the stored archive is not rewritten. Fresh transforms receive
@@ -371,9 +373,15 @@ empty state. All participating workers must support the new restore mapping.
 This is one supported topology edit, not general graph migration. The task
 identity, subtask count, key-group ownership and network routes must stay the
 same. Inserting before the operator that names a task, splitting/merging chains,
-changing shuffles, removing/reordering saved operators or introducing a stateful
+changing shuffles, removing stateful operators, reordering retained operators or introducing a stateful
 operator still fails preflight. Existing state serializers must remain compatible.
 Failure during restore/deployment retains the existing rollback and recovery
 budget behavior. The file-watcher acceptance test inserts a CEL map and verifies
 source offset 1 plus external transactional output exactly `v1:first` followed
 by `extra:v2:second`.
+
+The YAML watcher also supports reverting such an insertion. Its round-trip test
+keeps the source paused at offset 1, inserts a transform, reverts the file through
+a second savepoint, then releases the source. Both old attempts are joined and
+external output contains only the original first and second records, once each.
+A removed operator's unexpected saved state is never silently dropped.

@@ -3,8 +3,9 @@ package engine
 import "fmt"
 
 // RemapCheckpointOperators inserts empty state slots without rewriting the
-// original checkpoint identity or mutating archive contents. Every old operator
-// must be retained exactly once and in order, including the prepared sink.
+// original checkpoint identity or mutating archive contents. Retained operators
+// remain in order, and omitted positions must contain no state or typed handles.
+// The prepared sink must remain at the end.
 func RemapCheckpointOperators(snapshot TaskCheckpoint, indexes []int) (TaskCheckpoint, error) {
 	if err := snapshot.ValidateStateHandles(); err != nil {
 		return TaskCheckpoint{}, err
@@ -13,22 +14,31 @@ func RemapCheckpointOperators(snapshot TaskCheckpoint, indexes []int) (TaskCheck
 	next.Operators = make([][]byte, len(indexes))
 	next.StateHandleIndexes = nil
 	destinations := make(map[int]int, len(snapshot.Operators))
-	expected := 0
+	last := -1
 	for target, source := range indexes {
 		if source == -1 {
 			continue
 		}
-		if source != expected || source >= len(snapshot.Operators) {
+		if source <= last || source >= len(snapshot.Operators) {
 			return TaskCheckpoint{}, fmt.Errorf("invalid checkpoint operator mapping")
 		}
 		next.Operators[target] = append([]byte(nil), snapshot.Operators[source]...)
 		destinations[source] = target
-		expected++
+		last = source
 	}
-	if expected != len(snapshot.Operators) {
-		return TaskCheckpoint{}, fmt.Errorf("checkpoint mapping drops saved operators")
+	for source, data := range snapshot.Operators {
+		if _, retained := destinations[source]; !retained && len(data) != 0 {
+			return TaskCheckpoint{}, fmt.Errorf("checkpoint mapping drops nonempty operator state")
+		}
 	}
-	if snapshot.SinkPrepared && (len(indexes) == 0 || indexes[len(indexes)-1] != len(snapshot.Operators)-1) {
+	for _, source := range snapshot.StateHandleIndexes {
+		if source >= 0 {
+			if _, retained := destinations[source]; !retained {
+				return TaskCheckpoint{}, fmt.Errorf("checkpoint mapping drops a typed state handle")
+			}
+		}
+	}
+	if snapshot.SinkPrepared && (len(snapshot.Operators) == 0 || len(indexes) == 0 || indexes[len(indexes)-1] != len(snapshot.Operators)-1) {
 		return TaskCheckpoint{}, fmt.Errorf("checkpoint mapping moves prepared sink away from task end")
 	}
 	next.Source = append([]byte(nil), snapshot.Source...)

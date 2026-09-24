@@ -25,11 +25,12 @@ func (s *yamlReloadSource) ReadBatch(ctx context.Context) ([]Event, error) {
 }
 
 func TestYAMLFileReplacementThroughWorkers(t *testing.T) {
-	t.Run("same-layout", func(t *testing.T) { testYAMLFileReplacement(t, false) })
-	t.Run("insert-transform", func(t *testing.T) { testYAMLFileReplacement(t, true) })
+	t.Run("same-layout", func(t *testing.T) { testYAMLFileReplacement(t, "same-layout") })
+	t.Run("insert-transform", func(t *testing.T) { testYAMLFileReplacement(t, "insert-transform") })
+	t.Run("insert-revert", func(t *testing.T) { testYAMLFileReplacement(t, "insert-revert") })
 }
 
-func testYAMLFileReplacement(t *testing.T, insert bool) {
+func testYAMLFileReplacement(t *testing.T, mode string) {
 	release := make(chan struct{})
 	restored := make(chan uint64, 4)
 	var closed atomic.Int32
@@ -129,7 +130,7 @@ spec:
 	}
 	candidate := strings.Replace(original, "v1:", "v2:", 1)
 	expected := `"v2:second"`
-	if insert {
+	if mode != "same-layout" {
 		candidate = strings.Replace(candidate, "  sinks:", `    - name: extra
       type: map
       input: mapped
@@ -154,6 +155,26 @@ spec:
 	}
 	if closed.Load() != 1 {
 		t.Fatalf("old source teardown=%d", closed.Load())
+	}
+	if mode == "insert-revert" {
+		write(original)
+		waitApply(PipelineMigrationRequired)
+		reverted := <-reloaded
+		if reverted.SavepointID == result.SavepointID || reverted.JobID != jobID || reverted.RolledBack {
+			t.Fatalf("revert=%+v", reverted)
+		}
+		select {
+		case offset := <-restored:
+			if offset != 1 {
+				t.Fatalf("revert offset=%d", offset)
+			}
+		case <-ctx.Done():
+			t.Fatal("revert never restored source")
+		}
+		if closed.Load() != 2 {
+			t.Fatalf("revert did not join prior source: %d", closed.Load())
+		}
+		expected = `"v1:second"`
 	}
 	stop()
 	if err := <-watched; !errors.Is(err, context.Canceled) {

@@ -15,7 +15,7 @@ SDK, connector, security and state integrations from WIP-13 through WIP-18.
 | Checkpoint and restart | Configured policies reach local coordinator/worker execution with fresh-instance factories. `TestYAMLPeriodicCheckpointRecoversTransactionalOutput` completes a periodic checkpoint, fails a sink after staging new output, restores source offsets into fresh connectors, and verifies exactly one external commit of each expected result. Three race repetitions cover a CEL map and managed HashMap/Pebble windows. Mixed-source completion and broader external deployment/lifecycle acceptance remain open. |
 | File watching and validation | WatchPipelineFile detects stable content edits, validates the complete named-worker graph and invokes an application callback serially. Atomic replacement, invalid edits, reversion and fail-stop callback tests pass under race detection. Automatic migration callback and CLI watch integration remain required. |
 | Graceful switchover | Fenced same-job replacement joins old tasks before restore/deployment; real-worker ordinary/transactional success, rollback and no-restart cases pass. Multi-process crash timing remains unverified. |
-| Topology changes | Savepoint restore supports stateless insertion within existing task chains, with YAML file-to-worker acceptance. Chain split/merge, route changes, stateful insertion/removal and redistribution remain incomplete. |
+| Topology changes | Savepoint restore supports stateless insertion/removal within existing task chains, with YAML file-to-worker acceptance. Chain split/merge, route changes, stateful insertion/removal and redistribution remain incomplete. |
 | Configuration-only changes | Durable interval-only updates preserve deployment and use expected-interval conflict checks. Parallelism without job restart and full concurrent-edit reconciliation remain incomplete. |
 | CLI and operations | YAML submission and watch commands exist; stock worker HTTP/CEL execution and built-binary watch smoke pass. Full multi-process/security acceptance and precedence audit remain. |
 
@@ -288,3 +288,23 @@ split/merge, routing, redistribution, stateful changes or live parallelism.
 Insertion validation passed three SDK race repetitions (19.216s). Full affected
 package race suites passed: engine 103.901s, coordinator 43.536s, worker 117.039s,
 RPC 4.221s. Lint reports zero issues. The last full SDK run predates insertion.
+
+## Stateless removal and topology reversion
+
+Compatible-layout reload now permits removing map/filter/flat-map transforms
+without changing task identity, ownership or routes. Retained operators keep
+their order and original snapshot indexes. The worker rejects omission of any
+nonempty checkpoint bytes or typed state handle; source state and a prepared
+sink must remain. Removal of stateful operators and general topology changes
+are still outside the implemented migration path.
+
+Six real-worker ordinary/transactional success, rollback and no-restart cases
+remove a transform. YAML file acceptance performs insertion then reversion under
+the same job ID, waits for each source teardown/offset restore, and verifies only
+the original two records commit externally. These cases pass three race runs
+(14.849s). Engine tests check hidden-state rejection without original checkpoint
+mutation and typed-handle index movement. This does not close general graph or
+parallelism migration requirements.
+
+Full engine/coordinator race suites pass with removal (74.912s / 37.410s);
+the additional typed-handle regression passes separately (1.569s).

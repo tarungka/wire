@@ -15,7 +15,7 @@ var ErrPipelineMigrationRequired = errors.New("sdk: pipeline edit requires migra
 type PipelineLiveWatchConfig struct {
 	PipelineWatchConfig
 	OnApplied func(PipelineUpdatePlan)
-	// AllowReplacement enables savepoint reload, including stateless insertions
+	// AllowReplacement enables savepoint reload, including stateless insertions/removals
 	// within existing task chains. Incompatible topology changes fail preflight.
 	AllowReplacement bool
 	OnReload         func(PipelineReloadResult, error)

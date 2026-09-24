@@ -6,12 +6,13 @@ import (
 	"github.com/tarungka/wire/internal/rpc"
 )
 
-// replacementChainIndexes retains every existing operator in order and permits
-// only new stateless map/filter/flat-map operators. Source state stays separate;
+// replacementChainIndexes retains stateful operators in order and permits
+// stateless map/filter/flat-map insertion or removal. Removed state is checked
+// again against the actual snapshot on the worker. Source state stays separate;
 // returned indexes address TaskCheckpoint.Operators, with -1 for new operators.
 func replacementChainIndexes(source, target []rpc.OperatorDescriptor) ([]int, error) {
 	invalid := func() ([]int, error) {
-		return nil, fmt.Errorf("%w: replacement must preserve saved operators and may only insert stateless transforms", ErrInvalidConfig)
+		return nil, fmt.Errorf("%w: replacement must preserve stateful operators and may only edit stateless transforms", ErrInvalidConfig)
 	}
 	if len(source) == 0 {
 		return invalid()
@@ -23,6 +24,17 @@ func replacementChainIndexes(source, target []rpc.OperatorDescriptor) ([]int, er
 		}
 		oldIDs[op.OperatorID] = true
 	}
+	newIDs := make(map[string]bool, len(target))
+	for _, op := range target {
+		if op.OperatorID == "" || newIDs[op.OperatorID] {
+			return invalid()
+		}
+		newIDs[op.OperatorID] = true
+	}
+	stateless := func(op rpc.OperatorDescriptor) bool {
+		return op.Type == rpc.OperatorTypeMap || op.Type == rpc.OperatorTypeFilter || op.Type == rpc.OperatorTypeFlatMap
+	}
+	changed := false
 	seen := make(map[string]bool, len(target))
 	var indexes []int
 	oldPosition, oldSnapshot := 0, 0
@@ -31,6 +43,14 @@ func replacementChainIndexes(source, target []rpc.OperatorDescriptor) ([]int, er
 			return invalid()
 		}
 		seen[next.OperatorID] = true
+		for oldPosition < len(source) && !newIDs[source[oldPosition].OperatorID] {
+			if !stateless(source[oldPosition]) {
+				return invalid()
+			}
+			oldPosition++
+			oldSnapshot++
+			changed = true
+		}
 		if oldPosition < len(source) && source[oldPosition].OperatorID == next.OperatorID {
 			old := source[oldPosition]
 			if old.Type != next.Type {
@@ -52,14 +72,19 @@ func replacementChainIndexes(source, target []rpc.OperatorDescriptor) ([]int, er
 		switch next.Type {
 		case rpc.OperatorTypeMap, rpc.OperatorTypeFilter, rpc.OperatorTypeFlatMap:
 			indexes = append(indexes, -1)
+			changed = true
 		default:
 			return invalid()
 		}
 	}
-	if oldPosition != len(source) {
-		return invalid()
+	for oldPosition < len(source) {
+		if newIDs[source[oldPosition].OperatorID] || !stateless(source[oldPosition]) {
+			return invalid()
+		}
+		oldPosition++
+		changed = true
 	}
-	if len(source) == len(target) {
+	if !changed {
 		return nil, nil
 	}
 	return indexes, nil

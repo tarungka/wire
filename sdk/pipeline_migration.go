@@ -30,7 +30,7 @@ type PipelineReloadResult struct {
 // ctx. Mutations are sent once. Lost replies are reconciled by reading the
 // selected savepoint identity or persisted replacement request ID. Transient
 // reads retry with backoff until ctx ends; permanent failures require reconciliation. Returned IDs identify requests, not
-// proof of acceptance. Savepoints are retained. Stateless chain insertions are supported; changed task ownership/routes are not.
+// proof of acceptance. Savepoints are retained. Stateless chain edits are supported; changed task ownership/routes are not.
 func (p *YAMLPipeline) Reload(ctx context.Context, jobID string) (PipelineReloadResult, error) {
 	result := PipelineReloadResult{JobID: jobID}
 	if err := p.ValidateReplacement(ctx, jobID); err != nil {

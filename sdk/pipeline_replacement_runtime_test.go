@@ -71,6 +71,22 @@ func TestReplacementInsertsStatelessOperator(t *testing.T) {
 	}
 }
 
+func TestReplacementRemovesStatelessOperator(t *testing.T) {
+	for _, transactional := range []bool{false, true} {
+		kind := "ordinary"
+		if transactional {
+			kind = "transactional"
+		}
+		t.Run(kind, func(t *testing.T) {
+			for _, scenario := range []string{"success", "rollback", "no-restart"} {
+				t.Run(scenario, func(t *testing.T) {
+					testSameJobReplacement(t, scenario != "success", scenario != "no-restart", transactional, "remove")
+				})
+			}
+		})
+	}
+}
+
 func TestSameJobReplacementLostCommitResponse(t *testing.T) {
 	for _, boundary := range []string{"savepoint", "replacement-final"} {
 		t.Run(boundary, func(t *testing.T) {
@@ -125,7 +141,13 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, re
 	if recovery {
 		env.SetRestartStrategy(FixedDelay(3, 0))
 	}
-	env.AddSourceNamed("source", "replay", nil).MapNamed("map", "v1", nil).AddSinkNamed("sink", "output", nil)
+	initialStream := env.AddSourceNamed("source", "replay", nil).MapNamed("map", "v1", nil)
+	firstExpected := "v1:first"
+	if responseLoss == "remove" {
+		initialStream = initialStream.MapNamed("extra", "extra", nil)
+		firstExpected = "extra:v1:first"
+	}
+	initialStream.AddSinkNamed("sink", "output", nil)
 	done := make(chan error, 1)
 	go func() { _, err := env.ExecuteWithName(ctx, "replacement-runtime"); done <- err }()
 	var jobID string
@@ -256,7 +278,7 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, re
 			ledger.mu.Lock()
 			visible := append([]string(nil), ledger.visible...)
 			ledger.mu.Unlock()
-			if len(visible) != 1 || visible[0] != "v1:first" {
+			if len(visible) != 1 || visible[0] != firstExpected {
 				t.Fatalf("disabled recovery commits=%v", visible)
 			}
 		}
@@ -310,15 +332,18 @@ func testSameJobReplacement(t *testing.T, fail, recovery, transactional bool, re
 	}
 	if fail {
 		expected = "v1:second"
+		if responseLoss == "remove" {
+			expected = "extra:v1:second"
+		}
 	}
 	events := output.Events()
-	if len(events) != 2 || string(events[0].Value) != "v1:first" || string(events[1].Value) != expected {
+	if len(events) != 2 || string(events[0].Value) != firstExpected || string(events[1].Value) != expected {
 		t.Fatalf("output=%v", events)
 	}
 	if transactional {
 		ledger.mu.Lock()
 		defer ledger.mu.Unlock()
-		if len(ledger.visible) != 2 || ledger.visible[0] != "v1:first" || ledger.visible[1] != expected {
+		if len(ledger.visible) != 2 || ledger.visible[0] != firstExpected || ledger.visible[1] != expected {
 			t.Fatalf("external commits=%v", ledger.visible)
 		}
 		if ledger.jobID != jobID || ledger.generation <= old.DeploymentGeneration {
