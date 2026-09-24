@@ -11,6 +11,11 @@ import (
 
 // flagToKey maps CLI flag names to koanf dotted key paths.
 var flagToKey = map[string]string{
+	"auth":                 "auth.file",
+	"http-cert":            "http.tls.cert",
+	"http-key":             "http.tls.key",
+	"http-ca-cert":         "http.tls.ca_cert",
+	"http-verify-client":   "http.tls.verify_client",
 	"mode":                 "mode",
 	"listen":               "listen",
 	"debug":                "node.debug",

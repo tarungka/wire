@@ -51,13 +51,36 @@ revalidated by editing certificate files. Plan capacity and availability for
 this operation; normal rolling renewal with overlapping trust is different
 from immediately removing a compromised issuer.
 
-Coordinator HTTPS and worker-to-coordinator RPC TLS apply on this branch.
-RPC registration also checks verified worker certificate identity. File-backed
-HTTP authentication and admin/operator/viewer authorization are configured with
-`auth.file` (`--auth`). Metrics use their separate HTTP listener. Data-plane and
-checkpoint-replica TLS, full client credential propagation and the remaining
-security acceptance matrix are still tracked by WIP-17; this is not a claim that
-every cluster surface is secured.
+Coordinator HTTPS, worker-to-coordinator RPC TLS, and worker peer TLS are
+independent policies. RPC registration checks the verified worker certificate
+identity. File-backed HTTP authentication and admin/operator/viewer authorization
+are configured with `auth.file` (`--auth`). Enable `worker.peer_tls` separately
+for data streams and checkpoint transfers. The remaining WIP-17 acceptance gates
+are tracked in [the completion audit](trds/WIP-17/completion.md).
+
+### Security flag and configuration map
+
+Only explicitly supplied flags override file/environment configuration.
+
+| CLI flag | Configuration field | Boundary |
+| --- | --- | --- |
+| `--auth` | `auth.file` | HTTP API identities and roles |
+| `--http-cert` | `http.tls.cert` | HTTPS server certificate |
+| `--http-key` | `http.tls.key` | HTTPS server private key |
+| `--http-ca-cert` | `http.tls.ca_cert` | HTTPS client trust |
+| `--http-verify-client` | `http.tls.verify_client` | Require HTTPS client certificates |
+| `--node-cert` | `node_tls.cert` | Coordinator/worker RPC certificate |
+| `--node-key` | `node_tls.key` | Coordinator/worker RPC private key |
+| `--node-ca` | `node_tls.ca_cert` | RPC peer trust |
+| `--node-verify-client` | `node_tls.verify_client` | Coordinator requires RPC client certificates |
+| No CLI flag | `node_tls.verify_server_name` | Worker RPC server-name override |
+| No CLI flags | `worker.peer_tls.{cert,key,ca_cert}` | Worker data and checkpoint mTLS |
+| No node CLI flags | `worker.discovery_http` | HTTPS discovery client credentials/trust |
+
+There are no `--node-ca-cert`, `--node-verify-server-name` or `--node-no-verify`
+flags. The historical WIP proposal uses those names and refers to Raft; the
+current runtime has no Raft transport. Use this map and the configuration
+reference when deploying the current binary.
 
 HA and standalone startup both load HTTP TLS and authentication before listening.
 HA installs authentication around the leadership dispatcher, so standby redirects

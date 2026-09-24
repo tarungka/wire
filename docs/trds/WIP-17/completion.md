@@ -411,3 +411,15 @@ anonymous and invalid-Bearer scrapes return Prometheus data over plain HTTP.
 This verifies the explicitly public metrics contract; it does not claim API
 TLS or RBAC applies to metrics. The runtime guide now states the separate
 listener's network/proxy protection requirements.
+
+### HTTP security CLI wiring
+
+The walkthrough audit found that the proposal's HTTP TLS and auth flags were
+absent despite their config-file runtime support. The CLI now defines and maps
+`--auth`, `--http-cert`, `--http-key`, `--http-ca-cert` and
+`--http-verify-client`. A command-package regression test uses the actual flag
+parser and config overlay to verify unchanged defaults preserve file settings
+and explicit values override them, including an explicit false boolean.
+The generated reference and runtime guide list the actual security flags and
+config-only fields, and distinguish historical nonexistent node flags.
+The full multi-node walkthrough is still pending.

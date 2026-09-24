@@ -11,8 +11,9 @@ Loading does not itself run semantic validation: the CLI applies overrides and
 then calls Validate. Unknown fields are currently ignored by the loader.
 
 This table describes accepted configuration, not runtime feature availability.
-Authentication, TLS, and write-queue settings include fields that are not wired
-into the current runtime; setting them does not enable those features.
+HTTP authentication and TLS settings are wired into runtime startup. See
+[runtime TLS](runtime-tls.md) for their independent security boundaries.
+Write-queue settings include fields that are not wired into the runtime.
 
 | Field | Type | Default | CLI override |
 | --- | --- | --- | --- |
@@ -38,17 +39,17 @@ into the current runtime; setting them does not enable those features.
 | `http.addr` | string | `:4001` | `--http-listen` |
 | `http.adv_addr` | string | `""` | — |
 | `http.allow_origin` | string | `""` | — |
-| `http.tls.cert` | string | `""` | — |
-| `http.tls.key` | string | `""` | — |
-| `http.tls.ca_cert` | string | `""` | — |
-| `http.tls.verify_client` | bool | `false` | — |
+| `http.tls.cert` | string | `""` | `--http-cert` |
+| `http.tls.key` | string | `""` | `--http-key` |
+| `http.tls.ca_cert` | string | `""` | `--http-ca-cert` |
+| `http.tls.verify_client` | bool | `false` | `--http-verify-client` |
 | `http.tls.verify_server_name` | string | `""` | — |
 | `node_tls.cert` | string | `""` | `--node-cert` |
 | `node_tls.key` | string | `""` | `--node-key` |
 | `node_tls.ca_cert` | string | `""` | `--node-ca` |
 | `node_tls.verify_client` | bool | `false` | `--node-verify-client` |
 | `node_tls.verify_server_name` | string | `""` | — |
-| `auth.file` | string | `""` | — |
+| `auth.file` | string | `""` | `--auth` |
 | `write_queue.capacity` | int | `1024` | — |
 | `write_queue.batch_size` | int | `128` | — |
 | `write_queue.timeout` | duration string | `50ms` | — |
