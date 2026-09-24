@@ -213,3 +213,19 @@ and `httpworker.RegisterYAML(registry)` before starting. Custom applications can
 exported JSON through the existing CLI. Worker factories
 validate connector configuration on deployment; compiling a named binding does
 not open or validate the target connector's runtime resources.
+
+### Watching validated candidates
+
+`WatchPipelineFile` reads a bounded regular file and compiles the initial
+pipeline plus stable content changes. It only accepts named-worker bindings,
+so candidate validation cannot construct local connectors. Changed bytes must
+match across two polls (250ms default), including atomic file replacements;
+size and modification timestamps are not used as change identities. Invalid
+edits are reported through `OnRejected` and never reach the apply callback.
+
+The callback is serialized and an error stops the watcher without retrying an
+uncertain mutation. It must implement the actual job replacement protocol.
+This API alone does **not** provide graceful switchover, savepoint migration,
+rollback or live updates; those remain unfinished. Cancellation stops polling
+and is passed to the callback. Prefer atomic file replacement when editing;
+two stable reads cannot prove a file writer has finished an in-place edit.
