@@ -75,3 +75,13 @@ integration test uses the actual runWorker entry point, submits YAML through
 the CLI, sends an HTTP source record and verifies CEL-transformed HTTP output.
 Automatic watch/reload and migration are still outstanding; custom SDK workers
 explicitly register these classes.
+
+## Live checkpoint interval primitive
+
+The coordinator now accepts an authenticated operator-level PUT to a running
+job's checkpoint-interval endpoint. A synchronous batch persists the changed
+policy in both metadata and graph before publishing it in memory. Tests verify
+scheduler eligibility, disabling, unchanged assignments/commands, consistent
+persisted policy, failed-write rollback, strict HTTP input and role checks.
+This is not yet connected to the YAML reload controller. Parallelism updates
+without restart, migration and rollback remain unimplemented.

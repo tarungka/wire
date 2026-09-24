@@ -229,3 +229,12 @@ This API alone does **not** provide graceful switchover, savepoint migration,
 rollback or live updates; those remain unfinished. Cancellation stops polling
 and is passed to the callback. Prefer atomic file replacement when editing;
 two stable reads cannot prove a file writer has finished an in-place edit.
+
+The coordinator supports `PUT /api/v1/jobs/{id}/checkpoint-interval` with
+`{"interval":"5s"}` for a running job. This changes future periodic triggers
+without redeploying tasks; `0s` disables automatic triggers. Existing checkpoint
+operations retain their original settings, and manual savepoints remain enabled.
+The interval is persisted with both graph and job metadata. The schedule remains
+anchored to the previous trigger (or running time), so shortening an interval
+can make a checkpoint immediately due. This endpoint is not yet connected to
+YAML file watching; automatic live updates and parallelism changes remain open.
