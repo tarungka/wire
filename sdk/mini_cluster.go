@@ -3,11 +3,15 @@ package sdk
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 )
 
 // MiniClusterConfig configures a MiniCluster for integration testing.
 type MiniClusterConfig struct {
+	// NumWorkers is a minimum worker count, allowing spare capacity for rescale
+	// tests. Zero provisions only the workers needed by the initial graph.
+	NumWorkers int
 	// NumTaskSlots sets each local worker's capacity and the environment's
 	// default parallelism. Workers are provisioned to fit the submitted graph,
 	// with at least two workers for independent checkpoint replicas.
@@ -17,11 +21,13 @@ type MiniClusterConfig struct {
 // MiniCluster is a lightweight, in-process cluster for integration testing.
 // Each execution runs a local coordinator and workers with checkpoint replicas.
 type MiniCluster struct {
-	config MiniClusterConfig
-	mu     sync.Mutex
-	closed bool
-	active map[*StreamExecutionEnvironment]context.CancelFunc
-	joined sync.WaitGroup
+	config      MiniClusterConfig
+	mu          sync.Mutex
+	closed      bool
+	active      map[*StreamExecutionEnvironment]context.CancelFunc
+	jobs        map[string]MiniClusterJob
+	workerStops map[string]map[string]func(context.Context) error
+	joined      sync.WaitGroup
 }
 
 // NewMiniCluster creates a new MiniCluster with the given configuration.
@@ -29,13 +35,15 @@ func NewMiniCluster(config MiniClusterConfig) *MiniCluster {
 	if config.NumTaskSlots <= 0 {
 		config.NumTaskSlots = 1
 	}
-	return &MiniCluster{config: config, active: make(map[*StreamExecutionEnvironment]context.CancelFunc)}
+	return &MiniCluster{config: config, active: make(map[*StreamExecutionEnvironment]context.CancelFunc), jobs: make(map[string]MiniClusterJob), workerStops: make(map[string]map[string]func(context.Context) error)}
 }
 
 // GetExecutionEnvironment returns a pre-configured StreamExecutionEnvironment
-// for running pipelines on this MiniCluster.
+// for running pipelines on this MiniCluster. Managed Process/window state
+// defaults to HashMap with a 256 MiB logical payload limit per instance. Call
+// SetStateBackend on the returned environment to select another backend.
 func (mc *MiniCluster) GetExecutionEnvironment() *StreamExecutionEnvironment {
-	env := New()
+	env := New().SetStateBackend(NewHashMapStateBackend(256))
 	env.SetParallelism(mc.config.NumTaskSlots)
 	env.SetMode(Embedded)
 	env.miniCluster = mc
@@ -67,4 +75,48 @@ func (mc *MiniCluster) run(ctx context.Context, env *StreamExecutionEnvironment,
 	mc.mu.Unlock()
 	defer func() { cancel(); mc.mu.Lock(); delete(mc.active, env); mc.mu.Unlock(); mc.joined.Done() }()
 	return env.runLocal(ctx, name, mc.config.NumTaskSlots)
+}
+
+// MiniClusterJob identifies a running execution and its loopback HTTP control
+// API. The API is unauthenticated and exists only for the Execute invocation.
+type MiniClusterJob struct {
+	JobID          string
+	CoordinatorURL string
+}
+
+// Jobs returns a detached, ordered snapshot of active executions. A job may
+// finish after this call, so control requests must handle a closed endpoint.
+func (mc *MiniCluster) Jobs() []MiniClusterJob {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	jobs := make([]MiniClusterJob, 0, len(mc.jobs))
+	for _, job := range mc.jobs {
+		jobs = append(jobs, job)
+	}
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].JobID < jobs[j].JobID })
+	return jobs
+}
+
+func (mc *MiniCluster) publishJob(job MiniClusterJob, stops map[string]func(context.Context) error) func() {
+	mc.mu.Lock()
+	mc.jobs[job.JobID] = job
+	mc.workerStops[job.JobID] = stops
+	mc.mu.Unlock()
+	return func() { mc.mu.Lock(); delete(mc.jobs, job.JobID); delete(mc.workerStops, job.JobID); mc.mu.Unlock() }
+}
+
+// StopWorker permanently stops one execution's in-process worker, including
+// its data and checkpoint-replica services. It leaves the coordinator and other
+// workers running for fault-recovery tests. It does not kill an OS process.
+func (mc *MiniCluster) StopWorker(ctx context.Context, jobID, workerID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	mc.mu.Lock()
+	stop := mc.workerStops[jobID][workerID]
+	mc.mu.Unlock()
+	if stop == nil {
+		return fmt.Errorf("sdk: unknown MiniCluster job or worker")
+	}
+	return stop(ctx)
 }

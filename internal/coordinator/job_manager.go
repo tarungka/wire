@@ -33,6 +33,11 @@ func (c *Coordinator) SubmitJob(name string, parallelism int, config []byte) (*J
 
 	// Legacy opaque configurations remain accepted. Structured graphs are
 	// validated before reserving a job name or writing any metadata.
+	var defaultErr error
+	config, defaultErr = c.resolveStateBackendDefaults(config)
+	if defaultErr != nil {
+		return nil, defaultErr
+	}
 	var graph rpc.JobGraph
 	var secrets jobSecretValues
 	installed := false

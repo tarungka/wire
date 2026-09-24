@@ -50,5 +50,12 @@ func applyEnvironment(ko *koanf.Koanf) error {
 	if err := visit(reflect.TypeOf(WireConfig{}), ""); err != nil {
 		return err
 	}
+	// WIP-18 documents this shorter alias in addition to the derived field name.
+	if value, ok := os.LookupEnv("WIRE_STATE_BACKEND"); ok {
+		if previous, exists := values["state.default_backend"]; exists && previous != value {
+			return fmt.Errorf("%w: conflicting WIRE_STATE_BACKEND and WIRE_STATE_DEFAULT_BACKEND", ErrConfigFileLoad)
+		}
+		values["state.default_backend"] = value
+	}
 	return ko.Load(confmap.Provider(values, "."), nil)
 }

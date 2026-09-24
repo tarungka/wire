@@ -18,14 +18,15 @@ require (
 	github.com/rs/zerolog v1.33.0
 	github.com/shirou/gopsutil/v4 v4.26.8
 	github.com/spf13/pflag v1.0.6
+	github.com/tidwall/btree v1.8.1
 	github.com/twmb/murmur3 v1.1.8
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.65.0
 	go.opentelemetry.io/otel/metric v1.43.0
 	go.opentelemetry.io/otel/sdk v1.43.0
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
-	golang.org/x/crypto v0.48.0
 	go.uber.org/automaxprocs v1.6.0
+	golang.org/x/crypto v0.48.0
 	golang.org/x/sync v0.19.0
 	gopkg.in/yaml.v3 v3.0.1
 )

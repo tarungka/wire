@@ -96,3 +96,21 @@ func TestSavepointRoutesIgnorePlacementButRetainTopology(t *testing.T) {
 		t.Fatal("comparison mutated stored ownership")
 	}
 }
+
+func TestSavepointUpgradeRejectsBackendMigration(t *testing.T) {
+	cp, tasks := upgradePlanFixture(t)
+	for i := range tasks {
+		cp.TaskDescriptors[i].OperatorChain[1].Type = rpc.OperatorTypeProcess
+		tasks[i].OperatorChain[1].Type = rpc.OperatorTypeProcess
+		tasks[i].OperatorChain[1].StateBackend = &rpc.StateBackendSpec{Type: "hashmap"}
+	}
+	if _, err := planSavepointTaskRestore(cp, tasks); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("accepted implicit Pebble to HashMap migration: %v", err)
+	}
+	for i := range tasks {
+		tasks[i].OperatorChain[1].StateBackend = &rpc.StateBackendSpec{Type: "pebble", DataDir: "new-location"}
+	}
+	if _, err := planSavepointTaskRestore(cp, tasks); err != nil {
+		t.Fatalf("rejected same backend at different location: %v", err)
+	}
+}

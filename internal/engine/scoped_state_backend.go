@@ -12,6 +12,9 @@ import (
 func ScopedStateBackendFactory(config StateBackendConfig, jobID, operatorID, attemptID string, instance int) func() (StateBackend, func(), error) {
 	return func() (StateBackend, func(), error) {
 		cfg := config
+		if cfg.MetricTaskID != "" {
+			cfg.MetricOperatorID = operatorID
+		}
 		cleanup := func() {}
 		if cfg.Type == "" || cfg.Type == StateBackendPebble {
 			if cfg.PebbleDataDir == "" {

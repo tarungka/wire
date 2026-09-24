@@ -1,10 +1,6 @@
 package engine
 
-import (
-	"sort"
-
-	"github.com/cockroachdb/pebble"
-)
+import "github.com/cockroachdb/pebble"
 
 // StateMutation is one operation in an atomic operator-state update.
 type StateMutation struct {
@@ -47,29 +43,26 @@ func (h *HashMapStateBackend) ApplyBatch(changes []StateMutation) error {
 	if h.closed {
 		return ErrBackendClosed
 	}
-	// Preserve immutable existing payloads; clone only incoming values. Build a
-	// replacement index before publication so limits/errors cannot half-apply.
-	entries := make(map[string]kvEntry, len(h.entries)+len(changes))
-	for _, entry := range h.entries {
-		entries[string(entry.key)] = entry
-	}
+	// Copy-on-write keeps existing payloads immutable and publishes the entire
+	// batch only after validating its final memory usage.
+	next := h.entries.Copy()
+	size := h.curMemBytes
 	for _, change := range changes {
 		if change.Delete {
-			delete(entries, string(change.Key))
+			if old, ok := next.Delete(kvEntry{key: change.Key}); ok {
+				size -= int64(len(old.key) + len(old.value))
+			}
 		} else {
-			entries[string(change.Key)] = kvEntry{key: cloneBytes(change.Key), value: cloneBytes(change.Value)}
+			entry := kvEntry{key: cloneBytes(change.Key), value: cloneBytes(change.Value)}
+			if old, replaced := next.Set(entry); replaced {
+				size -= int64(len(old.key) + len(old.value))
+			}
+			size += int64(len(entry.key) + len(entry.value))
 		}
-	}
-	var size int64
-	next := make([]kvEntry, 0, len(entries))
-	for _, entry := range entries {
-		size += int64(len(entry.key) + len(entry.value))
-		next = append(next, entry)
 	}
 	if h.memLimit > 0 && size > h.memLimit {
 		return ErrMemoryLimitExceeded
 	}
-	sort.Slice(next, func(i, j int) bool { return string(next[i].key) < string(next[j].key) })
 	h.entries, h.curMemBytes = next, size
 	return nil
 }

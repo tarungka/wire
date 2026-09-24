@@ -1,6 +1,10 @@
 package engine
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/tarungka/wire/internal/observability"
+)
 
 // Default state backend configuration values per WIP-18.
 const (
@@ -17,6 +21,9 @@ const (
 
 // StateBackendConfig holds configuration for state backend creation.
 type StateBackendConfig struct {
+	// MetricTaskID and MetricOperatorID identify an active managed backend.
+	// Empty identity disables per-task metrics for staging and standalone stores.
+	MetricTaskID, MetricOperatorID string
 	// Type selects the state backend implementation.
 	// Defaults to StateBackendPebble if empty.
 	Type StateBackendType
@@ -54,7 +61,16 @@ func NewStateBackend(cfg StateBackendConfig) (StateBackend, error) {
 
 	switch backendType {
 	case StateBackendHashMap:
-		return NewHashMapStateBackend(cfg.HashMapMemLimit), nil
+		backend := NewHashMapStateBackend(cfg.HashMapMemLimit)
+		if cfg.MetricTaskID != "" || cfg.MetricOperatorID != "" {
+			recorder, err := observability.NewStateBackendRecorder(cfg.MetricOperatorID, cfg.MetricTaskID, backend.MemUsage)
+			if err != nil {
+				_ = backend.Close()
+				return nil, err
+			}
+			backend.metrics = recorder
+		}
+		return backend, nil
 	case StateBackendPebble:
 		return newPebbleStateBackend(cfg)
 	default:

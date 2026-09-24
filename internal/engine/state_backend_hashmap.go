@@ -5,14 +5,19 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
-	"sort"
 	"sync"
+
+	"github.com/tidwall/btree"
+
+	"github.com/tarungka/wire/internal/observability"
 )
 
 // hashMapSnapshotVersion is the binary format version for HashMap snapshots.
 const hashMapSnapshotVersion uint8 = 1
 
-// HashMapStateBackend is an in-memory state backend backed by a sorted slice.
+const hashMapSnapshotMagic = "WHSB"
+
+// HashMapStateBackend is an in-memory state backend backed by a B-tree.
 // It is designed for testing, development, and small-state workloads where
 // the full dataset fits in memory.
 //
@@ -20,8 +25,9 @@ const hashMapSnapshotVersion uint8 = 1
 // Memory accounting: Put operations track curMemBytes and reject writes that
 // would exceed memLimit (0 = unlimited).
 type HashMapStateBackend struct {
+	metrics     *observability.StateBackendRecorder
 	mu          sync.RWMutex
-	entries     []kvEntry // sorted by key
+	entries     *btree.BTreeG[kvEntry] // ordered by key; guarded by mu
 	curMemBytes int64
 	memLimit    int64 // 0 = unlimited
 	closed      bool
@@ -38,6 +44,7 @@ type kvEntry struct {
 func NewHashMapStateBackend(memLimit int64) *HashMapStateBackend {
 	return &HashMapStateBackend{
 		memLimit: memLimit,
+		entries:  newHashMapTree(),
 	}
 }
 
@@ -50,17 +57,13 @@ func (h *HashMapStateBackend) Put(key, value []byte) error {
 		return ErrBackendClosed
 	}
 
-	idx := h.search(key)
-
-	if idx < len(h.entries) && bytes.Equal(h.entries[idx].key, key) {
-		// Update existing entry.
-		oldSize := int64(len(h.entries[idx].value))
-		newSize := int64(len(value))
-		delta := newSize - oldSize
+	previous, exists := h.entries.Get(kvEntry{key: key})
+	if exists {
+		delta := int64(len(value)) - int64(len(previous.value))
 		if h.memLimit > 0 && h.curMemBytes+delta > h.memLimit {
 			return ErrMemoryLimitExceeded
 		}
-		h.entries[idx].value = cloneBytes(value)
+		h.entries.Set(kvEntry{key: previous.key, value: cloneBytes(value)})
 		h.curMemBytes += delta
 		return nil
 	}
@@ -72,10 +75,7 @@ func (h *HashMapStateBackend) Put(key, value []byte) error {
 	}
 
 	entry := kvEntry{key: cloneBytes(key), value: cloneBytes(value)}
-	// Insert in sorted position.
-	h.entries = append(h.entries, kvEntry{})
-	copy(h.entries[idx+1:], h.entries[idx:])
-	h.entries[idx] = entry
+	h.entries.Set(entry)
 	h.curMemBytes += entrySize
 	return nil
 }
@@ -89,9 +89,8 @@ func (h *HashMapStateBackend) Get(key []byte) ([]byte, error) {
 		return nil, ErrBackendClosed
 	}
 
-	idx := h.search(key)
-	if idx < len(h.entries) && bytes.Equal(h.entries[idx].key, key) {
-		return cloneBytes(h.entries[idx].value), nil
+	if entry, ok := h.entries.Get(kvEntry{key: key}); ok {
+		return cloneBytes(entry.value), nil
 	}
 	return nil, ErrKeyNotFound
 }
@@ -105,13 +104,11 @@ func (h *HashMapStateBackend) Delete(key []byte) error {
 		return ErrBackendClosed
 	}
 
-	idx := h.search(key)
-	if idx >= len(h.entries) || !bytes.Equal(h.entries[idx].key, key) {
+	entry, ok := h.entries.Delete(kvEntry{key: key})
+	if !ok {
 		return ErrKeyNotFound
 	}
-
-	h.curMemBytes -= int64(len(h.entries[idx].key) + len(h.entries[idx].value))
-	h.entries = append(h.entries[:idx], h.entries[idx+1:]...)
+	h.curMemBytes -= int64(len(entry.key) + len(entry.value))
 	return nil
 }
 
@@ -124,23 +121,15 @@ func (h *HashMapStateBackend) NewIterator(prefix []byte) StateIterator {
 		return &hashMapIterator{} // empty iterator
 	}
 
-	// Find the start of the prefix range.
-	start := sort.Search(len(h.entries), func(i int) bool {
-		return bytes.Compare(h.entries[i].key, prefix) >= 0
-	})
-
-	// Collect all entries with the given prefix. We snapshot them to avoid
-	// holding the lock during iteration.
+	// Copy matching entries so iteration neither holds the lock nor aliases state.
 	var snapshot []kvEntry
-	for i := start; i < len(h.entries); i++ {
-		if !bytes.HasPrefix(h.entries[i].key, prefix) {
-			break
+	h.entries.Ascend(kvEntry{key: prefix}, func(entry kvEntry) bool {
+		if !bytes.HasPrefix(entry.key, prefix) {
+			return false
 		}
-		snapshot = append(snapshot, kvEntry{
-			key:   cloneBytes(h.entries[i].key),
-			value: cloneBytes(h.entries[i].value),
-		})
-	}
+		snapshot = append(snapshot, kvEntry{key: cloneBytes(entry.key), value: cloneBytes(entry.value)})
+		return true
+	})
 
 	return &hashMapIterator{entries: snapshot, pos: -1}
 }
@@ -149,7 +138,7 @@ func (h *HashMapStateBackend) NewIterator(prefix []byte) StateIterator {
 //
 // Binary format:
 //
-//	[version:1B][num_entries:4B LE][entries...][crc32:4B LE]
+//	[magic:4B WHSB][version:1B][num_entries:4B LE][entries...][crc32:4B LE]
 //
 // Each entry:
 //
@@ -162,7 +151,12 @@ func (h *HashMapStateBackend) Checkpoint(checkpointID uint64) (SnapshotHandle, e
 		return SnapshotHandle{}, ErrBackendClosed
 	}
 
-	data, err := serializeHashMapSnapshot(h.entries)
+	entries := make([]kvEntry, 0, h.entries.Len())
+	h.entries.Scan(func(entry kvEntry) bool {
+		entries = append(entries, entry)
+		return true
+	})
+	data, err := serializeHashMapSnapshot(entries)
 	if err != nil {
 		return SnapshotHandle{}, fmt.Errorf("hashmap checkpoint: %w", err)
 	}
@@ -201,7 +195,14 @@ func (h *HashMapStateBackend) Restore(handle SnapshotHandle) error {
 		return ErrMemoryLimitExceeded
 	}
 
-	h.entries = entries
+	tree := newHashMapTree()
+	for i, entry := range entries {
+		if i > 0 && bytes.Compare(entries[i-1].key, entry.key) >= 0 {
+			return fmt.Errorf("%w: snapshot keys must be strictly increasing", ErrSnapshotCorrupt)
+		}
+		tree.Set(entry)
+	}
+	h.entries = tree
 	h.curMemBytes = memBytes
 	return nil
 }
@@ -209,16 +210,16 @@ func (h *HashMapStateBackend) Restore(handle SnapshotHandle) error {
 // Close releases resources and marks the backend as closed.
 func (h *HashMapStateBackend) Close() error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	if h.closed {
+		h.mu.Unlock()
 		return ErrBackendClosed
 	}
-
 	h.closed = true
 	h.entries = nil
 	h.curMemBytes = 0
-	return nil
+	h.mu.Unlock()
+	// Unregister outside the state lock: an in-flight scrape may need it.
+	return h.metrics.Close()
 }
 
 // MemUsage returns the current memory usage in bytes. Safe for concurrent use.
@@ -232,15 +233,17 @@ func (h *HashMapStateBackend) MemUsage() int64 {
 func (h *HashMapStateBackend) Len() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return len(h.entries)
+	if h.closed {
+		return 0
+	}
+	return h.entries.Len()
 }
 
-// search returns the index where key would be inserted to maintain sorted order.
-// Must be called with h.mu held (read or write).
-func (h *HashMapStateBackend) search(key []byte) int {
-	return sort.Search(len(h.entries), func(i int) bool {
-		return bytes.Compare(h.entries[i].key, key) >= 0
-	})
+// The backend lock makes tree updates and memory accounting atomic together.
+func newHashMapTree() *btree.BTreeG[kvEntry] {
+	return btree.NewBTreeGOptions(func(a, b kvEntry) bool {
+		return bytes.Compare(a.key, b.key) < 0
+	}, btree.Options{NoLocks: true})
 }
 
 // cloneBytes returns a copy of b. Returns nil if b is nil.
@@ -285,7 +288,7 @@ func (it *hashMapIterator) Close() {
 // serializeHashMapSnapshot encodes entries into the binary snapshot format.
 func serializeHashMapSnapshot(entries []kvEntry) ([]byte, error) {
 	// Pre-calculate buffer size.
-	size := 1 + 4 // version + num_entries
+	size := len(hashMapSnapshotMagic) + 1 + 4 // magic + version + num_entries
 	for _, e := range entries {
 		size += 4 + len(e.key) + 4 + len(e.value)
 	}
@@ -293,6 +296,7 @@ func serializeHashMapSnapshot(entries []kvEntry) ([]byte, error) {
 
 	buf := make([]byte, 0, size)
 
+	buf = append(buf, hashMapSnapshotMagic...)
 	// Version.
 	buf = append(buf, hashMapSnapshotVersion)
 
@@ -334,31 +338,41 @@ func deserializeHashMapSnapshot(data []byte) ([]kvEntry, error) {
 		return nil, fmt.Errorf("%w: CRC32 mismatch (expected %08x, got %08x)", ErrSnapshotCorrupt, expected, actual)
 	}
 
-	// Version check.
-	if data[0] != hashMapSnapshotVersion {
-		return nil, fmt.Errorf("%w: unsupported version %d", ErrSnapshotCorrupt, data[0])
+	// New snapshots carry the proposal's magic header. The old unframed
+	// version-1 format remains readable for checkpoint/savepoint upgrades.
+	header := 0
+	if bytes.HasPrefix(data, []byte(hashMapSnapshotMagic)) {
+		header = len(hashMapSnapshotMagic)
+		if payloadLen < header+5 {
+			return nil, fmt.Errorf("%w: truncated snapshot header", ErrSnapshotCorrupt)
+		}
+	} else if data[0] != hashMapSnapshotVersion {
+		return nil, fmt.Errorf("%w: invalid snapshot magic", ErrSnapshotCorrupt)
+	}
+	if data[header] != hashMapSnapshotVersion {
+		return nil, fmt.Errorf("%w: unsupported version %d", ErrSnapshotCorrupt, data[header])
 	}
 
-	numEntries := binary.LittleEndian.Uint32(data[1:5])
-	// Guard against corrupt numEntries causing OOM: each entry needs at least
-	// 8 bytes (4B key_len + 4B val_len), so cap against payload capacity.
-	maxPossibleEntries := uint32(payloadLen / 8)
-	if numEntries > maxPossibleEntries {
+	numEntries := binary.LittleEndian.Uint32(data[header+1 : header+5])
+	pos := header + 5
+	// Each entry needs at least its two lengths. Compare without narrowing
+	// the payload size so oversized headers cannot trigger a huge allocation.
+	if uint64(numEntries) > uint64(payloadLen-pos)/8 {
 		return nil, fmt.Errorf("%w: numEntries %d exceeds payload capacity", ErrSnapshotCorrupt, numEntries)
 	}
-	pos := 5
 
 	entries := make([]kvEntry, 0, numEntries)
 	for i := uint32(0); i < numEntries; i++ {
 		if pos+4 > payloadLen {
 			return nil, fmt.Errorf("%w: truncated at entry %d key length", ErrSnapshotCorrupt, i)
 		}
-		keyLen := int(binary.LittleEndian.Uint32(data[pos : pos+4]))
+		keySize := binary.LittleEndian.Uint32(data[pos : pos+4])
 		pos += 4
 
-		if pos+keyLen > payloadLen {
+		if uint64(keySize) > uint64(payloadLen-pos) {
 			return nil, fmt.Errorf("%w: truncated at entry %d key data", ErrSnapshotCorrupt, i)
 		}
+		keyLen := int(keySize)
 		key := make([]byte, keyLen)
 		copy(key, data[pos:pos+keyLen])
 		pos += keyLen
@@ -366,12 +380,13 @@ func deserializeHashMapSnapshot(data []byte) ([]kvEntry, error) {
 		if pos+4 > payloadLen {
 			return nil, fmt.Errorf("%w: truncated at entry %d value length", ErrSnapshotCorrupt, i)
 		}
-		valLen := int(binary.LittleEndian.Uint32(data[pos : pos+4]))
+		valueSize := binary.LittleEndian.Uint32(data[pos : pos+4])
 		pos += 4
 
-		if pos+valLen > payloadLen {
+		if uint64(valueSize) > uint64(payloadLen-pos) {
 			return nil, fmt.Errorf("%w: truncated at entry %d value data", ErrSnapshotCorrupt, i)
 		}
+		valLen := int(valueSize)
 		value := make([]byte, valLen)
 		copy(value, data[pos:pos+valLen])
 		pos += valLen

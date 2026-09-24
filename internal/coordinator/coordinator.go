@@ -22,11 +22,12 @@ const (
 
 // CoordinatorConfig configures the Coordinator.
 type CoordinatorConfig struct {
-	DataDir           string
-	NodeID            string
-	ListenAddr        string
-	RPCAdvertiseAddr  string
-	HTTPAdvertiseAddr string
+	DefaultStateBackend *rpc.StateBackendSpec
+	DataDir             string
+	NodeID              string
+	ListenAddr          string
+	RPCAdvertiseAddr    string
+	HTTPAdvertiseAddr   string
 	// Deprecated: heartbeat receipt times are now ephemeral; no periodic flush runs.
 	HeartbeatFlushInterval           time.Duration
 	WorkerTimeout                    time.Duration
@@ -131,6 +132,10 @@ type Coordinator struct {
 // here is reserved for term-local leader discovery managed by HAService.
 func New(cfg CoordinatorConfig, store MetadataStore, election LeaderElection, log zerolog.Logger) *Coordinator {
 	cfg.resolve()
+	if cfg.DefaultStateBackend != nil {
+		spec := *cfg.DefaultStateBackend
+		cfg.DefaultStateBackend = &spec
+	}
 	return &Coordinator{
 		state:               StateStandby,
 		nodeID:              cfg.NodeID,

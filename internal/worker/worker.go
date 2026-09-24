@@ -46,6 +46,7 @@ type Config struct {
 // taskHandle tracks a running task so it can be cancelled on demand or
 // on worker shutdown.
 type taskHandle struct {
+	stateMemoryBytes   uint64
 	redactor           *secretconfig.Redactor
 	status             rpc.TaskStatus
 	started            time.Time
@@ -63,6 +64,7 @@ type taskHandle struct {
 // Deployed tasks are resolved against the Worker's Registry and executed
 // via taskExecutor.
 type Worker struct {
+	stateMemoryAvailable   func(context.Context) (uint64, error)
 	cleanupCommands        chan rpc.WorkerCommand
 	epochStore             *epochStore
 	resources              *rpc.ResourceReport
@@ -572,6 +574,7 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 		return
 	}
 
+	availableMemory, memoryErr := w.sampleStateMemory(context.Background(), []rpc.TaskDescriptor{desc})
 	taskCtx, cancel := context.WithCancel(context.Background())
 	w.mu.Lock()
 	// Heartbeat and push delivery may both deploy the same attempt. Admission
@@ -603,6 +606,15 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 		w.mu.Unlock()
 		cancel()
 		w.log.Warn().Uint64("epoch", desc.EpochID).Str("task_id", cmd.TaskID).Msg("ignoring deployment from a different coordinator epoch")
+		return
+	}
+	if memoryErr == nil {
+		memoryErr = w.checkStateMemoryLocked([]rpc.TaskDescriptor{desc}, availableMemory)
+	}
+	if memoryErr != nil {
+		w.mu.Unlock()
+		cancel()
+		w.reportTaskFailed(cmd.JobID, cmd.TaskID, memoryErr)
 		return
 	}
 	w.installTaskLocked(cmd.JobID, cmd.TaskID, desc, cancel)
@@ -826,6 +838,7 @@ func (w *Worker) installTaskLocked(jobID, taskID string, desc rpc.TaskDescriptor
 			}
 		}
 	}
+	handle.stateMemoryBytes, _ = taskStateMemory(desc) // Admission validated the sum.
 	w.tasks[taskID] = handle
 }
 

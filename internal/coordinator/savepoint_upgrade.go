@@ -21,6 +21,11 @@ func (c *Coordinator) SubmitJobFromSavepoint(name string, parallelism int, confi
 	if err != nil || id == 0 || name == "" || parallelism < 1 {
 		return nil, fmt.Errorf("%w: invalid savepoint submission", ErrInvalidConfig)
 	}
+	var defaultErr error
+	config, defaultErr = c.resolveStateBackendDefaults(config)
+	if defaultErr != nil {
+		return nil, defaultErr
+	}
 	var graph rpc.JobGraph
 	if err := protocol.DecodeMsgPack(config, &graph); err != nil {
 		return nil, fmt.Errorf("%w: restore requires a structured job graph", ErrInvalidConfig)

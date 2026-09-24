@@ -10,11 +10,13 @@ import (
 
 // Config represents the configuration as set by command-line flags.
 type Config struct {
-	HTTPAuthFile     string
-	HTTPCert         string
-	HTTPKey          string
-	HTTPCA           string
-	HTTPVerifyClient bool
+	StateBackend            string
+	StateHashMapMaxMemoryMB int64
+	HTTPAuthFile            string
+	HTTPCert                string
+	HTTPKey                 string
+	HTTPCA                  string
+	HTTPVerifyClient        bool
 	// ConfigPath is the path to the config file. May not be set.
 	ConfigPath []string
 
@@ -120,6 +122,9 @@ func initFlags(name, desc string, build *BuildInfo) (*Config, *pflag.FlagSet, er
 	f.StringVar(&config.HTTPKey, "http-key", "", "HTTPS server private key file")
 	f.StringVar(&config.HTTPCA, "http-ca-cert", "", "CA certificate for HTTPS client verification")
 	f.BoolVar(&config.HTTPVerifyClient, "http-verify-client", false, "require HTTPS client certificates")
+
+	f.StringVar(&config.StateBackend, "state-backend", "pebble", "default state backend for new jobs (coordinator): pebble or hashmap")
+	f.Int64Var(&config.StateHashMapMaxMemoryMB, "state-hashmap-max-memory-mb", 256, "default HashMap logical payload limit in MiB per state instance (0 unlimited)")
 
 	// Coordinator flags
 	f.StringVar(&config.CoordinatorDataDir, "coordinator-data-dir", "data/coordinator", "coordinator metadata storage directory")

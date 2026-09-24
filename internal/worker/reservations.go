@@ -104,6 +104,7 @@ func (w *Worker) handleSubmitJob(ctx context.Context, _ uint64, payload []byte) 
 	if req.JobID == "" || req.AttemptID == "" || req.ReservationID == "" || len(req.Tasks) == 0 {
 		return nil, rpc.NewRPCError(rpc.ErrCodeInvalidRequest, "reserved deployment identity and tasks required")
 	}
+	availableMemory, memoryErr := w.sampleStateMemory(ctx, req.Tasks)
 	digest := sha256.Sum256(payload)
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -157,10 +158,17 @@ func (w *Worker) handleSubmitJob(ctx context.Context, _ uint64, payload []byte) 
 			case <-timer.C:
 			}
 			timer.Stop()
+			availableMemory, memoryErr = w.sampleStateMemory(ctx, req.Tasks)
 			w.mu.Lock()
 			// Recheck the entire admission, including epoch, cancellation, receipt
 			// and lease expiry. Concurrent retries must not execute twice.
 			continue
+		}
+		if memoryErr == nil {
+			memoryErr = w.checkStateMemoryLocked(req.Tasks, availableMemory)
+		}
+		if memoryErr != nil {
+			return nil, rpc.NewRPCError(rpc.ErrCodeInsufficientResources, memoryErr.Error())
 		}
 		if w.deploymentReceipts == nil {
 			w.deploymentReceipts = make(map[string][32]byte)

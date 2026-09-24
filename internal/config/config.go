@@ -3,6 +3,7 @@ package config
 // WireConfig is the top-level configuration for a Wire node.
 // It maps directly to the wire.yaml schema.
 type WireConfig struct {
+	State StateConfig `yaml:"state" json:"state" koanf:"state"`
 	// MaxFrameSize limits worker data-plane frames, not coordinator RPC payloads.
 	MaxFrameSize uint32           `yaml:"max_frame_size" json:"max_frame_size" koanf:"max_frame_size"`
 	Heartbeat    HeartbeatConfig  `yaml:"heartbeat" json:"heartbeat" koanf:"heartbeat"`
@@ -139,4 +140,18 @@ type PeerTLSConfig struct {
 	Cert   string `yaml:"cert" json:"cert" koanf:"cert"`
 	Key    string `yaml:"key" json:"key" koanf:"key"`
 	CACert string `yaml:"ca_cert" json:"ca_cert" koanf:"ca_cert"`
+}
+
+// StateConfig supplies coordinator defaults for newly submitted managed state.
+// The selected specification is persisted in each job; workers do not override it.
+type StateConfig struct {
+	DefaultBackend string             `yaml:"default_backend" json:"default_backend" koanf:"default_backend"`
+	HashMap        HashMapStateConfig `yaml:"hashmap" json:"hashmap" koanf:"hashmap"`
+	Pebble         PebbleStateConfig  `yaml:"pebble" json:"pebble" koanf:"pebble"`
+}
+type HashMapStateConfig struct {
+	MaxMemoryMB int64 `yaml:"max_memory_mb" json:"max_memory_mb" koanf:"max_memory_mb"`
+}
+type PebbleStateConfig struct {
+	DataDir string `yaml:"data_dir" json:"data_dir" koanf:"data_dir"`
 }
