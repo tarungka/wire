@@ -19,8 +19,10 @@ import (
 var validTransitions = map[JobStatus][]JobStatus{
 	JobCreated:   {JobDeploying, JobFailing, JobCanceling},
 	JobDeploying: {JobRunning, JobFailing, JobCanceling},
-	JobRunning:   {JobFinishing, JobPaused, JobFailing, JobCanceling},
-	JobPaused:    {JobDeploying, JobCanceling},
+	JobRunning:   {JobFinishing, JobPaused, JobPausing, JobFailing, JobCanceling},
+	JobPaused:    {JobDeploying, JobResuming, JobCanceling},
+	JobPausing:   {JobPaused, JobCanceling},
+	JobResuming:  {JobDeploying, JobFailing, JobCanceling},
 	JobFinishing: {JobFinished, JobCanceling},
 	JobFailing:   {JobDeploying, JobFailed, JobCanceled, JobCanceling},
 	JobCanceling: {JobCanceled},

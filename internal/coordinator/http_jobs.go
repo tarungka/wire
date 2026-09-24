@@ -112,7 +112,7 @@ func (s *HTTPServer) handlePauseJob(w http.ResponseWriter, r *http.Request) {
 		writeJobError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, pauseJobResponse{
+	writeJSON(w, http.StatusAccepted, pauseJobResponse{
 		Job:       jobDetailFromMeta(job),
 		Savepoint: savepointResponseFromMeta(sp),
 	})

@@ -10,10 +10,10 @@ branch builds on WIP-14's per-job policies and local worker runtime.
 | Submission, listing, inspection and filtering | Existing JSON graph-envelope handlers and CLI | YAML submission (WIP-19 integration); full detailed task/checkpoint response; malformed body/error audit |
 | Binary submission | `handleSubmitBinary` returns 501 | Implement actual compiled-application submission and execution contract, including limits and isolation; do not call the existing stub complete |
 | Cancel, including during deployment | Durable scheduler reconciliation, old-attempt fencing, CLI teardown and recovery tests | Savepoint-before-cancel and final whole-workflow acceptance |
-| Pause and resume | Existing PauseJob immediately changes metadata after triggering; ResumeJob contains a redeployment TODO | Await completed savepoint, stop the old attempt, resume by deploying from the pinned savepoint; failure and coordinator-restart cases |
+| Pause and resume | Durable queued intent, atomic checkpoint/PAUSING decision, fenced teardown, RESUMING placement; live CLI restores offsets and keyed state | Final operational walkthrough and acceptance audit |
 | Completed savepoints and restore/upgrade | Existing checkpoint manifests, worker restore, rescale and savepoint metadata | Cross-job compatible restore, operator identity validation and documented upgrade walkthrough |
 | Savepoint lifetime | Explicit metadata deletion exists | Delete replica data safely; protect all live restore references; unfinished savepoint cleanup |
-| Concurrent checkpoint and savepoint requests | Durable FIFO queue, HTTP 202, actual runner, deletion/race/recovery tests | Integrate queued savepoints into the pending pause workflow |
+| Concurrent checkpoint and savepoint requests | Durable FIFO queue, HTTP 202, actual runner, deletion/race/recovery tests | None identified in queue behavior; final acceptance remains |
 | Automatic recovery | Worker-loss and checkpoint selection tests; WIP-14 per-job restart policy | End-to-end REST/CLI evidence, bounded budget and all-workers-lost cases; retain explicit FAILED status for exhaustion |
 | Cluster status and node removal | Existing cluster routes | Removal must stop/fence execution and recover affected jobs safely; current removal only deletes worker metadata |
 | Health, readiness and metrics | Existing endpoints and metrics listener | Include actual addresses/status semantics in the final API reference and walkthrough |
@@ -49,7 +49,7 @@ is still outstanding.
 workers and a source whose Close is deliberately held. It verifies CANCELING
 while Close is blocked and CANCELED after teardown. Coordinator tests verify
 command retry/fencing, aborted checkpoint ordering, persistence failures and
-recovered cancellation. This does not complete pause/resume or the other rows.
+recovered cancellation. Other lifecycle requirements are tracked separately below.
 
 ## Durable queued savepoints
 
@@ -65,5 +65,20 @@ fails interrupted snapshots, and clears the old leadership term's active cache.
 
 Tests cover the running checkpoint runner, HTTP 202 responses, FIFO completion,
 recovery, activation persistence failure, deletion races and job cancellation.
-This supplies the queue needed for real pause/resume; it does not implement that
-workflow by itself. Legacy pause behavior remains unchanged until its replacement.
+The pause/resume implementation below builds on this queue.
+
+## Savepoint-based pause/resume
+
+Pause intent and its queued savepoint are written atomically. Checkpoint completion
+atomically pins the restore boundary and changes the job to PAUSING. The shared
+teardown reconciler waits for old task termination before PAUSED. Resume validates
+the pinned checkpoint, enters RESUMING, and uses normal scheduler deployment
+without spending a recovery attempt. A newer completed checkpoint releases the
+pin. Failed pause snapshots report pause_failure without claiming suspension.
+
+Unit tests cover failed request/resume writes, duplicate requests, invalid pinned
+checkpoints, missing replicas and recovery of queued/pausing/paused/resuming states.
+The live CLI test restores source offset 1 and keyed count 1, then emits count 2.
+Its transactional variant loses the first response after an external commit and
+verifies that resume produces each output once. These tests exercise real workers
+and replicas. Remaining WIP-15 requirements in the table still gate completion.

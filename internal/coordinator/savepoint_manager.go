@@ -109,6 +109,9 @@ func (c *Coordinator) DeleteSavepoint(jobID, spID string) error {
 	if err := protocol.DecodeMsgPack(data, &sp); err != nil {
 		return err
 	}
+	if job := c.jobs[jobID]; job != nil && !job.Status.IsTerminal() && (job.PauseSavepointID == sp.ID || (job.PauseCheckpoint != 0 && job.PauseCheckpoint == sp.CheckpointID)) {
+		return ErrSavepointInUse
+	}
 	if job := c.jobs[jobID]; job != nil && !job.Status.IsTerminal() && job.RescaleCheckpoint != 0 && job.RescaleCheckpoint == sp.CheckpointID && job.LatestCheckpoint == sp.CheckpointID {
 		return ErrSavepointInUse
 	}

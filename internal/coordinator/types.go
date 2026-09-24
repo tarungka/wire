@@ -45,6 +45,8 @@ const (
 	JobCanceling                  // Job cancellation was requested.
 	JobCanceled                   // Job was canceled by the user.
 	JobPaused                     // Job is paused (savepoint taken).
+	JobPausing                    // Savepoint completed; waiting for task teardown.
+	JobResuming                   // Resume requested; waiting for placement.
 )
 
 func (s JobStatus) String() string {
@@ -69,6 +71,10 @@ func (s JobStatus) String() string {
 		return "CANCELED"
 	case JobPaused:
 		return "PAUSED"
+	case JobPausing:
+		return "PAUSING"
+	case JobResuming:
+		return "RESUMING"
 	default:
 		return "UNKNOWN"
 	}
@@ -109,6 +115,9 @@ func (s CheckpointStatus) String() string {
 
 // JobMeta holds the persisted metadata for a single job.
 type JobMeta struct {
+	PauseSavepointID              string                `codec:"pause_savepoint_id,omitempty"`
+	PauseCheckpoint               uint64                `codec:"pause_checkpoint,omitempty"`
+	PauseFailure                  string                `codec:"pause_failure,omitempty"`
 	RestartPolicy                 *rpc.RestartPolicy    `codec:"restart_policy,omitempty"`
 	LastCheckpointTrigger         time.Time             `codec:"last_checkpoint_trigger,omitempty"`
 	CheckpointPolicy              *rpc.CheckpointPolicy `codec:"checkpoint_policy,omitempty"`

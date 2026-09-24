@@ -3,9 +3,12 @@ package sdk
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -140,5 +143,152 @@ func TestCLICancelWaitsForWorkerTeardown(t *testing.T) {
 	}
 	if err := json.Unmarshal(response.Bytes(), &status); err != nil || status.Status != "CANCELED" {
 		t.Fatalf("CLI status: %s, %v", response.String(), err)
+	}
+}
+
+type pauseReplaySource struct {
+	offset   atomic.Uint64
+	release  <-chan struct{}
+	restored chan<- uint64
+	closed   *atomic.Int32
+}
+
+func (*pauseReplaySource) Open(context.Context) error { return nil }
+func (s *pauseReplaySource) Close() error             { s.closed.Add(1); return nil }
+func (*pauseReplaySource) GenerateWatermark() int64   { return 0 }
+func (s *pauseReplaySource) ReadBatch(ctx context.Context) ([]Event, error) {
+	switch s.offset.Load() {
+	case 0:
+		s.offset.Store(1)
+		return []Event{{Key: []byte("key"), Value: []byte("first"), EventTime: 1}}, nil
+	case 1:
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-s.release:
+			s.offset.Store(2)
+			return []Event{{Key: []byte("key"), Value: []byte("second"), EventTime: 2}}, nil
+		case <-time.After(5 * time.Millisecond):
+			return []Event{}, nil
+		}
+	default:
+		return nil, nil
+	}
+}
+func (s *pauseReplaySource) Checkpoint(uint64) ([]byte, error) {
+	return binary.BigEndian.AppendUint64(nil, s.offset.Load()), nil
+}
+func (s *pauseReplaySource) RestoreOffset(_ context.Context, state []byte) error {
+	if len(state) != 8 {
+		return fmt.Errorf("invalid offset")
+	}
+	offset := binary.BigEndian.Uint64(state)
+	s.offset.Store(offset)
+	s.restored <- offset
+	return nil
+}
+
+func TestCLIPauseResumeRestoresOffsetsAndManagedState(t *testing.T) { testCLIPauseResume(t, false) }
+
+func TestCLIPauseResumeTransactionalCommitResponseLoss(t *testing.T) { testCLIPauseResume(t, true) }
+
+func testCLIPauseResume(t *testing.T, transactional bool) {
+	release := make(chan struct{})
+	restored := make(chan uint64, 2)
+	var closed atomic.Int32
+	registry := NewWorkerRegistry()
+	registry.RegisterSource("replay", func(context.Context, []byte, WorkerTaskContext) (Source, error) {
+		return &pauseReplaySource{release: release, restored: restored, closed: &closed}, nil
+	})
+	registry.RegisterKeyBy("key", func(context.Context, []byte, WorkerTaskContext) (KeySelector, error) {
+		return func(e Event) ([]byte, error) { return e.Key, nil }, nil
+	})
+	registry.RegisterProcess("count", func(context.Context, []byte, WorkerTaskContext) (ProcessDefinition, error) {
+		return ProcessDefinition{Process: func(ctx ProcessContext, e Event) ([]Event, error) {
+			state := ctx.GetState("count")
+			n, err := state.ValueInt64()
+			if err != nil {
+				return nil, err
+			}
+			if err := state.SetInt64(n + 1); err != nil {
+				return nil, err
+			}
+			e.Value = []byte(fmt.Sprint(n + 1))
+			return []Event{e}, nil
+		}}, nil
+	})
+	sink := &collectSink{}
+	ledger := &pauseTransactionLedger{prepared: make(map[uint64][]string), committed: make(map[uint64]bool), loseResponse: true}
+	registry.RegisterSink("collect", func(context.Context, []byte, WorkerTaskContext) (Sink, error) {
+		if transactional {
+			return &pauseTransactionSink{ledger: ledger, observed: sink}, nil
+		}
+		return sink, nil
+	})
+	ctx, coord, url := lifecycleCluster(t, registry)
+	env := New().SetMode(Cluster).SetCoordinator(url)
+	env.AddSourceNamed("source", "replay", nil).KeyByNamed("key", "key", nil).ProcessNamed("count", "count", nil).AddSinkNamed("sink", "collect", nil)
+	done := make(chan error, 1)
+	go func() { _, err := env.ExecuteWithName(ctx, "pause-resume"); done <- err }()
+	var jobID string
+	lifecycleWait(t, ctx, func() bool {
+		jobs := coord.ListJobs(nil)
+		if len(jobs) != 1 || jobs[0].Status != coordinator.JobRunning || len(sink.Events()) != 1 {
+			return false
+		}
+		jobID = jobs[0].ID
+		return true
+	})
+	var response bytes.Buffer
+	if err := jobcli.Run(ctx, []string{"jobs", "pause", jobID, "--coordinator", url}, &response, &response); err != nil {
+		t.Fatal(err)
+	}
+	lifecycleWait(t, ctx, func() bool { job, err := coord.GetJob(jobID); return err == nil && job.Status == coordinator.JobPaused })
+	paused, err := coord.GetJob(jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed.Load() != 1 || paused.PauseCheckpoint == 0 || paused.SavepointPath == "" {
+		t.Fatalf("paused before durable teardown: %+v closed=%d", paused, closed.Load())
+	}
+	if err := coord.DeleteSavepoint(jobID, paused.PauseSavepointID); !errors.Is(err, coordinator.ErrSavepointInUse) {
+		t.Fatalf("pause restore boundary could be deleted: %v", err)
+	}
+	response.Reset()
+	if err := jobcli.Run(ctx, []string{"jobs", "resume", jobID, "--coordinator", url}, &response, &response); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case offset := <-restored:
+		if offset != 1 {
+			t.Fatalf("restored offset=%d", offset)
+		}
+	case <-ctx.Done():
+		t.Fatal("resume never restored source")
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("resumed job never completed")
+	}
+	events := sink.Events()
+	if len(events) != 2 || string(events[0].Value) != "1" || string(events[1].Value) != "2" {
+		t.Fatalf("restored keyed state/output: %+v", events)
+	}
+	if transactional {
+		ledger.mu.Lock()
+		visible := append([]string(nil), ledger.visible...)
+		ledger.mu.Unlock()
+		if fmt.Sprint(visible) != "[1 2]" {
+			t.Fatalf("transactional output replayed or lost: %v", visible)
+		}
+	}
+	finished, err := coord.GetJob(jobID)
+	if err != nil || finished.RecoveryAttempts != 0 || finished.RestartCount != 0 {
+		t.Fatalf("manual resume charged recovery: %+v %v", finished, err)
 	}
 }

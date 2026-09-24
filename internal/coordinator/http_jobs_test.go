@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
 
 func TestHTTP_SubmitJob(t *testing.T) {
@@ -237,17 +238,9 @@ func TestHTTP_CancelJob_AlreadyCanceled(t *testing.T) {
 }
 
 func TestHTTP_PauseResumeJob(t *testing.T) {
-	c, _ := newReadyCoordinator(t)
+	c, _ := checkpointPolicyCoordinator(t)
 	srv := startTestHTTPServer(t, c)
-
-	job, _ := c.SubmitJob("j1", 1, []byte("cfg"))
-	installSavepointAssignment(t, c, job.ID)
-	if err := c.transitionJob(job, JobDeploying); err != nil {
-		t.Fatalf("transitionJob to deploying: %v", err)
-	}
-	if err := c.transitionJob(job, JobRunning); err != nil {
-		t.Fatalf("transitionJob to running: %v", err)
-	}
+	job := c.jobs["job"]
 
 	// Pause
 	resp, err := http.Post(
@@ -259,16 +252,16 @@ func TestHTTP_PauseResumeJob(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 for pause, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202 for pause, got %d", resp.StatusCode)
 	}
 
 	var pauseResult pauseJobResponse
 	if err := json.NewDecoder(resp.Body).Decode(&pauseResult); err != nil {
 		t.Fatalf("decode pause response: %v", err)
 	}
-	if pauseResult.Job.Status != "PAUSED" {
-		t.Fatalf("expected PAUSED, got %s", pauseResult.Job.Status)
+	if pauseResult.Job.Status != "RUNNING" {
+		t.Fatalf("expected pending RUNNING, got %s", pauseResult.Job.Status)
 	}
 	if pauseResult.Savepoint.ID == "" {
 		t.Fatal("expected savepoint ID in pause response")
@@ -277,6 +270,13 @@ func TestHTTP_PauseResumeJob(t *testing.T) {
 		t.Fatalf("expected savepoint job_id %s, got %s", job.ID, pauseResult.Savepoint.JobID)
 	}
 
+	if err := c.advanceQueuedSavepoint(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	completeQueueCheckpoint(t, c, c.activeCheckpoints[job.ID])
+	if err := c.advancePause(job.ID, time.Now().Add(c.config.WorkerTimeout)); err != nil {
+		t.Fatal(err)
+	}
 	// Resume
 	resp2, err := http.Post(
 		fmt.Sprintf("http://%s/api/v1/jobs/%s/resume", srv.Addr(), job.ID),
@@ -295,7 +295,7 @@ func TestHTTP_PauseResumeJob(t *testing.T) {
 	if err := json.NewDecoder(resp2.Body).Decode(&result); err != nil {
 		t.Fatalf("decode resume response: %v", err)
 	}
-	if result.Status != "DEPLOYING" {
-		t.Fatalf("expected DEPLOYING after resume, got %s", result.Status)
+	if result.Status != "RESUMING" {
+		t.Fatalf("expected RESUMING after resume, got %s", result.Status)
 	}
 }

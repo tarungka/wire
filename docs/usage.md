@@ -220,7 +220,8 @@ curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/cancel | jq
 
 ### Pause a Job
 
-Pausing a job triggers an automatic savepoint before suspending execution.
+Pause returns HTTP 202 after persisting a savepoint request. Poll the job until
+`PAUSED`: it remains `RUNNING` during the snapshot and `PAUSING` during teardown.
 
 ```bash
 curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/pause | jq
@@ -233,7 +234,8 @@ Response:
   "job": {
     "id": "job_abc123",
     "name": "my-pipeline",
-    "status": "PAUSED",
+    "status": "RUNNING",
+    "pause_savepoint_id": "sp_xyz789",
     "parallelism": 4,
     "created_at": "2025-01-01T00:00:00Z",
     "updated_at": "2025-01-01T00:00:05Z",
@@ -244,15 +246,17 @@ Response:
   "savepoint": {
     "id": "sp_xyz789",
     "job_id": "job_abc123",
-    "status": "COMPLETED",
-    "path": "data/savepoints/sp_xyz789",
-    "trigger_time": "2025-01-01T00:00:05Z",
-    "completion_time": "2025-01-01T00:00:05Z"
+    "status": "IN_PROGRESS",
+    "queued": true,
+    "trigger_time": "2025-01-01T00:00:05Z"
   }
 }
 ```
 
 ### Resume a Job
+
+Resume a `PAUSED` job from its pinned savepoint. `RESUMING` waits for capacity,
+then proceeds through `DEPLOYING` to `RUNNING`. See [pause and resume details](job-cli.md#pause-and-resume-from-a-savepoint).
 
 ```bash
 curl -s -X POST http://localhost:4001/api/v1/jobs/{job_id}/resume | jq
@@ -332,7 +336,7 @@ CREATED -> DEPLOYING -> RUNNING -> FINISHING -> FINISHED
    |          |            |
    |          |            +-> CANCELING -> CANCELED
    |          |            |
-   |          |            +-> PAUSED -> (DEPLOYING, resumes)
+   |          |            +-> PAUSING -> PAUSED -> RESUMING -> DEPLOYING
    |          |
    |          +-> CANCELING -> CANCELED
    |          |
@@ -352,7 +356,9 @@ CREATED -> DEPLOYING -> RUNNING -> FINISHING -> FINISHED
 * **FAILED** — Terminated due to error (terminal)
 * **CANCELING** — Cancellation requested
 * **CANCELED** — Canceled by user (terminal)
-* **PAUSED** — Suspended with savepoint taken
+* **PAUSING** — Savepoint completed; stopping the old tasks
+* **PAUSED** — Savepoint pinned and old tasks stopped
+* **RESUMING** — Manual restore requested; waiting for placement
 
 Terminal states: `FINISHED`, `FAILED`, `CANCELED`.
 

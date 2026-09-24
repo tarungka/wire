@@ -107,13 +107,14 @@ func (c *Coordinator) schedulePending(ctx context.Context, dispatch func(*JobMet
 	}
 	c.detectLostTaskWorkers()
 	c.scheduleCancellations()
+	c.schedulePauses()
 	c.scheduleFinalCheckpoints(ctx)
 
 	// Snapshot CREATED jobs under RLock.
 	c.mu.RLock()
 	var createdJobs []*JobMeta
 	for _, job := range c.jobs {
-		if job.Status == JobCreated || job.Status == JobFailing {
+		if job.Status == JobCreated || job.Status == JobFailing || job.Status == JobResuming {
 			createdJobs = append(createdJobs, job)
 		}
 	}
@@ -200,7 +201,7 @@ func (c *Coordinator) scheduleJobContext(ctx context.Context, job *JobMeta) {
 	// Transition CREATED → DEPLOYING and persist assignments under Lock.
 	c.mu.Lock()
 	// Re-check status under lock (another tick may have grabbed it).
-	if ctx.Err() != nil || !c.readyLocked() || (job.Status != JobCreated && job.Status != JobFailing) || !c.assignmentsLiveLocked(assignments, time.Now(), peers) {
+	if ctx.Err() != nil || !c.readyLocked() || (job.Status != JobCreated && job.Status != JobFailing && job.Status != JobResuming) || !c.assignmentsLiveLocked(assignments, time.Now(), peers) {
 		c.mu.Unlock()
 		return
 	}

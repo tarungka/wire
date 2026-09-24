@@ -32,12 +32,9 @@ placeholder above is not runnable graph data. A successful submission reports
 acceptance, not successful deployment or completion. The server still accepts
 legacy `config` bytes, but the scheduler does not interpret those as a graph.
 
-`wire jobs pause JOB_ID` and `wire jobs resume JOB_ID` expose the existing REST
-endpoints. Those endpoints currently update metadata; they do not provide a
-completed runtime pause/savepoint/restore workflow. Similarly, triggering a
-savepoint returns its current metadata status, not a guarantee of a completed
-durable snapshot. Inspect returned status before relying on it. Upgrades,
-rescaling, and binary submission remain unsupported.
+Pause and resume use the durable workflow below. Triggering a savepoint reports
+acceptance rather than a completed archive; poll its status before relying on it.
+Cross-job upgrades, binary submission and CLI rescale support remain WIP-15 work.
 
 ### Cancellation completion
 
@@ -69,5 +66,40 @@ Queued requests are persisted, dispatched in arrival order, and take priority
 over new automatic checkpoints. Unstarted requests survive coordinator recovery;
 an active snapshot interrupted by recovery is still failed. Deleting a queued
 request cancels it. Once its snapshot starts, deletion waits for the decision.
-Canceling the job fails its remaining queued requests. These semantics apply to
-savepoint requests; the unfinished pause/resume workflow is tracked separately.
+Canceling the job fails its remaining queued requests. Pause uses the same durable queue, as described below.
+
+### Pause and resume from a savepoint
+
+```sh
+wire jobs pause JOB_ID
+wire jobs get JOB_ID
+# Poll until PAUSED, then:
+wire jobs resume JOB_ID
+wire jobs get JOB_ID
+```
+
+Pause returns HTTP 202 with the job and a queued savepoint ID. While that
+savepoint waits or runs, the job remains `RUNNING` and exposes
+`pause_savepoint_id`. Once the snapshot completes durably, the job enters
+`PAUSING`, stops the old tasks, then enters `PAUSED`. A failed snapshot leaves
+the job unpaused and exposes `pause_failure`; it does not consume the checkpoint
+failure budget. An interrupted active snapshot fails during coordinator recovery;
+a queued request survives and waits for a running job.
+
+Resume returns `RESUMING` while waiting for worker capacity. The coordinator
+redeploys from the exact pause checkpoint with a new deployment generation; this
+manual deployment does not consume a failure-recovery attempt. Sources restore
+saved offsets and managed operators restore their state. Ordinary sinks retain
+their replay semantics; transactional sinks must implement the WIP-10 fencing
+and idempotent commit contract. Records processed after the savepoint boundary
+may be replayed after resume.
+
+The pause savepoint cannot be deleted while it is needed for resume/recovery.
+A newer completed checkpoint releases the pin; an invalid pinned checkpoint
+returns an error rather than silently replaying from an older boundary.
+Cancel remains available during `PAUSING`, `PAUSED` and `RESUMING`.
+
+Upgrade coordinators before using these new lifecycle states; older coordinators
+do not understand persisted `PAUSING`/`RESUMING` values. Legacy metadata-only
+PAUSED jobs with no pinned checkpoint are rejected on resume rather than restarted
+from empty state.

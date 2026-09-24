@@ -44,17 +44,31 @@ func (c *Coordinator) advanceCancellation(jobID string, now time.Time) error {
 	if job == nil || job.Status != JobCanceling {
 		return nil
 	}
-	data, err := c.store.Get(JobAssignmentsKey(jobID))
+	stopped, err := c.stopAssignedTasksLocked(job, now)
 	if err != nil {
 		return err
+	}
+
+	if !stopped {
+		return nil
+	}
+	return c.transitionJobLocked(job, JobCanceled)
+}
+
+// stopAssignedTasksLocked reconciles old-attempt teardown for cancel and pause.
+// The caller holds c.mu and persists the resulting job state only after true.
+func (c *Coordinator) stopAssignedTasksLocked(job *JobMeta, now time.Time) (bool, error) {
+	data, err := c.store.Get(JobAssignmentsKey(job.ID))
+	if err != nil {
+		return false, err
 	}
 	var assignment TaskAssignmentMap
 	if len(data) != 0 {
 		if err := protocol.DecodeMsgPack(data, &assignment); err != nil {
-			return err
+			return false, err
 		}
-		if assignment.JobID != jobID {
-			return fmt.Errorf("cancellation assignment identity mismatch")
+		if assignment.JobID != job.ID {
+			return false, fmt.Errorf("cancellation assignment identity mismatch")
 		}
 	}
 	stopped := true
@@ -80,10 +94,7 @@ func (c *Coordinator) advanceCancellation(jobID string, now time.Time) error {
 			continue
 		}
 		stopped = false
-		c.enqueueCommandLocked(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeCancelTask, JobID: jobID, TaskID: taskID, EpochID: assignment.EpochID, AttemptID: assignment.AttemptID})
+		c.enqueueCommandLocked(workerID, rpc.WorkerCommand{Type: rpc.CommandTypeCancelTask, JobID: job.ID, TaskID: taskID, EpochID: assignment.EpochID, AttemptID: assignment.AttemptID})
 	}
-	if !stopped {
-		return nil
-	}
-	return c.transitionJobLocked(job, JobCanceled)
+	return stopped, nil
 }

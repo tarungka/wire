@@ -18,6 +18,8 @@ type errorResponse struct {
 
 // jobResponse is the API representation of a job.
 type jobResponse struct {
+	PauseSavepointID  string `json:"pause_savepoint_id,omitempty"`
+	PauseFailure      string `json:"pause_failure,omitempty"`
 	CheckpointFailure string `json:"checkpoint_failure,omitempty"`
 	RescaleFailure    string `json:"rescale_failure,omitempty"`
 	ID                string `json:"id"`
@@ -92,6 +94,8 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 func writeJobError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, ErrCheckpointUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "CHECKPOINT_UNAVAILABLE", err.Error())
 	case errors.Is(err, ErrSavepointInUse):
 		writeError(w, http.StatusConflict, "SAVEPOINT_IN_USE", err.Error())
 	case errors.Is(err, ErrCheckpointMinPause):
@@ -139,6 +143,10 @@ func parseJobStatus(s string) (JobStatus, error) {
 		return JobCanceling, nil
 	case "CANCELED":
 		return JobCanceled, nil
+	case "PAUSING":
+		return JobPausing, nil
+	case "RESUMING":
+		return JobResuming, nil
 	case "PAUSED":
 		return JobPaused, nil
 	default:
@@ -155,6 +163,7 @@ func formatTime(t time.Time) string {
 
 func jobResponseFromMeta(j *JobMeta) jobResponse {
 	return jobResponse{
+		PauseSavepointID: j.PauseSavepointID, PauseFailure: j.PauseFailure,
 		CheckpointFailure: j.CheckpointFailure,
 		RescaleFailure:    j.RescaleFailure,
 		ID:                j.ID,

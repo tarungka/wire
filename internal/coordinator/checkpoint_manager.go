@@ -438,7 +438,6 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 	checkpoint.StatePaths[request.TaskID] = request.State.Path
 	if checkpoint.Status == CheckpointCompleted {
 		notify = checkpoint.Tasks
-		c.kickScheduler()
 		return nil
 	}
 	complete := len(checkpoint.StatePaths) == len(checkpoint.Tasks)
@@ -477,6 +476,25 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 		}
 		next = *job
 		next.LatestCheckpoint = checkpoint.ID
+		if checkpoint.SavepointID != "" && checkpoint.SavepointID == job.PauseSavepointID && job.Status == JobRunning {
+			next.Status = JobPausing
+			next.UpdatedAt = time.Now().UTC()
+			next.PauseCheckpoint = checkpoint.ID
+			next.SavepointPath = fmt.Sprintf("jobs/%s/checkpoints/%d", job.ID, checkpoint.ID)
+		} else if job.PauseCheckpoint != 0 && checkpoint.ID > job.PauseCheckpoint {
+			next.PauseCheckpoint = 0
+			// A newer completed boundary now protects recovery after resume.
+			if job.PauseSavepointID != "" {
+				sp, e := c.GetSavepoint(job.ID, job.PauseSavepointID)
+				if e != nil {
+					return e
+				}
+				if sp.Status == SavepointCompleted {
+					next.PauseSavepointID = ""
+				}
+			}
+		}
+
 		next.LastCheckpointCompletion = time.Now().UTC()
 		if checkpoint.SavepointID == "" {
 			next.CheckpointOutcomes = checkpointpolicy.Record(next.CheckpointOutcomes, false)
@@ -501,13 +519,10 @@ func (c *Coordinator) AcknowledgeCheckpoint(request rpc.AcknowledgeCheckpointReq
 	}
 	if complete {
 		job := c.jobs[request.JobID]
-		job.LatestCheckpoint = next.LatestCheckpoint
-		job.LastCheckpointCompletion = next.LastCheckpointCompletion
-		job.CheckpointOutcomes = next.CheckpointOutcomes
-		job.ConsecutiveCheckpointFailures = next.ConsecutiveCheckpointFailures
-		job.CheckpointFailure = next.CheckpointFailure
+		*job = next
 		delete(c.activeCheckpoints, request.JobID)
 		notify = checkpoint.Tasks
+		c.kickScheduler()
 	}
 	return nil
 }

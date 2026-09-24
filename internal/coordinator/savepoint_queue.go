@@ -93,5 +93,25 @@ func (c *Coordinator) advanceQueuedSavepoint(jobID string) error {
 	id := points[0].ID
 	c.mu.Unlock()
 	_, err = c.triggerCheckpointWithQueue(jobID, id, false, true)
+	if errors.Is(err, ErrCheckpointUnavailable) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if !c.readyLocked() {
+			return ErrNotLeader
+		}
+		sp, readErr := c.GetSavepoint(jobID, id)
+		if readErr != nil {
+			return readErr
+		}
+		if sp.Queued {
+			sp.Queued = false
+			sp.Status = SavepointFailed
+			sp.CompletionTime = time.Now().UTC()
+			if e := c.persistSavepoint(sp); e != nil {
+				return e
+			}
+			c.kickScheduler()
+		}
+	}
 	return err
 }

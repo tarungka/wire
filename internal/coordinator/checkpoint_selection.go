@@ -86,7 +86,11 @@ func checkpointInventory(store MetadataStore, cp CheckpointMeta) (map[string]eng
 // selectRecoveryCheckpointLocked chooses one boundary for the entire deployment.
 // An explicit rescale savepoint is never silently replaced with another boundary.
 func (c *Coordinator) selectRecoveryCheckpointLocked(job *JobMeta) (CheckpointMeta, map[string]engine.TaskMeta, error) {
-	pinned := job.RescaleCheckpoint != 0 && job.RescaleCheckpoint == job.LatestCheckpoint
+	pinnedID := job.RescaleCheckpoint
+	if job.PauseCheckpoint != 0 && job.PauseCheckpoint == job.LatestCheckpoint {
+		pinnedID = job.PauseCheckpoint
+	}
+	pinned := pinnedID != 0 && pinnedID == job.LatestCheckpoint
 	var candidates []CheckpointMeta
 	err := c.store.PrefixScan([]byte(fmt.Sprintf("jobs/%s/checkpoints/", job.ID)), func(key, value []byte) bool {
 		if strings.HasSuffix(string(key), "/latest") || strings.HasSuffix(string(key), "/metadata.json") {
@@ -103,7 +107,7 @@ func (c *Coordinator) selectRecoveryCheckpointLocked(job *JobMeta) (CheckpointMe
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID > candidates[j].ID })
 	for _, cp := range candidates {
-		if pinned && cp.ID != job.RescaleCheckpoint {
+		if pinned && cp.ID != pinnedID {
 			continue
 		}
 		inventory, err := checkpointInventory(c.store, cp)
@@ -120,7 +124,7 @@ func (c *Coordinator) selectRecoveryCheckpointLocked(job *JobMeta) (CheckpointMe
 				}
 			}
 			if pinned {
-				return CheckpointMeta{}, nil, err
+				return CheckpointMeta{}, nil, fmt.Errorf("%w: pinned checkpoint %d: %v", errNoValidCheckpoint, cp.ID, err)
 			}
 			c.log.Warn().Err(err).Uint64("checkpoint", cp.ID).Msg("skipping invalid recovery checkpoint")
 			continue
