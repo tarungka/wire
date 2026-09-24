@@ -77,20 +77,25 @@ func (p *WindowProcessor) BindBackend(backend StateBackend) error {
 	if err != nil {
 		return err
 	}
+	candidate.numKeyGroups = p.numKeyGroups
 	if err = candidate.Restore(binary.BigEndian.AppendUint32(body, crc32.ChecksumIEEE(body))); err != nil {
 		return err
 	}
 	p.windows, p.watermark, p.stats = candidate.windows, candidate.watermark, candidate.stats
+	p.groupWatermarks = candidate.groupWatermarks
 	p.backend = store
 	return nil
 }
 
 // persist assumes p.mu is held. An empty list deletes a key's retained windows.
 func (p *WindowProcessor) persist(watermark int64, stats WindowStats, updates map[string][]retainedWindow) error {
+	return p.persistProgress(watermark, stats, updates, p.groupWatermarks)
+}
+func (p *WindowProcessor) persistProgress(watermark int64, stats WindowStats, updates map[string][]retainedWindow, floors map[uint16]int64) error {
 	if p.backend == nil {
 		return nil
 	}
-	metadata, err := json.Marshal(windowSnapshot{Version: 1, Config: p.config, Watermark: watermark, Stats: stats})
+	metadata, err := json.Marshal(windowSnapshot{Version: windowSnapshotVersion(floors), NumKeyGroups: p.numKeyGroups, GroupWatermarks: floors, Config: p.config, Watermark: watermark, Stats: stats})
 	if err != nil {
 		return err
 	}

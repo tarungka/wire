@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 
+	"github.com/tarungka/wire/internal/keygroup"
 	"github.com/tarungka/wire/internal/observability"
 )
 
@@ -42,6 +43,9 @@ func (op *EventTimeWindowOperator) SetMetricIdentity(operatorID, taskID string) 
 	op.operatorID, op.taskID = operatorID, taskID
 }
 func (op *EventTimeWindowOperator) Open(context.Context) error {
+	if err := (keygroup.Config{NumKeyGroups: op.processor.numKeyGroups, Parallelism: 1}).Validate(); err != nil {
+		return err
+	}
 	factory := op.StateBackendFactory
 	if factory == nil {
 		factory = func() (StateBackend, func(), error) {
@@ -168,6 +172,7 @@ func (op *EventTimeWindowOperator) ConfigureWindow(kind string, size, slide, gap
 	if err != nil {
 		return err
 	}
+	processor.numKeyGroups = op.processor.numKeyGroups
 	op.processor = processor
 	return nil
 }

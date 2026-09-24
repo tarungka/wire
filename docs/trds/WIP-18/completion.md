@@ -17,7 +17,7 @@ are not evidence that every requirement is implemented.
 | Memory limits and safeguards | Existing logical payload accounting and errors need full boundary/overflow/restore audit. Worker aggregate admission against available memory remains open. Runtime overhead and snapshot/iterator copies must be documented accurately. |
 | Checkpoint format and metadata | HashMap writes `WHSB`, version 1, length-prefixed entries and CRC32, and reads legacy unframed version-1 snapshots. Fixed byte fixtures verify upgrade compatibility and malformed-header rejection. Backend-tagged handles exist; backend mismatch, native Pebble semantics and durable manifest evidence remain in the final audit. |
 | Replication, restore and retention | Current worker archive transport and retention code exist from earlier WIPs. Prove both backends through actual completed-checkpoint recovery and cleanup; helper round trips alone are insufficient. |
-| Rescaling | Both backends pass real coordinator/two-worker savepoint rescale tests for 4→8, 8→4 and 4→3, including replicated fetch, assigned-key validation, replacement checkpoint and old-savepoint release. Backend restore rejects gaps, overlaps, mixed checkpoints, corruption and cancellation atomically. SDK managed Process now implements typed key-group restore, with shared HashMap/Pebble state/TTL/timer tests at the same sizes. MiniCluster end-to-end managed Process and window rescale acceptance remains. |
+| Rescaling | Both backends pass real coordinator/two-worker savepoint rescale tests for 4→8, 8→4 and 4→3, including replicated fetch, assigned-key validation, replacement checkpoint and old-savepoint release. Backend restore rejects gaps, overlaps, mixed checkpoints, corruption and cancellation atomically. SDK managed Process now implements typed key-group restore, with shared HashMap/Pebble state/TTL/timer tests at the same sizes. Managed window redistribution now has operator-level parity tests for both backends, all three window kinds and all required sizes. MiniCluster end-to-end managed Process/window rescale acceptance remains. |
 | Contract/negative tests | Shared `TestStateBackendAcceptance` verifies every entry of a 10,000-entry restore, empty restore, 10 MiB value, binary key groups 0x0000–0x007F with ordered 0x0020 prefix selection, and checkpoint consistency during concurrent atomic updates/Get. Three runs pass under `-race` for both backends. Existing corruption, cross-backend rejection and memory-limit cases still need final requirement mapping. |
 | Comparative benchmarks | Implemented reproducible Put/Get/full-iterator and 1/64/256 MiB checkpoint benchmarks for both backends. [Local measurements and raw output](benchmarks.md) distinguish volatile writes from synchronized writes and serialization from native checkpoint hashing; proposal estimates are not guarantees. |
 | Documentation and upgrade behavior | Record current formats, defaults, resource boundaries and incompatibilities, link runtime guidance, then audit all original sections before marking Implemented. |
@@ -161,9 +161,38 @@ apply during publication.
 `TestWindowTypedSnapshotBackends` covers tumbling, sliding and session windows
 with both backend types. It checks accumulator continuity, no repeated firing
 at a restored watermark, and atomic rejection of a checksummed backend snapshot
-whose window metadata is malformed. This adds the prerequisite for distributed
-window rescale; it does not yet redistribute windows or solve differing source
-partition watermarks. That requirement remains open.
+whose window metadata is malformed. This supplies the typed checkpoint prerequisite; window redistribution and
+differing partition progress are covered by the subsequent implementation below.
 
 The full engine, worker and SDK suites pass under `-race` with typed window
 checkpoints enabled; engine lint reports zero issues.
+
+## Window redistribution and event-time progress
+
+`EventTimeWindowOperator.RestoreKeyGroupState` now selects retained windows by
+user-key hash and rebuilds them privately before publishing typed state. The
+worker supplies the fixed job key-group count. Coverage/identity checks reject
+gaps, overlaps and mixed checkpoints; the existing window configuration and
+state-size limits still apply. Source operational late/drop counters reset for
+the new task because they cannot be apportioned among key groups; retained
+window counts and state bytes are rebuilt from selected state.
+
+A rescaled window stores per-key-group watermark floors. Processing, late-data
+classification, firing, purge and retention accounting use the greater of the
+current input watermark and the key group's restored progress. This preserves
+already-purged history even when another contributing partition was behind.
+Floors also survive ordinary typed checkpoint/restore and subsequent rescaling.
+Snapshots carrying floors use window snapshot version 2; readers without this
+feature reject them rather than silently dropping progress. Legacy version 1
+remains readable. Backend format versions are independent of this window format.
+
+`TestWindowRescaleMatchesOriginalPartitions` checks HashMap and Pebble, tumbling,
+sliding and session windows, and 4→8, 8→4 and 4→3. Source watermarks deliberately
+differ (5, 12 and 20), spanning unfired, fired-retained and purged windows. After
+rescaling and another checkpoint/restore, late-record results and final watermark
+outputs must match the original partitions. Invalid version/hash-space/progress
+metadata is rejected without altering live windows. These are operator tests;
+full MiniCluster rescale and worker-loss recovery acceptance are still separate.
+
+With window redistribution enabled, the full engine, worker and SDK suites
+pass under `-race`; engine lint reports zero issues.

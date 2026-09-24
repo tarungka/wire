@@ -6,6 +6,8 @@ import (
 	"math"
 	"sort"
 	"sync"
+
+	"github.com/tarungka/wire/internal/keygroup"
 )
 
 // WindowAggregator is structurally compatible with SDK Aggregator. Callers
@@ -54,13 +56,15 @@ type retainedWindow struct {
 // must deliver ordered events/watermarks and route Process's too-late result to
 // its configured side output. It does not run a watermark or checkpoint loop.
 type WindowProcessor struct {
-	mu         sync.Mutex
-	config     WindowConfig
-	aggregator WindowAggregator
-	watermark  int64
-	windows    map[string][]retainedWindow
-	stats      WindowStats
-	backend    BatchedStateBackend
+	numKeyGroups    int
+	groupWatermarks map[uint16]int64
+	mu              sync.Mutex
+	config          WindowConfig
+	aggregator      WindowAggregator
+	watermark       int64
+	windows         map[string][]retainedWindow
+	stats           WindowStats
+	backend         BatchedStateBackend
 }
 
 func NewWindowProcessor(c WindowConfig, aggregator WindowAggregator) (*WindowProcessor, error) {
@@ -98,7 +102,7 @@ func NewWindowProcessor(c WindowConfig, aggregator WindowAggregator) (*WindowPro
 	default:
 		return nil, fmt.Errorf("window: unknown kind %q", c.Kind)
 	}
-	return &WindowProcessor{config: c, aggregator: aggregator, watermark: math.MinInt64, windows: make(map[string][]retainedWindow)}, nil
+	return &WindowProcessor{numKeyGroups: keygroup.DefaultNumKeyGroups, config: c, aggregator: aggregator, watermark: math.MinInt64, windows: make(map[string][]retainedWindow)}, nil
 }
 func windowEnd(start, duration int64) (int64, error) {
 	if start > math.MaxInt64-duration {
@@ -201,7 +205,7 @@ func (p *WindowProcessor) Process(event Event) (results []WindowResult, tooLate 
 	}
 	accepted := 0
 	for _, window := range assigned {
-		if p.watermark >= p.deadline(window.End) {
+		if p.keyWatermark(event.Key, p.watermark) >= p.deadline(window.End) {
 			continue
 		}
 		accepted++
@@ -222,7 +226,7 @@ func (p *WindowProcessor) Process(event Event) (results []WindowResult, tooLate 
 		if err != nil {
 			return nil, false, err
 		}
-		if p.watermark >= window.End {
+		if p.keyWatermark(event.Key, p.watermark) >= window.End {
 			result, err := p.result(window, window.Emitted)
 			if err != nil {
 				return nil, false, err
@@ -250,7 +254,7 @@ func (p *WindowProcessor) Process(event Event) (results []WindowResult, tooLate 
 	stats := p.stats
 	stats.RetainedWindows = newCount
 	stats.StateBytes = newBytes
-	if event.EventTime < p.watermark {
+	if event.EventTime < p.keyWatermark(event.Key, p.watermark) {
 		stats.Late++
 		if accepted > 0 {
 			stats.Allowed++
@@ -301,7 +305,7 @@ func (p *WindowProcessor) AdvanceWatermarkChecked(watermark int64) ([]WindowResu
 	var results []WindowResult
 	for _, key := range keys {
 		for _, w := range p.windows[key] {
-			if !w.Fired && watermark >= w.End {
+			if !w.Fired && p.keyWatermark(w.Key, watermark) >= w.End {
 				result, err := p.result(w, w.Emitted)
 				if err != nil {
 					return nil, err
@@ -309,7 +313,7 @@ func (p *WindowProcessor) AdvanceWatermarkChecked(watermark int64) ([]WindowResu
 				results = append(results, result)
 				w.Fired, w.Emitted = true, true
 			}
-			if watermark < p.deadline(w.End) {
+			if p.keyWatermark(w.Key, watermark) < p.deadline(w.End) {
 				next[key] = append(next[key], w)
 				count++
 				stateBytes += int64(len(w.Key) + len(w.Accumulator))
@@ -340,7 +344,7 @@ func (p *WindowProcessor) Stats() WindowStats {
 	stats.RetentionBytes = 0
 	for _, windows := range p.windows {
 		for _, w := range windows {
-			if p.watermark >= w.End {
+			if p.keyWatermark(w.Key, p.watermark) >= w.End {
 				stats.RetentionBytes += int64(len(w.Key) + len(w.Accumulator))
 			}
 		}
@@ -360,4 +364,14 @@ func windowPayloadBytes(windows []retainedWindow) int64 {
 		total += int64(len(w.Key) + len(w.Accumulator))
 	}
 	return total
+}
+
+func (p *WindowProcessor) keyWatermark(key []byte, watermark int64) int64 {
+	if len(p.groupWatermarks) == 0 {
+		return watermark
+	}
+	if floor, ok := p.groupWatermarks[keygroup.KeyGroup(key, p.numKeyGroups)]; ok && floor > watermark {
+		return floor
+	}
+	return watermark
 }

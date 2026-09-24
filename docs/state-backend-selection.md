@@ -100,3 +100,10 @@ method remains available. Workers predating typed window restore cannot consume
 these new window snapshots, regardless of backend choice; upgrade all eligible
 workers before allowing jobs to publish them. This is an additional compatibility
 boundary to the HashMap magic header described above.
+
+Rescaled windows retain per-key-group event-time progress in window snapshot
+version 2. This prevents a merged partition's lower watermark from reopening
+windows already purged by another partition. The progress is durable across
+later checkpoints. Older window readers reject version 2, so the worker upgrade
+requirement also applies to these snapshots. Ordinary legacy version-1 window
+snapshots remain readable; this version is separate from the backend blob format.

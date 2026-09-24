@@ -40,6 +40,7 @@ func (op *EventTimeWindowOperator) RestoreState(handle SnapshotHandle) error {
 	if err != nil {
 		return err
 	}
+	candidate.numKeyGroups = op.processor.numKeyGroups
 	if err := candidate.BindBackend(source); err != nil {
 		return err
 	}
@@ -49,5 +50,6 @@ func (op *EventTimeWindowOperator) RestoreState(handle SnapshotHandle) error {
 	op.processor.windows = candidate.windows
 	op.processor.watermark = candidate.watermark
 	op.processor.stats = candidate.stats
+	op.processor.groupWatermarks = candidate.groupWatermarks
 	return nil
 }

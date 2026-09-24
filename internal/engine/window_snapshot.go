@@ -6,15 +6,19 @@ import (
 	"fmt"
 	"hash/crc32"
 	"sort"
+
+	"github.com/tarungka/wire/internal/keygroup"
 )
 
 type windowSnapshot struct {
-	Version      int
-	CheckpointID uint64
-	Config       WindowConfig
-	Watermark    int64
-	Windows      []retainedWindow
-	Stats        WindowStats
+	NumKeyGroups    int              `json:",omitempty"`
+	GroupWatermarks map[uint16]int64 `json:",omitempty"`
+	Version         int
+	CheckpointID    uint64
+	Config          WindowConfig
+	Watermark       int64
+	Windows         []retainedWindow
+	Stats           WindowStats
 }
 
 // Checkpoint includes event-time progress and update flags, so recovery neither
@@ -22,7 +26,7 @@ type windowSnapshot struct {
 func (p *WindowProcessor) Checkpoint(checkpointID uint64) ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	snapshot := windowSnapshot{Version: 1, CheckpointID: checkpointID, Config: p.config, Watermark: p.watermark, Stats: p.stats}
+	snapshot := windowSnapshot{Version: windowSnapshotVersion(p.groupWatermarks), NumKeyGroups: p.numKeyGroups, GroupWatermarks: p.groupWatermarks, CheckpointID: checkpointID, Config: p.config, Watermark: p.watermark, Stats: p.stats}
 	keys := make([]string, 0, len(p.windows))
 	for key := range p.windows {
 		keys = append(keys, key)
@@ -57,13 +61,31 @@ func (p *WindowProcessor) Restore(data []byte) error {
 	if snapshot.Config.MaxStateBytes == 0 {
 		snapshot.Config.MaxStateBytes = 64 * 1024 * 1024
 	}
-	if snapshot.Version != 1 || snapshot.Config != p.config || len(snapshot.Windows) > p.config.MaxWindows || snapshot.Stats.RetainedWindows != len(snapshot.Windows) {
+	if (snapshot.Version != 1 && snapshot.Version != 2) || snapshot.Config != p.config || len(snapshot.Windows) > p.config.MaxWindows || snapshot.Stats.RetainedWindows != len(snapshot.Windows) {
 		return fmt.Errorf("%w: incompatible window snapshot", ErrSnapshotCorrupt)
+	}
+	if snapshot.NumKeyGroups == 0 {
+		snapshot.NumKeyGroups = p.numKeyGroups
+	}
+	if snapshot.NumKeyGroups != p.numKeyGroups || (snapshot.Version == 1 && len(snapshot.GroupWatermarks) > 0) {
+		return fmt.Errorf("%w: incompatible window hash space", ErrSnapshotCorrupt)
+	}
+	for group := range snapshot.GroupWatermarks {
+		if int(group) >= p.numKeyGroups {
+			return fmt.Errorf("%w: invalid window watermark group", ErrSnapshotCorrupt)
+		}
+	}
+	effective := func(key []byte) int64 {
+		watermark := snapshot.Watermark
+		if floor, ok := snapshot.GroupWatermarks[keygroup.KeyGroup(key, p.numKeyGroups)]; ok && floor > watermark {
+			watermark = floor
+		}
+		return watermark
 	}
 	windows := make(map[string][]retainedWindow)
 	seen := make(map[string]map[[2]int64]bool)
 	for _, w := range snapshot.Windows {
-		if w.End <= w.Start || snapshot.Watermark >= p.deadline(w.End) || w.Fired && !w.Emitted || w.Fired != (snapshot.Watermark >= w.End) {
+		if w.End <= w.Start || effective(w.Key) >= p.deadline(w.End) || w.Fired && !w.Emitted || w.Fired != (effective(w.Key) >= w.End) {
 			return fmt.Errorf("%w: invalid retained window", ErrSnapshotCorrupt)
 		}
 		key := string(w.Key)
@@ -109,11 +131,19 @@ func (p *WindowProcessor) Restore(data []byte) error {
 	for key, value := range windows {
 		updates[key] = value
 	}
-	if err := p.persist(snapshot.Watermark, snapshot.Stats, updates); err != nil {
+	if err := p.persistProgress(snapshot.Watermark, snapshot.Stats, updates, snapshot.GroupWatermarks); err != nil {
 		return err
 	}
+	p.groupWatermarks = snapshot.GroupWatermarks
 	p.windows = windows
 	p.watermark = snapshot.Watermark
 	p.stats = snapshot.Stats
 	return nil
+}
+
+func windowSnapshotVersion(floors map[uint16]int64) int {
+	if len(floors) > 0 {
+		return 2
+	}
+	return 1
 }
