@@ -142,6 +142,7 @@ func runOpenedOperatorChain(
 
 	// Build chain links (pairs operators with error configs).
 	links := buildChainLinks(operators, errorConfigs)
+	configureSinkBatches(links)
 
 	// Resolve error metrics.
 	if errMetrics == nil {
@@ -181,7 +182,7 @@ func runOpenedOperatorChain(
 			select {
 			case ctrl, ok := <-controlCh:
 				if !ok {
-					return nil
+					return cc.flushSinkBatches()
 				}
 				if err := handleControl(cc, ctrl, &eofCount); err != nil {
 					if err == errChainDone {
@@ -204,6 +205,13 @@ func runOpenedOperatorChain(
 		if cc.transactionPrepared {
 			events = nil
 		}
+		// Flush partial batches before waiting for more input. This coalesces
+		// queued records without adding a timer or delaying sparse streams.
+		if len(events) == 0 {
+			if err := cc.flushSinkBatches(); err != nil {
+				return err
+			}
+		}
 		// Phase 2: Blocking select on both channels.
 		select {
 		case <-ctx.Done():
@@ -217,7 +225,7 @@ func runOpenedOperatorChain(
 			}
 		case ctrl, ok := <-controlCh:
 			if !ok {
-				return nil
+				return cc.flushSinkBatches()
 			}
 			if err := handleControl(cc, ctrl, &eofCount); err != nil {
 				if err == errChainDone {
@@ -228,7 +236,7 @@ func runOpenedOperatorChain(
 		case event, ok := <-events:
 			if !ok {
 				log.Debug().Msg("input channel closed")
-				return nil
+				return cc.flushSinkBatches()
 			}
 			if err := processEvent(cc, event); err != nil {
 				return err
@@ -403,6 +411,13 @@ func invokeSinkWithRetry(cc *chainContext, link ChainLink, e Event, op SinkOpera
 	}
 	hasErrorHandling := link.Config.MaxRetries > 0 || link.Config.OnExhausted != FailJob || link.Config.Classifier != nil
 
+	if link.batch != nil {
+		link.batch.events = append(link.batch.events, cloneEventPayload(e))
+		if len(link.batch.events) >= sinkBatchLimit {
+			return link.batch.flush(cc, link)
+		}
+		return nil
+	}
 	if !hasErrorHandling {
 		// Legacy path.
 		if err := invokeLegacyWithMetrics(cc, link, func() error { return op.Write(cc.ctx, e) }); err != nil {
@@ -499,6 +514,10 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 		// All readers enqueued their pre-barrier records before marking alignment.
 		// Consume them before snapshotting, despite control-channel priority.
 		if err := drainInputCh(cc); err != nil {
+			return err
+		}
+
+		if err := cc.flushSinkBatches(); err != nil {
 			return err
 		}
 
@@ -718,6 +737,9 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 				return err
 			}
 		}
+		if err := cc.flushSinkBatches(); err != nil {
+			return err
+		}
 		cc.log.Info().Msg("shutdown control received")
 		return errChainDone
 	}
@@ -745,6 +767,9 @@ func handleControl(cc *chainContext, ctrl ControlMsg, eofCount *int) error {
 }
 
 func emitChainEnd(cc *chainContext) error {
+	if err := cc.flushSinkBatches(); err != nil {
+		return err
+	}
 	if cc.txnSink != nil && cc.transactionDirty {
 		return ErrUncommittedTransactionAtEOF
 	}

@@ -57,3 +57,22 @@ race suites also pass for the restore-order change.
 HTTP accepted events are still volatile, and restoring a sequence does not
 recreate the input queue or request sender replay. Crash/replay acceptance and the
 remaining scope above are not established by this pause/resume test.
+
+## Runtime sink batching
+
+The chain preserves the optional SDK BatchSink capability and coalesces up to
+100 queued records. It flushes on idle input and before checkpoint snapshots /
+transaction PreCommit, ordered watermarks, end-of-input and orderly shutdown.
+No background writer owns data past a checkpoint boundary. Records are copied
+when buffered. Sparse input is flushed without waiting for another record.
+
+Batch failures fail the task before reporting the boundary; connectors remain
+responsible for external partial-delivery/idempotency semantics. Configured
+per-record retry, DLQ, drop or classification policies intentionally use Write,
+since the existing batch error contract does not identify failed records. HTTP's
+own bounded request retries still apply to each batch. HTTP BatchSize can split
+a runtime batch into smaller requests; it does not force a minimum fill level.
+
+Engine regressions cover bounds, ordering, partial flush, payload ownership,
+boundary failures and per-record policy behavior. The SDK HTTP runtime acceptance
+expands one record to 205 and checks ordered requests of 100, 100 and 5 records.

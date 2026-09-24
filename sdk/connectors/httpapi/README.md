@@ -127,3 +127,11 @@ does not add durable ingress or automatic sender replay.
 While idle, HTTP source reads yield a non-nil empty batch every 100ms so pending
 checkpoint/savepoint requests can run without another ingress request. This is
 not end of input; the listener remains active.
+
+The runtime uses `WriteBatch` for sinks with the default fail-on-error policy,
+coalescing up to 100 queued records and flushing before checkpoints, watermarks,
+end-of-input or an idle wait. `BatchSize` caps each HTTP request; sparse streams
+can produce smaller requests. Configured record-level retry/DLQ/drop policies use
+single-record `Write` to preserve precise error attribution. Connector HTTP
+retries still apply within each request. Partial external delivery remains
+possible if a later request fails; receivers need replay-safe handling.

@@ -17,6 +17,9 @@ func processWatermark(cc *chainContext, timestamp int64) error {
 	if cc.watermarkSet && timestamp <= cc.lastWatermark {
 		return nil
 	}
+	if err := cc.flushSinkBatches(); err != nil {
+		return err
+	}
 	cc.lastWatermark, cc.watermarkSet = timestamp, true
 	for index, link := range cc.links {
 		operator, ok := link.Operator.(WatermarkOperator)
@@ -32,6 +35,9 @@ func processWatermark(cc *chainContext, timestamp int64) error {
 				return err
 			}
 		}
+	}
+	if err := cc.flushSinkBatches(); err != nil {
+		return err
 	}
 	return cc.sendOutput(OutputMsg{Type: OutputWatermark, Watermark: &protocol.WatermarkMsg{Timestamp: timestamp}})
 }

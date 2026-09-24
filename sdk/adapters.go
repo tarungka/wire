@@ -122,6 +122,9 @@ func adaptSink(sink Sink) engine.SinkOperator {
 	if transactional, ok := sink.(TransactionalSink); ok {
 		return transactional
 	}
+	if batch, ok := sink.(BatchSink); ok {
+		return &batchSinkAdapter{sinkAdapter: &sinkAdapter{sink: sink}, batch: batch}
+	}
 	return &sinkAdapter{sink: sink}
 }
 
@@ -140,4 +143,13 @@ type preOpenSourceAdapter struct {
 
 func (a *preOpenSourceAdapter) RestoreOffsetBeforeOpen(ctx context.Context, data []byte) error {
 	return a.restore(ctx, append([]byte(nil), data...))
+}
+
+type batchSinkAdapter struct {
+	*sinkAdapter
+	batch BatchSink
+}
+
+func (a *batchSinkAdapter) WriteBatch(ctx context.Context, events []Event) error {
+	return a.batch.WriteBatch(ctx, events)
 }
