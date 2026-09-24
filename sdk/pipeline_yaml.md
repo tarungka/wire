@@ -84,7 +84,7 @@ to partition source input instead of emitting the whole input from each copy.
 Each call receives a deep copy of its YAML configuration and must return a
 fresh, unopened connector. Instance factories run during execution after graph
 validation. Registering both legacy and instance factories for the same type is
-an error. Named DLQ destinations currently require a legacy shared sink factory.
+an error. Local named DLQ destinations require a legacy shared sink factory.
 
 Checkpoint and restart settings use the SDK's local coordinator/worker runtime
 and require instance-aware factories for every source and sink, including at
@@ -94,11 +94,11 @@ and exactly-once external output requires transactional sinks. Factory support
 alone does not provide either guarantee. Checkpointed sources currently park at
 EOF until all job sources exhaust. Mixed bounded/unbounded jobs therefore keep
 the exhausted source task and its output streams open; independently finishing
-those branches is an open lifecycle requirement. External cluster deployment and YAML
-recovery acceptance remain in the completion audit.
+those branches is an open lifecycle requirement. Task recovery acceptance covers CEL and both window backends; process replacement
+and mixed-source completion remain in the completion audit.
 
 There is no automatic reload, drain/switchover, savepoint migration, CLI loader,
-or cluster deployment of CEL programs yet. Invalid reload candidates can be
+yet. Invalid reload candidates can be
 validated with ParsePipelineYAML, but callers must not infer a safe switchover
 protocol from that API. WIP-19 remains Partially Implemented.
 
@@ -167,3 +167,23 @@ Compatibility: earlier YAML windows exposed the Go SDK's binary aggregate
 bytes. YAML consumers must now read the named JSON aggregate field. Numeric
 YAML input is JSON rather than binary float bytes. Ordinary Go SDK window
 values and binary checkpoint accumulator formats are unchanged.
+
+### Registered worker execution
+
+Call `registry.RegisterPipelineTransforms()` once before starting workers. This
+registers the ten YAML transform types under versioned `wire.yaml.v1.*` classes.
+Workers independently validate and compile the serialized configuration; Go
+closures from the submitting process are not deployed. Definitions are bounded
+to 1 MiB and 1024 variable names, with the existing CEL parser limits applied.
+
+Supply `PipelineConnectors.NamedSources` and `.NamedSinks` maps from YAML type
+to application worker class, then call `pipeline.SetCoordinator(url).Execute(ctx)`.
+Use `SetCoordinatorSecurity` for HTTPS and credentials. Every selected class must
+be registered on every worker; each factory must create a fresh connector.
+Connector config is JSON, including for a named `__dlq__` sink. Such sinks receive
+the normal DLQ envelope with original event, error and operator attribution.
+Named bindings are remote-only and cannot overlap local factories for a type.
+
+These JSON bindings do not directly match the HTTP connector's existing
+MessagePack factory format. Register an application JSON adapter for that
+connector until the public YAML connector adapter is available.

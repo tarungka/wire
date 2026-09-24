@@ -47,3 +47,17 @@ checkpoint captured the unfired window before EOF; either case must preserve
 the accumulator and commit the result once. All three cases pass three runs
 under `-race` (14.340s total). This tests task recovery with live replica
 workers, not replacement of a crashed OS process.
+
+## Registered worker transform execution
+
+The YAML graph now carries versioned transform definitions. Workers explicitly
+register and compile all ten transform classes. Named source, sink and DLQ
+bindings pass JSON configuration to application worker factories. Regression
+coverage submits through coordinator HTTP and worker RPC, removes submitter
+closures, and checks parallel CEL/key-by/window/projection output. A separate
+case checks successful output plus malformed JSON delivered in a named DLQ
+envelope. Malformed, oversized and incompatible definitions are rejected.
+
+The HTTP connector's MessagePack factories still need a public YAML JSON
+adapter; this increment does not prove that integration, process isolation,
+hot reload, CLI loading, state migration or live configuration updates.
