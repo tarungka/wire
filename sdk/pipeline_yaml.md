@@ -73,8 +73,9 @@ allowed. Connector-specific `config` validation is the factory's responsibility.
 `Graph()` exposes the compiled SDK graph for integration. Linear pipelines
 support parallel execution when every source and sink uses an instance-aware
 factory. The legacy `Sources`/`Sinks` factories remain limited to parallelism
-one. Key-by requires a window, and stateless branching and multiple sources
-remain rejected by the YAML executor.
+one. Graphs may contain multiple sources and fan-out branches; key-by can feed
+ordinary transforms or sinks without a window. Each `input` names one upstream
+operator; this schema does not yet expose a multi-input union/join field.
 
 `PipelineConnectors.SourceInstances` and `.SinkInstances` map type names to
 `func(map[string]any, InstanceContext) (Source, error)` and the corresponding
@@ -90,7 +91,10 @@ and require instance-aware factories for every source and sink, including at
 parallelism one. This permits a fresh connector on each deployment attempt;
 sources must still implement the SDK checkpoint/restore contract for replay,
 and exactly-once external output requires transactional sinks. Factory support
-alone does not provide either guarantee. External cluster deployment and YAML
+alone does not provide either guarantee. Checkpointed sources currently park at
+EOF until all job sources exhaust. Mixed bounded/unbounded jobs therefore keep
+the exhausted source task and its output streams open; independently finishing
+those branches is an open lifecycle requirement. External cluster deployment and YAML
 recovery acceptance remain in the completion audit.
 
 There is no automatic reload, drain/switchover, savepoint migration, CLI loader,

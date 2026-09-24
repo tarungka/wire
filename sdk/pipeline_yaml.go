@@ -59,7 +59,7 @@ type pipelineDocument struct {
 }
 
 // YAMLPipeline is a validated definition compiled to the SDK StreamGraph.
-// Execute rejects capabilities that the embedded runtime cannot yet provide.
+// Execute uses the SDK graph runtime and enforces connector instance ownership.
 type YAMLPipeline struct {
 	Name   string
 	Labels map[string]string
@@ -68,37 +68,10 @@ type YAMLPipeline struct {
 
 func (p *YAMLPipeline) Graph() *StreamGraph { return p.env.graph }
 func (p *YAMLPipeline) Execute(ctx context.Context) (*JobResult, error) {
-	hasWindow := false
-	for _, node := range p.env.graph.nodes {
-		hasWindow = hasWindow || node.Type == NodeWindow || node.Type == NodeReduce
-	}
-	sources, sinks := 0, 0
-	outgoing := map[int]int{}
-	for _, edge := range p.env.graph.edges {
-		outgoing[edge.SourceID]++
-	}
-	for _, node := range p.env.graph.nodes {
-		switch node.Type {
-		case NodeSource:
-			sources++
-		case NodeSink:
-			sinks++
-		case NodeKeyBy:
-			if !hasWindow {
-				return nil, fmt.Errorf("%w: YAML keyed execution requires a window", ErrInvalidConfig)
-			}
-		}
-		if outgoing[node.ID] > 1 && !hasWindow {
-			return nil, fmt.Errorf("%w: YAML branching execution is not supported", ErrInvalidConfig)
-		}
-	}
 	for _, node := range p.env.graph.nodes {
 		if node.Parallelism > 1 && ((node.Type == NodeSource && node.SourceFactory == nil) || (node.Type == NodeSink && node.SinkFactory == nil)) {
 			return nil, fmt.Errorf("%w: YAML parallel execution requires per-instance connector factories for %q", ErrInvalidConfig, node.Name)
 		}
-	}
-	if sources != 1 || sinks < 1 || (!hasWindow && sinks != 1) {
-		return nil, fmt.Errorf("%w: YAML execution requires one source and sink", ErrInvalidConfig)
 	}
 	if p.env.checkpointInterval != 0 || p.env.restartStrategy.Type != RestartNone {
 		for _, node := range p.env.graph.nodes {
