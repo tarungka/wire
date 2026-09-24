@@ -150,3 +150,18 @@ asserts no authorization callback and no returned bytes; streaming rejection may
 surface as EOF. Coordinators must be upgraded before enabling this peer policy
 because legacy coordinators ignore the additional attestation field. Other
 original security gates remain open.
+
+### Authentication acceptance: admission, audit logs and revocation
+
+`http_auth_security_test.go` adds executable evidence for concurrent admission
+(the 20-request burst is shared across 200 concurrent callers), token refill,
+duplicate Authorization header rejection, and clearing plaintext API keys after
+loading. Captured DEBUG-enabled logs and HTTP responses are checked for both
+accepted and rejected credentials; audit records retain source IP and username.
+A replacement-server test verifies the documented restart-based revocation
+contract: the running server retains its immutable credential snapshot, while
+its replacement rejects the removed key and accepts the new key.
+
+These tests do not establish full HTTP-route coverage or complete WIP-17:
+connector secret resolution/redaction and the remaining security acceptance
+requirements still need implementation or verification.
