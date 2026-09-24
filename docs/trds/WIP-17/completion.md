@@ -14,8 +14,8 @@ The existing PR is #197. Other merged TRDs will use linked follow-up PRs.
 | Endpoint RBAC (§3.6) | Authenticated HTTPS acceptance covers every registered coordinator route, all roles, HEAD variants, public probes, escaped paths and canonical redirects; the test enforces route-inventory coverage. A subprocess acceptance test also verifies the production metrics listener stays public while the API rejects anonymous requests. |
 | Brute-force protection (§6) | Bounded global authentication admission added (20 burst, 10 checks/second). Document operational behavior and test concurrent admission. |
 | Authentication logs (§7.3) | Successful identity and failed source/Basic username logging added. Add capture tests proving passwords and API keys never appear. |
-| Connector secret substitution (§3.7) | Implemented for structured JSON connector settings: submission-time snapshots, missing-variable rejection, reference-only metadata, recovery reconstruction and mTLS/capability-gated worker delivery. Live worker acceptance passes; complete recovery acceptance remains. |
-| Credential redaction (§3.7) | Implemented runtime diagnostic filters and reference-only persistence; authenticated HTTPS tests verify submission/list/detail/task projections omit configs and credentials. Complete recovery and broader diagnostic acceptance remain. |
+| Connector secret substitution (§3.7) | Implemented for structured JSON connector settings: submission-time snapshots, missing-variable rejection, reference-only metadata, recovery reconstruction and mTLS/capability-gated worker delivery. Live deployment and Pebble-close/reopen coordinator/worker recovery acceptance pass, including changed and missing environment values. |
+| Credential redaction (§3.7) | Implemented runtime diagnostic filters and reference-only persistence; authenticated HTTPS tests verify submission/list/detail/task projections omit configs and credentials. Recovery metadata scans pass for both old and new credentials; broader diagnostic acceptance remains. |
 | Certificate/auth revocation (§4.2, §8.1) | Pending: restart/revocation integration tests and operational instructions. Rotation automation is explicitly out of scope. |
 | Encryption at rest strategy (§1.3) | Documented in [storage security](../../storage-security.md): all runtime storage surfaces, temporary files, backups, key rotation and operator acceptance checks. Actual encrypted-volume deployment remains an operator verification requirement. |
 | Flag/config documentation (§1.4) | Runtime guide maps actual security flags and config-only fields. The secure-cluster script generates certificate/config files and verifies a real two-worker startup with OpenSSL; HA takeover and data/recovery acceptance are separate tests. |
@@ -455,3 +455,19 @@ to another worker, an unexpected partition and an unknown source. Each is
 rejected before input queueing, then a legitimate source succeeds on the same
 connection. Re-registering the target with a different owner rejects the old
 worker. Address-resolution tests also assert the coordinator supplies ownership.
+
+### Secret reconstruction across runtime restart
+
+`TestSecretRecoveryAcrossCoordinatorAndWorkerRestart` starts the real coordinator
+lifecycle, a Pebble metadata store and an mTLS-connected worker. A credentialed
+source keeps its first attempt RUNNING. The test stops and joins those runtimes,
+closes Pebble, changes the environment, and creates fresh coordinator, store and
+worker instances using the same persisted metadata and worker epoch file.
+
+The replacement coordinator advances the fencing epoch and the recovered source
+receives the new environment value, emits its record and finishes. A second case
+removes the required variable: the recovered job fails and the replacement
+factory is never called. Full metadata scans before and after restart reject
+either plaintext credential. This verifies runtime reconstruction, not just
+helper-level resolution; it does not promise stable credentials across leaders
+with inconsistent environments or erase application-owned secret copies.
