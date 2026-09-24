@@ -3,6 +3,7 @@ package coordinator
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -18,6 +19,7 @@ import (
 //     bytes, then parsed by the scheduler to produce task descriptors.
 //   - Config: arbitrary opaque bytes (legacy path; ignored by the scheduler).
 type submitJobRequest struct {
+	Savepoint   string `json:"savepoint,omitempty"`
 	Name        string `json:"name"`
 	Parallelism int    `json:"parallelism"`
 	Config      string `json:"config,omitempty"`
@@ -27,11 +29,21 @@ type submitJobRequest struct {
 func (s *HTTPServer) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<20) // 4 MiB limit
 	var req submitJobRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
 		return
 	}
 
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "expected one JSON object")
+		return
+	}
+	if req.Config != "" && req.GraphBytes != "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "provide graph_bytes or config, not both")
+		return
+	}
 	var configBytes []byte
 	switch {
 	case req.GraphBytes != "":
@@ -54,7 +66,13 @@ func (s *HTTPServer) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		configBytes = []byte(req.Config)
 	}
 
-	job, err := s.coord.SubmitJob(req.Name, req.Parallelism, configBytes)
+	var job *JobMeta
+	var err error
+	if req.Savepoint != "" {
+		job, err = s.coord.SubmitJobFromSavepoint(req.Name, req.Parallelism, configBytes, req.Savepoint)
+	} else {
+		job, err = s.coord.SubmitJob(req.Name, req.Parallelism, configBytes)
+	}
 	if err != nil {
 		writeJobError(w, err)
 		return

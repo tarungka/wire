@@ -134,3 +134,43 @@ acknowledges the request; affected jobs recover only after their old tasks stop
 or their authority expires. `wire cluster status` retains a REMOVED entry.
 Restart policy and checkpoint availability still determine recovery. Use a new
 worker ID for a replacement; a removed identity cannot re-register.
+
+### Upgrade from a savepoint
+
+Use the completed checkpoint path returned by the coordinator, rather than a
+worker filesystem path. Keep the operator IDs, ordering, parallelism and state
+serializers compatible in the new submission. Register the replacement operator
+classes on workers before submitting their graph.
+
+```bash
+wire jobs cancel OLD_JOB_ID --savepoint
+wire jobs get OLD_JOB_ID
+# Wait for CANCELED; retain savepoint_path from the response.
+wire jobs submit --file upgraded-submission.json --savepoint jobs/OLD_JOB_ID/checkpoints/1
+wire jobs get NEW_JOB_ID
+```
+
+For `jobs submit`, `--savepoint` takes a path; for `jobs cancel` it is a boolean.
+Put `jobs submit` before its flags. The submit flag sets the JSON envelope's
+`savepoint` field, overriding that field if already present in the file. REST
+clients can provide the field directly. Submission rejects unknown fields,
+multiple JSON values, and simultaneous `config` and `graph_bytes` fields.
+
+The predecessor must be stopped and the savepoint must be its latest completed
+checkpoint. A successful HTTP 201 means a successor was durably accepted, not
+that restore has finished. The response exposes `restore_savepoint_path` while
+the new job still depends on that boundary. That reference blocks savepoint
+deletion and clears after the successor completes its own checkpoint.
+
+Only one successor can be accepted from a predecessor. Concurrent or repeated
+submissions cannot create two writers for the same transaction lineage. For
+another upgrade, take a new savepoint from the current successor, stop it, and
+submit from that boundary. A predecessor with an accepted successor cannot be
+reused, even if that successor later fails; automatic retries use the successor's
+configured recovery policy. Operator state-format migration and redistribution
+of opaque state are not inferred from a changed graph.
+
+The upgraded job gets a new runtime ID, but transactional sinks retain their
+original external job/task identity with a higher deployment generation.
+Checkpoint IDs continue above the predecessor's high-water mark. This preserves
+the idempotent commit/recovery contract when a prior commit reply was lost.

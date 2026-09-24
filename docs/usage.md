@@ -163,6 +163,13 @@ Response:
 }
 ```
 
+To restore a compatible upgraded graph, add `"savepoint":
+"jobs/OLD_JOB_ID/checkpoints/1"` to the submission envelope. The predecessor must
+be stopped, have no accepted successor, and the path must name its latest
+completed savepoint. The new job receives a distinct runtime ID. See the
+[CLI upgrade workflow](job-cli.md#upgrade-from-a-savepoint) for reference protection,
+transaction identity and polling semantics.
+
 ### List Jobs
 
 ```bash

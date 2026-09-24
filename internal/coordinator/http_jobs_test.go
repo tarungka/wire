@@ -299,3 +299,23 @@ func TestHTTP_PauseResumeJob(t *testing.T) {
 		t.Fatalf("expected RESUMING after resume, got %s", result.Status)
 	}
 }
+
+func TestHTTPSubmitRejectsAmbiguousBodiesBeforePublication(t *testing.T) {
+	for _, body := range []string{
+		`{"name":"new","parallelism":1,"config":"legacy"} {}`,
+		`{"name":"new","parallelism":1,"config":"legacy","unknown":true}`,
+		`{"name":"new","parallelism":1,"config":"legacy","graph_bytes":"YWJj"}`,
+		`{"name":"new","parallelism":1,"config":"legacy","savepoint":true}`,
+	} {
+		c, _ := newReadyCoordinator(t)
+		server := startTestHTTPServer(t, c)
+		response, err := http.Post("http://"+server.Addr()+"/api/v1/jobs", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest || len(c.ListJobs(nil)) != 0 {
+			t.Fatalf("accepted ambiguous body: %s", body)
+		}
+	}
+}

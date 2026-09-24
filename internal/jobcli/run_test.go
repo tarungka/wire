@@ -3,6 +3,7 @@ package jobcli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -104,6 +105,36 @@ func TestSavepointFlagRejectedOutsideCancel(t *testing.T) {
 	for _, args := range [][]string{{"jobs", "get", "job", "--savepoint"}, {"jobs", "pause", "job", "--savepoint=false"}, {"savepoints", "trigger", "job", "--savepoint"}} {
 		if err := Run(context.Background(), args, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "only valid for jobs cancel") {
 			t.Fatalf("args=%v error=%v", args, err)
+		}
+	}
+}
+
+func TestSubmissionSavepointFlag(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "job.json")
+	if err := os.WriteFile(file, []byte(`{"name":"new","parallelism":1,"graph_bytes":"YWJj"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		if r.URL.RawQuery != "" || payload["savepoint"] != "jobs/old/checkpoints/7" || payload["graph_bytes"] != "YWJj" {
+			t.Errorf("wrong upgrade submission: %+v %s", payload, r.URL)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":"new"}`)
+	}))
+	defer server.Close()
+	if err := Run(context.Background(), []string{"jobs", "submit", "--file", file, "--savepoint", "jobs/old/checkpoints/7", "--coordinator", server.URL}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"null", "[]"} {
+		if err := os.WriteFile(file, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := Run(context.Background(), []string{"jobs", "submit", "--file", file, "--savepoint", "jobs/old/checkpoints/7"}, io.Discard, io.Discard); err == nil {
+			t.Fatal("accepted non-object submission")
 		}
 	}
 }

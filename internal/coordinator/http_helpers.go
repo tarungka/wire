@@ -18,6 +18,7 @@ type errorResponse struct {
 
 // jobResponse is the API representation of a job.
 type jobResponse struct {
+	RestoreSavepointPath string `json:"restore_savepoint_path,omitempty"`
 	CancelAfterSavepoint bool   `json:"cancel_after_savepoint,omitempty"`
 	PauseSavepointID     string `json:"pause_savepoint_id,omitempty"`
 	PauseFailure         string `json:"pause_failure,omitempty"`
@@ -163,7 +164,12 @@ func formatTime(t time.Time) string {
 }
 
 func jobResponseFromMeta(j *JobMeta) jobResponse {
+	restorePath := ""
+	if ref := j.RestoreSavepoint; ref != nil {
+		restorePath = fmt.Sprintf("jobs/%s/checkpoints/%d", ref.JobID, ref.CheckpointID)
+	}
 	return jobResponse{
+		RestoreSavepointPath: restorePath,
 		CancelAfterSavepoint: j.CancelAfterSavepoint,
 		PauseSavepointID:     j.PauseSavepointID, PauseFailure: j.PauseFailure,
 		CheckpointFailure: j.CheckpointFailure,

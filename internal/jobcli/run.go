@@ -34,7 +34,14 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	timeout := flags.Duration("timeout", 30*time.Second, "request timeout")
 	file := flags.String("file", "", "submission JSON file")
 	status := flags.String("status", "", "job-list status filter")
-	savepoint := flags.Bool("savepoint", false, "take a completed savepoint before canceling the job")
+	savepoint := new(bool)
+	var restorePath string
+	submissionCommand := len(args) >= 2 && args[0] == "jobs" && args[1] == "submit"
+	if submissionCommand {
+		flags.StringVar(&restorePath, "savepoint", "", "restore submission from a completed savepoint path")
+	} else {
+		flags.BoolVar(savepoint, "savepoint", false, "take a completed savepoint before canceling the job")
+	}
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			return nil
@@ -106,7 +113,7 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if *file != "" && (words[0] != "jobs" || words[1] != "submit") {
 		return fmt.Errorf("--file is only valid for jobs submit")
 	}
-	if flags.Changed("savepoint") && (words[0] != "jobs" || words[1] != "cancel") {
+	if flags.Changed("savepoint") && !submissionCommand && (words[0] != "jobs" || words[1] != "cancel") {
 		return fmt.Errorf("--savepoint is only valid for jobs cancel")
 	}
 	var body []byte
@@ -125,6 +132,20 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 		}
 		if len(body) > maxBody || !json.Valid(body) {
 			return fmt.Errorf("submission must be valid JSON at most 4 MiB")
+		}
+	}
+	if submissionCommand && flags.Changed("savepoint") {
+		if restorePath == "" {
+			return fmt.Errorf("--savepoint requires a nonempty restore path")
+		}
+		var payload map[string]json.RawMessage
+		if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
+			return fmt.Errorf("submission must be a JSON object")
+		}
+		payload["savepoint"], _ = json.Marshal(restorePath)
+		body, err = json.Marshal(payload)
+		if err != nil || len(body) > maxBody {
+			return fmt.Errorf("submission exceeds 4 MiB after adding savepoint")
 		}
 	}
 	target := strings.TrimRight(base.String(), "/") + path

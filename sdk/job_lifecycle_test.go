@@ -3,10 +3,13 @@ package sdk
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -417,9 +420,16 @@ func TestCLINodeRemovalRecoversOnRemainingWorker(t *testing.T) {
 	}
 }
 
-func TestSavepointUpgradeRestoresAcrossJobIdentities(t *testing.T) { testSavepointUpgrade(t, false) }
-func TestSavepointUpgradePreservesTransactionLineage(t *testing.T) { testSavepointUpgrade(t, true) }
-func testSavepointUpgrade(t *testing.T, transactional bool) {
+func TestSavepointUpgradeRestoresAcrossJobIdentities(t *testing.T) {
+	testSavepointUpgrade(t, false, false)
+}
+func TestSavepointUpgradePreservesTransactionLineage(t *testing.T) {
+	testSavepointUpgrade(t, true, false)
+}
+func TestRepeatedSavepointUpgradePreservesTransactionLineage(t *testing.T) {
+	testSavepointUpgrade(t, true, true)
+}
+func testSavepointUpgrade(t *testing.T, transactional, repeat bool) {
 	release := make(chan struct{})
 	restored := make(chan uint64, 2)
 	var closed atomic.Int32
@@ -430,7 +440,7 @@ func testSavepointUpgrade(t *testing.T, transactional bool) {
 	registry.RegisterKeyBy("key", func(context.Context, []byte, WorkerTaskContext) (KeySelector, error) {
 		return func(e Event) ([]byte, error) { return e.Key, nil }, nil
 	})
-	for _, class := range []string{"count", "count-v2"} {
+	for _, class := range []string{"count", "count-v2", "count-v3"} {
 		registry.RegisterProcess(class, func(context.Context, []byte, WorkerTaskContext) (ProcessDefinition, error) {
 			return ProcessDefinition{Process: func(ctx ProcessContext, e Event) ([]Event, error) {
 				state := ctx.GetState("count")
@@ -468,7 +478,8 @@ func testSavepointUpgrade(t *testing.T, transactional bool) {
 		oldID = jobs[0].ID
 		return jobs[0].Status == coordinator.JobRunning
 	})
-	if _, _, err := coord.CancelJobWithSavepoint(oldID); err != nil {
+	var canceled bytes.Buffer
+	if err := jobcli.Run(ctx, []string{"jobs", "cancel", oldID, "--savepoint", "--coordinator", url}, &canceled, &canceled); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -496,10 +507,7 @@ func testSavepointUpgrade(t *testing.T, transactional bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := coord.SubmitJobFromSavepoint("upgrade-after", old.Parallelism, config, old.SavepointPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	next := submitUpgradeCLI(t, ctx, coord, url, "upgrade-after", old.Parallelism, config, old.SavepointPath)
 	if next.ID == old.ID {
 		t.Fatal("upgrade reused runtime job ID")
 	}
@@ -514,6 +522,44 @@ func testSavepointUpgrade(t *testing.T, transactional bool) {
 	if err := coord.DeleteSavepoint(old.ID, old.PauseSavepointID); !errors.Is(err, coordinator.ErrSavepointInUse) {
 		t.Fatalf("source pin released too early: %v", err)
 	}
+	expectedClass := "count-v2"
+	if repeat {
+		lifecycleWait(t, ctx, func() bool {
+			job, err := coord.GetJob(next.ID)
+			return err == nil && job.Status == coordinator.JobRunning
+		})
+		var cancelResponse bytes.Buffer
+		if err := jobcli.Run(ctx, []string{"jobs", "cancel", next.ID, "--savepoint", "--coordinator", url}, &cancelResponse, &cancelResponse); err != nil {
+			t.Fatal(err)
+		}
+		lifecycleWait(t, ctx, func() bool {
+			job, err := coord.GetJob(next.ID)
+			return err == nil && job.Status == coordinator.JobCanceled
+		})
+		predecessor, err := coord.GetJob(next.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range graph.Operators {
+			if graph.Operators[i].ClassName == "count-v2" {
+				graph.Operators[i].ClassName = "count-v3"
+			}
+		}
+		config, err = protocol.EncodeMsgPack(graph)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next = submitUpgradeCLI(t, ctx, coord, url, "upgrade-again", predecessor.Parallelism, config, predecessor.SavepointPath)
+		select {
+		case offset := <-restored:
+			if offset != 1 {
+				t.Fatalf("second upgrade offset=%d", offset)
+			}
+		case <-ctx.Done():
+			t.Fatal("second upgrade did not restore")
+		}
+		expectedClass = "count-v3"
+	}
 	close(release)
 	lifecycleWait(t, ctx, func() bool {
 		job, err := coord.GetJob(next.ID)
@@ -523,14 +569,14 @@ func testSavepointUpgrade(t *testing.T, transactional bool) {
 		return err == nil && job.Status == coordinator.JobFinished
 	})
 	events := sink.Events()
-	if len(events) != 2 || string(events[0].Value) != "count:1" || string(events[1].Value) != "count-v2:2" {
+	if len(events) != 2 || string(events[0].Value) != "count:1" || string(events[1].Value) != expectedClass+":2" {
 		t.Fatalf("upgrade offset/state/code: %+v", events)
 	}
 	if transactional {
 		ledger.mu.Lock()
 		visible := append([]string(nil), ledger.visible...)
 		ledger.mu.Unlock()
-		if fmt.Sprint(visible) != "[count:1 count-v2:2]" {
+		if fmt.Sprint(visible) != "[count:1 "+expectedClass+":2]" {
 			t.Fatalf("transaction output replayed or lost: %v", visible)
 		}
 	}
@@ -541,4 +587,35 @@ func testSavepointUpgrade(t *testing.T, transactional bool) {
 	if finished.LatestCheckpoint <= old.LatestCheckpoint || finished.RestoreSavepoint != nil || finished.DeploymentGeneration <= old.DeploymentGeneration {
 		t.Fatalf("upgrade did not advance fencing/boundary: %+v", finished)
 	}
+}
+
+func submitUpgradeCLI(t *testing.T, ctx context.Context, coord *coordinator.Coordinator, url, name string, parallelism int, config []byte, path string) *coordinator.JobMeta {
+	t.Helper()
+	submission, err := json.Marshal(map[string]any{"name": name, "parallelism": parallelism, "graph_bytes": base64.StdEncoding.EncodeToString(config)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "upgrade.json")
+	if err := os.WriteFile(file, submission, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var response bytes.Buffer
+	if err := jobcli.Run(ctx, []string{"jobs", "submit", "--file", file, "--savepoint", path, "--coordinator", url}, &response, &response); err != nil {
+		t.Fatal(err)
+	}
+	var accepted struct {
+		ID          string `json:"id"`
+		RestorePath string `json:"restore_savepoint_path"`
+	}
+	if err := json.Unmarshal(response.Bytes(), &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if accepted.RestorePath != path {
+		t.Fatalf("accepted restore path %q != %q", accepted.RestorePath, path)
+	}
+	next, err := coord.GetJob(accepted.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return next
 }

@@ -116,3 +116,31 @@ func TestUpgradeRejectsChangedOperatorBeforePublishing(t *testing.T) {
 		t.Fatal("rejected graph consumed successor")
 	}
 }
+
+func TestUpgradeSubmissionRacesSavepointDeletion(t *testing.T) {
+	for range 10 {
+		c, _, old, path := stoppedUpgradeSource(t)
+		config := append([]byte(nil), old.Config...)
+		points, err := c.ListSavepoints(old.ID)
+		if err != nil || len(points) != 1 {
+			t.Fatal("fixture savepoint missing", err)
+		}
+		sourceID, savepointID := old.ID, points[0].ID
+		var wg sync.WaitGroup
+		var submitted *JobMeta
+		var submitErr, deleteErr error
+		wg.Add(2)
+		go func() { defer wg.Done(); submitted, submitErr = c.SubmitJobFromSavepoint("new", 1, config, path) }()
+		go func() { defer wg.Done(); deleteErr = c.DeleteSavepoint(sourceID, savepointID) }()
+		wg.Wait()
+		if submitErr == nil {
+			if submitted == nil || !errors.Is(deleteErr, ErrSavepointInUse) {
+				t.Fatalf("unprotected successor: %v", deleteErr)
+			}
+		} else {
+			if deleteErr != nil || !errors.Is(submitErr, ErrSavepointNotFound) || len(c.jobs) != 1 || old.UpgradeSuccessorID != "" {
+				t.Fatalf("partial race outcome: submit=%v delete=%v", submitErr, deleteErr)
+			}
+		}
+	}
+}

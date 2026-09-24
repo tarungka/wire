@@ -2,8 +2,9 @@
 
 This document records the restore contract and remaining acceptance work.
 The coordinator submission method, archive transfer, transaction lineage and
-reference protection are implemented. HTTP/CLI exposure and the complete upgrade
-walkthrough are still pending; this is not yet an available management endpoint.
+reference protection are implemented and exposed by REST submission and
+`wire jobs submit --savepoint PATH`. The CLI reference describes the workflow;
+the complete executable deployment walkthrough remains pending.
 The completion audit still gates WIP-15.
 
 ## Submission and compatibility
@@ -100,6 +101,9 @@ A live two-worker test creates a savepoint, cancels the old job, submits a new j
 with a replacement Process class, and restores source offset 1 and keyed count 1
 before emitting count 2. Its transactional variant loses a commit response and
 asserts each visible output appears once while preserving external job/task
-identity. This covers one upgrade through the coordinator API; repeated upgrades,
-HTTP/CLI workflow, additional crash points and deletion races remain acceptance
-work, not implied by those tests.
+identity. These tests now run cancellation and upgraded submission through CLI/HTTP. A
+second transactional upgrade preserves the same external identity and output
+without duplication. A concurrent delete/submit test proves that either deletion
+wins with no successor, or submission pins the savepoint and blocks deletion.
+Additional crash points and a complete executable deployment walkthrough remain
+acceptance work, not implied by those tests.

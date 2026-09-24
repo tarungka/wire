@@ -11,14 +11,14 @@ branch builds on WIP-14's per-job policies and local worker runtime.
 | Binary submission | `handleSubmitBinary` returns 501 | Implement actual compiled-application submission and execution contract, including limits and isolation; do not call the existing stub complete |
 | Cancel, including during deployment | Durable scheduler reconciliation, old-attempt fencing, CLI teardown and recovery tests | Final whole-workflow acceptance |
 | Pause and resume | Durable queued intent, atomic checkpoint/PAUSING decision, fenced teardown, RESUMING placement; live CLI restores offsets and keyed state | Final operational walkthrough and acceptance audit |
-| Completed savepoints and restore/upgrade | Existing checkpoint manifests, worker restore, rescale and savepoint metadata | Cross-job compatible restore, operator identity validation and documented upgrade walkthrough |
+| Completed savepoints and restore/upgrade | Validated cross-job restore, atomic succession, protected references; CLI/HTTP live upgrade tests including two transactional upgrades | Additional crash-point acceptance and executable deployment walkthrough |
 | Savepoint lifetime | Explicit metadata deletion exists | Delete replica data safely; protect all live restore references; unfinished savepoint cleanup |
 | Concurrent checkpoint and savepoint requests | Durable FIFO queue, HTTP 202, actual runner, deletion/race/recovery tests | None identified in queue behavior; final acceptance remains |
 | Automatic recovery | Worker-loss and checkpoint selection tests; WIP-14 per-job restart policy | End-to-end REST/CLI evidence, bounded budget and all-workers-lost cases; retain explicit FAILED status for exhaustion |
 | Cluster status and node removal | Durable removed identities, admission fencing, lease-aware recovery and live HTTP removal test | Final operational walkthrough |
 | Health, readiness and metrics | Existing endpoints and metrics listener | Include actual addresses/status semantics in the final API reference and walkthrough |
 | Authenticated REST and protected secrets | WIP-17/WIP-19 dependencies | Verify all private routes and ensure resolved credentials never persist or appear in responses |
-| CLI and operational walkthrough | Existing JSON submission and management commands | YAML/binary/restore support; run complete documented lifecycle against live workers |
+| CLI and operational walkthrough | Existing JSON submission and management commands | YAML/binary support; run complete documented lifecycle against live workers |
 | Tests and final PR | Existing API and recovery suites | Full lifecycle, failure injection, all state transitions, end-to-end CLI and final race/build/vet/lint |
 
 Compatibility decisions must be explicit. Existing numeric persisted job states,
@@ -123,6 +123,6 @@ archive task IDs and rejects incompatible operator order/types, ownership,
 channels and replica inventories. The coordinator now publishes successors atomically, authorizes source-to-target
 archive transfer, preserves transaction identity and pins the original savepoint.
 A real-worker upgrade restores offsets and keyed state while changing a Process
-class; a transactional variant covers a lost commit response. HTTP/CLI exposure,
-repeated upgrades, crash/deletion-race acceptance and the full walkthrough remain
-open. These checks do not establish complete upgrade acceptance.
+class; a transactional variant covers a lost commit response. HTTP/CLI submission, repeated transactional upgrades and deletion/submission
+races now have tests. Additional crash-point acceptance and the full executable
+walkthrough remain open. These checks do not establish complete upgrade acceptance.
