@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -95,6 +96,17 @@ func TestHTTPLiveCheckpointIntervalValidation(t *testing.T) {
 		server.server.Handler.ServeHTTP(response, request)
 		if response.Code != tc.status {
 			t.Fatalf("body=%s status=%d response=%s", tc.body, response.Code, response.Body.String())
+		}
+		if tc.status == 200 {
+			var result struct {
+				Interval string `json:"checkpoint_interval"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Interval != c.jobs["job"].CheckpointPolicy.Interval.String() {
+				t.Fatal("status did not expose updated interval")
+			}
 		}
 	}
 	if apiRoleAllowed("viewer", http.MethodPut, "/api/v1/jobs/job/checkpoint-interval") || !apiRoleAllowed("operator", http.MethodPut, "/api/v1/jobs/job/checkpoint-interval") {

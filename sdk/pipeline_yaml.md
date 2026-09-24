@@ -238,3 +238,11 @@ The interval is persisted with both graph and job metadata. The schedule remains
 anchored to the previous trigger (or running time), so shortening an interval
 can make a checkpoint immediately due. This endpoint is not yet connected to
 YAML file watching; automatic live updates and parallelism changes remain open.
+
+SDK controllers can call
+`pipeline.SetCoordinator(url).UpdateCheckpointInterval(ctx, jobID, interval)`.
+It uses the configured coordinator security, sends one request, and verifies the
+response identifies the job and requested duration. Job list/detail responses
+expose `checkpoint_interval` when the job has an explicit checkpoint policy.
+A failed request is not automatically retried; controllers must reconcile the
+job's current status before deciding what to do after an uncertain response.
