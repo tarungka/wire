@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
@@ -17,6 +18,31 @@ import (
 // this package's API expose resolved values separately from the returned bytes.
 // Callers must keep the result out of metadata, logs and API responses.
 func Resolve(raw []byte, lookup func(string) (string, bool)) ([]byte, error) {
+	return resolve(raw, lookup, nil)
+}
+
+// ResolveWithSecrets also returns the exact substituted values for runtime-only
+// redaction. This includes defaults and excludes unrelated environment entries.
+// Neither the returned configuration nor this list belongs in durable metadata.
+func ResolveWithSecrets(raw []byte, lookup func(string) (string, bool)) ([]byte, []string, error) {
+	values := make(map[string]bool)
+	result, err := resolve(raw, lookup, func(value string) {
+		if value != "" {
+			values[value] = true
+		}
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	secrets := make([]string, 0, len(values))
+	for value := range values {
+		secrets = append(secrets, value)
+	}
+	sort.Strings(secrets)
+	return result, secrets, nil
+}
+
+func resolve(raw []byte, lookup func(string) (string, bool), record func(string)) ([]byte, error) {
 	hasRawReference := bytes.Contains(raw, []byte("${"))
 	if !json.Valid(raw) && !hasRawReference {
 		return bytes.Clone(raw), nil
@@ -39,7 +65,7 @@ func Resolve(raw []byte, lookup func(string) (string, bool)) ([]byte, error) {
 			if strings.Contains(v, "${") {
 				changed = true
 			}
-			return expand(v, lookup)
+			return expand(v, lookup, record)
 		case []any:
 			for i := range v {
 				resolved, err := walk(v[i])
@@ -76,7 +102,7 @@ func Resolve(raw []byte, lookup func(string) (string, bool)) ([]byte, error) {
 	return result, nil
 }
 
-func expand(input string, lookup func(string) (string, bool)) (string, error) {
+func expand(input string, lookup func(string) (string, bool), record func(string)) (string, error) {
 	var out strings.Builder
 	for {
 		start := strings.Index(input, "${")
@@ -102,6 +128,9 @@ func expand(input string, lookup func(string) (string, bool)) (string, error) {
 				return "", fmt.Errorf("environment variable %s not set", name)
 			}
 			value = fallback
+		}
+		if record != nil {
+			record(value)
 		}
 		// Values are literal; never recursively interpret references from a secret.
 		out.WriteString(value)

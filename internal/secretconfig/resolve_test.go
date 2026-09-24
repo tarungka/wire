@@ -88,3 +88,31 @@ func TestResolveEscapedReference(t *testing.T) {
 		t.Fatalf("escaped reference: %s %v", resolved, err)
 	}
 }
+
+func TestResolveCollectsOnlyUsedCredentialValues(t *testing.T) {
+	lookup := func(name string) (string, bool) {
+		switch name {
+		case "TOKEN":
+			return "used-token", true
+		case "UNRELATED":
+			return "not-for-this-task", true
+		default:
+			return "", false
+		}
+	}
+	_, values, err := ResolveWithSecrets([]byte(`{"authorization":"Bearer ${TOKEN}","again":"${TOKEN}","fallback":"${MISSING:-default-secret}","empty":"${EMPTY:-}"}`), lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 || values[0] != "default-secret" || values[1] != "used-token" {
+		t.Fatalf("incorrect redaction values: %v", values)
+	}
+	r := NewRedactor(values)
+	if r.String("connector rejected used-token") != "connector rejected [REDACTED]" {
+		t.Fatal("did not capture credential embedded in config string")
+	}
+	result, values, err := ResolveWithSecrets([]byte(`["${TOKEN}","${MISSING}"]`), lookup)
+	if err == nil || result != nil || values != nil {
+		t.Fatal("failed resolution returned partial secret values")
+	}
+}

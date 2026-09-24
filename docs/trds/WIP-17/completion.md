@@ -237,3 +237,21 @@ missing connection and missing session lifetime.
 
 This is provenance for the upcoming credential-delivery gate; it does not yet
 send resolved configurations or claim worker-side redaction is complete.
+
+### Credential-aware diagnostic filtering groundwork
+
+The secret resolver can now return the exact substituted values, including
+fallback defaults, without collecting unrelated environment entries. This is
+needed because a connector may report just the token from a larger configured
+string such as `Bearer ${TOKEN}`. Failed resolution returns neither partial
+configuration nor partial credential lists.
+
+`secretconfig.Redactor` filters literal, JSON-escaped, URL-escaped and standard /
+URL-safe base64 forms, handles overlapping credentials longest-first, and retains
+`errors.Is` / `errors.As` classification through sanitized error wrappers. Tests
+cover those forms, concurrent use, defaults, duplicates and partial failure.
+Callers must separately sanitize panic stacks or other unwrapped fields.
+
+This remains groundwork: worker logger, task-status and DLQ integration is not
+yet enabled. Arbitrary custom connector transformations or independent logging
+cannot be covered merely by filtering known representations.
