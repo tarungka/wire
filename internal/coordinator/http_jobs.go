@@ -106,12 +106,12 @@ func (s *HTTPServer) handleListJobs(w http.ResponseWriter, r *http.Request) {
 
 func (s *HTTPServer) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("job_id")
-	job, err := s.coord.GetJob(jobID)
+	detail, err := s.coord.jobInspection(jobID)
 	if err != nil {
 		writeJobError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, jobDetailFromMeta(job))
+	writeJSON(w, http.StatusOK, detail)
 }
 
 func (s *HTTPServer) handleCancelJob(w http.ResponseWriter, r *http.Request) {

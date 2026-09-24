@@ -35,11 +35,12 @@ type jobResponse struct {
 // jobDetailResponse includes full job details.
 type jobDetailResponse struct {
 	jobResponse
-	StartedAt        string `json:"started_at,omitempty"`
-	FinishedAt       string `json:"finished_at,omitempty"`
-	RestartCount     int    `json:"restart_count"`
-	LatestCheckpoint uint64 `json:"latest_checkpoint"`
-	SavepointPath    string `json:"savepoint_path,omitempty"`
+	StartedAt        string            `json:"started_at,omitempty"`
+	FinishedAt       string            `json:"finished_at,omitempty"`
+	RestartCount     int               `json:"restart_count"`
+	LatestCheckpoint uint64            `json:"latest_checkpoint"`
+	Tasks            []jobTaskResponse `json:"tasks,omitempty"`
+	SavepointPath    string            `json:"savepoint_path,omitempty"`
 }
 
 // pauseJobResponse includes the job and the savepoint created on pause.

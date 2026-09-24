@@ -138,3 +138,12 @@ operators and oversized envelopes, and verify repeated export leaves execution
 available. This removes the need for applications to import internal RPC types
 just to generate a CLI submission; the full savepoint deployment walkthrough
 remains a separate acceptance item.
+
+## Job task inspection
+
+The job-detail endpoint now includes sorted assigned tasks with operator/subtask,
+worker, attempt and observed status from a consistent coordinator snapshot.
+Unreported status is UNKNOWN, including after leadership recovery; corrupt stored
+assignments return an error rather than silently hiding tasks. The HTTP and
+snapshot tests cover these fields. Per-task metrics and checkpoint summaries
+remain open and are not represented by fabricated zero values.
