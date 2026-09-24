@@ -102,3 +102,27 @@ timestamps with the ingestion clock. `max_ooo` is only valid for bounded-ooo;
 omitting it selects the five-second default. Explicit `0s` means zero
 tolerance, equivalent to `monotonic`. Invalid strategies, durations, unknown fields, and watermark settings
 on transforms or sinks are rejected before connector factories run.
+
+## State backend selection
+
+Pipeline YAML accepts the nested WIP-18 configuration under `spec`:
+
+```yaml
+state_backend:
+  type: hashmap
+  hashmap:
+    max_memory_mb: 256
+```
+
+For Pebble, use `type: pebble` and optional `pebble.data_dir` and
+`pebble.max_compaction_concurrency`. An omitted HashMap limit means 256 MiB;
+explicit zero means unlimited. Negative limits, overflow, unknown backend
+names and unknown nested fields are rejected before connector factories run.
+The limit applies to logical state payload per managed operator instance.
+
+`pipeline.SetStateBackend(sdk.NewHashMapStateBackend(64))` overrides the YAML
+selection. An omitted `state_backend` preserves the environment default;
+embedded Pebble uses temporary storage unless a directory is configured.
+This option does not remove the parallel/checkpoint execution restrictions
+above. Full CLI/pipeline/system precedence and distributed YAML execution are
+tracked in the [WIP-19 completion audit](../docs/trds/WIP-19/completion.md).

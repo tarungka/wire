@@ -4,6 +4,9 @@
 **Author:** TBD
 **Dependencies:** WIP-14 (User API & Go SDK)
 
+The active follow-up is tracked in [completion.md](completion.md). The dated
+assessment below records its original base, not completion of this follow-up.
+
 ## Implementation Status — 2026-09-12
 
 Assessed against `master` at `0e78195`. This section records current implementation; the proposal below retains its original design context and targets.

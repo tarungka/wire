@@ -37,8 +37,9 @@ type pipelineDocument struct {
 		Labels map[string]string `yaml:"labels"`
 	} `yaml:"metadata"`
 	Spec struct {
-		Parallelism int `yaml:"parallelism"`
-		Checkpoint  struct {
+		StateBackend *pipelineStateBackend `yaml:"state_backend"`
+		Parallelism  int                   `yaml:"parallelism"`
+		Checkpoint   struct {
 			Interval time.Duration `yaml:"interval"`
 			Timeout  time.Duration `yaml:"timeout"`
 		} `yaml:"checkpoint"`
@@ -130,6 +131,13 @@ func ParsePipelineYAML(data []byte, connectors PipelineConnectors) (*YAMLPipelin
 		return nil, ErrNoSinks
 	}
 	env := New().SetParallelism(doc.Spec.Parallelism).SetCheckpointInterval(doc.Spec.Checkpoint.Interval)
+	if doc.Spec.StateBackend != nil {
+		backend, err := doc.Spec.StateBackend.compile()
+		if err != nil {
+			return nil, err
+		}
+		env.SetStateBackend(backend)
+	}
 	if doc.Spec.Checkpoint.Timeout > 0 {
 		env.SetCheckpointTimeout(doc.Spec.Checkpoint.Timeout)
 	}
