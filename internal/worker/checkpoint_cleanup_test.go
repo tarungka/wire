@@ -50,7 +50,7 @@ func TestCleanupCommandDeletesBeforeReceiptAndRetries(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); server.ServeSession(ctx, peer) }()
 	defer func() { cancel(); _ = caller.Close(); _ = peer.Close(); server.Stop(); <-done }()
-	w := New(Config{WorkerID: "replica", CheckpointReplica: &CheckpointReplicaConfig{StoreRoot: root}}, zerolog.Nop())
+	w := New(Config{WorkerID: "replica", CheckpointReplica: &CheckpointReplicaConfig{StoreRoot: root, ArtifactRoot: t.TempDir()}}, zerolog.Nop())
 	w.epoch = 5
 	w.client = rpc.NewClient(caller, rpc.DefaultConfig())
 	stop := w.startCheckpointCleanup(ctx)

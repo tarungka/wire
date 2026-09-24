@@ -221,4 +221,6 @@ Savepoint deletion durably queues replica cleanup. Workers remove each replica's
 inline snapshot and portable archive and retain a deletion marker to reject late
 uploads. Cleanup is asynchronous and retries while replicas are unavailable;
 the DELETE response does not mean physical space has already been reclaimed.
-Shared content-addressed Pebble artifacts are not yet collected by this workflow.
+Workers collect imported Pebble artifacts only after scanning retained checkpoint
+references while excluding concurrent publication. Corrupt retained metadata
+blocks collection and leaves cleanup pending for retry.

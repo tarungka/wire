@@ -14,6 +14,8 @@ import (
 // ImportArchive retains the exact verified transfer bytes, so relocation of
 // typed state handles never changes the portable archive referenced by a manifest.
 func (s *FileCheckpointStore) ImportArchive(ctx context.Context, jobID, taskID string, id, epoch uint64, source io.Reader, artifactRoot string, maxBytes int64) error {
+	s.artifactsMu.RLock()
+	defer s.artifactsMu.RUnlock()
 	destination, err := s.path(jobID, taskID, id, epoch)
 	if err != nil {
 		return err

@@ -62,6 +62,9 @@ func (w *Worker) deleteCheckpointReplica(ctx context.Context, cmd rpc.WorkerComm
 	if err := store.Delete(ctx, request.JobID, request.TaskID, request.CheckpointID, request.SnapshotEpoch); err != nil {
 		return err
 	}
+	if _, err := store.CollectArtifacts(ctx, cfg.ArtifactRoot); err != nil {
+		return err
+	}
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var response rpc.AcknowledgeCheckpointResponse

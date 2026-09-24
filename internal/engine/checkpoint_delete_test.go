@@ -120,6 +120,18 @@ func TestCheckpointDeletionDuringArchiveUpload(t *testing.T) {
 	artifacts := t.TempDir()
 	go func() { done <- store.ImportArchive(t.Context(), "job", "task", 1, 2, reader, artifacts, 1<<20) }()
 	<-reader.started
+	reopened, err := NewFileCheckpointStore(store.root)
+	if err != nil {
+		close(reader.release)
+		<-done
+		t.Fatal(err)
+	}
+	if reopened.artifactsMu.TryLock() {
+		reopened.artifactsMu.Unlock()
+		close(reader.release)
+		<-done
+		t.Fatal("artifact collection can overlap an unfinished import")
+	}
 	deleteErr := store.Delete(t.Context(), "job", "task", 1, 2)
 	close(reader.release)
 	uploadErr := <-done

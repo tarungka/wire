@@ -107,5 +107,5 @@ func (s *FileCheckpointStore) importArchive(ctx context.Context, jobID, taskID s
 	if err != nil {
 		return err
 	}
-	return s.Put(ctx, jobID, snapshot)
+	return s.put(ctx, jobID, snapshot)
 }

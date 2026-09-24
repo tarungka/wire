@@ -21,10 +21,12 @@ func checkpointNotDeleted(path string) error {
 
 // Delete durably fences this exact replica identity before removing its inline
 // snapshot and retained archive. Retries complete interrupted removal. Shared
-// content-addressed Pebble artifacts are deliberately retained until a separate
-// reference-aware collector can prove they are unused. The caller must authorize
+// content-addressed Pebble artifacts are handled separately by CollectArtifacts,
+// which proves they are unused before removal. The caller must authorize
 // deletion and establish that no live recovery reference needs this identity.
 func (s *FileCheckpointStore) Delete(ctx context.Context, jobID, taskID string, id, epoch uint64) error {
+	s.artifactsMu.RLock()
+	defer s.artifactsMu.RUnlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}

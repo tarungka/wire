@@ -233,3 +233,21 @@ additional leadership/crash acceptance remain open.
 durable metadata, preserves completed replica receipts, waits for renewed worker
 contact and emits only unfinished work with the new epoch. Full coordinator,
 worker, RPC and SDK race suites pass for this delivery implementation.
+
+## Shared artifact collection
+
+Worker cleanup now scans all retained checkpoint handles before removing unused
+published Pebble imports. A shared gate across reopened store handles excludes
+publication during collection while allowing concurrent imports. Deleted replica
+markers fence late publication; corrupt metadata stops collection. Only owned
+content-addressed snapshot directories are candidates, not staging or unrelated
+files. A real archive test verifies shared artifacts survive until their final
+checkpoint reference is removed, and an upload test checks that an unfinished
+import excludes collection through another store handle. Worker receipts follow
+collection. Final crash, filesystem-boundary and operational acceptance remain
+required before declaring the entire savepoint lifecycle complete.
+
+Artifact collection validation: full engine, worker and SDK race suites pass;
+filesystem-boundary and cancellation regressions pass; engine/worker vet and
+lint are clean. Symlink candidates are rejected, unrelated/staging directories
+are preserved, and root aliases share the publication gate.
