@@ -85,3 +85,12 @@ scheduler eligibility, disabling, unchanged assignments/commands, consistent
 persisted policy, failed-write rollback, strict HTTP input and role checks.
 This is not yet connected to the YAML reload controller. Parallelism updates
 without restart, migration and rollback remain unimplemented.
+
+## Reload classification
+
+PlanUpdate distinguishes identical definitions and interval-only changes from
+other deployment edits. It validates both complete submission graphs and checks
+configured state backends, including stateless graphs where no backend appears
+in operator descriptors. Tests cover interval, timeout, parallelism, expression,
+connector, backend, name and combined changes without mutating the old pipeline.
+Automatic migration is not implemented by this classification primitive.

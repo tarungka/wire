@@ -246,3 +246,11 @@ response identifies the job and requested duration. Job list/detail responses
 expose `checkpoint_interval` when the job has an explicit checkpoint policy.
 A failed request is not automatically retried; controllers must reconcile the
 job's current status before deciding what to do after an uncertain response.
+
+`current.PlanUpdate(candidate)` validates both named-worker deployments and
+classifies them as unchanged, checkpoint-interval-only, or migration-required.
+It compares complete submitted graphs and configured state backends, rather
+than matching a few YAML fields. A simultaneous expression/connector/backend
+edit cannot be sent through the interval-only path. Planning has no runtime
+side effects. Migration-required is a decision to perform further validation,
+not a guarantee that the existing savepoint restore path supports that change.
