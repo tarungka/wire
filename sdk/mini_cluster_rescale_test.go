@@ -13,8 +13,10 @@ import (
 )
 
 type miniRescaleSource struct {
-	gate    <-chan struct{}
-	emitted bool
+	gate     <-chan struct{}
+	emitted  bool
+	advance  <-chan struct{}
+	advanced bool
 }
 
 func (*miniRescaleSource) Open(context.Context) error { return nil }
@@ -27,9 +29,17 @@ func (s *miniRescaleSource) ReadBatch(ctx context.Context) ([]Event, error) {
 			s.emitted = true
 			events := make([]Event, 32)
 			for i := range events {
-				events[i] = Event{Key: []byte(fmt.Sprintf("key-%d", i)), Value: []byte("record")}
+				events[i] = Event{Key: []byte(fmt.Sprintf("key-%d", i)), Value: []byte("record"), EventTime: 1}
 			}
 			return events, nil
+		default:
+		}
+	}
+	if s.emitted && !s.advanced {
+		select {
+		case <-s.advance:
+			s.advanced = true
+			return []Event{{Key: []byte("watermark"), EventTime: 100}}, nil
 		default:
 		}
 	}
@@ -88,33 +98,7 @@ func TestMiniClusterManagedProcessRescale(t *testing.T) {
 				lifecycleWait(t, ctx, func() bool { return len(cluster.Jobs()) == 1 && len(sink.Events()) == 32 })
 				job := cluster.Jobs()[0]
 				path := job.CoordinatorURL + "/api/v1/jobs/" + job.JobID
-				request := func(method, url, body string, status int) map[string]any {
-					t.Helper()
-					req, err := http.NewRequestWithContext(ctx, method, url, strings.NewReader(body))
-					if err != nil {
-						t.Fatal(err)
-					}
-					req.Header.Set("Content-Type", "application/json")
-					response, err := http.DefaultClient.Do(req)
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer response.Body.Close()
-					data, err := io.ReadAll(response.Body)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if response.StatusCode != status {
-						t.Fatalf("%s %s: %d %s", method, url, response.StatusCode, data)
-					}
-					result := make(map[string]any)
-					if len(data) > 0 {
-						if err := json.Unmarshal(data, &result); err != nil {
-							t.Fatal(err)
-						}
-					}
-					return result
-				}
+				request := miniClusterRequester(t, ctx)
 				lifecycleWait(t, ctx, func() bool { return request("GET", path, "", 200)["status"] == "RUNNING" })
 				savepoint := request("POST", path+"/savepoints", "", 202)["id"].(string)
 				lifecycleWait(t, ctx, func() bool { return request("GET", path+"/savepoints/"+savepoint, "", 200)["status"] == "COMPLETED" })
@@ -139,5 +123,35 @@ func TestMiniClusterManagedProcessRescale(t *testing.T) {
 				request("DELETE", path+"/savepoints/"+savepoint, "", 204)
 			})
 		}
+	}
+}
+
+func miniClusterRequester(t *testing.T, ctx context.Context) func(string, string, string, int) map[string]any {
+	return func(method, url, body string, status int) map[string]any {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, method, url, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		response, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		data, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != status {
+			t.Fatalf("%s %s: %d %s", method, url, response.StatusCode, data)
+		}
+		result := make(map[string]any)
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return result
 	}
 }

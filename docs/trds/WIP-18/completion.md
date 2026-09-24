@@ -17,7 +17,7 @@ are not evidence that every requirement is implemented.
 | Memory limits and safeguards | Existing logical payload accounting and errors need full boundary/overflow/restore audit. Worker aggregate admission against available memory remains open. Runtime overhead and snapshot/iterator copies must be documented accurately. |
 | Checkpoint format and metadata | HashMap writes `WHSB`, version 1, length-prefixed entries and CRC32, and reads legacy unframed version-1 snapshots. Fixed byte fixtures verify upgrade compatibility and malformed-header rejection. Backend-tagged handles exist; backend mismatch, native Pebble semantics and durable manifest evidence remain in the final audit. |
 | Replication, restore and retention | Current worker archive transport and retention code exist from earlier WIPs. Prove both backends through actual completed-checkpoint recovery and cleanup; helper round trips alone are insufficient. |
-| Rescaling | Both backends pass real coordinator/two-worker savepoint rescale tests for 4→8, 8→4 and 4→3, including replicated fetch, assigned-key validation, replacement checkpoint and old-savepoint release. Backend restore rejects gaps, overlaps, mixed checkpoints, corruption and cancellation atomically. SDK managed Process now implements typed key-group restore, with shared HashMap/Pebble state/TTL/timer tests at the same sizes. Managed window redistribution now has operator-level parity tests for both backends, all three window kinds and all required sizes. MiniCluster managed Process rescale now passes for both backends at all three sizes, including restored state, a replacement savepoint and deletion of the old savepoint. MiniCluster window rescale and actual worker-loss recovery remain. |
+| Rescaling | Both backends pass real coordinator/two-worker savepoint rescale tests for 4→8, 8→4 and 4→3, including replicated fetch, assigned-key validation, replacement checkpoint and old-savepoint release. Backend restore rejects gaps, overlaps, mixed checkpoints, corruption and cancellation atomically. SDK managed Process now implements typed key-group restore, with shared HashMap/Pebble state/TTL/timer tests at the same sizes. Managed window redistribution now has operator-level parity tests for both backends, all three window kinds and all required sizes. MiniCluster managed Process rescale now passes for both backends at all three sizes, including restored state, a replacement savepoint and deletion of the old savepoint. MiniCluster window rescale now also passes for both backends, all three window kinds and all three sizes. Actual worker-loss recovery acceptance remains. |
 | Contract/negative tests | Shared `TestStateBackendAcceptance` verifies every entry of a 10,000-entry restore, empty restore, 10 MiB value, binary key groups 0x0000–0x007F with ordered 0x0020 prefix selection, and checkpoint consistency during concurrent atomic updates/Get. Three runs pass under `-race` for both backends. Existing corruption, cross-backend rejection and memory-limit cases still need final requirement mapping. |
 | Comparative benchmarks | Implemented reproducible Put/Get/full-iterator and 1/64/256 MiB checkpoint benchmarks for both backends. [Local measurements and raw output](benchmarks.md) distinguish volatile writes from synchronized writes and serialization from native checkpoint hashing; proposal estimates are not guarantees. |
 | Documentation and upgrade behavior | Record current formats, defaults, resource boundaries and incompatibilities, link runtime guidance, then audit all original sections before marking Implemented. |
@@ -221,3 +221,18 @@ these observations remain workload/host-specific, not an SLA.
 
 The complete SDK suite passes with `-race`, including endpoint cleanup checks;
 SDK lint reports zero issues.
+
+## MiniCluster window acceptance
+
+`TestMiniClusterWindowRescale` runs HashMap and Pebble, tumbling/sliding/session
+windows, and 4→8, 8→4 and 4→3 through the real MiniCluster HTTP control, scheduler,
+worker data streams and checkpoint replicas. It observes the first 32 keys being
+added to window accumulators, saves them before firing, rescales, then adds the
+same keys again. A subsequent source timestamp advances the watermark. Every
+result must have count 2, with exactly the expected windows per key. The test
+also completes a replacement savepoint and deletes the original one.
+
+The full new matrix and existing MiniCluster Process rescale tests pass together
+under `-race`; SDK lint is clean. The source is deliberately controlled between
+boundaries, so this establishes window-state redistribution and completed
+checkpoint retention behavior, not real external-source replay or worker loss.
