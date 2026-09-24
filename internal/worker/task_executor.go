@@ -31,6 +31,9 @@ func newTaskExecutor(reg *Registry) *taskExecutor {
 // channels, and drives execution until ctx is cancelled or the source ends.
 // Explicit upstream/downstream descriptors connect separate worker tasks.
 func (te *taskExecutor) run(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor, log zerolog.Logger, onRunning func(), checkpoints ...*taskCheckpointRuntime) (retErr error) {
+	if len(desc.SecretValues) > 0 {
+		log = secretconfig.NewRedactor(desc.SecretValues).Logger(log)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = &engine.OperatorPanicError{Value: r, Stack: string(debug.Stack())}

@@ -618,6 +618,10 @@ func (w *Worker) handleDeployTask(cmd rpc.WorkerCommand) {
 // runTask reports Running after initialization, drives the executor, and reports
 // Finished/Failed on exit. Always removes the task from w.tasks when done.
 func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.TaskDescriptor, log zerolog.Logger) {
+	executorLog := log
+	if len(desc.SecretValues) > 0 {
+		log = secretconfig.NewRedactor(desc.SecretValues).Logger(log)
+	}
 	w.mu.RLock()
 	handle := w.tasks[taskID]
 	w.mu.RUnlock()
@@ -653,7 +657,7 @@ func (w *Worker) runTask(ctx context.Context, jobID, taskID string, desc rpc.Tas
 		return
 	}
 	defer cleanup()
-	err = w.executor.run(ctx, jobID, taskID, desc, log, func() {
+	err = w.executor.run(ctx, jobID, taskID, desc, executorLog, func() {
 		w.reportTaskStatus(jobID, taskID, rpc.TaskStatusRunning, nil)
 	}, checkpoint)
 

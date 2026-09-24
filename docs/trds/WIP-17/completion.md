@@ -292,3 +292,19 @@ The coordinator still does not dispatch resolved configurations. Automatic
 filtered-logger construction, secure connection gating and worker capability
 negotiation remain prerequisites; old workers must not receive credentials under
 an assumption that they implement these new diagnostic protections.
+
+### Automatic task logger filtering
+
+A task with runtime redaction values now automatically receives a filtered logger
+in both worker-managed execution and direct executor calls. Factory contexts and
+the task slot share that filtered logger. The adapter retains the original
+logging destination, severity, structured fields and exact numeric values;
+unfiltered context is not reattached and destination sampling is not repeated.
+The source-failure regression now passes an ordinary logger and verifies both
+factory diagnostics and runtime failures are filtered automatically.
+
+Caller-supplied logger hooks and output destinations are trusted application
+code; they must not independently emit credentials. This filtering cannot
+protect a connector that deliberately writes raw configuration through an
+unrelated logger. Secure deployment gating and capability negotiation are still
+pending, so resolved configurations remain undispatched.
