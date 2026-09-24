@@ -18,7 +18,7 @@ are not evidence that every requirement is implemented.
 | Checkpoint format and metadata | HashMap serialization and backend-tagged handles exist. Audit magic/version/CRC, backend mismatch, native Pebble semantics and durable manifest evidence. |
 | Replication, restore and retention | Current worker archive transport and retention code exist from earlier WIPs. Prove both backends through actual completed-checkpoint recovery and cleanup; helper round trips alone are insufficient. |
 | Rescaling | Prove HashMap 4→8, 8→4 and 4→3 key-group redistribution through the distributed runtime, with equivalent Pebble behavior. |
-| Contract/negative tests | Verify 10,000-entry roundtrip, empty snapshot, 10 MiB value, corruption, cross-backend rejection, prefix ordering, memory release after delete and concurrent mutation/checkpoint with the race detector. |
+| Contract/negative tests | Shared `TestStateBackendAcceptance` verifies every entry of a 10,000-entry restore, empty restore, 10 MiB value, binary key groups 0x0000–0x007F with ordered 0x0020 prefix selection, and checkpoint consistency during concurrent atomic updates/Get. Three runs pass under `-race` for both backends. Existing corruption, cross-backend rejection and memory-limit cases still need final requirement mapping. |
 | Comparative benchmarks | Implemented reproducible Put/Get/full-iterator and 1/64/256 MiB checkpoint benchmarks for both backends. [Local measurements and raw output](benchmarks.md) distinguish volatile writes from synchronized writes and serialization from native checkpoint hashing; proposal estimates are not guarantees. |
 | Documentation and upgrade behavior | Record current formats, defaults, resource boundaries and incompatibilities, link runtime guidance, then audit all original sections before marking Implemented. |
 
@@ -84,3 +84,13 @@ unordered or duplicate keys instead of silently changing cardinality or memory
 accounting. The memory cap still measures logical key/value payload, not tree
 allocation overhead or process RSS. Comparative throughput and checkpoint measurements are recorded in
 [the benchmark baseline](benchmarks.md).
+
+## Shared backend acceptance cases
+
+Run `go test -race ./internal/engine -run '^TestStateBackendAcceptance$' -count=3`.
+The test uses the same cases for HashMap and Pebble. Roundtrip checks read all
+10,000 records from a separate restored backend. The concurrent case races
+checkpoint creation with paired atomic updates and reads, then restores each
+snapshot into a separate instance and checks that its pair is consistent.
+This is local backend acceptance; it does not substitute for distributed
+replication, task-loss recovery, retention or key-group rescale acceptance.
