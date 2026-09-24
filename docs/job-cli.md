@@ -211,3 +211,8 @@ newest completed boundary, whereas the existing top-level `latest_checkpoint`
 can identify an older boundary selected for recovery. Task and checkpoint
 sections are sampled separately; they are not a transaction across the whole API
 response. The history scan does not hold the coordinator's ownership lock.
+
+Savepoint deletion returns `SAVEPOINT_IN_USE` while it is the active job's latest
+selected recovery checkpoint, even if the savepoint was requested independently
+of pause or rescale. A newer completed checkpoint or terminal job releases that
+recovery pin; independent pause/rescale/upgrade references may still retain it.

@@ -169,3 +169,12 @@ including corrupt metadata. Tests verify content type, machine-readable codes
 and that unavailable triggers do not start a checkpoint. Submission rejection
 also covers null/array bodies and malformed base64/msgpack without publishing a
 job. The broader lifecycle acceptance and binary/YAML submission remain open.
+
+## Recovery pin before physical cleanup
+
+Deleting a completed savepoint now also checks whether it is the latest selected
+recovery boundary of any active state of its source job. Previously only explicit
+pause/rescale/upgrade references blocked deletion. Tests cover all nonterminal
+states, release after a newer checkpoint, and terminal jobs. This is a prerequisite
+for archive cleanup, not physical deletion itself: replica deletion delivery,
+durable retry/tombstones and imported artifact lifetime still require work.

@@ -109,6 +109,12 @@ func (c *Coordinator) DeleteSavepoint(jobID, spID string) error {
 	if err := protocol.DecodeMsgPack(data, &sp); err != nil {
 		return err
 	}
+	// A savepoint is also a normal recovery boundary. Physical cleanup must
+	// not remove the latest selected boundary of an active job, even when it
+	// was requested directly rather than by pause/rescale.
+	if job := c.jobs[jobID]; job != nil && !job.Status.IsTerminal() && sp.CheckpointID != 0 && job.LatestCheckpoint == sp.CheckpointID {
+		return ErrSavepointInUse
+	}
 	if job := c.jobs[jobID]; job != nil && !job.Status.IsTerminal() && (job.PauseSavepointID == sp.ID || (job.PauseCheckpoint != 0 && job.PauseCheckpoint == sp.CheckpointID)) {
 		return ErrSavepointInUse
 	}
