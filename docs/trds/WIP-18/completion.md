@@ -19,7 +19,7 @@ are not evidence that every requirement is implemented.
 | Replication, restore and retention | Current worker archive transport and retention code exist from earlier WIPs. Prove both backends through actual completed-checkpoint recovery and cleanup; helper round trips alone are insufficient. |
 | Rescaling | Prove HashMap 4→8, 8→4 and 4→3 key-group redistribution through the distributed runtime, with equivalent Pebble behavior. |
 | Contract/negative tests | Verify 10,000-entry roundtrip, empty snapshot, 10 MiB value, corruption, cross-backend rejection, prefix ordering, memory release after delete and concurrent mutation/checkpoint with the race detector. |
-| Comparative benchmarks | Put/Get/iterator/checkpoint baselines and 1/64/256 MiB serialization measurements remain. Expected numbers in the proposal are not results. |
+| Comparative benchmarks | Implemented reproducible Put/Get/full-iterator and 1/64/256 MiB checkpoint benchmarks for both backends. [Local measurements and raw output](benchmarks.md) distinguish volatile writes from synchronized writes and serialization from native checkpoint hashing; proposal estimates are not guarantees. |
 | Documentation and upgrade behavior | Record current formats, defaults, resource boundaries and incompatibilities, link runtime guidance, then audit all original sections before marking Implemented. |
 
 ## MiniCluster backend default
@@ -82,5 +82,5 @@ The full engine and SDK suites pass with `-race` after replacing the sorted
 slice. Existing version-1 snapshots retain their byte format; restore rejects
 unordered or duplicate keys instead of silently changing cardinality or memory
 accounting. The memory cap still measures logical key/value payload, not tree
-allocation overhead or process RSS. Comparative throughput and serialization
-benchmarks remain outstanding.
+allocation overhead or process RSS. Comparative throughput and checkpoint measurements are recorded in
+[the benchmark baseline](benchmarks.md).
