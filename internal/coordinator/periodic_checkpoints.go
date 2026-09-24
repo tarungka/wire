@@ -10,10 +10,14 @@ import (
 func (c *Coordinator) runPeriodicCheckpoints(ctx context.Context) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	cleanupTicker := time.NewTicker(5 * time.Second)
+	defer cleanupTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-cleanupTicker.C:
+			c.dispatchSavepointCleanup(ctx)
 		case now := <-ticker.C:
 			c.expireCheckpoints(now)
 			c.scheduleQueuedSavepoints()

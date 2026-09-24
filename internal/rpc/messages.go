@@ -188,6 +188,7 @@ const (
 	CommandTypeUpdateConfig     CommandType = 5
 	CommandTypeAbortCheckpoint  CommandType = 6
 	CommandTypeCommitCheckpoint CommandType = 7
+	CommandTypeDeleteCheckpoint CommandType = 8
 )
 
 // String returns the human-readable name of the command type.
@@ -205,6 +206,8 @@ func (c CommandType) String() string {
 		return "TakeSnapshot"
 	case CommandTypeAbortCheckpoint:
 		return "AbortCheckpoint"
+	case CommandTypeDeleteCheckpoint:
+		return "DeleteCheckpoint"
 	case CommandTypeCommitCheckpoint:
 		return "CommitCheckpoint"
 	case CommandTypeUpdateConfig:

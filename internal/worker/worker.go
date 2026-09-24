@@ -57,6 +57,7 @@ type taskHandle struct {
 // Deployed tasks are resolved against the Worker's Registry and executed
 // via taskExecutor.
 type Worker struct {
+	cleanupCommands        chan rpc.WorkerCommand
 	epochStore             *epochStore
 	resources              *rpc.ResourceReport
 	lastCoordinatorContact time.Time
@@ -187,6 +188,8 @@ func (w *Worker) Run(ctx context.Context) (retErr error) {
 	defer stopResources()
 	go w.runResourceSampler(resourceCtx)
 
+	stopCleanup := w.startCheckpointCleanup(ctx)
+	defer stopCleanup()
 	for ctx.Err() == nil {
 		w.mu.RLock()
 		stopping := w.stopping
@@ -714,6 +717,8 @@ func (w *Worker) reportTaskFailed(jobID, taskID string, err error) {
 func (w *Worker) handleCommands(cmds []rpc.WorkerCommand) {
 	for _, cmd := range cmds {
 		switch cmd.Type {
+		case rpc.CommandTypeDeleteCheckpoint:
+			w.enqueueCheckpointCleanup(cmd)
 		case rpc.CommandTypeDeployTask:
 			w.handleDeployTask(cmd)
 		case rpc.CommandTypeCancelTask:

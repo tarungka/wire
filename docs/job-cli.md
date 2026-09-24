@@ -216,3 +216,9 @@ Savepoint deletion returns `SAVEPOINT_IN_USE` while it is the active job's lates
 selected recovery checkpoint, even if the savepoint was requested independently
 of pause or rescale. A newer completed checkpoint or terminal job releases that
 recovery pin; independent pause/rescale/upgrade references may still retain it.
+
+Savepoint deletion durably queues replica cleanup. Workers remove each replica's
+inline snapshot and portable archive and retain a deletion marker to reject late
+uploads. Cleanup is asynchronous and retries while replicas are unavailable;
+the DELETE response does not mean physical space has already been reclaimed.
+Shared content-addressed Pebble artifacts are not yet collected by this workflow.

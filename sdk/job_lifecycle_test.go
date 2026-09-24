@@ -27,6 +27,11 @@ import (
 // lifecycleCluster runs the production HTTP, RPC, scheduler and public worker
 // API. Each test owns and joins its services and can inspect coordinator state.
 func lifecycleCluster(t *testing.T, registry *WorkerRegistry, allowRemoval ...bool) (context.Context, *coordinator.Coordinator, string) {
+	ctx, coord, url, _ := lifecycleClusterWithRoots(t, registry, allowRemoval...)
+	return ctx, coord, url
+}
+
+func lifecycleClusterWithRoots(t *testing.T, registry *WorkerRegistry, allowRemoval ...bool) (context.Context, *coordinator.Coordinator, string, []string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	store := coordinator.NewMemoryStore()
@@ -54,8 +59,10 @@ func lifecycleCluster(t *testing.T, registry *WorkerRegistry, allowRemoval ...bo
 		t.Fatal(err)
 	}
 	start(func() { _ = httpServer.Serve() })
+	var roots []string
 	for i := 0; i < 2; i++ {
 		cfg := WorkerConfig{WorkerID: fmt.Sprint("lifecycle-", i), CoordinatorAddr: rpcServer.Addr(), TaskSlots: 4, HeartbeatInterval: 100 * time.Millisecond, HeartbeatTimeout: time.Second, CheckpointDirectory: t.TempDir()}
+		roots = append(roots, cfg.CheckpointDirectory)
 		start(func() {
 			if err := RunWorker(ctx, cfg, registry); err != nil && ctx.Err() == nil {
 				if len(allowRemoval) == 0 || !allowRemoval[0] || !errors.Is(err, worker.ErrCoordinatorContactLost) {
@@ -65,7 +72,7 @@ func lifecycleCluster(t *testing.T, registry *WorkerRegistry, allowRemoval ...bo
 		})
 	}
 	lifecycleWait(t, ctx, func() bool { return len(coord.ListWorkers()) == 2 })
-	return ctx, coord, "http://" + httpServer.Addr()
+	return ctx, coord, "http://" + httpServer.Addr(), roots
 }
 
 func lifecycleWait(t *testing.T, ctx context.Context, ready func() bool) {
@@ -310,7 +317,7 @@ func TestCLICancelWithSavepointPersistsBeforeStopping(t *testing.T) {
 	})
 	sink := &collectSink{}
 	registry.RegisterSink("collect", func(context.Context, []byte, WorkerTaskContext) (Sink, error) { return sink, nil })
-	ctx, coord, url := lifecycleCluster(t, registry)
+	ctx, coord, url, roots := lifecycleClusterWithRoots(t, registry)
 	env := New().SetMode(Cluster).SetCoordinator(url)
 	env.AddSourceNamed("source", "replay", nil).AddSinkNamed("sink", "collect", nil)
 	done := make(chan error, 1)
@@ -358,6 +365,36 @@ func TestCLICancelWithSavepointPersistsBeforeStopping(t *testing.T) {
 	if job.RecoveryAttempts != 0 || job.RestartCount != 0 {
 		t.Fatalf("cancellation consumed recovery: %+v", job)
 	}
+	var payloads []string
+	for _, root := range roots {
+		files, err := filepath.Glob(filepath.Join(root, "replicas", "*.checkpoint"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		payloads = append(payloads, files...)
+	}
+	if len(payloads) == 0 {
+		t.Fatal("no real replica payload to clean")
+	}
+	response.Reset()
+	if err := jobcli.Run(ctx, []string{"savepoints", "delete", jobID, sp.ID, "--coordinator", url}, &response, &response); err != nil {
+		t.Fatal(err)
+	}
+	lifecycleWait(t, ctx, func() bool {
+		for _, path := range payloads {
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				return false
+			}
+			if _, err := os.Stat(path + ".archive"); !errors.Is(err, os.ErrNotExist) {
+				return false
+			}
+			if _, err := os.Stat(path + ".deleted"); err != nil {
+				return false
+			}
+		}
+		return true
+	})
+
 }
 
 func TestCLINodeRemovalRecoversOnRemainingWorker(t *testing.T) {

@@ -211,3 +211,25 @@ a failed write remains retryable and duplicate receipts are idempotent. Tests
 cover mismatched identities, removed/lost workers, write failure, partial and final
 receipts. Command dispatch and worker receipt generation are still required; this
 RPC alone does not initiate deletion or establish end-to-end cleanup acceptance.
+
+## Cleanup command delivery
+
+The joined checkpoint maintenance runner now retries durable cleanup requests
+through worker commands every five seconds. Reads occur outside the coordinator
+ownership lock; pending command queues are bounded and duplicate pending deletion
+commands coalesce. Workers use a bounded, joined cleanup queue so disk operations
+and receipt RPCs do not block heartbeat or deployment dispatch. Commands validate
+current coordinator and exact replica identity before deletion. Lost/removed or
+unavailable replicas remain pending for retry, not silently completed.
+
+Coordinator tests verify retries until durable receipts. Worker RPC tests verify
+stale-command rejection, durable deletion before receipt and duplicate handling.
+The live SDK CLI cancellation/savepoint test now deletes the savepoint and checks
+that real replica snapshot/archive files disappear and deletion markers remain.
+Shared content-addressed Pebble artifact collection, cleanup observability and
+additional leadership/crash acceptance remain open.
+
+`TestCleanupDispatchRecoversWithoutInMemoryQueue` reconstructs a coordinator from
+durable metadata, preserves completed replica receipts, waits for renewed worker
+contact and emits only unfinished work with the new epoch. Full coordinator,
+worker, RPC and SDK race suites pass for this delivery implementation.
